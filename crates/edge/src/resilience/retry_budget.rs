@@ -55,7 +55,7 @@ impl RetryBudget {
         let global_limit = ((primary * self.global_ratio_percent as u64) / 100).saturating_add(1);
         if self
             .global_retries
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |retries| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |retries| {
                 (retries < global_limit).then_some(retries + 1)
             })
             .is_err()

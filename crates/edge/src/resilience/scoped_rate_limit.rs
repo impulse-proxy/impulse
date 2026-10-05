@@ -88,7 +88,7 @@ impl ScopedRateLimitBucketStore {
 
     fn reserve_bucket_slot(&self) -> bool {
         self.live_buckets
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
                 (count < MAX_SCOPED_RATE_LIMIT_BUCKETS_PER_RULE).then_some(count + 1)
             })
             .is_ok()

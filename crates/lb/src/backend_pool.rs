@@ -325,7 +325,7 @@ impl BackendPool {
         let _ =
             backend
                 .active_requests
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
                     Some(current.saturating_sub(1))
                 });
 

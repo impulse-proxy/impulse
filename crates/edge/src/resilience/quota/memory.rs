@@ -163,7 +163,7 @@ impl InMemoryDistributedQuotaCounterStore {
         match self.max_entries {
             Some(max_entries) => self
                 .live_entries
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
                     count
                         .checked_add(additional_entries)
                         .filter(|next| *next <= max_entries)
