@@ -260,9 +260,7 @@ impl InMemoryDistributedQuotaCounterStore {
                 let shard_position = shard_indices
                     .binary_search(&window.shard_index)
                     .map_err(|_| shard_routing_error())?;
-                let shard = shards
-                    .get(shard_position)
-                    .ok_or_else(shard_routing_error)?;
+                let shard = shards.get(shard_position).ok_or_else(shard_routing_error)?;
                 if !shard.buckets.contains_key(&window.spec.storage_key) {
                     additional_entries = additional_entries.saturating_add(1);
                 }
