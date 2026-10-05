@@ -233,7 +233,7 @@ impl InMemoryDistributedQuotaCounterStore {
                 .map_err(|_| shard_routing_error())?;
             let current = shards
                 .get(shard_position)
-                .ok_or_else(&shard_routing_error)?
+                .ok_or_else(shard_routing_error)?
                 .buckets
                 .get(&window.storage_key)
                 .map(|state| state.consumed)
@@ -262,7 +262,7 @@ impl InMemoryDistributedQuotaCounterStore {
                     .map_err(|_| shard_routing_error())?;
                 let shard = shards
                     .get(shard_position)
-                    .ok_or_else(&shard_routing_error)?;
+                    .ok_or_else(shard_routing_error)?;
                 if !shard.buckets.contains_key(&window.spec.storage_key) {
                     additional_entries = additional_entries.saturating_add(1);
                 }
@@ -281,7 +281,7 @@ impl InMemoryDistributedQuotaCounterStore {
                     .map_err(|_| shard_routing_error())?;
                 let shard = shards
                     .get_mut(shard_position)
-                    .ok_or_else(&shard_routing_error)?;
+                    .ok_or_else(shard_routing_error)?;
                 shard.buckets.insert(
                     window.spec.storage_key.clone(),
                     InMemoryBucketState {
