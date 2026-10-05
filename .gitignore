@@ -77,9 +77,6 @@ out/
 test-results/
 coverage/
 
-# Documentation build
-docs/_build/
-
 # Backup files
 *.bak
 *.backup
@@ -96,12 +93,6 @@ config.yaml
 
 # Certificates
 certs/
-
-# Internal docs
-docs/internal/
-
-# MkDocs build output
-site/
 
 .venv/
 

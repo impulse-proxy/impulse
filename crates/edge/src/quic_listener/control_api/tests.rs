@@ -3153,12 +3153,6 @@ async fn control_api_runtime_history_observability_view_stays_stable_without_adm
                 "degraded": false
             },
             "current_generation": 0,
-            "documentation": {
-                "observability_contract": "docs/architecture/observability-contract.md",
-                "control_plane_operations": "docs/operations/control-plane.md",
-                "metrics_and_alerts_operations": "docs/operations/metrics-and-alerts.md",
-                "distributed_quota_operations": "docs/operations/distributed-quota.md"
-            },
             "dashboard_packages": [
                 {
                     "dashboard_id": "edge_traffic",
@@ -3455,12 +3449,6 @@ async fn control_api_runtime_snapshot_exposes_quota_policy_and_backend_status() 
                 "degraded": false
             },
             "current_generation": 0,
-            "documentation": {
-                "observability_contract": "docs/architecture/observability-contract.md",
-                "control_plane_operations": "docs/operations/control-plane.md",
-                "metrics_and_alerts_operations": "docs/operations/metrics-and-alerts.md",
-                "distributed_quota_operations": "docs/operations/distributed-quota.md"
-            },
             "dashboard_packages": [
                 {
                     "dashboard_id": "edge_traffic",
