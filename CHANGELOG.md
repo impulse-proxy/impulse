@@ -31,7 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Canonical operator correlation fields on admin audit events — `event_id`, `schema_version`, `request_id`, `trace_id`, `span_id`, and `listener`, plus a stable `failure_class` (`authentication`, `authorization`, `source_policy`, `request_validation`, `runtime_config`, `runtime_state`, `listener_tls`, `watchdog`) attached to non-success events so failures can be grouped without parsing free-form reason strings.
 - `GET /admin/runtime` and the runtime history endpoints gained an `observability` block — contract version, audit schema version, current generation, backend and quota backend health summaries, recent tracked admin actions, and repository-relative dashboard/documentation references, so operators and automation have one canonical entry point into the packaged bundle.
 - `h3_client` now accepts `--method` (default `GET`) and repeatable `--header name=value` flags (including pseudo-headers such as `:protocol`), for exercising non-GET and header-sensitive observability traffic in the lab.
-- Documentation: `docs/operations/observability-bundle.md` documents the shipped dashboards, alerts, SLOs, and incident-correlation workflow; `docs/architecture/observability-contract.md` and `docs/operations/control-plane.md` document the audit schema and the new runtime `observability` block.
+- Documentation covered the shipped dashboards, alerts, SLOs, incident-correlation workflow, audit schema, and the runtime `observability` block.
 
 ### Changed
 
@@ -62,7 +62,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Backend failure policy via `resilience.quota.backend_failure_policy` — `fail_closed` (default) rejects with `503` when the counter store is unreachable, `fail_open` admits. The default is fail-closed: an unreachable Redis stops enforcing budgets, and admitting unbounded traffic is the worse outcome.
 - Quota metrics — `impulse_quota_policy_outcomes_total{policy,decision,reason,selector_dimensions,backend_mode}` and `impulse_quota_backend_health_total{backend_mode,reason}`. Decisions are `allowed`, `denied`, `shadow_denied`, `failed_open`, `failed_closed`, and `not_applied`; degraded operation is visible in `backend_mode` as `<kind>_local_fallback_<reason>`, so running on fallback counters is distinguishable from running on the real backend.
 - Runtime introspection for quota — `GET /admin/runtime` gained a `quota` block carrying `enabled`, `enforcement`, `backend_failure_policy`, `active_backend`, a `backend_status` object (`availability`, `degraded`, `health_reason`, `last_observed_at_unix_ms`, `recent_errors[]`), and the resolved `policies[]` with their selectors and windows.
-- Documentation: `docs/architecture/quota-policy-contract.md` defines the policy semantics and decision model, and `docs/operations/distributed-quota.md` covers backend selection, degraded operation, and migration from scoped rate limiting.
+- Documentation covered quota policy semantics, backend selection, degraded operation, and migration from scoped rate limiting.
 
 ### Changed
 
@@ -415,8 +415,6 @@ Initial release of Impulse HTTP/3 edge proxy and load balancer.
 1. No dynamic backend discovery (service discovery remains static config-driven).
 2. No configuration hot reload (restart-based config apply model).
 3. Project is pre-GA and still requires extended soak/failure-mode hardening for broad production rollout.
-
-See [roadmap](docs/roadmap.md) for planned improvements.
 
 ---
 

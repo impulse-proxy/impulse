@@ -22,7 +22,6 @@ jobs:
     outputs:
       rust: ${{ steps.filter.outputs.rust }}
       dependencies: ${{ steps.filter.outputs.dependencies }}
-      docs: ${{ steps.filter.outputs.docs }}
       packaging: ${{ steps.filter.outputs.packaging }}
       test_scope: ${{ steps.packages.outputs.test_scope }}
       test_packages: ${{ steps.packages.outputs.test_packages }}
@@ -56,13 +55,6 @@ jobs:
               - 'Cargo.toml'
               - 'Cargo.lock'
               - '**/Cargo.toml'
-            docs:
-              - 'docs/**'
-              - 'assets/**'
-              - 'README.md'
-              - 'CONTRIBUTING.md'
-              - 'mkdocs.yml'
-              - 'docs-requirements.txt'
             packaging:
               - 'packaging/**'
               - 'deploy/**'

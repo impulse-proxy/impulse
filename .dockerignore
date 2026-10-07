@@ -2,7 +2,6 @@
 .github
 target
 bench/load/matrix
-docs/site
 impulse-test-suite
 *.log
 *.tmp

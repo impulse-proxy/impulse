@@ -107,13 +107,6 @@ Useful starting points:
 - `config/config.development.yaml`: local development profile
 - `config/config.sample.yaml`: broader reference sample
 
-Recommended docs:
-
-- [Configuration Reference](docs/configuration/reference.md)
-- [Examples](docs/configuration/examples.md)
-- [TLS Configuration](docs/configuration/tls.md)
-- [Distributed Quota Operations](docs/operations/distributed-quota.md)
-
 Minimal example:
 
 ```yaml
@@ -174,46 +167,9 @@ sudo apt install cmake build-essential pkg-config
 brew install cmake pkg-config
 ```
 
-Start here for deployment and operations:
-
-- [Getting Started](docs/getting-started/overview.md)
-- [Production Deployment](docs/deployment/production.md)
-- [Production Readiness](docs/operations/production-readiness.md)
-- [Metrics And Alerts](docs/operations/metrics-and-alerts.md)
-- [Observability Bundle](docs/operations/observability-bundle.md)
-- [Runbook](docs/operations/runbook.md)
-- [Troubleshooting](docs/troubleshooting/common-issues.md)
-
 ## Project Status
 
 **Beta.** Impulse is suitable for controlled production rollouts, but it remains pre-GA and should be deployed with staged rollout, monitoring, and rollback readiness.
-
-See:
-
-- [Release Maturity](docs/release-maturity.md)
-- [Roadmap](docs/roadmap.md)
-- [Limitations](docs/reference/limitations.md)
-
-## Documentation
-
-The full documentation index is at [docs/README.md](docs/README.md).
-
-Use these entry points first:
-
-- Start here: [Getting Started](docs/getting-started/overview.md)
-- Deploy and operate: [Operations Overview](docs/operations/overview.md)
-- Troubleshoot: [Common Issues](docs/troubleshooting/common-issues.md)
-- Exact product support and limits: [Reference Overview](docs/reference/overview.md)
-
-Recommended deep links:
-
-- [Architecture Overview](docs/architecture/overview.md)
-- [Request Lifecycle](docs/architecture/request-lifecycle.md)
-- [Transport Boundary](docs/architecture/transport.md)
-- [Quota Policy Contract](docs/architecture/quota-policy-contract.md)
-- [Observability Contract](docs/architecture/observability-contract.md)
-- [Control API Reference](docs/reference/control-api-reference.md)
-- [Feature Matrix](docs/reference/feature-matrix.md)
 
 ## Development
 
@@ -227,10 +183,3 @@ cargo fmt
 cargo clippy --workspace -- -D warnings
 cargo test --workspace
 ```
-
-For repository structure, testing strategy, and implementation guidance, use:
-
-- [Contributing Guide](CONTRIBUTING.md)
-- [Development Overview](docs/development/overview.md)
-- [Codebase Map](docs/development/codebase-map.md)
-- [Testing Strategy](docs/development/testing-strategy.md)

@@ -23,7 +23,6 @@ groups:
             a 99.9% availability objective and is intended to catch fast and
             sustained edge failure growth without relying on raw PromQL at alert
             time.
-          runbook: docs/operations/runbook.md#scenario-rising-503-rate
 
       - alert: ImpulseP99LatencyBurnPage
         expr: >-
@@ -45,7 +44,6 @@ groups:
             sustained 30-minute windows. The packaged defaults assume a 1s p99
             objective and page only when the short window materially exceeds it
             while the long window stays above it.
-          runbook: docs/operations/runbook.md#scenario-backend-timeout-surge
 
       - alert: ImpulseBackendTimeoutSurgePage
         expr: >-
@@ -66,7 +64,6 @@ groups:
             relative to total request rate. This usually indicates upstream fleet
             regression, network path problems, or concurrency pressure that is
             now user-visible.
-          runbook: docs/operations/runbook.md#scenario-backend-timeout-surge
 
       - alert: ImpulseTlsCertificateExpiryCritical
         expr: >-
@@ -83,7 +80,6 @@ groups:
             before expiration. Inspect the affected listener and server_name
             labels on the firing series and rotate certificate material before
             client handshakes start failing.
-          runbook: docs/operations/runbook.md#scenario-cert-rotation
 
       - alert: ImpulseWatchdogDegraded
         expr: >-
@@ -99,7 +95,6 @@ groups:
             The packaged watchdog degradation recording rule is non-zero for a
             sustained period. The process is still up, but control-plane safety
             mechanisms are reporting unhealthy evaluation windows.
-          runbook: docs/operations/runbook.md#scenario-control-api-or-metrics-endpoint-unavailable
 
       - alert: ImpulseRuntimePanicObserved
         expr: >-
@@ -115,7 +110,6 @@ groups:
             The packaged runtime panic recording rule is non-zero. This indicates
             one or more runtime tasks panicked recently and requires immediate
             investigation even if traffic is still partially flowing.
-          runbook: docs/operations/runbook.md#after-any-incident
 
       - alert: ImpulseControlPlaneUnavailable
         expr: >-
@@ -131,7 +125,6 @@ groups:
             The control-plane recording-rule series are absent. In practice this
             usually means the Impulse process is down, the metrics endpoint is not
             being scraped, or the recording rules were not loaded correctly.
-          runbook: docs/operations/runbook.md#scenario-control-api-or-metrics-endpoint-unavailable
 
   - name: impulse-ticket-alerts
     interval: 30s
@@ -151,7 +144,6 @@ groups:
             The packaged retry-attempt ratio is above 5% of request rate for a
             sustained period. This is usually an early sign of backend timeout,
             transport, or pool instability before hard failure rates fully spike.
-          runbook: docs/operations/runbook.md#scenario-backend-timeout-surge
 
       - alert: ImpulseHedgeGrowth
         expr: >-
@@ -168,7 +160,6 @@ groups:
             Hedge triggers are above 2% of request volume for a sustained period.
             That usually means tail latency is deteriorating enough that the
             hedge policy is engaging routinely rather than exceptionally.
-          runbook: docs/operations/runbook.md#scenario-backend-timeout-surge
 
       - alert: ImpulseBackendDnsRefreshFailures
         expr: >-
@@ -185,7 +176,6 @@ groups:
             The packaged DNS refresh recording rules show ongoing failures and a
             failure ratio above 10%. Address-set refresh is no longer reliably
             converging and stale backend endpoints may be retained.
-          runbook: docs/operations/runbook.md#scenario-backend-timeout-surge
 
       - alert: ImpulseBrownoutActiveTooLong
         expr: >-
@@ -201,7 +191,6 @@ groups:
             Brownout is continuously active beyond the packaged tolerance window.
             The edge is protecting itself, but capacity or load shape should be
             reviewed before this turns into a user-visible availability issue.
-          runbook: docs/operations/runbook.md#scenario-brownout-or-overload-triggering
 
       - alert: ImpulseQuotaBackendDegraded
         expr: >-
@@ -219,7 +208,6 @@ groups:
             state. Inspect the backend_mode and reason labels to determine
             whether Redis timeouts, backend unavailability, or another quota
             evaluation fault is degrading enforcement.
-          runbook: docs/operations/distributed-quota.md
 
       - alert: ImpulseTlsHandshakeFailuresRising
         expr: >-
@@ -237,4 +225,3 @@ groups:
             The recorded handshake failure ratio is elevated in both the short
             and sustained windows. This usually points to certificate, client
             authentication, ALPN, or protocol compatibility issues.
-          runbook: docs/operations/runbook.md#scenario-handshake-failures-or-client-connection-failures

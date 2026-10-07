@@ -163,7 +163,7 @@ impl InMemoryDistributedQuotaCounterStore {
         match self.max_entries {
             Some(max_entries) => self
                 .live_entries
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
                     count
                         .checked_add(additional_entries)
                         .filter(|next| *next <= max_entries)
@@ -233,7 +233,7 @@ impl InMemoryDistributedQuotaCounterStore {
                 .map_err(|_| shard_routing_error())?;
             let current = shards
                 .get(shard_position)
-                .ok_or_else(&shard_routing_error)?
+                .ok_or_else(shard_routing_error)?
                 .buckets
                 .get(&window.storage_key)
                 .map(|state| state.consumed)
@@ -260,9 +260,7 @@ impl InMemoryDistributedQuotaCounterStore {
                 let shard_position = shard_indices
                     .binary_search(&window.shard_index)
                     .map_err(|_| shard_routing_error())?;
-                let shard = shards
-                    .get(shard_position)
-                    .ok_or_else(&shard_routing_error)?;
+                let shard = shards.get(shard_position).ok_or_else(shard_routing_error)?;
                 if !shard.buckets.contains_key(&window.spec.storage_key) {
                     additional_entries = additional_entries.saturating_add(1);
                 }
@@ -281,7 +279,7 @@ impl InMemoryDistributedQuotaCounterStore {
                     .map_err(|_| shard_routing_error())?;
                 let shard = shards
                     .get_mut(shard_position)
-                    .ok_or_else(&shard_routing_error)?;
+                    .ok_or_else(shard_routing_error)?;
                 shard.buckets.insert(
                     window.spec.storage_key.clone(),
                     InMemoryBucketState {

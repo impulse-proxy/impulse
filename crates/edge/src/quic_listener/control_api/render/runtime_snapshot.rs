@@ -361,12 +361,6 @@ impl ControlApiObservabilityPayload {
                 .generation
                 .as_ref()
                 .map(|generation| generation.generation()),
-            documentation: ControlApiObservabilityDocumentationPayload {
-                observability_contract: "docs/architecture/observability-contract.md",
-                control_plane_operations: "docs/operations/control-plane.md",
-                metrics_and_alerts_operations: "docs/operations/metrics-and-alerts.md",
-                distributed_quota_operations: "docs/operations/distributed-quota.md",
-            },
             dashboard_packages: vec![
                 ControlApiObservabilityDashboardPayload {
                     dashboard_id: "edge_traffic",
