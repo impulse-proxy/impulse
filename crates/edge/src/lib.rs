@@ -11,6 +11,8 @@ mod constants;
 mod hash;
 pub mod metrics;
 mod observability;
+#[allow(dead_code)] // Staged until Pingora ingress listener integration.
+mod pingora_ingress;
 mod quic_listener;
 #[allow(dead_code)] // Introduced before protocol adapters migrate to the shared contracts.
 mod request_pipeline;
