@@ -7,7 +7,6 @@ use tokio::{sync::oneshot, task::AbortHandle};
 
 use super::{
     auth::start_external_auth_task,
-    pipeline::ForwardingRequestPipeline,
     resolve::{
         ForwardTargetResolution, ForwardTargetResolutionInput, ResolutionContext,
         ResolutionObservation, TargetResolutionRequest,
@@ -18,7 +17,9 @@ use crate::{
     quic_listener::admission::{
         AdmissionPolicyDecision, AdmissionRejectionResponse, admission_rejection_response,
     },
-    request_pipeline::{PipelineRequest, PipelineResolution},
+    request_pipeline::{
+        PipelineRequest, PipelineResolution, PipelineResult, PipelineRoute, evaluate_pipeline,
+    },
     runtime::connection::{
         auth::{
             ExternalAuthCompletion, ExternalAuthFailureDisposition, ExternalAuthResult,
@@ -480,7 +481,7 @@ impl QUICListener {
                 .and_then(|header| std::str::from_utf8(header.value()).ok())
                 .map(str::to_string)
         };
-        let resolved = ForwardingRequestPipeline::new(resilience).resolve(
+        let resolved: PipelineResult<ForwardTargetResolution> =
             Self::resolve_forwarding_target(ForwardTargetResolutionInput {
                 request: TargetResolutionRequest::new(
                     method,
@@ -491,16 +492,31 @@ impl QUICListener {
                 ),
                 context: resolution_context,
                 observation: ResolutionObservation::new(metrics, request_start.elapsed()),
-            }),
-            PipelineRequest {
-                method,
-                path,
-                authority,
-                peer_address,
-                headers: Some(&lb_header_lookup),
-                runtime_generation: shared_ctx.runtime_generation,
-            },
-        );
+            })
+            .map(|target| {
+                let PipelineResolution {
+                    route: _,
+                    policy,
+                    admission,
+                } = evaluate_pipeline(
+                    resilience,
+                    PipelineRoute::new(&target.upstream_name, &target.upstream_policy),
+                    PipelineRequest {
+                        method,
+                        path,
+                        authority,
+                        peer_address,
+                        headers: Some(&lb_header_lookup),
+                        runtime_generation: shared_ctx.runtime_generation,
+                    },
+                );
+
+                PipelineResolution {
+                    route: target,
+                    policy,
+                    admission,
+                }
+            });
 
         let prepared = match resolved {
             Ok(PipelineResolution {

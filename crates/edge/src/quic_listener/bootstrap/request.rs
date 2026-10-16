@@ -26,7 +26,7 @@ use super::{
         forwarding::{
             BootstrapTargetResolutionInput, ResolutionContext, ResolutionObservation,
             TargetResolutionRequest, evaluate_pending_forward_external_auth,
-            pipeline::{ForwardingRequestPipeline, PipelineRoute},
+            pipeline::ForwardingRequestPipeline,
         },
     },
     context::BootstrapRequestCtx,
@@ -35,7 +35,7 @@ use super::{
     response::{BootstrapStreamingBody, boxed_full},
 };
 use crate::{
-    request_pipeline::{PipelineRequest, ResolvedRequestPolicy},
+    request_pipeline::{PipelineRequest, PipelineRoute, ResolvedRequestPolicy},
     runtime::connection::{
         auth::{
             ExternalAuthDecision, ExternalAuthStateTransition, PendingHeaderMutation,

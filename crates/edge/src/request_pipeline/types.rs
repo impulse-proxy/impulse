@@ -1,5 +1,6 @@
 use std::{net::SocketAddr, sync::Arc};
 
+use impulse_config::runtime::RuntimeUpstreamPolicy;
 use impulse_errors::ProxyError;
 
 use super::policy::ResolvedRequestPolicy;
@@ -18,6 +19,24 @@ pub(crate) struct PipelineRequest<'a> {
     pub(crate) peer_address: SocketAddr,
     pub(crate) headers: Option<&'a RequestHeaderLookup<'a>>,
     pub(crate) runtime_generation: GenerationId,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct PipelineRoute<'a> {
+    pub(super) upstream_name: &'a str,
+    pub(super) upstream_policy: &'a RuntimeUpstreamPolicy,
+}
+
+impl<'a> PipelineRoute<'a> {
+    pub(crate) const fn new(
+        upstream_name: &'a str,
+        upstream_policy: &'a RuntimeUpstreamPolicy,
+    ) -> Self {
+        Self {
+            upstream_name,
+            upstream_policy,
+        }
+    }
 }
 
 pub(crate) type PipelineResult<Route> = Result<PipelineResolution<Route>, ProxyError>;
