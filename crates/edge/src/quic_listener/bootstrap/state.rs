@@ -22,6 +22,7 @@ use crate::{
 };
 
 pub(in crate::quic_listener) struct BootstrapConnectionState {
+    pub(in crate::quic_listener) runtime_generation: crate::runtime::activation::GenerationId,
     pub(in crate::quic_listener) alt_svc_value: String,
     pub(in crate::quic_listener) backend_timeout: Duration,
     pub(in crate::quic_listener) max_request_body_bytes: usize,
@@ -77,6 +78,7 @@ pub(in crate::quic_listener) fn bootstrap_connection_state(
     startup: &BootstrapStartupState,
 ) -> Option<BootstrapConnectionState> {
     let (
+        runtime_generation,
         listener_config,
         listener_tls_store,
         transport_pool,
@@ -91,6 +93,7 @@ pub(in crate::quic_listener) fn bootstrap_connection_state(
         let shared = runtime.shared_services();
         let generation = runtime.state();
         (
+            runtime.generation(),
             runtime.listener_runtime_config(listener_label)?,
             shared.listener_tls_store.clone(),
             shared.transport_pool.clone(),
@@ -103,6 +106,7 @@ pub(in crate::quic_listener) fn bootstrap_connection_state(
         )
     } else {
         (
+            0,
             startup.listener_config.clone(),
             Arc::clone(&startup.listener_tls_store),
             Arc::clone(&startup.transport_pool),
@@ -116,6 +120,7 @@ pub(in crate::quic_listener) fn bootstrap_connection_state(
     };
 
     Some(BootstrapConnectionState {
+        runtime_generation,
         alt_svc_value: format!("h3=\":{}\"; ma=86400", listener_config.listen.listen.port),
         backend_timeout: listener_config.policies.timeouts.backend_request,
         max_request_body_bytes: listener_config.policies.transport.max_request_body_bytes,

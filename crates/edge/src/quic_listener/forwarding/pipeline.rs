@@ -1,5 +1,3 @@
-use std::net::SocketAddr;
-
 use impulse_errors::ProxyError;
 
 use super::resolve::ForwardTargetResolution;
@@ -8,7 +6,7 @@ use crate::{
         LbHeaderLookup,
         admission::{AdmissionPolicyDecision, RequestAdmissionService},
     },
-    request_pipeline::{RequestPolicyService, ResolvedRequestPolicy},
+    request_pipeline::{PipelineRequest, RequestPolicyService, ResolvedRequestPolicy},
     resilience::runtime::RuntimeResilience,
 };
 
@@ -19,14 +17,6 @@ use crate::{
 #[derive(Clone, Copy)]
 pub(in crate::quic_listener) struct ForwardingRequestPipeline<'a> {
     resilience: &'a RuntimeResilience,
-}
-
-pub(in crate::quic_listener) struct PipelineRequest<'a> {
-    pub(in crate::quic_listener) method: &'a str,
-    pub(in crate::quic_listener) path: &'a str,
-    pub(in crate::quic_listener) authority: Option<&'a str>,
-    pub(in crate::quic_listener) peer_address: SocketAddr,
-    pub(in crate::quic_listener) header_lookup: Option<&'a LbHeaderLookup<'a>>,
 }
 
 pub(super) struct PipelineResolution {
@@ -86,15 +76,23 @@ impl<'a> ForwardingRequestPipeline<'a> {
         route: PipelineRoute<'_>,
         request: PipelineRequest<'_>,
     ) -> PipelinePolicyAdmission {
+        let PipelineRequest {
+            method,
+            path,
+            authority,
+            peer_address,
+            headers,
+            runtime_generation: _runtime_generation,
+        } = request;
         let policy = RequestPolicyService::resolve(route.upstream_policy);
         let admission = RequestAdmissionService::new(self.resilience).evaluate_pre_auth(
             &policy.local_auth_policy,
-            request.header_lookup,
+            headers,
             route.upstream_name,
-            request.method,
-            request.path,
-            request.authority,
-            request.peer_address,
+            method,
+            path,
+            authority,
+            peer_address,
         );
 
         PipelinePolicyAdmission { policy, admission }

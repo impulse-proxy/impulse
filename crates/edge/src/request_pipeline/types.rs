@@ -1,20 +1,17 @@
-use std::{net::SocketAddr, sync::Arc, time::Instant};
+use std::{net::SocketAddr, sync::Arc};
 
-use http::{HeaderMap, Method};
+use crate::{routing::decision::RouteDecisionReason, runtime::activation::GenerationId};
 
-use crate::routing::decision::RouteDecisionReason;
+pub(crate) type RequestHeaderLookup<'a> = dyn Fn(&str) -> Option<String> + 'a;
 
-/// HTTP request data normalized by an ingress adapter before policy evaluation.
-///
-/// The fields deliberately describe HTTP semantics only. Connection, stream,
-/// QUIC, and Hyper state remain owned by their respective protocol adapters.
-#[derive(Clone, Debug)]
-pub(crate) struct NormalizedRequestMetadata {
-    pub(crate) method: Method,
-    pub(crate) scheme: Option<Arc<str>>,
-    pub(crate) authority: Option<Arc<str>>,
-    pub(crate) path: Arc<str>,
-    pub(crate) headers: HeaderMap,
+/// Protocol-neutral request data supplied to the shared policy pipeline.
+pub(crate) struct PipelineRequest<'a> {
+    pub(crate) method: &'a str,
+    pub(crate) path: &'a str,
+    pub(crate) authority: Option<&'a str>,
+    pub(crate) peer_address: SocketAddr,
+    pub(crate) headers: Option<&'a RequestHeaderLookup<'a>>,
+    pub(crate) runtime_generation: GenerationId,
 }
 
 /// The route selected by the shared routing service before backend selection.
@@ -25,19 +22,4 @@ pub(crate) struct ResolvedRouteTarget {
     pub(crate) host_specific: bool,
     pub(crate) method_specific: bool,
     pub(crate) reason: RouteDecisionReason,
-}
-
-/// Request-scoped identity and timing data shared across request services.
-///
-/// Trace identifiers are propagated as opaque values. Protocol adapters remain
-/// responsible for parsing protocol-specific tracing headers.
-#[derive(Clone, Debug)]
-pub(crate) struct SharedRequestContext {
-    pub(crate) request_id: u64,
-    pub(crate) peer_addr: SocketAddr,
-    pub(crate) trace_id: Option<Arc<str>>,
-    pub(crate) span_id: Option<Arc<str>>,
-    pub(crate) traceparent: Option<Arc<str>>,
-    pub(crate) started_at: Instant,
-    pub(crate) deadline: Instant,
 }

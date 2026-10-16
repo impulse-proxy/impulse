@@ -18,6 +18,7 @@ pub(in crate::quic_listener) struct BootstrapBodyLimits {
 }
 
 pub(in crate::quic_listener) struct BootstrapRuntimeCtx {
+    pub(in crate::quic_listener) runtime_generation: crate::runtime::activation::GenerationId,
     pub(in crate::quic_listener) alt_svc: String,
     pub(in crate::quic_listener) backend_timeout: Duration,
     pub(in crate::quic_listener) body_limits: BootstrapBodyLimits,
@@ -35,6 +36,7 @@ impl BootstrapRuntimeCtx {
         state: &BootstrapConnectionState,
     ) -> Self {
         Self {
+            runtime_generation: state.runtime_generation,
             alt_svc: state.alt_svc_value.clone(),
             backend_timeout: state.backend_timeout,
             body_limits: BootstrapBodyLimits {

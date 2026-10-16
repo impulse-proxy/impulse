@@ -26,7 +26,7 @@ use super::{
         forwarding::{
             BootstrapTargetResolutionInput, ResolutionContext, ResolutionObservation,
             TargetResolutionRequest, evaluate_pending_forward_external_auth,
-            pipeline::{ForwardingRequestPipeline, PipelineRequest, PipelineRoute},
+            pipeline::{ForwardingRequestPipeline, PipelineRoute},
         },
     },
     context::BootstrapRequestCtx,
@@ -35,7 +35,7 @@ use super::{
     response::{BootstrapStreamingBody, boxed_full},
 };
 use crate::{
-    request_pipeline::ResolvedRequestPolicy,
+    request_pipeline::{PipelineRequest, ResolvedRequestPolicy},
     runtime::connection::{
         auth::{
             ExternalAuthDecision, ExternalAuthStateTransition, PendingHeaderMutation,
@@ -491,7 +491,8 @@ pub(in crate::quic_listener) fn evaluate_bootstrap_request_policy(
             path: &input.intake.path,
             authority: input.intake.authority.as_deref(),
             peer_address: input.request_ctx.peer,
-            header_lookup: Some(&lb_header_lookup),
+            headers: Some(&lb_header_lookup),
+            runtime_generation: input.request_ctx.runtime.runtime_generation,
         },
     );
     let admission = pipeline_evaluation.admission;
