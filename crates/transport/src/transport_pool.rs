@@ -17,7 +17,7 @@ use impulse_config::runtime::{
     RuntimeBackendConnectionPolicy, RuntimeBackendTransportKind, RuntimeUpstream,
 };
 use impulse_errors::{PoolError, ProxyError};
-use pingora_core::{Error, InternalError, Result as PingoraResult, upstreams::peer::HttpPeer};
+use pingora_core::upstreams::peer::HttpPeer;
 use tokio::sync::{OwnedSemaphorePermit, mpsc};
 
 use crate::{
@@ -33,6 +33,7 @@ use crate::{
     h1_pool::H1Pool,
     h2_client::{ConnectObserver, SharedDnsResolver, TlsClientConfig},
     h2_pool::H2Pool,
+    pingora_failure::classify_pingora_h1_error,
     pingora_h1::PingoraH1UpstreamSession,
     pingora_pool::{PingoraPool, PingoraPoolLease},
 };
@@ -106,12 +107,13 @@ impl UpstreamTransportPool {
         &self,
         peer: HttpPeer,
         identity: &PingoraUpstreamConnectionIdentity,
-    ) -> PingoraResult<PingoraH1UpstreamSession> {
-        let pool = self
-            .pingora_pool
-            .acquire()
-            .ok_or_else(|| Error::explain(InternalError, "Pingora upstream pool is draining"))?;
-        PingoraH1UpstreamSession::acquire(pool, peer, identity).await
+    ) -> Result<PingoraH1UpstreamSession, ProxyError> {
+        let pool = self.pingora_pool.acquire().ok_or_else(|| {
+            ProxyError::Transport("Pingora upstream pool is draining".to_string())
+        })?;
+        PingoraH1UpstreamSession::acquire(pool, peer, identity)
+            .await
+            .map_err(|error| classify_pingora_h1_error(&error))
     }
 
     pub fn acquire_pingora_pool(&self) -> Option<PingoraPoolLease> {

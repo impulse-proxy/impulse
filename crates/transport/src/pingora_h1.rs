@@ -13,7 +13,7 @@ use crate::{
     PingoraPoolLease, PingoraUpstreamConnectionIdentity, UpstreamBodyFrame, UpstreamCancellation,
     UpstreamConnectionReuse, UpstreamExchangeCompletion, UpstreamExchangeLifecycle,
     UpstreamExchangeOutcome, UpstreamExchangeResponse, UpstreamRequestBody, UpstreamRequestHead,
-    UpstreamResponseHead, exchange::upstream_response_body_channel,
+    UpstreamResponseHead, classify_pingora_h1_error, exchange::upstream_response_body_channel,
 };
 
 pub fn translate_pingora_h1_request_header(
@@ -120,12 +120,12 @@ impl PingoraH1UpstreamSession {
             Ok(header) => header,
             Err(error) => {
                 self.session_mut().shutdown().await;
-                return Err(ProxyError::Protocol(error.to_string()));
+                return Err(classify_pingora_h1_error(&error));
             }
         };
         if let Err(error) = self.session_mut().write_request_header(header).await {
             self.session_mut().shutdown().await;
-            return Err(ProxyError::Transport(error.to_string()));
+            return Err(classify_pingora_h1_error(&error));
         }
 
         while let Some(frame) = body.frames.recv().await {
@@ -149,7 +149,7 @@ impl PingoraH1UpstreamSession {
                         }
                         Err(error) => {
                             self.session_mut().shutdown().await;
-                            return Err(ProxyError::Transport(error.to_string()));
+                            return Err(classify_pingora_h1_error(&error));
                         }
                     }
                 }
@@ -168,7 +168,7 @@ impl PingoraH1UpstreamSession {
 
         if let Err(error) = self.session_mut().finish_body().await {
             self.session_mut().shutdown().await;
-            return Err(ProxyError::Transport(error.to_string()));
+            return Err(classify_pingora_h1_error(&error));
         }
         Ok(())
     }
@@ -179,14 +179,15 @@ impl PingoraH1UpstreamSession {
     ) -> Result<UpstreamExchangeResponse, ProxyError> {
         loop {
             if let Err(error) = self.session_mut().read_response().await {
-                let detail = error.to_string();
+                let outcome_error = classify_pingora_h1_error(&error);
+                let return_error = classify_pingora_h1_error(&error);
                 self.shutdown().await;
                 finish_pingora_h1_exchange(
                     lifecycle,
-                    UpstreamExchangeOutcome::Failed(ProxyError::Transport(detail.clone())),
+                    UpstreamExchangeOutcome::Failed(outcome_error),
                     UpstreamConnectionReuse::Close,
                 );
-                return Err(ProxyError::Transport(detail));
+                return Err(return_error);
             }
             let status = self
                 .session()
@@ -343,10 +344,11 @@ async fn pump_pingora_h1_response(
                 return;
             }
             Err(error) => {
-                let detail = error.to_string();
+                let frame_error = classify_pingora_h1_error(&error);
+                let outcome_error = classify_pingora_h1_error(&error);
                 let delivered = send_pingora_h1_response_frame(
                     &frames,
-                    Err(ProxyError::Transport(detail.clone())),
+                    Err(frame_error),
                     &mut lifecycle.cancellation,
                     &mut cancellation_open,
                 )
@@ -355,7 +357,7 @@ async fn pump_pingora_h1_response(
                 finish_pingora_h1_exchange(
                     lifecycle,
                     if delivered {
-                        UpstreamExchangeOutcome::Failed(ProxyError::Transport(detail))
+                        UpstreamExchangeOutcome::Failed(outcome_error)
                     } else {
                         UpstreamExchangeOutcome::Cancelled
                     },
