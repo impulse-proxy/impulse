@@ -28,8 +28,9 @@ use support::{
     parity::{BootstrapQuicParityHarness, ParityRequestSpec, make_backend, make_upstream},
     request_path::{
         BootstrapRequestSpec, H3RequestSpec, cancel_bootstrap_post_to, cancel_h3_post_to,
-        run_bootstrap_h1_websocket_handshake_to, run_bootstrap_request_to, run_request_to,
-        run_two_chunk_bootstrap_post_to, run_two_chunk_post_to,
+        run_bootstrap_authority_host_request_to, run_bootstrap_h1_websocket_handshake_to,
+        run_bootstrap_request_to, run_request_to, run_two_chunk_bootstrap_post_to,
+        run_two_chunk_post_to,
     },
 };
 
@@ -2448,7 +2449,165 @@ fn run_overload_shed_scenario(ingress: IngressKind) -> RejectionObservation {
     }
 }
 
-// Upgrade-exception parity boundaries
+// Protocol edge-case parity
+
+#[test]
+fn bootstrap_and_quic_connect_policy_rejections_match() {
+    if !local_listener_bind_available() {
+        return;
+    }
+
+    let mut harness = BootstrapQuicParityHarness::new();
+    let backend_addr = harness.start_h1_static_backend(b"unexpected CONNECT forwarding");
+    start_single_route_listener(&mut harness, "/", backend_addr.to_string());
+
+    let request = ParityRequestSpec {
+        method: "CONNECT",
+        authority: "localhost:443",
+        path: "/",
+        headers: &[],
+        body: None,
+        user_agent: "impulse-bootstrap-quic-parity-test",
+        selected_response_headers: &[],
+        capture_metrics_delta: false,
+    };
+    let pair = harness
+        .run_parity_pair(request)
+        .expect("CONNECT parity pair");
+
+    assert_eq!(pair.quic.response.status, 403);
+    assert_eq!(pair.bootstrap.response.status, 403);
+    assert_eq!(pair.bootstrap.response.body, pair.quic.response.body);
+    assert_eq!(
+        pair.quic.response.body,
+        b"CONNECT target denied by policy\n"
+    );
+}
+
+#[test]
+fn bootstrap_and_quic_malformed_content_length_rejections_match() {
+    if !local_listener_bind_available() {
+        return;
+    }
+
+    let mut harness = BootstrapQuicParityHarness::new();
+    let backend_addr = harness.start_h1_static_backend(b"unexpected malformed forwarding");
+    start_single_route_listener(&mut harness, "/malformed-framing", backend_addr.to_string());
+
+    let request = ParityRequestSpec {
+        method: "POST",
+        authority: "localhost",
+        path: "/malformed-framing",
+        headers: &[("content-length", "not-a-number")],
+        body: None,
+        user_agent: "impulse-bootstrap-quic-parity-test",
+        selected_response_headers: &[],
+        capture_metrics_delta: false,
+    };
+    let pair = harness
+        .run_parity_pair(request)
+        .expect("malformed framing parity pair");
+
+    assert_eq!(pair.quic.response.status, 400);
+    assert_eq!(pair.bootstrap.response.status, 400);
+    assert_eq!(pair.bootstrap.response.body, pair.quic.response.body);
+    assert_eq!(pair.quic.response.body, b"invalid content-length header\n");
+}
+
+#[test]
+fn bootstrap_and_quic_forwarded_header_normalization_matches() {
+    if !local_listener_bind_available() {
+        return;
+    }
+
+    let mut harness = BootstrapQuicParityHarness::new();
+    let backend_addr = harness.start_h1_backend(|req: Request<Incoming>| async move {
+        let value = |name: &str| {
+            req.headers()
+                .get(name)
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or("<missing>")
+                .to_string()
+        };
+        let body = format!(
+            "forwarded={}\nxff={}\nxfp={}\nxfh={}\nhost={}\n",
+            value("forwarded"),
+            value("x-forwarded-for"),
+            value("x-forwarded-proto"),
+            value("x-forwarded-host"),
+            value("host"),
+        );
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(body))))
+    });
+    start_single_route_listener(&mut harness, "/forwarded", backend_addr.to_string());
+
+    let pair = harness
+        .run_parity_pair(ParityRequestSpec {
+            method: "GET",
+            authority: "public.example.com",
+            path: "/forwarded",
+            headers: &[
+                ("forwarded", "for=1.2.3.4;proto=http;host=evil.example"),
+                ("x-forwarded-for", "1.2.3.4"),
+                ("x-forwarded-proto", "http"),
+                ("x-forwarded-host", "evil.example"),
+            ],
+            body: None,
+            user_agent: "impulse-bootstrap-quic-parity-test",
+            selected_response_headers: &[],
+            capture_metrics_delta: false,
+        })
+        .expect("forwarded header parity pair");
+
+    assert_eq!(pair.quic.response.status, 200);
+    assert_eq!(pair.bootstrap.response.status, 200);
+    assert_eq!(pair.bootstrap.response.body, pair.quic.response.body);
+    let body = String::from_utf8_lossy(&pair.quic.response.body);
+    assert!(body.contains("forwarded=for=127.0.0.1;proto=https;host=\"public.example.com\"\n"));
+    assert!(body.contains("xff=127.0.0.1\n"));
+    assert!(body.contains("xfp=https\n"));
+    assert!(body.contains("xfh=public.example.com\n"));
+    assert!(body.contains("host=public.example.com\n"));
+}
+
+#[test]
+fn bootstrap_and_quic_authority_host_disagreement_rejections_match() {
+    if !local_listener_bind_available() {
+        return;
+    }
+
+    let mut harness = BootstrapQuicParityHarness::new();
+    let backend_addr = harness.start_h1_static_backend(b"unexpected authority forwarding");
+    start_single_route_listener(&mut harness, "/authority", backend_addr.to_string());
+    let listen_addr = harness.listen_addr();
+
+    let quic = run_request_to(
+        listen_addr,
+        H3RequestSpec {
+            method: "GET",
+            authority: "public.example.com",
+            path: "/authority",
+            headers: &[("host", "other.example.com")],
+            body: None,
+            user_agent: "impulse-bootstrap-quic-parity-test",
+        },
+    )
+    .expect("quic authority disagreement response");
+    let bootstrap = run_bootstrap_authority_host_request_to(
+        listen_addr,
+        harness.cert_path(),
+        "GET",
+        "public.example.com",
+        "other.example.com",
+        "/authority",
+    )
+    .expect("bootstrap authority disagreement response");
+
+    assert_eq!(quic.status, 400);
+    assert_eq!(bootstrap.status, 400);
+    assert_eq!(quic.body, b":authority and host headers must match\n");
+    assert_eq!(bootstrap.body, b"authority and host headers must match\n");
+}
 
 #[test]
 #[serial]

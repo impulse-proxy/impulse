@@ -562,6 +562,40 @@ pub fn run_bootstrap_request_to(
         .block_on(run_bootstrap_h2_request(addr, cert_path, request))
 }
 
+pub fn run_bootstrap_authority_host_request_to(
+    addr: SocketAddr,
+    cert_path: &str,
+    method: &str,
+    authority: &str,
+    host: &str,
+    path: &str,
+) -> Result<BootstrapResponse, String> {
+    tokio::runtime::Runtime::new()
+        .expect("runtime")
+        .block_on(async move {
+            let (mut sender, _conn_task) = connect_bootstrap_h2(addr, cert_path).await?;
+            sender
+                .ready()
+                .await
+                .map_err(|err| format!("sender ready: {err}"))?;
+            let request = Request::builder()
+                .method(method)
+                .uri(format!("https://{authority}{path}"))
+                .header("host", host)
+                .body(
+                    Full::new(Bytes::new())
+                        .map_err(|never| match never {})
+                        .boxed(),
+                )
+                .map_err(|err| format!("request build: {err}"))?;
+            let response = sender
+                .send_request(request)
+                .await
+                .map_err(|err| format!("send request: {err}"))?;
+            read_bootstrap_h2_response(response).await
+        })
+}
+
 pub fn run_bootstrap_h1_websocket_handshake_to(
     addr: SocketAddr,
     cert_path: &str,
