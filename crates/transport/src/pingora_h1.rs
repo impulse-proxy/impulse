@@ -1,5 +1,6 @@
 use hyper::{Method, http::Version};
 use impulse_config::runtime::RuntimeBackendTransportKind;
+use impulse_errors::ProxyError;
 use pingora_core::{
     Error, InternalError, Result,
     protocols::http::{client::HttpSession as PingoraHttpSession, v1::client::HttpSession},
@@ -7,7 +8,10 @@ use pingora_core::{
 };
 use pingora_http::RequestHeader;
 
-use crate::{PingoraPoolLease, PingoraUpstreamConnectionIdentity, UpstreamRequestHead};
+use crate::{
+    PingoraPoolLease, PingoraUpstreamConnectionIdentity, UpstreamBodyFrame, UpstreamRequestBody,
+    UpstreamRequestHead,
+};
 
 pub fn translate_pingora_h1_request_header(
     head: &UpstreamRequestHead,
@@ -102,6 +106,68 @@ impl PingoraH1UpstreamSession {
         self.session
             .as_mut()
             .expect("Pingora H1 session ownership already released")
+    }
+
+    pub async fn write_request(
+        &mut self,
+        head: &UpstreamRequestHead,
+        mut body: UpstreamRequestBody,
+    ) -> Result<(), ProxyError> {
+        let header = match translate_pingora_h1_request_header(head) {
+            Ok(header) => header,
+            Err(error) => {
+                self.session_mut().shutdown().await;
+                return Err(ProxyError::Protocol(error.to_string()));
+            }
+        };
+        if let Err(error) = self.session_mut().write_request_header(header).await {
+            self.session_mut().shutdown().await;
+            return Err(ProxyError::Transport(error.to_string()));
+        }
+
+        while let Some(frame) = body.frames.recv().await {
+            match frame {
+                Ok(UpstreamBodyFrame::Data(data)) if data.is_empty() => {}
+                Ok(UpstreamBodyFrame::Data(data)) => {
+                    match self.session_mut().write_body(&data).await {
+                        Ok(Some(written)) if written == data.len() => {}
+                        Ok(Some(written)) => {
+                            self.session_mut().shutdown().await;
+                            return Err(ProxyError::Transport(format!(
+                                "Pingora wrote {written} of {} request body bytes",
+                                data.len()
+                            )));
+                        }
+                        Ok(None) => {
+                            self.session_mut().shutdown().await;
+                            return Err(ProxyError::Protocol(
+                                "request body exceeds its declared framing".to_string(),
+                            ));
+                        }
+                        Err(error) => {
+                            self.session_mut().shutdown().await;
+                            return Err(ProxyError::Transport(error.to_string()));
+                        }
+                    }
+                }
+                Ok(UpstreamBodyFrame::Trailers(_)) => {
+                    self.session_mut().shutdown().await;
+                    return Err(ProxyError::Protocol(
+                        "Pingora 0.9 cannot forward HTTP/1 request trailers".to_string(),
+                    ));
+                }
+                Err(error) => {
+                    self.session_mut().shutdown().await;
+                    return Err(error);
+                }
+            }
+        }
+
+        if let Err(error) = self.session_mut().finish_body().await {
+            self.session_mut().shutdown().await;
+            return Err(ProxyError::Transport(error.to_string()));
+        }
+        Ok(())
     }
 
     pub async fn release(mut self) {
