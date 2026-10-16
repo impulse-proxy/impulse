@@ -1593,6 +1593,7 @@ name = "impulse-transport"
 version = "0.6.0"
 dependencies = [
  "bytes",
+ "h2",
  "http-body-util",
  "hyper",
  "hyper-rustls",

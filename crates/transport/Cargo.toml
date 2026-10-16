@@ -10,6 +10,7 @@ http-body-util.workspace = true
 hyper.workspace = true
 hyper-util.workspace = true
 hyper-rustls.workspace = true
+h2 = "0.4"
 log.workspace = true
 rustls.workspace = true
 rustls-pki-types.workspace = true

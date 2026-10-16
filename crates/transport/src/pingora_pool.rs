@@ -1,10 +1,14 @@
-use std::sync::{Arc, RwLock};
+use std::sync::{
+    Arc, RwLock,
+    atomic::{AtomicBool, Ordering},
+};
 
 use pingora_core::connectors::http::Connector;
 
 struct PingoraPoolGeneration {
     generation: u64,
     connector: Arc<Connector>,
+    draining: AtomicBool,
 }
 
 #[derive(Clone)]
@@ -19,6 +23,10 @@ impl PingoraPoolLease {
 
     pub fn connector(&self) -> &Connector {
         &self.generation.connector
+    }
+
+    pub fn is_draining(&self) -> bool {
+        self.generation.draining.load(Ordering::Acquire)
     }
 }
 
@@ -54,20 +62,27 @@ impl PingoraPool {
         {
             return;
         }
-        *active = Some(Self::generation(generation));
+        if let Some(retired) = active.replace(Self::generation(generation)) {
+            retired.draining.store(true, Ordering::Release);
+        }
     }
 
     pub fn drain(&self) {
-        self.active
+        if let Some(retired) = self
+            .active
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take();
+            .take()
+        {
+            retired.draining.store(true, Ordering::Release);
+        }
     }
 
     fn generation(generation: u64) -> Arc<PingoraPoolGeneration> {
         Arc::new(PingoraPoolGeneration {
             generation,
             connector: Arc::new(Connector::new(None)),
+            draining: AtomicBool::new(false),
         })
     }
 }
