@@ -97,6 +97,20 @@ impl BackendUpgradeResponse {
 }
 
 impl UpstreamTransportPool {
+    pub async fn send_exchange(
+        &self,
+        backend: &str,
+        request: UpstreamExchangeRequest,
+    ) -> Result<UpstreamExchangeResponse, ProxyError> {
+        match self.backend_entry(backend) {
+            Some(BackendTransportEntry::Http1) => self.send_h1_exchange(backend, request).await,
+            Some(BackendTransportEntry::H2) => self.send_h2_exchange(backend, request).await,
+            None => Err(ProxyError::Pool(PoolError::UnknownBackend(
+                backend.to_string(),
+            ))),
+        }
+    }
+
     pub async fn send_h1_exchange(
         &self,
         backend: &str,
