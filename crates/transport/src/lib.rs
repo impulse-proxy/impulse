@@ -8,8 +8,6 @@
 mod client_rotation;
 mod connection_identity;
 mod exchange;
-mod h1_client;
-mod h1_pool;
 mod h2_client;
 mod h2_pool;
 mod pingora_failure;
@@ -33,6 +31,4 @@ pub use pingora_h1::{PingoraH1UpstreamSession, translate_pingora_h1_request_head
 pub use pingora_h2::{PingoraH2UpstreamSession, translate_pingora_h2_request_header};
 pub use pingora_peer::build_pingora_http_peer;
 pub use pingora_pool::{PingoraPool, PingoraPoolLease};
-pub use transport_pool::{
-    BackendUpgradeLease, BackendUpgradeResponse, TransportClientRotation, UpstreamTransportPool,
-};
+pub use transport_pool::{TransportClientRotation, UpstreamTransportPool};

@@ -1,4 +1,3 @@
-use http_body_util::Full;
 use impulse_errors::classify_upstream_proxy_error;
 
 use super::*;
@@ -126,12 +125,8 @@ impl QUICListener {
                                 continue;
                             }
 
-                            let request = match http::Request::builder()
-                                .method("GET")
-                                .uri(&job.health_uri)
-                                .body(BoxBody::new(Full::new(Bytes::new())))
-                            {
-                                Ok(req) => req,
+                            let health_uri = match job.health_uri.parse() {
+                                Ok(uri) => uri,
                                 Err(_) => continue,
                             };
 
@@ -140,9 +135,9 @@ impl QUICListener {
                             let transport_pool = Arc::clone(&transport_pool);
                             let task = pending.spawn(async move {
                                 transport_pool
-                                    .send_backend_request_with_timeout(
+                                    .send_health_check(
                                         &backend_identity,
-                                        request,
+                                        health_uri,
                                         timeout,
                                     )
                                     .await
@@ -192,7 +187,7 @@ impl QUICListener {
                             let evaluation = match result {
                                 Ok(response) => {
                                     let outcome = match classify_active_health_check_response(
-                                        response.status(),
+                                        response,
                                     ) {
                                         HealthClassification::Success => {
                                             BackendHealthObservationOutcome::Success

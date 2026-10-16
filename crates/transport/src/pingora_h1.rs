@@ -54,7 +54,6 @@ pub fn translate_pingora_h1_request_header(
     }
     Ok(Box::new(translated))
 }
-
 pub struct PingoraH1UpstreamSession {
     pool: PingoraPoolLease,
     peer: HttpPeer,
@@ -332,7 +331,6 @@ impl PingoraH1UpstreamSession {
         }
     }
 }
-
 struct PingoraH1TunnelLease {
     stream: Stream,
     _pool: PingoraPoolLease,
@@ -487,6 +485,3 @@ async fn pump_pingora_h1_response(
         }
     }
 }
-
-#[cfg(test)]
-mod tests;

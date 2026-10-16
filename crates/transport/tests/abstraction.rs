@@ -119,13 +119,6 @@ fn runtime_upstream_interpretation_selects_protocol_without_caller_branching() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn transport_facade_executes_requests_without_protocol_specific_callers() {
-    let h1_backend =
-        match start_backend_server(TransportTestProtocol::Http1, b"h1", Duration::ZERO, None).await
-        {
-            Ok(backend) => backend,
-            Err(err) if loopback_bind_restricted(&err) => return,
-            Err(err) => panic!("failed to start h1 server: {err}"),
-        };
     let h2_backend =
         match start_backend_server(TransportTestProtocol::H2, b"h2", Duration::ZERO, None).await {
             Ok(backend) => backend,
@@ -134,22 +127,10 @@ async fn transport_facade_executes_requests_without_protocol_specific_callers() 
         };
 
     let pool = build_pool(
-        [
-            (
-                h1_backend.clone(),
-                TransportTestProtocol::Http1.runtime_kind(),
-            ),
-            (h2_backend.clone(), TransportTestProtocol::H2.runtime_kind()),
-        ],
+        [(h2_backend.clone(), TransportTestProtocol::H2.runtime_kind())],
         4,
         SharedDnsResolver::new(),
     );
-
-    let h1_response = pool
-        .send_backend_request(&h1_backend, request_to_backend(&h1_backend))
-        .await
-        .expect("h1 response");
-    assert_eq!(read_body(h1_response).await, Bytes::from_static(b"h1"));
 
     let h2_response = pool
         .send_backend_request(&h2_backend, request_to_backend(&h2_backend))
@@ -219,23 +200,6 @@ async fn transport_facade_maps_unknown_backend_send_failure_and_overload_consist
         ProxyError::Pool(PoolError::UnknownBackend(name)) if name == "missing"
     ));
 
-    let failing_h1_pool = build_pool(
-        [(
-            "h1-fail".to_string(),
-            TransportTestProtocol::Http1.runtime_kind(),
-        )],
-        1,
-        SharedDnsResolver::new(),
-    );
-    let Some(h1_port) = reserve_unused_port_or_skip() else {
-        return;
-    };
-    let h1_err = failing_h1_pool
-        .send_backend_request("h1-fail", request(&format!("http://127.0.0.1:{h1_port}/")))
-        .await
-        .expect_err("h1 send should fail");
-    assert!(matches!(h1_err, ProxyError::Pool(PoolError::Send(_))));
-
     let failing_h2_pool = build_pool(
         [(
             "h2-fail".to_string(),
@@ -252,43 +216,6 @@ async fn transport_facade_maps_unknown_backend_send_failure_and_overload_consist
         .await
         .expect_err("h2 send should fail");
     assert!(matches!(h2_err, ProxyError::Pool(PoolError::Send(_))));
-
-    let h1_tracker = Arc::new(ConcurrencyTracker::new());
-    let (h1_backend, h1_overload_pool) = match start_shared_backend_pool(
-        TransportTestProtocol::Http1,
-        b"h1",
-        Duration::from_millis(50),
-        Some(Arc::clone(&h1_tracker)),
-        1,
-        SharedDnsResolver::new(),
-    )
-    .await
-    {
-        Ok(fixture) => fixture,
-        Err(err) if loopback_bind_restricted(&err) => return,
-        Err(err) => panic!("failed to start h1 overload server: {err}"),
-    };
-    let h1_task_pool = Arc::clone(&h1_overload_pool);
-    let h1_task_backend = h1_backend.clone();
-    let h1_task = tokio::spawn(async move {
-        h1_task_pool
-            .send_backend_request(&h1_task_backend, request_to_backend(&h1_task_backend))
-            .await
-    });
-    tokio::time::sleep(Duration::from_millis(10)).await;
-    let h1_overload = h1_overload_pool
-        .send_backend_request(&h1_backend, request_to_backend(&h1_backend))
-        .await;
-    assert!(matches!(
-        h1_overload,
-        Err(ProxyError::Pool(PoolError::BackendOverloaded(_)))
-    ));
-    let _ = h1_task.await.expect("h1 task join");
-    assert_eq!(
-        h1_tracker.max_observed(),
-        1,
-        "tracked h1 overload fixture should observe only one admitted request"
-    );
 
     let h2_tracker = Arc::new(ConcurrencyTracker::new());
     let (h2_backend, h2_overload_pool) = match start_shared_backend_pool(
@@ -329,19 +256,7 @@ async fn transport_facade_maps_unknown_backend_send_failure_and_overload_consist
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn transport_facade_maps_execution_timeouts_to_proxy_timeout_across_protocols() {
-    let h1_backend = match start_backend_server(
-        TransportTestProtocol::Http1,
-        b"h1",
-        Duration::from_millis(50),
-        None,
-    )
-    .await
-    {
-        Ok(backend) => backend,
-        Err(err) if loopback_bind_restricted(&err) => return,
-        Err(err) => panic!("failed to start h1 timeout server: {err}"),
-    };
+async fn transport_facade_maps_h2_execution_timeout_to_proxy_timeout() {
     let h2_backend = match start_backend_server(
         TransportTestProtocol::H2,
         b"h2",
@@ -361,38 +276,16 @@ async fn transport_facade_maps_execution_timeouts_to_proxy_timeout_across_protoc
     };
 
     let pool = build_pool_with_policy(
-        [
-            (
-                h1_backend.clone(),
-                TransportTestProtocol::Http1.runtime_kind(),
-            ),
-            (h2_backend.clone(), TransportTestProtocol::H2.runtime_kind()),
-        ],
+        [(h2_backend.clone(), TransportTestProtocol::H2.runtime_kind())],
         timeout_policy,
         SharedDnsResolver::new(),
     );
-
-    let h1_err = pool
-        .send_backend_request(&h1_backend, request_to_backend(&h1_backend))
-        .await
-        .expect_err("h1 execution should time out");
-    assert!(matches!(h1_err, ProxyError::Timeout));
 
     let h2_err = pool
         .send_backend_request(&h2_backend, request_to_backend(&h2_backend))
         .await
         .expect_err("h2 execution should time out");
     assert!(matches!(h2_err, ProxyError::Timeout));
-
-    let h1_response = pool
-        .send_backend_request_with_timeout(
-            &h1_backend,
-            request_to_backend(&h1_backend),
-            Duration::from_millis(100),
-        )
-        .await
-        .expect("caller timeout should override the shorter pool timeout");
-    assert_eq!(h1_response.status().as_u16(), 200);
 }
 
 #[test]

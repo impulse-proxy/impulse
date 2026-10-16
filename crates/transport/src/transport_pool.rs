@@ -10,6 +10,7 @@ use std::{
     convert::Infallible,
     future::Future,
     net::{SocketAddr, ToSocketAddrs},
+    sync::Arc,
     time::Duration,
 };
 
@@ -18,13 +19,12 @@ use hyper::{
     Method, Request,
     body::{Bytes, Incoming},
 };
-use hyper_util::rt::TokioIo;
 use impulse_config::runtime::{
     RuntimeBackendConnectionPolicy, RuntimeBackendTransportKind, RuntimeUpstream,
 };
 use impulse_errors::{PoolError, ProxyError};
 use pingora_core::upstreams::peer::{ALPN, HttpPeer};
-use tokio::sync::{OwnedSemaphorePermit, mpsc};
+use tokio::sync::{Semaphore, TryAcquireError, mpsc};
 
 use crate::{
     PingoraUpstreamConnectionIdentity,
@@ -33,10 +33,8 @@ use crate::{
         UpstreamBodyFrame, UpstreamCancellation, UpstreamConnectionReuse,
         UpstreamExchangeCompletion, UpstreamExchangeLifecycle, UpstreamExchangeOutcome,
         UpstreamExchangeRequest, UpstreamExchangeResponse, UpstreamInflightPermit,
-        UpstreamResponseHead, UpstreamTrailers, UpstreamTunnel, UpstreamUpgrade,
-        upstream_response_body_channel,
+        UpstreamResponseHead, UpstreamTrailers, upstream_response_body_channel,
     },
-    h1_pool::H1Pool,
     h2_client::{ConnectObserver, SharedDnsResolver, TlsClientConfig},
     h2_pool::H2Pool,
     pingora_failure::{classify_pingora_h1_error, classify_pingora_h2_error},
@@ -80,44 +78,12 @@ impl TransportClientRotation {
 /// Canonical transport façade used by edge/runtime code for backend execution.
 pub struct UpstreamTransportPool {
     backend_entries: HashMap<String, BackendTransportEntry>,
-    h1_pool: H1Pool,
+    inflight_limits: HashMap<String, Arc<Semaphore>>,
     h2_pool: H2Pool,
     pingora_backends: HashMap<String, PingoraBackend>,
     pingora_pool: PingoraPool,
     dns_resolver: SharedDnsResolver,
     execution_timeout: Duration,
-}
-
-pub struct BackendUpgradeResponse {
-    response: hyper::Response<Incoming>,
-    permit: OwnedSemaphorePermit,
-}
-
-pub struct BackendUpgradeLease {
-    _permit: OwnedSemaphorePermit,
-}
-
-impl BackendUpgradeResponse {
-    pub fn response(&self) -> &hyper::Response<Incoming> {
-        &self.response
-    }
-
-    pub fn response_mut(&mut self) -> &mut hyper::Response<Incoming> {
-        &mut self.response
-    }
-
-    pub fn into_response(self) -> hyper::Response<Incoming> {
-        self.response
-    }
-
-    pub fn into_parts(self) -> (hyper::Response<Incoming>, BackendUpgradeLease) {
-        (
-            self.response,
-            BackendUpgradeLease {
-                _permit: self.permit,
-            },
-        )
-    }
 }
 
 impl UpstreamTransportPool {
@@ -198,12 +164,9 @@ impl UpstreamTransportPool {
             config.peer._address = address.into();
             config.identity.address = address;
         }
-        let permit = match self.backend_entry(backend) {
-            Some(BackendTransportEntry::Http1) => self.h1_pool.acquire_exchange_permit(backend),
-            Some(BackendTransportEntry::H2) => self.h2_pool.acquire_exchange_permit(backend),
-            None => Err(PoolError::UnknownBackend(backend.to_string())),
-        }
-        .map_err(ProxyError::Pool);
+        let permit = self
+            .acquire_exchange_permit(backend)
+            .map_err(ProxyError::Pool);
         let permit = match permit {
             Ok(permit) => permit,
             Err(error) => {
@@ -259,114 +222,6 @@ impl UpstreamTransportPool {
             }
             None => unreachable!("Pingora backend disappeared after lookup"),
         }
-    }
-
-    pub async fn send_h1_exchange(
-        &self,
-        backend: &str,
-        request: UpstreamExchangeRequest,
-    ) -> Result<UpstreamExchangeResponse, ProxyError> {
-        if self.backend_entry(backend) != Some(BackendTransportEntry::Http1) {
-            return Err(match self.backend_entry(backend) {
-                Some(BackendTransportEntry::H2) => ProxyError::Protocol(format!(
-                    "backend '{backend}' is not configured for HTTP/1"
-                )),
-                None => ProxyError::Pool(PoolError::UnknownBackend(backend.to_string())),
-                Some(BackendTransportEntry::Http1) => unreachable!(),
-            });
-        }
-
-        let UpstreamExchangeRequest {
-            head,
-            body,
-            mut cancellation,
-            completion,
-        } = request;
-        let expects_tunnel =
-            head.method == Method::CONNECT || head.headers.contains_key(hyper::header::UPGRADE);
-        let mut hyper_request = Request::new(body.boxed());
-        *hyper_request.method_mut() = head.method.clone();
-        *hyper_request.uri_mut() = head.uri;
-        *hyper_request.version_mut() = head.version;
-        *hyper_request.headers_mut() = head.headers;
-
-        let send = tokio::time::timeout(
-            self.execution_timeout,
-            self.h1_pool.send_exchange(backend, hyper_request),
-        );
-        tokio::pin!(send);
-        let sent = tokio::select! {
-            cancellation_result = &mut cancellation.signal => {
-                if cancellation_result.is_ok() {
-                    let _ = completion.send(UpstreamExchangeCompletion {
-                        outcome: UpstreamExchangeOutcome::Cancelled,
-                        connection_reuse: UpstreamConnectionReuse::Close,
-                    });
-                    return Err(ProxyError::Transport("upstream exchange cancelled".to_string()));
-                }
-                send.await
-            }
-            result = &mut send => result,
-        };
-        let (mut response, permit) = match sent {
-            Ok(Ok(response)) => response,
-            Ok(Err(error)) => {
-                let detail = error.to_string();
-                let _ = completion.send(UpstreamExchangeCompletion {
-                    outcome: UpstreamExchangeOutcome::Failed(ProxyError::Transport(detail)),
-                    connection_reuse: UpstreamConnectionReuse::Close,
-                });
-                return Err(ProxyError::Pool(error));
-            }
-            Err(_) => {
-                let _ = completion.send(UpstreamExchangeCompletion {
-                    outcome: UpstreamExchangeOutcome::Failed(ProxyError::Timeout),
-                    connection_reuse: UpstreamConnectionReuse::Close,
-                });
-                return Err(ProxyError::Timeout);
-            }
-        };
-        let lifecycle = UpstreamExchangeLifecycle {
-            cancellation,
-            completion,
-            inflight_permit: UpstreamInflightPermit { _permit: permit },
-        };
-        let tunnel_response = expects_tunnel
-            && (response.status() == hyper::StatusCode::SWITCHING_PROTOCOLS
-                || (head.method == Method::CONNECT && response.status().is_success()));
-        let upgrade = tunnel_response.then(|| hyper::upgrade::on(&mut response));
-        let (parts, response_body) = response.into_parts();
-        let response_head = UpstreamResponseHead {
-            status: parts.status,
-            version: parts.version,
-            headers: parts.headers,
-        };
-
-        if let Some(on_upgrade) = upgrade {
-            drop(response_body);
-            let (frames, body) = upstream_response_body_channel();
-            drop(frames);
-            let (tunnel_sender, tunnel) = tokio::sync::oneshot::channel();
-            tokio::spawn(forward_h1_upgrade(on_upgrade, lifecycle, tunnel_sender));
-            return Ok(UpstreamExchangeResponse {
-                head: response_head,
-                body,
-                upgrade: Some(UpstreamUpgrade { tunnel }),
-            });
-        }
-
-        let (frames, body) = upstream_response_body_channel();
-        tokio::spawn(pump_hyper_response(
-            response_body,
-            frames,
-            lifecycle,
-            "HTTP/1",
-        ));
-        Ok(UpstreamExchangeResponse {
-            head: response_head,
-            body,
-            upgrade: None,
-        })
     }
 
     pub async fn send_h2_exchange(
@@ -477,14 +332,9 @@ impl UpstreamTransportPool {
         timeout: Duration,
     ) -> Result<hyper::Response<Incoming>, ProxyError> {
         match self.backend_entry(backend) {
-            Some(BackendTransportEntry::Http1) => {
-                self.execute_with_timeout_duration(
-                    backend,
-                    self.h1_pool.send(backend, req),
-                    timeout,
-                )
-                .await
-            }
+            Some(BackendTransportEntry::Http1) => Err(ProxyError::Protocol(format!(
+                "backend '{backend}' requires the shared upstream exchange"
+            ))),
             Some(BackendTransportEntry::H2) => {
                 self.execute_with_timeout_duration(
                     backend,
@@ -499,26 +349,73 @@ impl UpstreamTransportPool {
         }
     }
 
-    /// Execute an HTTP/1 backend request that may upgrade into a long-lived tunnel.
-    ///
-    /// The returned lease keeps the per-backend inflight permit held until the
-    /// caller finishes with the upgraded connection.
-    pub async fn send_http1_upgrade_request(
+    pub async fn send_health_check(
         &self,
         backend: &str,
-        req: Request<BoxBody<Bytes, Infallible>>,
-    ) -> Result<BackendUpgradeResponse, ProxyError> {
-        match self.backend_entry(backend) {
-            Some(BackendTransportEntry::Http1) => self
-                .execute_with_timeout(backend, self.h1_pool.send_upgrade(backend, req))
-                .await
-                .map(|(response, permit)| BackendUpgradeResponse { response, permit }),
-            Some(BackendTransportEntry::H2) => Err(ProxyError::Protocol(format!(
-                "backend '{backend}' does not support HTTP/1 upgrades"
-            ))),
-            None => Err(ProxyError::Pool(PoolError::UnknownBackend(
-                backend.to_string(),
-            ))),
+        uri: hyper::Uri,
+        timeout: Duration,
+    ) -> Result<hyper::StatusCode, ProxyError> {
+        let version = match self.backend_entry(backend) {
+            Some(BackendTransportEntry::Http1) => hyper::Version::HTTP_11,
+            Some(BackendTransportEntry::H2) => hyper::Version::HTTP_2,
+            None => {
+                return Err(ProxyError::Pool(PoolError::UnknownBackend(
+                    backend.to_string(),
+                )));
+            }
+        };
+        let mut headers = hyper::HeaderMap::new();
+        if let Some(authority) = uri.authority() {
+            let host = hyper::header::HeaderValue::from_str(authority.as_str())
+                .map_err(|error| ProxyError::Protocol(error.to_string()))?;
+            headers.insert(hyper::header::HOST, host);
+        }
+        let (frames, body) = mpsc::channel(1);
+        drop(frames);
+        let (cancel, cancellation) = tokio::sync::oneshot::channel();
+        let (completed, completion) = tokio::sync::oneshot::channel();
+        let request = UpstreamExchangeRequest {
+            head: crate::UpstreamRequestHead {
+                method: Method::GET,
+                uri,
+                version,
+                headers,
+            },
+            body: crate::UpstreamRequestBody { frames: body },
+            cancellation: UpstreamCancellation {
+                signal: cancellation,
+            },
+            completion: completed,
+        };
+        let exchange = async {
+            let mut response = self.send_exchange(backend, request).await?;
+            let status = response.head.status;
+            while let Some(frame) = response.body.frames.recv().await {
+                frame?;
+            }
+            match completion.await {
+                Ok(UpstreamExchangeCompletion {
+                    outcome: UpstreamExchangeOutcome::Failed(error),
+                    ..
+                }) => Err(error),
+                Ok(UpstreamExchangeCompletion {
+                    outcome: UpstreamExchangeOutcome::Cancelled,
+                    ..
+                }) => Err(ProxyError::Transport(
+                    "upstream health check cancelled".to_string(),
+                )),
+                Ok(_) => Ok(status),
+                Err(_) => Err(ProxyError::Transport(
+                    "upstream health check ended without completion".to_string(),
+                )),
+            }
+        };
+        match tokio::time::timeout(timeout, exchange).await {
+            Ok(result) => result,
+            Err(_) => {
+                let _ = cancel.send(());
+                Err(ProxyError::Timeout)
+            }
         }
     }
 
@@ -572,7 +469,7 @@ impl UpstreamTransportPool {
         let backend_tls_for_pingora = backend_tls.clone();
         let mut backend_entries = HashMap::new();
         let mut pingora_backends = configured_pingora_backends.unwrap_or_default();
-        let mut h1_backends = Vec::new();
+        let mut inflight_limits = HashMap::new();
         let mut h2_backends = Vec::new();
 
         for (backend, runtime_transport) in backends {
@@ -589,21 +486,16 @@ impl UpstreamTransportPool {
                 }
             }
             backend_entries.insert(backend.clone(), entry);
+            inflight_limits.insert(
+                backend.clone(),
+                Arc::new(Semaphore::new(max_inflight.max(1))),
+            );
             match entry {
-                BackendTransportEntry::Http1 => h1_backends.push(backend),
+                BackendTransportEntry::Http1 => {}
                 BackendTransportEntry::H2 => h2_backends.push(backend),
             }
         }
 
-        let h1_pool = H1Pool::new_with_observer(
-            h1_backends,
-            max_inflight,
-            max_idle_per_backend,
-            pool_idle_timeout,
-            connect_timeout,
-            dns_resolver.clone(),
-            connect_observer.clone(),
-        );
         let h2_pool = H2Pool::new_with_observer(
             h2_backends,
             backend_tls,
@@ -617,7 +509,7 @@ impl UpstreamTransportPool {
 
         Ok(Self {
             backend_entries,
-            h1_pool,
+            inflight_limits,
             h2_pool,
             pingora_backends,
             pingora_pool: PingoraPool::new(0),
@@ -756,16 +648,32 @@ impl UpstreamTransportPool {
         self.backend_entries.get(backend).copied()
     }
 
+    fn acquire_exchange_permit(
+        &self,
+        backend: &str,
+    ) -> Result<tokio::sync::OwnedSemaphorePermit, PoolError> {
+        let limiter = self
+            .inflight_limits
+            .get(backend)
+            .ok_or_else(|| PoolError::UnknownBackend(backend.to_string()))?;
+        match Arc::clone(limiter).try_acquire_owned() {
+            Ok(permit) => Ok(permit),
+            Err(TryAcquireError::NoPermits) => {
+                Err(PoolError::BackendOverloaded(backend.to_string()))
+            }
+            Err(TryAcquireError::Closed) => Err(PoolError::InflightLimiterClosed),
+        }
+    }
+
     async fn execute(
         &self,
         backend: &str,
         req: Request<BoxBody<Bytes, Infallible>>,
     ) -> Result<hyper::Response<Incoming>, ProxyError> {
         match self.backend_entry(backend) {
-            Some(BackendTransportEntry::Http1) => {
-                self.execute_with_timeout(backend, self.h1_pool.send(backend, req))
-                    .await
-            }
+            Some(BackendTransportEntry::Http1) => Err(ProxyError::Protocol(format!(
+                "backend '{backend}' requires the shared upstream exchange"
+            ))),
             Some(BackendTransportEntry::H2) => {
                 self.execute_with_timeout(backend, self.h2_pool.send(backend, req))
                     .await
@@ -778,10 +686,9 @@ impl UpstreamTransportPool {
 
     pub fn rotate_backend_client(&self, backend: &str) -> Result<TransportClientRotation, String> {
         match self.backend_entry(backend) {
-            Some(BackendTransportEntry::Http1) => self
-                .h1_pool
-                .rotate_backend_client(backend)
-                .map(Self::transport_rotation),
+            Some(BackendTransportEntry::Http1) => Ok(TransportClientRotation {
+                rotation: BackendClientRotation::recreated(),
+            }),
             Some(BackendTransportEntry::H2) => self
                 .h2_pool
                 .rotate_backend_client(backend)
@@ -798,10 +705,9 @@ impl UpstreamTransportPool {
         tls: TlsClientConfig,
     ) -> Result<TransportClientRotation, String> {
         match self.backend_entry(backend) {
-            Some(BackendTransportEntry::Http1) => self
-                .h1_pool
-                .rotate_backend_client(backend)
-                .map(Self::transport_rotation),
+            Some(BackendTransportEntry::Http1) => Ok(TransportClientRotation {
+                rotation: BackendClientRotation::recreated(),
+            }),
             Some(BackendTransportEntry::H2) => self
                 .h2_pool
                 .rotate_backend_client_with_tls(backend, tls)
@@ -981,55 +887,6 @@ async fn pump_hyper_response(
             );
             return;
         }
-    }
-}
-
-async fn forward_h1_upgrade(
-    on_upgrade: hyper::upgrade::OnUpgrade,
-    mut lifecycle: UpstreamExchangeLifecycle,
-    tunnel_sender: tokio::sync::oneshot::Sender<Result<UpstreamTunnel, ProxyError>>,
-) {
-    tokio::pin!(on_upgrade);
-    let upgraded = tokio::select! {
-        cancellation_result = &mut lifecycle.cancellation.signal => {
-            if cancellation_result.is_ok() {
-                let _ = tunnel_sender.send(Err(ProxyError::Transport(
-                    "upstream exchange cancelled".to_string(),
-                )));
-                finish_hyper_exchange(
-                    lifecycle,
-                    UpstreamExchangeOutcome::Cancelled,
-                    UpstreamConnectionReuse::Close,
-                );
-                return;
-            }
-            on_upgrade.await
-        }
-        upgraded = &mut on_upgrade => upgraded,
-    };
-    let upgraded = match upgraded {
-        Ok(upgraded) => upgraded,
-        Err(error) => {
-            let detail = format!("HTTP/1 upgrade failed: {error}");
-            let _ = tunnel_sender.send(Err(ProxyError::Transport(detail.clone())));
-            finish_hyper_exchange(
-                lifecycle,
-                UpstreamExchangeOutcome::Failed(ProxyError::Transport(detail)),
-                UpstreamConnectionReuse::Close,
-            );
-            return;
-        }
-    };
-    let tunnel = UpstreamTunnel {
-        io: Box::new(TokioIo::new(upgraded)),
-        lifecycle,
-    };
-    if let Err(Ok(tunnel)) = tunnel_sender.send(Ok(tunnel)) {
-        finish_hyper_exchange(
-            tunnel.lifecycle,
-            UpstreamExchangeOutcome::Cancelled,
-            UpstreamConnectionReuse::Close,
-        );
     }
 }
 

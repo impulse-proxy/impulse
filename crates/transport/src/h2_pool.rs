@@ -199,13 +199,6 @@ impl H2Pool {
         Ok((response, permit))
     }
 
-    pub(crate) fn acquire_exchange_permit(
-        &self,
-        backend: &str,
-    ) -> Result<OwnedSemaphorePermit, PoolError> {
-        Self::acquire_inflight_permit(self.backend_handle(backend)?, backend)
-    }
-
     fn backend_handle(&self, backend: &str) -> Result<&BackendHandle, PoolError> {
         self.backends
             .get(backend)
