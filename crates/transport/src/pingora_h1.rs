@@ -48,6 +48,15 @@ pub struct PingoraH1UpstreamSession {
     peer: HttpPeer,
     session: Option<HttpSession>,
     reused: bool,
+    state: PingoraH1ExchangeState,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum PingoraH1ExchangeState {
+    Acquired,
+    RequestComplete,
+    ResponseComplete,
+    Closed,
 }
 
 impl PingoraH1UpstreamSession {
@@ -88,6 +97,7 @@ impl PingoraH1UpstreamSession {
             peer,
             session: Some(session),
             reused,
+            state: PingoraH1ExchangeState::Acquired,
         })
     }
 
@@ -116,15 +126,21 @@ impl PingoraH1UpstreamSession {
         head: &UpstreamRequestHead,
         mut body: UpstreamRequestBody,
     ) -> Result<(), ProxyError> {
+        if self.state != PingoraH1ExchangeState::Acquired {
+            self.close().await;
+            return Err(ProxyError::Protocol(
+                "Pingora HTTP/1 request has already been written".to_string(),
+            ));
+        }
         let header = match translate_pingora_h1_request_header(head) {
             Ok(header) => header,
             Err(error) => {
-                self.session_mut().shutdown().await;
+                self.close().await;
                 return Err(classify_pingora_h1_error(&error));
             }
         };
         if let Err(error) = self.session_mut().write_request_header(header).await {
-            self.session_mut().shutdown().await;
+            self.close().await;
             return Err(classify_pingora_h1_error(&error));
         }
 
@@ -135,41 +151,42 @@ impl PingoraH1UpstreamSession {
                     match self.session_mut().write_body(&data).await {
                         Ok(Some(written)) if written == data.len() => {}
                         Ok(Some(written)) => {
-                            self.session_mut().shutdown().await;
+                            self.close().await;
                             return Err(ProxyError::Transport(format!(
                                 "Pingora wrote {written} of {} request body bytes",
                                 data.len()
                             )));
                         }
                         Ok(None) => {
-                            self.session_mut().shutdown().await;
+                            self.close().await;
                             return Err(ProxyError::Protocol(
                                 "request body exceeds its declared framing".to_string(),
                             ));
                         }
                         Err(error) => {
-                            self.session_mut().shutdown().await;
+                            self.close().await;
                             return Err(classify_pingora_h1_error(&error));
                         }
                     }
                 }
                 Ok(UpstreamBodyFrame::Trailers(_)) => {
-                    self.session_mut().shutdown().await;
+                    self.close().await;
                     return Err(ProxyError::Protocol(
                         "Pingora 0.9 cannot forward HTTP/1 request trailers".to_string(),
                     ));
                 }
                 Err(error) => {
-                    self.session_mut().shutdown().await;
+                    self.close().await;
                     return Err(error);
                 }
             }
         }
 
         if let Err(error) = self.session_mut().finish_body().await {
-            self.session_mut().shutdown().await;
+            self.close().await;
             return Err(classify_pingora_h1_error(&error));
         }
+        self.state = PingoraH1ExchangeState::RequestComplete;
         Ok(())
     }
 
@@ -177,6 +194,16 @@ impl PingoraH1UpstreamSession {
         mut self,
         lifecycle: UpstreamExchangeLifecycle,
     ) -> Result<UpstreamExchangeResponse, ProxyError> {
+        if self.state != PingoraH1ExchangeState::RequestComplete {
+            self.close().await;
+            let detail = "Pingora HTTP/1 response read before request completion".to_string();
+            finish_pingora_h1_exchange(
+                lifecycle,
+                UpstreamExchangeOutcome::Failed(ProxyError::Protocol(detail.clone())),
+                UpstreamConnectionReuse::Close,
+            );
+            return Err(ProxyError::Protocol(detail));
+        }
         loop {
             if let Err(error) = self.session_mut().read_response().await {
                 let outcome_error = classify_pingora_h1_error(&error);
@@ -226,7 +253,16 @@ impl PingoraH1UpstreamSession {
         })
     }
 
-    pub async fn release(mut self) {
+    pub async fn release(mut self) -> UpstreamConnectionReuse {
+        if self.state != PingoraH1ExchangeState::ResponseComplete {
+            self.close().await;
+            return UpstreamConnectionReuse::Close;
+        }
+        let connection_reuse = if self.session().will_keepalive() {
+            UpstreamConnectionReuse::Reuse
+        } else {
+            UpstreamConnectionReuse::Close
+        };
         let session = self
             .session
             .take()
@@ -239,9 +275,15 @@ impl PingoraH1UpstreamSession {
                 self.peer.options.idle_timeout,
             )
             .await;
+        connection_reuse
     }
 
     pub async fn shutdown(mut self) {
+        self.close().await;
+    }
+
+    async fn close(&mut self) {
+        self.state = PingoraH1ExchangeState::Closed;
         if let Some(mut session) = self.session.take() {
             session.shutdown().await;
         }
@@ -335,11 +377,12 @@ async fn pump_pingora_h1_response(
                 }
             }
             Ok(None) => {
-                session.release().await;
+                session.state = PingoraH1ExchangeState::ResponseComplete;
+                let connection_reuse = session.release().await;
                 finish_pingora_h1_exchange(
                     lifecycle,
                     UpstreamExchangeOutcome::Completed,
-                    UpstreamConnectionReuse::Reuse,
+                    connection_reuse,
                 );
                 return;
             }
