@@ -34,7 +34,10 @@ use super::{
     response::{BootstrapStreamingBody, boxed_full},
 };
 use crate::{
-    request_pipeline::{PipelineRequest, PipelineRoute, ResolvedRequestPolicy, evaluate_pipeline},
+    request_pipeline::{
+        PipelineRequest, PipelineRoute, ResolvedRequestPolicy, TerminalOutcomeGuard,
+        evaluate_pipeline,
+    },
     runtime::connection::{
         auth::{
             ExternalAuthDecision, ExternalAuthStateTransition, PendingHeaderMutation,
@@ -195,10 +198,6 @@ impl BootstrapTerminalResponse {
         })
     }
 
-    pub(in crate::quic_listener) fn into_response(self) -> Response<BoxBody<Bytes, Infallible>> {
-        self.response
-    }
-
     /// Log the terminal state at the terminalization boundary, then return the
     /// response. Phase 11: the terminal outcome is now *observed* rather than a
     /// dead byproduct, so bootstrap terminalization is traceable the same way the
@@ -206,8 +205,9 @@ impl BootstrapTerminalResponse {
     pub(in crate::quic_listener) fn into_observed_response(
         self,
         request_id: u64,
+        terminal_outcome: &TerminalOutcomeGuard,
     ) -> Response<BoxBody<Bytes, Infallible>> {
-        if !self.outcome.is_accepted() {
+        if terminal_outcome.record() && !self.outcome.is_accepted() {
             log::debug!(
                 "bootstrap request {} terminalized at stage={} outcome={}",
                 request_id,
@@ -492,6 +492,7 @@ pub(in crate::quic_listener) fn evaluate_bootstrap_request_policy(
             peer_address: input.request_ctx.peer,
             headers: Some(&lb_header_lookup),
             runtime_generation: input.request_ctx.runtime.runtime_generation,
+            terminal_outcome: input.request_ctx.terminal_outcome.clone(),
         },
     );
     let admission = pipeline_evaluation.admission;

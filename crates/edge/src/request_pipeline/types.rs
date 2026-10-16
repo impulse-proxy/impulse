@@ -3,7 +3,7 @@ use std::{net::SocketAddr, sync::Arc};
 use impulse_config::runtime::RuntimeUpstreamPolicy;
 use impulse_errors::ProxyError;
 
-use super::policy::ResolvedRequestPolicy;
+use super::{outcome::TerminalOutcomeGuard, policy::ResolvedRequestPolicy};
 use crate::{
     quic_listener::admission::AdmissionPolicyDecision, routing::decision::RouteDecisionReason,
     runtime::activation::GenerationId,
@@ -19,6 +19,7 @@ pub(crate) struct PipelineRequest<'a> {
     pub(crate) peer_address: SocketAddr,
     pub(crate) headers: Option<&'a RequestHeaderLookup<'a>>,
     pub(crate) runtime_generation: GenerationId,
+    pub(crate) terminal_outcome: TerminalOutcomeGuard,
 }
 
 #[derive(Clone, Copy)]

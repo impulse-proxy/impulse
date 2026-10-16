@@ -10,7 +10,7 @@ use super::{
     super::{protocol::is_head_method, validation::validate_http_request},
     request::{
         BootstrapLifecycleStage, BootstrapRejectionReason, BootstrapRequestMode,
-        BootstrapTerminalOutcome, BootstrapTerminalResponse,
+        BootstrapTerminalOutcome, BootstrapTerminalResponse, BootstrapTerminalResult,
     },
     response::boxed_full,
     websocket::capture_bootstrap_websocket_flow,
@@ -50,7 +50,7 @@ pub(in crate::quic_listener) fn prepare_bootstrap_request_intake(
     metrics: &Metrics,
     alt_svc: &str,
     request_start: Instant,
-) -> Result<BootstrapRequestIntake, Box<Response<BoxBody<Bytes, Infallible>>>> {
+) -> BootstrapTerminalResult<BootstrapRequestIntake> {
     let websocket_flow = capture_bootstrap_websocket_flow(req, use_h2);
 
     let request = match validate_http_request(req, resilience) {
@@ -69,13 +69,10 @@ pub(in crate::quic_listener) fn prepare_bootstrap_request_intake(
                 &ProxyError::Bridge(BridgeError::InvalidHeader),
                 None,
             );
-            return Err(Box::new(
-                BootstrapTerminalResponse::new(
-                    BootstrapLifecycleStage::Validate,
-                    BootstrapTerminalOutcome::Rejected(BootstrapRejectionReason::ValidationFailed),
-                    bootstrap_error_response(alt_svc, status, body),
-                )
-                .into_response(),
+            return Err(BootstrapTerminalResponse::new(
+                BootstrapLifecycleStage::Validate,
+                BootstrapTerminalOutcome::Rejected(BootstrapRejectionReason::ValidationFailed),
+                bootstrap_error_response(alt_svc, status, body),
             ));
         }
     };

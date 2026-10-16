@@ -18,7 +18,8 @@ use crate::{
         AdmissionPolicyDecision, AdmissionRejectionResponse, admission_rejection_response,
     },
     request_pipeline::{
-        PipelineRequest, PipelineResolution, PipelineResult, PipelineRoute, evaluate_pipeline,
+        PipelineRequest, PipelineResolution, PipelineResult, PipelineRoute, TerminalOutcomeGuard,
+        evaluate_pipeline,
     },
     runtime::connection::{
         auth::{
@@ -394,6 +395,7 @@ impl QUICListener {
                     authority: authority.map(str::to_string),
                     start: request_start,
                     total_request_deadline: request_start,
+                    terminal_outcome: TerminalOutcomeGuard::default(),
                 },
                 request_mode,
                 request_body: request_mode.initial_body_state(),
@@ -508,6 +510,7 @@ impl QUICListener {
                         peer_address,
                         headers: Some(&lb_header_lookup),
                         runtime_generation: shared_ctx.runtime_generation,
+                        terminal_outcome: intake.state.context.terminal_outcome.clone(),
                     },
                 );
 
@@ -549,6 +552,7 @@ impl QUICListener {
                 match admission {
                     AdmissionPolicyDecision::AdmitReady => {}
                     AdmissionPolicyDecision::Unauthorized(_) => {
+                        intake.state.context.terminal_outcome.record();
                         metrics.inc_policy_denied();
                         let _ = observe_admission_outcome(
                             metrics,
@@ -589,6 +593,7 @@ impl QUICListener {
                         )));
                     }
                     AdmissionPolicyDecision::RateLimited(decision) => {
+                        intake.state.context.terminal_outcome.record();
                         metrics.inc_request_rate_limited();
                         let _ = observe_admission_outcome(
                             metrics,
@@ -629,6 +634,7 @@ impl QUICListener {
                         )));
                     }
                     AdmissionPolicyDecision::Overloaded(decision) => {
+                        intake.state.context.terminal_outcome.record();
                         let _ = observe_admission_outcome(
                             metrics,
                             RouteOutcomeTarget {
@@ -728,6 +734,7 @@ impl QUICListener {
                 })
             }
             Err(err) => {
+                intake.state.context.terminal_outcome.record();
                 let (status, body): (http::StatusCode, &[u8]) = match &err {
                     ProxyError::Bridge(_) => (http::StatusCode::BAD_REQUEST, b"invalid request\n"),
                     ProxyError::Transport(_) | ProxyError::Pool(_) => {

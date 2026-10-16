@@ -10,7 +10,10 @@ use impulse_lb::upstream_pool::UpstreamPool;
 use impulse_transport::UpstreamTransportPool;
 
 use super::state::BootstrapConnectionState;
-use crate::{Metrics, resilience::runtime::RuntimeResilience, routing::index::RouteIndex};
+use crate::{
+    Metrics, request_pipeline::TerminalOutcomeGuard, resilience::runtime::RuntimeResilience,
+    routing::index::RouteIndex,
+};
 
 pub(in crate::quic_listener) struct BootstrapBodyLimits {
     pub(in crate::quic_listener) max_request_body_bytes: usize,
@@ -59,6 +62,7 @@ pub(in crate::quic_listener) struct BootstrapRequestCtx<'a> {
     pub(in crate::quic_listener) runtime: &'a BootstrapRuntimeCtx,
     pub(in crate::quic_listener) peer: SocketAddr,
     pub(in crate::quic_listener) request_start: Instant,
+    pub(in crate::quic_listener) terminal_outcome: &'a TerminalOutcomeGuard,
 }
 
 #[derive(Clone, Copy)]
