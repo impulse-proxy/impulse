@@ -18,11 +18,10 @@ mod transport_pool;
 
 pub use connection_identity::{PingoraUpstreamConnectionIdentity, PingoraUpstreamProxyIdentity};
 pub use exchange::{
-    UpstreamBodyFrame, UpstreamCancellation, UpstreamConnectionReuse, UpstreamExchangeCompletion,
-    UpstreamExchangeLifecycle, UpstreamExchangeOutcome, UpstreamExchangeRequest,
-    UpstreamExchangeResponse, UpstreamInflightPermit, UpstreamRequestBody, UpstreamRequestHead,
-    UpstreamResponseBody, UpstreamResponseHead, UpstreamTrailers, UpstreamTunnel, UpstreamTunnelIo,
-    UpstreamUpgrade,
+    UpstreamBody, UpstreamBodyFrame, UpstreamCancellation, UpstreamConnectionReuse,
+    UpstreamExchangeCompletion, UpstreamExchangeLifecycle, UpstreamExchangeOutcome,
+    UpstreamExchangeRequest, UpstreamExchangeResponse, UpstreamInflightPermit, UpstreamRequestHead,
+    UpstreamResponseHead, UpstreamTunnel, UpstreamTunnelIo, UpstreamUpgrade,
 };
 pub use runtime_config::{SharedDnsResolver, TlsClientConfig};
 pub use transport_pool::{TransportClientRotation, UpstreamTransportPool};

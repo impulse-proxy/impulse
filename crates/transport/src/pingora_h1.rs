@@ -21,12 +21,11 @@ use tokio::{
 };
 
 use crate::{
-    PingoraUpstreamConnectionIdentity, UpstreamBodyFrame, UpstreamCancellation,
+    PingoraUpstreamConnectionIdentity, UpstreamBody, UpstreamBodyFrame, UpstreamCancellation,
     UpstreamConnectionReuse, UpstreamExchangeCompletion, UpstreamExchangeLifecycle,
-    UpstreamExchangeOutcome, UpstreamExchangeResponse, UpstreamRequestBody, UpstreamRequestHead,
-    UpstreamResponseHead, UpstreamTunnel, UpstreamUpgrade,
-    exchange::upstream_response_body_channel, pingora_failure::classify_pingora_h1_error,
-    pingora_pool::PingoraPoolLease,
+    UpstreamExchangeOutcome, UpstreamExchangeResponse, UpstreamRequestHead, UpstreamResponseHead,
+    UpstreamTunnel, UpstreamUpgrade, exchange::upstream_response_body_channel,
+    pingora_failure::classify_pingora_h1_error, pingora_pool::PingoraPoolLease,
 };
 
 pub(crate) fn translate_pingora_h1_request_header(
@@ -138,7 +137,7 @@ impl PingoraH1UpstreamSession {
     pub async fn write_request(
         &mut self,
         head: &UpstreamRequestHead,
-        mut body: UpstreamRequestBody,
+        mut body: UpstreamBody,
     ) -> Result<(), ProxyError> {
         if self.state != PingoraH1ExchangeState::Acquired {
             self.close().await;
@@ -158,7 +157,7 @@ impl PingoraH1UpstreamSession {
             return Err(classify_pingora_h1_error(&error));
         }
 
-        while let Some(frame) = body.frames.recv().await {
+        while let Some(frame) = body.recv().await {
             match frame {
                 Ok(UpstreamBodyFrame::Data(data)) if data.is_empty() => {}
                 Ok(UpstreamBodyFrame::Data(data)) => {

@@ -10,11 +10,11 @@ use pingora_http::RequestHeader;
 use tokio::sync::mpsc;
 
 use crate::{
-    PingoraUpstreamConnectionIdentity, UpstreamBodyFrame, UpstreamCancellation,
+    PingoraUpstreamConnectionIdentity, UpstreamBody, UpstreamBodyFrame, UpstreamCancellation,
     UpstreamConnectionReuse, UpstreamExchangeCompletion, UpstreamExchangeLifecycle,
-    UpstreamExchangeOutcome, UpstreamExchangeResponse, UpstreamRequestBody, UpstreamRequestHead,
-    UpstreamResponseHead, UpstreamTrailers, exchange::upstream_response_body_channel,
-    pingora_failure::classify_pingora_h2_error, pingora_pool::PingoraPoolLease,
+    UpstreamExchangeOutcome, UpstreamExchangeResponse, UpstreamRequestHead, UpstreamResponseHead,
+    exchange::upstream_response_body_channel, pingora_failure::classify_pingora_h2_error,
+    pingora_pool::PingoraPoolLease,
 };
 
 pub(crate) fn translate_pingora_h2_request_header(
@@ -135,7 +135,7 @@ impl PingoraH2UpstreamSession {
     pub async fn write_request(
         &mut self,
         head: &UpstreamRequestHead,
-        mut body: UpstreamRequestBody,
+        mut body: UpstreamBody,
     ) -> Result<(), ProxyError> {
         if self.state != PingoraH2ExchangeState::Acquired {
             self.close().await;
@@ -156,7 +156,7 @@ impl PingoraH2UpstreamSession {
         }
 
         let mut ended = false;
-        while let Some(frame) = body.frames.recv().await {
+        while let Some(frame) = body.recv().await {
             if ended {
                 self.close().await;
                 return Err(ProxyError::Protocol(
@@ -178,7 +178,7 @@ impl PingoraH2UpstreamSession {
                             "Pingora HTTP/2 request body is already complete".to_string(),
                         ));
                     };
-                    if let Err(error) = writer.send_trailers(trailers.headers) {
+                    if let Err(error) = writer.send_trailers(trailers) {
                         self.close().await;
                         return Err(ProxyError::Protocol(error.to_string()));
                     }
@@ -487,7 +487,7 @@ async fn pump_pingora_h2_response(
         Ok(Some(headers)) => {
             if !send_pingora_h2_response_frame(
                 &frames,
-                Ok(UpstreamBodyFrame::Trailers(UpstreamTrailers { headers })),
+                Ok(UpstreamBodyFrame::Trailers(headers)),
                 &mut lifecycle.cancellation,
                 &mut cancellation_open,
             )

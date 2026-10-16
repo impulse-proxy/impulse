@@ -1,13 +1,5 @@
-use std::{
-    pin::Pin,
-    task::{Context, Poll},
-};
-
 use bytes::Bytes;
-use hyper::{
-    body::{Body, Frame},
-    http::{HeaderMap, Method, StatusCode, Uri, Version},
-};
+use hyper::http::{HeaderMap, Method, StatusCode, Uri, Version};
 use impulse_errors::ProxyError;
 use tokio::{
     io::{AsyncRead, AsyncWrite},
@@ -29,55 +21,19 @@ pub struct UpstreamResponseHead {
     pub headers: HeaderMap,
 }
 
-#[derive(Clone, Debug)]
-pub struct UpstreamTrailers {
-    pub headers: HeaderMap,
-}
-
 #[derive(Debug)]
 pub enum UpstreamBodyFrame {
     Data(Bytes),
-    Trailers(UpstreamTrailers),
+    Trailers(HeaderMap),
 }
 
-#[derive(Debug)]
-pub struct UpstreamRequestBody {
-    pub frames: mpsc::Receiver<Result<UpstreamBodyFrame, ProxyError>>,
-}
-
-impl Body for UpstreamRequestBody {
-    type Data = Bytes;
-    type Error = ProxyError;
-
-    fn poll_frame(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
-        match self.frames.poll_recv(cx) {
-            Poll::Ready(Some(Ok(UpstreamBodyFrame::Data(data)))) => {
-                Poll::Ready(Some(Ok(Frame::data(data))))
-            }
-            Poll::Ready(Some(Ok(UpstreamBodyFrame::Trailers(trailers)))) => {
-                Poll::Ready(Some(Ok(Frame::trailers(trailers.headers))))
-            }
-            Poll::Ready(Some(Err(error))) => Poll::Ready(Some(Err(error))),
-            Poll::Ready(None) => Poll::Ready(None),
-            Poll::Pending => Poll::Pending,
-        }
-    }
-}
-
-#[derive(Debug)]
-pub struct UpstreamResponseBody {
-    pub frames: mpsc::Receiver<Result<UpstreamBodyFrame, ProxyError>>,
-}
+pub type UpstreamBody = mpsc::Receiver<Result<UpstreamBodyFrame, ProxyError>>;
 
 pub(crate) fn upstream_response_body_channel() -> (
     mpsc::Sender<Result<UpstreamBodyFrame, ProxyError>>,
-    UpstreamResponseBody,
+    UpstreamBody,
 ) {
-    let (frames, receiver) = mpsc::channel(16);
-    (frames, UpstreamResponseBody { frames: receiver })
+    mpsc::channel(16)
 }
 
 pub struct UpstreamCancellation {
@@ -128,13 +84,13 @@ pub struct UpstreamUpgrade {
 
 pub struct UpstreamExchangeRequest {
     pub head: UpstreamRequestHead,
-    pub body: UpstreamRequestBody,
+    pub body: UpstreamBody,
     pub cancellation: UpstreamCancellation,
     pub completion: oneshot::Sender<UpstreamExchangeCompletion>,
 }
 
 pub struct UpstreamExchangeResponse {
     pub head: UpstreamResponseHead,
-    pub body: UpstreamResponseBody,
+    pub body: UpstreamBody,
     pub upgrade: Option<UpstreamUpgrade>,
 }

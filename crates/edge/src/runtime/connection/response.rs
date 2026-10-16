@@ -4,7 +4,7 @@ use impulse_errors::{
     HedgeOutcomeTelemetryReason, HedgeTriggerTelemetryReason, ProxyError,
     RetryAttemptTelemetryReason, RetryPolicyDenialReason,
 };
-use impulse_transport::UpstreamResponseBody;
+use impulse_transport::UpstreamBody;
 use tokio::sync::mpsc;
 
 use crate::{
@@ -16,7 +16,7 @@ pub(crate) enum ForwardSuccess {
     Response {
         status: http::StatusCode,
         headers: http::HeaderMap,
-        body: UpstreamResponseBody,
+        body: UpstreamBody,
     },
     Tunnel {
         status: http::StatusCode,
@@ -127,7 +127,7 @@ pub(crate) enum ResponseStartDecision {
     },
     StreamingBodyPump {
         metadata: ResponseStartMetadata,
-        response_body: UpstreamResponseBody,
+        response_body: UpstreamBody,
         pump: ResponseBodyPumpPlan,
         observation: ResponseStartObservation,
     },

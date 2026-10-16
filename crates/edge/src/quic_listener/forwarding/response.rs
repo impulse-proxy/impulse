@@ -1,6 +1,6 @@
 use bytes::Bytes;
 use impulse_errors::{UpstreamProxyErrorKind, classify_upstream_proxy_error};
-use impulse_transport::{UpstreamBodyFrame, UpstreamResponseBody};
+use impulse_transport::{UpstreamBody, UpstreamBodyFrame};
 use tokio::sync::mpsc::error::TryRecvError;
 
 use super::*;
@@ -848,7 +848,7 @@ impl QUICListener {
 
     fn spawn_response_body_pump(
         req: &RequestEnvelope,
-        response_body: UpstreamResponseBody,
+        response_body: UpstreamBody,
         deferred_start: Option<ResponseChunk>,
         pump: ResponseBodyPumpPlan,
     ) -> mpsc::Receiver<ResponseChunk> {
@@ -890,7 +890,7 @@ impl QUICListener {
                         return;
                     }
                 };
-                let frame_fut = body.frames.recv();
+                let frame_fut = body.recv();
                 let result = tokio::time::timeout(streaming.wait_timeout, frame_fut).await;
                 match result {
                     Err(_elapsed) => {
@@ -956,7 +956,7 @@ impl QUICListener {
                             }
                         }
                         UpstreamBodyFrame::Trailers(trailers) => {
-                            let trailer_headers = collect_h3_trailers(&trailers.headers);
+                            let trailer_headers = collect_h3_trailers(&trailers);
                             if !trailer_headers.is_empty() {
                                 if pump.defer_headers_until_body_validated {
                                     buffered_trailers = Some(trailer_headers);

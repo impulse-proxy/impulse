@@ -85,14 +85,6 @@ impl UpstreamTransportPool {
         backend: &str,
         request: UpstreamExchangeRequest,
     ) -> Result<UpstreamExchangeResponse, ProxyError> {
-        self.send_pingora_exchange(backend, request).await
-    }
-
-    async fn send_pingora_exchange(
-        &self,
-        backend: &str,
-        request: UpstreamExchangeRequest,
-    ) -> Result<UpstreamExchangeResponse, ProxyError> {
         let UpstreamExchangeRequest {
             head,
             body,
@@ -211,7 +203,7 @@ impl UpstreamTransportPool {
                 version,
                 headers,
             },
-            body: crate::UpstreamRequestBody { frames: body },
+            body,
             cancellation: UpstreamCancellation {
                 signal: cancellation,
             },
@@ -220,7 +212,7 @@ impl UpstreamTransportPool {
         let exchange = async {
             let mut response = self.send_exchange(backend, request).await?;
             let status = response.head.status;
-            while let Some(frame) = response.body.frames.recv().await {
+            while let Some(frame) = response.body.recv().await {
                 frame?;
             }
             match completion.await {

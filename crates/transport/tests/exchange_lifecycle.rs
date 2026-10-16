@@ -25,10 +25,9 @@ use hyper::{
 use hyper_util::rt::TokioIo;
 use impulse_errors::{PoolError, ProxyError};
 use impulse_transport::{
-    SharedDnsResolver, UpstreamBodyFrame, UpstreamCancellation, UpstreamConnectionReuse,
-    UpstreamExchangeCompletion, UpstreamExchangeLifecycle, UpstreamExchangeOutcome,
-    UpstreamExchangeRequest, UpstreamRequestBody, UpstreamRequestHead, UpstreamResponseBody,
-    UpstreamTrailers, UpstreamTunnel,
+    SharedDnsResolver, UpstreamBody, UpstreamBodyFrame, UpstreamCancellation,
+    UpstreamConnectionReuse, UpstreamExchangeCompletion, UpstreamExchangeLifecycle,
+    UpstreamExchangeOutcome, UpstreamExchangeRequest, UpstreamRequestHead, UpstreamTunnel,
 };
 use tokio::{
     io::AsyncWriteExt,
@@ -101,7 +100,7 @@ fn exchange_request(
                 version: Version::HTTP_11,
                 headers,
             },
-            body: UpstreamRequestBody { frames: frame_rx },
+            body: frame_rx,
             cancellation: UpstreamCancellation {
                 signal: cancellation_signal,
             },
@@ -112,9 +111,9 @@ fn exchange_request(
     )
 }
 
-async fn collect_exchange_body(mut body: UpstreamResponseBody) -> Vec<UpstreamBodyFrame> {
+async fn collect_exchange_body(mut body: UpstreamBody) -> Vec<UpstreamBodyFrame> {
     let mut frames = Vec::new();
-    while let Some(frame) = body.frames.recv().await {
+    while let Some(frame) = body.recv().await {
         frames.push(frame.expect("upstream response frame"));
     }
     frames
@@ -251,9 +250,7 @@ async fn exchange_streams_data_and_trailers_in_both_directions() {
         [
             UpstreamBodyFrame::Data(Bytes::from_static(b"one")),
             UpstreamBodyFrame::Data(Bytes::from_static(b"two")),
-            UpstreamBodyFrame::Trailers(UpstreamTrailers {
-                headers: request_trailers,
-            }),
+            UpstreamBodyFrame::Trailers(request_trailers),
         ],
     );
 
@@ -268,7 +265,7 @@ async fn exchange_streams_data_and_trailers_in_both_directions() {
     for frame in response_frames {
         match frame {
             UpstreamBodyFrame::Data(data) => response_data.extend_from_slice(&data),
-            UpstreamBodyFrame::Trailers(trailers) => response_trailers = Some(trailers.headers),
+            UpstreamBodyFrame::Trailers(trailers) => response_trailers = Some(trailers),
         }
     }
     assert_eq!(response_data, b"firstsecond");
