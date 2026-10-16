@@ -1,10 +1,7 @@
-use impulse_errors::ProxyError;
-
 use super::resolve::ForwardTargetResolution;
 use crate::{
-    quic_listener::admission::AdmissionPolicyDecision,
     request_pipeline::{
-        PipelineRequest, ResolvedRequestPolicy, evaluate_admission, resolve_policy,
+        PipelineRequest, PipelineResolution, PipelineResult, evaluate_admission, resolve_policy,
     },
     resilience::runtime::RuntimeResilience,
 };
@@ -16,12 +13,6 @@ use crate::{
 #[derive(Clone, Copy)]
 pub(in crate::quic_listener) struct ForwardingRequestPipeline<'a> {
     resilience: &'a RuntimeResilience,
-}
-
-pub(super) struct PipelineResolution {
-    pub(super) target: ForwardTargetResolution,
-    pub(super) policy: ResolvedRequestPolicy,
-    pub(super) admission: AdmissionPolicyDecision,
 }
 
 #[derive(Clone, Copy)]
@@ -42,11 +33,6 @@ impl<'a> PipelineRoute<'a> {
     }
 }
 
-pub(in crate::quic_listener) struct PipelinePolicyAdmission {
-    pub(in crate::quic_listener) policy: ResolvedRequestPolicy,
-    pub(in crate::quic_listener) admission: AdmissionPolicyDecision,
-}
-
 impl<'a> ForwardingRequestPipeline<'a> {
     pub(in crate::quic_listener) const fn new(resilience: &'a RuntimeResilience) -> Self {
         Self { resilience }
@@ -54,9 +40,9 @@ impl<'a> ForwardingRequestPipeline<'a> {
 
     pub(super) fn resolve(
         self,
-        target: Result<ForwardTargetResolution, ProxyError>,
+        target: PipelineResult<ForwardTargetResolution>,
         request: PipelineRequest<'_>,
-    ) -> Result<PipelineResolution, ProxyError> {
+    ) -> PipelineResult<ForwardTargetResolution> {
         let target = target?;
         let evaluation = self.evaluate(
             PipelineRoute::new(&target.upstream_name, &target.upstream_policy),
@@ -64,20 +50,24 @@ impl<'a> ForwardingRequestPipeline<'a> {
         );
 
         Ok(PipelineResolution {
-            target,
+            route: target,
             policy: evaluation.policy,
             admission: evaluation.admission,
         })
     }
 
-    pub(in crate::quic_listener) fn evaluate(
+    pub(in crate::quic_listener) fn evaluate<'route>(
         self,
-        route: PipelineRoute<'_>,
+        route: PipelineRoute<'route>,
         request: PipelineRequest<'_>,
-    ) -> PipelinePolicyAdmission {
+    ) -> PipelineResolution<PipelineRoute<'route>> {
         let policy = resolve_policy(route.upstream_policy);
         let admission = evaluate_admission(self.resilience, &policy, route.upstream_name, &request);
 
-        PipelinePolicyAdmission { policy, admission }
+        PipelineResolution {
+            route,
+            policy,
+            admission,
+        }
     }
 }

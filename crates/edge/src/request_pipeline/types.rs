@@ -1,6 +1,12 @@
 use std::{net::SocketAddr, sync::Arc};
 
-use crate::{routing::decision::RouteDecisionReason, runtime::activation::GenerationId};
+use impulse_errors::ProxyError;
+
+use super::policy::ResolvedRequestPolicy;
+use crate::{
+    quic_listener::admission::AdmissionPolicyDecision, routing::decision::RouteDecisionReason,
+    runtime::activation::GenerationId,
+};
 
 pub(crate) type RequestHeaderLookup<'a> = dyn Fn(&str) -> Option<String> + 'a;
 
@@ -12,6 +18,15 @@ pub(crate) struct PipelineRequest<'a> {
     pub(crate) peer_address: SocketAddr,
     pub(crate) headers: Option<&'a RequestHeaderLookup<'a>>,
     pub(crate) runtime_generation: GenerationId,
+}
+
+pub(crate) type PipelineResult<Route> = Result<PipelineResolution<Route>, ProxyError>;
+
+/// Protocol-neutral policy evaluation paired with its resolved route.
+pub(crate) struct PipelineResolution<Route> {
+    pub(crate) route: Route,
+    pub(crate) policy: ResolvedRequestPolicy,
+    pub(crate) admission: AdmissionPolicyDecision,
 }
 
 /// The route selected by the shared routing service before backend selection.

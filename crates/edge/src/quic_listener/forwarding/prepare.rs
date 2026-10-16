@@ -7,7 +7,7 @@ use tokio::{sync::oneshot, task::AbortHandle};
 
 use super::{
     auth::start_external_auth_task,
-    pipeline::{ForwardingRequestPipeline, PipelineResolution},
+    pipeline::ForwardingRequestPipeline,
     resolve::{
         ForwardTargetResolution, ForwardTargetResolutionInput, ResolutionContext,
         ResolutionObservation, TargetResolutionRequest,
@@ -18,7 +18,7 @@ use crate::{
     quic_listener::admission::{
         AdmissionPolicyDecision, AdmissionRejectionResponse, admission_rejection_response,
     },
-    request_pipeline::PipelineRequest,
+    request_pipeline::{PipelineRequest, PipelineResolution},
     runtime::connection::{
         auth::{
             ExternalAuthCompletion, ExternalAuthFailureDisposition, ExternalAuthResult,
@@ -504,7 +504,7 @@ impl QUICListener {
 
         let prepared = match resolved {
             Ok(PipelineResolution {
-                target:
+                route:
                     ForwardTargetResolution {
                         upstream_name,
                         upstream_pool,
