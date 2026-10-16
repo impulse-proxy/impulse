@@ -1,19 +1,31 @@
+use std::{
+    pin::Pin,
+    task::{Context, Poll},
+};
+
 use hyper::{Method, http::Version};
 use impulse_config::runtime::RuntimeBackendTransportKind;
 use impulse_errors::ProxyError;
 use pingora_core::{
     Error, InternalError, Result,
-    protocols::http::{client::HttpSession as PingoraHttpSession, v1::client::HttpSession},
+    protocols::{
+        Stream,
+        http::{client::HttpSession as PingoraHttpSession, v1::client::HttpSession},
+    },
     upstreams::peer::HttpPeer,
 };
 use pingora_http::RequestHeader;
-use tokio::sync::mpsc;
+use tokio::{
+    io::{AsyncRead, AsyncWrite, ReadBuf},
+    sync::{mpsc, oneshot},
+};
 
 use crate::{
     PingoraPoolLease, PingoraUpstreamConnectionIdentity, UpstreamBodyFrame, UpstreamCancellation,
     UpstreamConnectionReuse, UpstreamExchangeCompletion, UpstreamExchangeLifecycle,
     UpstreamExchangeOutcome, UpstreamExchangeResponse, UpstreamRequestBody, UpstreamRequestHead,
-    UpstreamResponseHead, classify_pingora_h1_error, exchange::upstream_response_body_channel,
+    UpstreamResponseHead, UpstreamTunnel, UpstreamUpgrade, classify_pingora_h1_error,
+    exchange::upstream_response_body_channel,
 };
 
 pub fn translate_pingora_h1_request_header(
@@ -49,6 +61,7 @@ pub struct PingoraH1UpstreamSession {
     session: Option<HttpSession>,
     reused: bool,
     state: PingoraH1ExchangeState,
+    connect_request: bool,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -98,6 +111,7 @@ impl PingoraH1UpstreamSession {
             session: Some(session),
             reused,
             state: PingoraH1ExchangeState::Acquired,
+            connect_request: false,
         })
     }
 
@@ -186,6 +200,7 @@ impl PingoraH1UpstreamSession {
             self.close().await;
             return Err(classify_pingora_h1_error(&error));
         }
+        self.connect_request = head.method == Method::CONNECT;
         self.state = PingoraH1ExchangeState::RequestComplete;
         Ok(())
     }
@@ -229,7 +244,28 @@ impl PingoraH1UpstreamSession {
             .session()
             .resp_header()
             .expect("Pingora response header is available after reading it");
-        if response.headers.contains_key(hyper::header::TRAILER) {
+        let head = UpstreamResponseHead {
+            status: response.status,
+            version: response.version,
+            headers: response.headers.clone(),
+        };
+        let tunnel_response =
+            self.session().was_upgraded() || (self.connect_request && head.status.is_success());
+        if tunnel_response {
+            let (frames, body) = upstream_response_body_channel();
+            drop(frames);
+            let (tunnel_sender, tunnel) = oneshot::channel();
+            let _ = tunnel_sender.send(Ok(UpstreamTunnel {
+                io: Box::new(self.into_tunnel()),
+                lifecycle,
+            }));
+            return Ok(UpstreamExchangeResponse {
+                head,
+                body,
+                upgrade: Some(UpstreamUpgrade { tunnel }),
+            });
+        }
+        if head.headers.contains_key(hyper::header::TRAILER) {
             self.shutdown().await;
             let detail = "Pingora 0.9 cannot expose HTTP/1 response trailers".to_string();
             finish_pingora_h1_exchange(
@@ -239,11 +275,6 @@ impl PingoraH1UpstreamSession {
             );
             return Err(ProxyError::Protocol(detail));
         }
-        let head = UpstreamResponseHead {
-            status: response.status,
-            version: response.version,
-            headers: response.headers.clone(),
-        };
         let (frames, body) = upstream_response_body_channel();
         tokio::spawn(pump_pingora_h1_response(self, frames, lifecycle));
         Ok(UpstreamExchangeResponse {
@@ -287,6 +318,51 @@ impl PingoraH1UpstreamSession {
         if let Some(mut session) = self.session.take() {
             session.shutdown().await;
         }
+    }
+
+    fn into_tunnel(mut self) -> PingoraH1TunnelLease {
+        let stream = self
+            .session
+            .take()
+            .expect("Pingora H1 session ownership already released")
+            .into_inner();
+        PingoraH1TunnelLease {
+            stream,
+            _pool: self.pool,
+        }
+    }
+}
+
+struct PingoraH1TunnelLease {
+    stream: Stream,
+    _pool: PingoraPoolLease,
+}
+
+impl AsyncRead for PingoraH1TunnelLease {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(self.stream.as_mut()).poll_read(cx, buf)
+    }
+}
+
+impl AsyncWrite for PingoraH1TunnelLease {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        Pin::new(self.stream.as_mut()).poll_write(cx, buf)
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(self.stream.as_mut()).poll_flush(cx)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(self.stream.as_mut()).poll_shutdown(cx)
     }
 }
 
