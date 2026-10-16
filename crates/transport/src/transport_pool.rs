@@ -35,6 +35,7 @@ use crate::{
     h2_pool::H2Pool,
     pingora_failure::classify_pingora_h1_error,
     pingora_h1::PingoraH1UpstreamSession,
+    pingora_h2::PingoraH2UpstreamSession,
     pingora_pool::{PingoraPool, PingoraPoolLease},
 };
 
@@ -103,6 +104,19 @@ impl BackendUpgradeResponse {
 }
 
 impl UpstreamTransportPool {
+    pub async fn acquire_pingora_h2_session(
+        &self,
+        peer: HttpPeer,
+        identity: &PingoraUpstreamConnectionIdentity,
+    ) -> Result<PingoraH2UpstreamSession, ProxyError> {
+        let pool = self.pingora_pool.acquire().ok_or_else(|| {
+            ProxyError::Transport("Pingora upstream pool is draining".to_string())
+        })?;
+        PingoraH2UpstreamSession::acquire(pool, peer, identity)
+            .await
+            .map_err(|error| classify_pingora_h1_error(&error))
+    }
+
     pub async fn acquire_pingora_h1_session(
         &self,
         peer: HttpPeer,
