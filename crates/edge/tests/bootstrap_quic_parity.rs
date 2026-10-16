@@ -14,8 +14,9 @@ use bytes::Bytes;
 use http_body_util::Full;
 use hyper::{Request, Response, body::Incoming};
 use impulse_config::config::{
-    ApiKeyAuth, ExternalAuth, ExternalAuthFailureMode, ExternalAuthRequestHeader, JwtAlgorithm,
-    JwtAuth, JwtVerificationKey, LoadBalancing, RouteAuth, RouteMatch, ScopedRateLimit,
+    ApiKeyAuth, DistributedQuotaPolicy, DistributedQuotaSelector, DistributedQuotaWindow,
+    ExternalAuth, ExternalAuthFailureMode, ExternalAuthRequestHeader, JwtAlgorithm, JwtAuth,
+    JwtVerificationKey, LoadBalancing, QuotaCounterBackend, RouteAuth, RouteMatch, ScopedRateLimit,
     ScopedRateLimitScope, Upstream,
 };
 use serial_test::serial;
@@ -439,25 +440,35 @@ fn bootstrap_and_quic_local_api_key_auth_decisions_match() {
         selected_response_headers: &["www-authenticate"],
         capture_metrics_delta: false,
     };
-    let deny_pair = harness.run_parity_pair(deny_request).expect("api key deny");
-    assert_eq!(deny_pair.quic.response.status, 401);
-    assert_eq!(deny_pair.bootstrap.response.status, 401);
-    assert_eq!(
-        deny_pair.quic.response.selected_headers,
-        vec![(String::from("www-authenticate"), String::from("ApiKey"))]
-    );
-    assert_eq!(
-        deny_pair.bootstrap.response.selected_headers,
-        deny_pair.quic.response.selected_headers
-    );
-    assert_eq!(
-        deny_pair.bootstrap.response.body,
-        deny_pair.quic.response.body
-    );
-    assert!(
-        String::from_utf8_lossy(&deny_pair.quic.response.body).contains("unauthorized"),
-        "expected canonical unauthorized body for api key rejection"
-    );
+    for (name, headers) in [
+        ("missing", &[][..]),
+        ("invalid", &[("x-api-key", "wrong-key")][..]),
+    ] {
+        let deny_pair = harness
+            .run_parity_pair(ParityRequestSpec {
+                headers,
+                ..deny_request
+            })
+            .unwrap_or_else(|err| panic!("api key {name} parity failed: {err}"));
+        assert_eq!(deny_pair.quic.response.status, 401);
+        assert_eq!(deny_pair.bootstrap.response.status, 401);
+        assert_eq!(
+            deny_pair.quic.response.selected_headers,
+            vec![(String::from("www-authenticate"), String::from("ApiKey"))]
+        );
+        assert_eq!(
+            deny_pair.bootstrap.response.selected_headers,
+            deny_pair.quic.response.selected_headers
+        );
+        assert_eq!(
+            deny_pair.bootstrap.response.body,
+            deny_pair.quic.response.body
+        );
+        assert!(
+            String::from_utf8_lossy(&deny_pair.quic.response.body).contains("unauthorized"),
+            "expected canonical unauthorized body for api key rejection"
+        );
+    }
 
     let allow_request = ParityRequestSpec {
         headers: &[("x-api-key", "edge-key")],
@@ -636,6 +647,24 @@ fn bootstrap_and_quic_local_jwt_auth_decisions_match() {
         "expected canonical unauthorized body for jwt rejection"
     );
 
+    let invalid_authorization = "Bearer invalid.jwt.token";
+    let invalid_pair = harness
+        .run_parity_pair(ParityRequestSpec {
+            headers: &[("authorization", invalid_authorization)],
+            ..deny_request
+        })
+        .expect("invalid jwt deny");
+    assert_eq!(invalid_pair.quic.response.status, 401);
+    assert_eq!(invalid_pair.bootstrap.response.status, 401);
+    assert_eq!(
+        invalid_pair.bootstrap.response.selected_headers,
+        invalid_pair.quic.response.selected_headers
+    );
+    assert_eq!(
+        invalid_pair.bootstrap.response.body,
+        invalid_pair.quic.response.body
+    );
+
     let token = encode_test_hs256_jwt(
         "jwt-secret",
         serde_json::json!({
@@ -808,6 +837,44 @@ fn bootstrap_and_quic_external_auth_decisions_match() {
 
 #[test]
 #[serial]
+fn bootstrap_and_quic_external_auth_unavailable_fail_closed_matches() {
+    if !local_listener_bind_available() {
+        return;
+    }
+
+    let mut harness = BootstrapQuicParityHarness::new();
+    let backend_addr = harness.start_h1_static_backend(b"unexpected backend call");
+    let unused_listener = TcpListener::bind("127.0.0.1:0").expect("bind unused auth port");
+    let unused_addr = unused_listener.local_addr().expect("unused auth addr");
+    drop(unused_listener);
+
+    let config = configure_http_external_auth(
+        &harness,
+        format!("http://{backend_addr}"),
+        format!("http://{unused_addr}/check"),
+        150,
+        ExternalAuthFailureMode::FailClosed,
+        Vec::new(),
+    );
+    harness
+        .start_listener(config)
+        .expect("listener with bootstrap");
+
+    let pair = harness
+        .run_parity_pair(ParityRequestSpec::get("localhost", "/auth"))
+        .expect("external auth unavailable parity pair");
+
+    assert_eq!(pair.quic.response.status, 503);
+    assert_eq!(pair.bootstrap.response.status, 503);
+    assert_eq!(pair.bootstrap.response.body, pair.quic.response.body);
+    assert!(
+        String::from_utf8_lossy(&pair.quic.response.body).contains("external auth unavailable"),
+        "expected canonical external auth unavailable body"
+    );
+}
+
+#[test]
+#[serial]
 fn bootstrap_and_quic_admission_rate_limit_rejections_match() {
     if !local_listener_bind_available() {
         return;
@@ -838,6 +905,30 @@ fn bootstrap_and_quic_admission_rate_limit_rejections_match() {
         bootstrap.upstream_calls, 1,
         "bootstrap rate-limit path should reject before the second upstream dispatch"
     );
+}
+
+#[test]
+#[serial]
+#[ignore = "bootstrap path does not yet share post-auth distributed quota semantics"]
+fn bootstrap_and_quic_distributed_quota_rejections_match() {
+    if !local_listener_bind_available() {
+        return;
+    }
+
+    let quic = run_distributed_quota_scenario(IngressKind::Quic);
+    let bootstrap = run_distributed_quota_scenario(IngressKind::Bootstrap);
+
+    assert_eq!(quic.status, 429);
+    assert_eq!(bootstrap.status, 429);
+    assert_eq!(bootstrap.body, quic.body);
+    assert!(
+        quic.body.contains("burst quota exhausted"),
+        "expected canonical quota rejection body, got `{}`",
+        quic.body
+    );
+    assert_eq!(bootstrap.headers, quic.headers);
+    assert_eq!(quic.upstream_calls, 1);
+    assert_eq!(bootstrap.upstream_calls, 1);
 }
 
 #[test]
@@ -1982,6 +2073,71 @@ fn run_scoped_rate_limit_scenario(ingress: IngressKind) -> RejectionObservation 
             user_agent: "impulse-bootstrap-quic-parity-test",
             selected_response_headers: &["retry-after", "www-authenticate"],
             capture_metrics_delta: false,
+        },
+    )
+    .expect("second request should complete");
+
+    RejectionObservation {
+        status: rejection.status,
+        body: String::from_utf8_lossy(&rejection.body).into_owned(),
+        headers: rejection.selected_headers,
+        upstream_calls: upstream_calls.load(Ordering::Relaxed),
+    }
+}
+
+fn run_distributed_quota_scenario(ingress: IngressKind) -> RejectionObservation {
+    let mut harness = BootstrapQuicParityHarness::new();
+    let upstream_calls = Arc::new(AtomicUsize::new(0));
+    let backend_observed = Arc::clone(&upstream_calls);
+    let backend_addr = harness.start_h1_backend(move |_req: Request<Incoming>| {
+        let backend_observed = Arc::clone(&backend_observed);
+        async move {
+            backend_observed.fetch_add(1, Ordering::Relaxed);
+            Ok::<_, Infallible>(Response::new(Full::new(Bytes::from_static(b"quota ok"))))
+        }
+    });
+
+    let mut config = harness.make_config(HashMap::from([(
+        "api".to_string(),
+        make_upstream(
+            "/quota",
+            vec![make_backend("backend-a", backend_addr.to_string())],
+            None,
+            "round-robin",
+        ),
+    )]));
+    config.resilience.quota.enabled = true;
+    config.resilience.quota.backend = QuotaCounterBackend::InMemory {
+        key_prefix: "impulse:test:parity".to_string(),
+    };
+    config.resilience.quota.policies = vec![DistributedQuotaPolicy {
+        name: "route-burst".to_string(),
+        route_allowlist: vec!["api".to_string()],
+        selector: DistributedQuotaSelector {
+            route: true,
+            ..DistributedQuotaSelector::default()
+        },
+        burst: Some(DistributedQuotaWindow {
+            requests: 1,
+            window_secs: 60,
+        }),
+        sustained: None,
+    }];
+    harness
+        .start_listener(config)
+        .expect("listener with bootstrap");
+
+    let request = ParityRequestSpec::get("localhost", "/quota");
+    let success = run_parity_ingress_request(ingress, &harness, request)
+        .expect("first request should complete");
+    assert_eq!(success.status, 200);
+
+    let rejection = run_parity_ingress_request(
+        ingress,
+        &harness,
+        ParityRequestSpec {
+            selected_response_headers: &["retry-after"],
+            ..request
         },
     )
     .expect("second request should complete");
