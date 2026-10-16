@@ -6,12 +6,14 @@ license.workspace = true
 
 [dependencies]
 bytes.workspace = true
-http-body-util.workspace = true
 hyper.workspace = true
-hyper-util.workspace = true
 h2 = "0.4"
 tokio.workspace = true
 pingora-core.workspace = true
 pingora-http.workspace = true
 impulse-errors = { path = "../errors" }
 impulse-config = { path = "../config" }
+
+[dev-dependencies]
+http-body-util.workspace = true
+hyper-util.workspace = true

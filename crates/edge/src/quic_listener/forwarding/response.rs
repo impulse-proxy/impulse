@@ -703,7 +703,7 @@ impl QUICListener {
                             b"upstream protocol error\n",
                         )
                     }
-                    UpstreamProxyErrorKind::Send | UpstreamProxyErrorKind::Transport => {
+                    UpstreamProxyErrorKind::Transport => {
                         metrics.inc_backend_error();
                         let _ = crate::runtime::connection::outcome::observe_status_outcome(
                             metrics,

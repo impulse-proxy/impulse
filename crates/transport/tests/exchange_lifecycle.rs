@@ -347,7 +347,7 @@ async fn cancellation_closes_the_exchange_and_releases_its_inflight_permit() {
 
 #[tokio::test]
 async fn tunnel_completion_releases_its_inflight_permit() {
-    let backend = match start_h1_upgrade_server(None).await {
+    let backend = match start_h1_upgrade_server().await {
         Ok(backend) => backend,
         Err(error) if loopback_bind_restricted(&error) => return,
         Err(error) => panic!("start tunnel exchange server: {error}"),

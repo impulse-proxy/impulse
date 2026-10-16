@@ -24,10 +24,5 @@ pub use exchange::{
     UpstreamResponseBody, UpstreamResponseHead, UpstreamTrailers, UpstreamTunnel, UpstreamTunnelIo,
     UpstreamUpgrade,
 };
-pub use pingora_failure::{classify_pingora_h1_error, classify_pingora_h2_error};
-pub use pingora_h1::{PingoraH1UpstreamSession, translate_pingora_h1_request_header};
-pub use pingora_h2::{PingoraH2UpstreamSession, translate_pingora_h2_request_header};
-pub use pingora_peer::build_pingora_http_peer;
-pub use pingora_pool::{PingoraPool, PingoraPoolLease};
 pub use runtime_config::{SharedDnsResolver, TlsClientConfig};
 pub use transport_pool::{TransportClientRotation, UpstreamTransportPool};

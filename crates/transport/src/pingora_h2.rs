@@ -10,14 +10,14 @@ use pingora_http::RequestHeader;
 use tokio::sync::mpsc;
 
 use crate::{
-    PingoraPoolLease, PingoraUpstreamConnectionIdentity, UpstreamBodyFrame, UpstreamCancellation,
+    PingoraUpstreamConnectionIdentity, UpstreamBodyFrame, UpstreamCancellation,
     UpstreamConnectionReuse, UpstreamExchangeCompletion, UpstreamExchangeLifecycle,
     UpstreamExchangeOutcome, UpstreamExchangeResponse, UpstreamRequestBody, UpstreamRequestHead,
-    UpstreamResponseHead, UpstreamTrailers, classify_pingora_h2_error,
-    exchange::upstream_response_body_channel,
+    UpstreamResponseHead, UpstreamTrailers, exchange::upstream_response_body_channel,
+    pingora_failure::classify_pingora_h2_error, pingora_pool::PingoraPoolLease,
 };
 
-pub fn translate_pingora_h2_request_header(
+pub(crate) fn translate_pingora_h2_request_header(
     head: &UpstreamRequestHead,
 ) -> Result<Box<RequestHeader>> {
     let target = head.uri.to_string();
@@ -33,7 +33,7 @@ pub fn translate_pingora_h2_request_header(
     Ok(Box::new(translated))
 }
 
-pub struct PingoraH2UpstreamSession {
+pub(crate) struct PingoraH2UpstreamSession {
     pool: PingoraPoolLease,
     peer: HttpPeer,
     session: Option<Http2Session>,

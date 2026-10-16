@@ -31,8 +31,8 @@ use crate::{
     pingora_failure::{classify_pingora_h1_error, classify_pingora_h2_error},
     pingora_h1::PingoraH1UpstreamSession,
     pingora_h2::PingoraH2UpstreamSession,
-    pingora_peer::build_pingora_http_peer_with_address,
-    pingora_pool::{PingoraPool, PingoraPoolLease},
+    pingora_peer::build_pingora_http_peer,
+    pingora_pool::PingoraPool,
     runtime_config::{SharedDnsResolver, TlsClientConfig},
 };
 
@@ -72,36 +72,6 @@ pub struct UpstreamTransportPool {
 }
 
 impl UpstreamTransportPool {
-    pub async fn acquire_pingora_h2_session(
-        &self,
-        peer: HttpPeer,
-        identity: &PingoraUpstreamConnectionIdentity,
-    ) -> Result<PingoraH2UpstreamSession, ProxyError> {
-        let pool = self.pingora_pool.acquire().ok_or_else(|| {
-            ProxyError::Transport("Pingora upstream pool is draining".to_string())
-        })?;
-        PingoraH2UpstreamSession::acquire(pool, peer, identity)
-            .await
-            .map_err(|error| classify_pingora_h2_error(&error, false))
-    }
-
-    pub async fn acquire_pingora_h1_session(
-        &self,
-        peer: HttpPeer,
-        identity: &PingoraUpstreamConnectionIdentity,
-    ) -> Result<PingoraH1UpstreamSession, ProxyError> {
-        let pool = self.pingora_pool.acquire().ok_or_else(|| {
-            ProxyError::Transport("Pingora upstream pool is draining".to_string())
-        })?;
-        PingoraH1UpstreamSession::acquire(pool, peer, identity)
-            .await
-            .map_err(|error| classify_pingora_h1_error(&error))
-    }
-
-    pub fn acquire_pingora_pool(&self) -> Option<PingoraPoolLease> {
-        self.pingora_pool.acquire()
-    }
-
     pub fn rotate_pingora_pool(&self, generation: u64) {
         self.pingora_pool.rotate(generation);
     }
@@ -360,7 +330,7 @@ impl UpstreamTransportPool {
                 let backend_addr = backend.backend.address.clone();
                 backends.push((backend_addr.clone(), backend.endpoint.transport_kind));
                 let (mut peer, address) =
-                    build_pingora_http_peer_with_address(&backend.endpoint, connection_policy)?;
+                    build_pingora_http_peer(&backend.endpoint, connection_policy)?;
                 if peer.is_tls() {
                     peer.options.verify_cert = tls.verify_certificates;
                     peer.options.verify_hostname = tls.strict_sni;

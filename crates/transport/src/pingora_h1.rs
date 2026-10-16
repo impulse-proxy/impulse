@@ -21,14 +21,15 @@ use tokio::{
 };
 
 use crate::{
-    PingoraPoolLease, PingoraUpstreamConnectionIdentity, UpstreamBodyFrame, UpstreamCancellation,
+    PingoraUpstreamConnectionIdentity, UpstreamBodyFrame, UpstreamCancellation,
     UpstreamConnectionReuse, UpstreamExchangeCompletion, UpstreamExchangeLifecycle,
     UpstreamExchangeOutcome, UpstreamExchangeResponse, UpstreamRequestBody, UpstreamRequestHead,
-    UpstreamResponseHead, UpstreamTunnel, UpstreamUpgrade, classify_pingora_h1_error,
-    exchange::upstream_response_body_channel,
+    UpstreamResponseHead, UpstreamTunnel, UpstreamUpgrade,
+    exchange::upstream_response_body_channel, pingora_failure::classify_pingora_h1_error,
+    pingora_pool::PingoraPoolLease,
 };
 
-pub fn translate_pingora_h1_request_header(
+pub(crate) fn translate_pingora_h1_request_header(
     head: &UpstreamRequestHead,
 ) -> Result<Box<RequestHeader>> {
     let target = if head.method == Method::CONNECT {
@@ -54,7 +55,7 @@ pub fn translate_pingora_h1_request_header(
     }
     Ok(Box::new(translated))
 }
-pub struct PingoraH1UpstreamSession {
+pub(crate) struct PingoraH1UpstreamSession {
     pool: PingoraPoolLease,
     peer: HttpPeer,
     session: Option<HttpSession>,

@@ -8,15 +8,7 @@ use impulse_config::{
 };
 use pingora_core::upstreams::peer::{ALPN, HttpPeer};
 
-/// Build a Pingora peer from an already validated runtime backend.
-pub fn build_pingora_http_peer(
-    endpoint: &RuntimeBackendEndpoint,
-    connection_policy: &RuntimeBackendConnectionPolicy,
-) -> Result<HttpPeer, String> {
-    build_pingora_http_peer_with_address(endpoint, connection_policy).map(|(peer, _)| peer)
-}
-
-pub(crate) fn build_pingora_http_peer_with_address(
+pub(crate) fn build_pingora_http_peer(
     endpoint: &RuntimeBackendEndpoint,
     connection_policy: &RuntimeBackendConnectionPolicy,
 ) -> Result<(HttpPeer, SocketAddr), String> {
