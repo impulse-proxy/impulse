@@ -67,11 +67,17 @@ impl PingoraH2UpstreamSession {
                 "Pingora pool generation does not match the upstream connection identity",
             ));
         }
+        if pool.is_draining() {
+            return Err(Error::explain(
+                InternalError,
+                "Pingora pool generation is draining",
+            ));
+        }
 
         peer.options.alpn = ALPN::H2;
         peer.group_key = identity.pool_key();
         let (session, reused) = pool.connector().get_http_session(&peer).await?;
-        let session = match session {
+        let mut session = match session {
             PingoraHttpSession::H2(session) => session,
             mut session => {
                 session.shutdown().await;
@@ -81,6 +87,21 @@ impl PingoraH2UpstreamSession {
                 ));
             }
         };
+        if pool.is_draining() {
+            session.shutdown();
+            session.conn.mark_shutdown();
+            pool.connector()
+                .release_http_session(
+                    PingoraHttpSession::H2(session),
+                    &peer,
+                    peer.options.idle_timeout,
+                )
+                .await;
+            return Err(Error::explain(
+                InternalError,
+                "Pingora pool generation began draining during HTTP/2 session acquisition",
+            ));
+        }
 
         Ok(Self {
             pool,
@@ -251,6 +272,12 @@ impl PingoraH2UpstreamSession {
             .session
             .take()
             .expect("Pingora H2 session ownership already released");
+        let reusable = !self.pool.is_draining()
+            && !session.conn.is_closed()
+            && !session.conn.is_shutting_down();
+        if !reusable {
+            session.conn.mark_shutdown();
+        }
         self.pool
             .connector()
             .release_http_session(
@@ -259,7 +286,11 @@ impl PingoraH2UpstreamSession {
                 self.peer.options.idle_timeout,
             )
             .await;
-        UpstreamConnectionReuse::Reuse
+        if reusable {
+            UpstreamConnectionReuse::Reuse
+        } else {
+            UpstreamConnectionReuse::Close
+        }
     }
 
     pub async fn shutdown(mut self) {
@@ -270,6 +301,9 @@ impl PingoraH2UpstreamSession {
         self.state = PingoraH2ExchangeState::Closed;
         if let Some(mut session) = self.session.take() {
             session.shutdown();
+            if self.pool.is_draining() {
+                session.conn.mark_shutdown();
+            }
             self.pool
                 .connector()
                 .release_http_session(
