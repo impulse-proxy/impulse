@@ -14,8 +14,10 @@ mod h2_pool;
 mod transport_pool;
 
 pub use exchange::{
-    UpstreamBodyFrame, UpstreamRequestBody, UpstreamRequestHead, UpstreamResponseBody,
-    UpstreamResponseHead, UpstreamTrailers,
+    UpstreamBodyFrame, UpstreamCancellation, UpstreamConnectionReuse, UpstreamExchangeCompletion,
+    UpstreamExchangeLifecycle, UpstreamExchangeOutcome, UpstreamInflightPermit,
+    UpstreamRequestBody, UpstreamRequestHead, UpstreamResponseBody, UpstreamResponseHead,
+    UpstreamTrailers,
 };
 pub use h2_client::{ConnectObservation, ConnectObserver, SharedDnsResolver, TlsClientConfig};
 pub use transport_pool::{
