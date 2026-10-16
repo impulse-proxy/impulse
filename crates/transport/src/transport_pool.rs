@@ -5,7 +5,13 @@
 //! should hand it a backend identity plus a canonical request and avoid
 //! reconstructing H1/H2 selection logic themselves.
 
-use std::{collections::HashMap, convert::Infallible, future::Future, time::Duration};
+use std::{
+    collections::HashMap,
+    convert::Infallible,
+    future::Future,
+    net::{SocketAddr, ToSocketAddrs},
+    time::Duration,
+};
 
 use http_body_util::{BodyExt, combinators::BoxBody};
 use hyper::{
@@ -17,7 +23,7 @@ use impulse_config::runtime::{
     RuntimeBackendConnectionPolicy, RuntimeBackendTransportKind, RuntimeUpstream,
 };
 use impulse_errors::{PoolError, ProxyError};
-use pingora_core::upstreams::peer::HttpPeer;
+use pingora_core::upstreams::peer::{ALPN, HttpPeer};
 use tokio::sync::{OwnedSemaphorePermit, mpsc};
 
 use crate::{
@@ -36,6 +42,7 @@ use crate::{
     pingora_failure::{classify_pingora_h1_error, classify_pingora_h2_error},
     pingora_h1::PingoraH1UpstreamSession,
     pingora_h2::PingoraH2UpstreamSession,
+    pingora_peer::build_pingora_http_peer_with_address,
     pingora_pool::{PingoraPool, PingoraPoolLease},
 };
 
@@ -43,6 +50,14 @@ use crate::{
 enum BackendTransportEntry {
     Http1,
     H2,
+}
+
+#[derive(Clone)]
+struct PingoraBackend {
+    host: String,
+    port: u16,
+    peer: HttpPeer,
+    identity: PingoraUpstreamConnectionIdentity,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,7 +82,9 @@ pub struct UpstreamTransportPool {
     backend_entries: HashMap<String, BackendTransportEntry>,
     h1_pool: H1Pool,
     h2_pool: H2Pool,
+    pingora_backends: HashMap<String, PingoraBackend>,
     pingora_pool: PingoraPool,
+    dns_resolver: SharedDnsResolver,
     execution_timeout: Duration,
 }
 
@@ -147,12 +164,100 @@ impl UpstreamTransportPool {
         backend: &str,
         request: UpstreamExchangeRequest,
     ) -> Result<UpstreamExchangeResponse, ProxyError> {
+        self.send_pingora_exchange(backend, request).await
+    }
+
+    async fn send_pingora_exchange(
+        &self,
+        backend: &str,
+        request: UpstreamExchangeRequest,
+    ) -> Result<UpstreamExchangeResponse, ProxyError> {
+        let UpstreamExchangeRequest {
+            head,
+            body,
+            cancellation,
+            completion,
+        } = request;
+        let Some(mut config) = self.pingora_backends.get(backend).cloned() else {
+            let error = if self.backend_entry(backend).is_some() {
+                ProxyError::Transport(format!(
+                    "Pingora backend '{backend}' has no resolved endpoint"
+                ))
+            } else {
+                ProxyError::Pool(PoolError::UnknownBackend(backend.to_string()))
+            };
+            finish_pingora_dispatch_failure(completion, &error);
+            return Err(error);
+        };
+        if let Some(mut address) = self
+            .dns_resolver
+            .cached_addrs(&config.host)
+            .and_then(|addresses| addresses.into_iter().next())
+        {
+            address.set_port(config.port);
+            config.peer._address = address.into();
+            config.identity.address = address;
+        }
+        let permit = match self.backend_entry(backend) {
+            Some(BackendTransportEntry::Http1) => self.h1_pool.acquire_exchange_permit(backend),
+            Some(BackendTransportEntry::H2) => self.h2_pool.acquire_exchange_permit(backend),
+            None => Err(PoolError::UnknownBackend(backend.to_string())),
+        }
+        .map_err(ProxyError::Pool);
+        let permit = match permit {
+            Ok(permit) => permit,
+            Err(error) => {
+                finish_pingora_dispatch_failure(completion, &error);
+                return Err(error);
+            }
+        };
+        let Some(pool) = self.pingora_pool.acquire() else {
+            let error = ProxyError::Transport("Pingora upstream pool is draining".to_string());
+            finish_pingora_dispatch_failure(completion, &error);
+            return Err(error);
+        };
+        let mut identity = config.identity;
+        identity.generation = pool.generation();
+        let lifecycle = UpstreamExchangeLifecycle {
+            cancellation,
+            completion,
+            inflight_permit: UpstreamInflightPermit { _permit: permit },
+        };
+
         match self.backend_entry(backend) {
-            Some(BackendTransportEntry::Http1) => self.send_h1_exchange(backend, request).await,
-            Some(BackendTransportEntry::H2) => self.send_h2_exchange(backend, request).await,
-            None => Err(ProxyError::Pool(PoolError::UnknownBackend(
-                backend.to_string(),
-            ))),
+            Some(BackendTransportEntry::Http1) => {
+                let mut session =
+                    match PingoraH1UpstreamSession::acquire(pool, config.peer, &identity).await {
+                        Ok(session) => session,
+                        Err(error) => {
+                            let error = classify_pingora_h1_error(&error);
+                            finish_pingora_dispatch_failure(lifecycle.completion, &error);
+                            return Err(error);
+                        }
+                    };
+                if let Err(error) = session.write_request(&head, body).await {
+                    finish_pingora_dispatch_failure(lifecycle.completion, &error);
+                    return Err(error);
+                }
+                session.read_response(lifecycle).await
+            }
+            Some(BackendTransportEntry::H2) => {
+                let mut session =
+                    match PingoraH2UpstreamSession::acquire(pool, config.peer, &identity).await {
+                        Ok(session) => session,
+                        Err(error) => {
+                            let error = classify_pingora_h2_error(&error, false);
+                            finish_pingora_dispatch_failure(lifecycle.completion, &error);
+                            return Err(error);
+                        }
+                    };
+                if let Err(error) = session.write_request(&head, body).await {
+                    finish_pingora_dispatch_failure(lifecycle.completion, &error);
+                    return Err(error);
+                }
+                session.read_response(lifecycle).await
+            }
+            None => unreachable!("Pingora backend disappeared after lookup"),
         }
     }
 
@@ -437,6 +542,7 @@ impl UpstreamTransportPool {
             connection_policy.execution_timeout,
             dns_resolver,
             None,
+            None,
         )
     }
 
@@ -451,16 +557,37 @@ impl UpstreamTransportPool {
         execution_timeout: Duration,
         dns_resolver: SharedDnsResolver,
         connect_observer: Option<ConnectObserver>,
+        configured_pingora_backends: Option<HashMap<String, PingoraBackend>>,
     ) -> Result<Self, String>
     where
         I: IntoIterator<Item = (String, RuntimeBackendTransportKind)>,
     {
+        let connection_policy = RuntimeBackendConnectionPolicy {
+            max_inflight,
+            max_idle_per_backend,
+            pool_idle_timeout,
+            connect_timeout,
+            execution_timeout,
+        };
+        let backend_tls_for_pingora = backend_tls.clone();
         let mut backend_entries = HashMap::new();
+        let mut pingora_backends = configured_pingora_backends.unwrap_or_default();
         let mut h1_backends = Vec::new();
         let mut h2_backends = Vec::new();
 
         for (backend, runtime_transport) in backends {
             let entry = Self::resolve_runtime_transport(runtime_transport);
+            if !pingora_backends.contains_key(&backend) {
+                let tls = backend_tls_for_pingora.get(&backend);
+                if let Ok(config) = Self::fallback_pingora_backend(
+                    &backend,
+                    runtime_transport,
+                    &connection_policy,
+                    tls,
+                ) {
+                    pingora_backends.insert(backend.clone(), config);
+                }
+            }
             backend_entries.insert(backend.clone(), entry);
             match entry {
                 BackendTransportEntry::Http1 => h1_backends.push(backend),
@@ -484,7 +611,7 @@ impl UpstreamTransportPool {
             max_idle_per_backend,
             pool_idle_timeout,
             connect_timeout,
-            dns_resolver,
+            dns_resolver.clone(),
             connect_observer,
         )?;
 
@@ -492,7 +619,9 @@ impl UpstreamTransportPool {
             backend_entries,
             h1_pool,
             h2_pool,
+            pingora_backends,
             pingora_pool: PingoraPool::new(0),
+            dns_resolver: dns_resolver.clone(),
             execution_timeout,
         })
     }
@@ -516,19 +645,41 @@ impl UpstreamTransportPool {
     {
         let mut backends = Vec::new();
         let mut backend_tls = HashMap::new();
+        let mut pingora_backends = HashMap::new();
 
         for upstream in upstreams {
+            let tls = TlsClientConfig::from_runtime_upstream(upstream);
             for backend in &upstream.backends {
                 let backend_addr = backend.backend.address.clone();
                 backends.push((backend_addr.clone(), backend.endpoint.transport_kind));
+                let (mut peer, address) =
+                    build_pingora_http_peer_with_address(&backend.endpoint, connection_policy)?;
+                if peer.is_tls() {
+                    peer.options.verify_cert = tls.verify_certificates;
+                    peer.options.verify_hostname = tls.strict_sni;
+                }
+                let identity = PingoraUpstreamConnectionIdentity::new(
+                    address,
+                    backend.endpoint.transport_kind,
+                    peer.sni.clone(),
+                    peer.is_tls().then_some(&tls),
+                    peer.proxy.as_ref(),
+                    0,
+                );
+                pingora_backends.insert(
+                    backend_addr.clone(),
+                    PingoraBackend {
+                        host: backend.endpoint.authority_host.clone(),
+                        port: backend.endpoint.authority_port,
+                        peer,
+                        identity,
+                    },
+                );
                 if matches!(
                     backend.endpoint.transport_kind,
                     RuntimeBackendTransportKind::H2
                 ) {
-                    backend_tls.insert(
-                        backend_addr,
-                        TlsClientConfig::from_runtime_upstream(upstream),
-                    );
+                    backend_tls.insert(backend_addr, tls.clone());
                 }
             }
         }
@@ -543,7 +694,62 @@ impl UpstreamTransportPool {
             connection_policy.execution_timeout,
             dns_resolver,
             connect_observer,
+            Some(pingora_backends),
         )
+    }
+
+    fn fallback_pingora_backend(
+        backend: &str,
+        protocol: RuntimeBackendTransportKind,
+        connection_policy: &RuntimeBackendConnectionPolicy,
+        tls: Option<&TlsClientConfig>,
+    ) -> Result<PingoraBackend, String> {
+        let uri = if backend.contains("://") {
+            backend.to_string()
+        } else {
+            format!("http://{backend}")
+        }
+        .parse::<hyper::Uri>()
+        .map_err(|error| format!("invalid backend '{backend}': {error}"))?;
+        let host = uri
+            .host()
+            .ok_or_else(|| format!("backend '{backend}' is missing a host"))?;
+        let tls_enabled = uri.scheme_str() == Some("https");
+        let port = uri.port_u16().unwrap_or(if tls_enabled { 443 } else { 80 });
+        let address: SocketAddr = (host, port)
+            .to_socket_addrs()
+            .map_err(|error| format!("failed to resolve backend '{backend}': {error}"))?
+            .next()
+            .ok_or_else(|| format!("backend '{backend}' resolved without an address"))?;
+        let sni = tls_enabled.then(|| host.to_string()).unwrap_or_default();
+        let mut peer = HttpPeer::new(address, tls_enabled, sni.clone());
+        peer.options.connection_timeout = Some(connection_policy.connect_timeout);
+        peer.options.total_connection_timeout = Some(connection_policy.connect_timeout);
+        peer.options.read_timeout = Some(connection_policy.execution_timeout);
+        peer.options.write_timeout = Some(connection_policy.execution_timeout);
+        peer.options.idle_timeout = Some(connection_policy.pool_idle_timeout);
+        peer.options.alpn = match protocol {
+            RuntimeBackendTransportKind::Http1 => ALPN::H1,
+            RuntimeBackendTransportKind::H2 => ALPN::H2,
+        };
+        peer.options.max_h2_streams = connection_policy.max_inflight;
+        if let Some(tls) = tls.filter(|_| tls_enabled) {
+            peer.options.verify_cert = tls.verify_certificates;
+            peer.options.verify_hostname = tls.strict_sni;
+        }
+        Ok(PingoraBackend {
+            host: host.to_string(),
+            port,
+            peer,
+            identity: PingoraUpstreamConnectionIdentity::new(
+                address,
+                protocol,
+                sni,
+                tls.filter(|_| tls_enabled),
+                None,
+                0,
+            ),
+        })
     }
 
     fn backend_entry(&self, backend: &str) -> Option<BackendTransportEntry> {
@@ -632,6 +838,23 @@ impl UpstreamTransportPool {
             .map_err(|_| ProxyError::Timeout)?
             .map_err(ProxyError::Pool)
     }
+}
+
+fn finish_pingora_dispatch_failure(
+    completion: tokio::sync::oneshot::Sender<UpstreamExchangeCompletion>,
+    error: &ProxyError,
+) {
+    let outcome_error = match error {
+        ProxyError::Transport(detail) => ProxyError::Transport(detail.clone()),
+        ProxyError::Protocol(detail) => ProxyError::Protocol(detail.clone()),
+        ProxyError::Timeout => ProxyError::Timeout,
+        ProxyError::Tls(detail) => ProxyError::Tls(detail.clone()),
+        ProxyError::Bridge(_) | ProxyError::Pool(_) => ProxyError::Transport(error.to_string()),
+    };
+    let _ = completion.send(UpstreamExchangeCompletion {
+        outcome: UpstreamExchangeOutcome::Failed(outcome_error),
+        connection_reuse: UpstreamConnectionReuse::Close,
+    });
 }
 
 fn finish_hyper_exchange(

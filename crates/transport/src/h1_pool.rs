@@ -122,6 +122,13 @@ impl H1Pool {
         Ok((response, permit))
     }
 
+    pub(crate) fn acquire_exchange_permit(
+        &self,
+        backend: &str,
+    ) -> Result<OwnedSemaphorePermit, PoolError> {
+        Self::acquire_inflight_permit(self.backend_handle(backend)?, backend)
+    }
+
     pub(crate) fn rotate_backend_client(
         &self,
         backend: &str,

@@ -1,4 +1,4 @@
-use std::net::ToSocketAddrs;
+use std::net::{SocketAddr, ToSocketAddrs};
 
 use impulse_config::{
     backend_endpoint::BackendScheme,
@@ -13,6 +13,13 @@ pub fn build_pingora_http_peer(
     endpoint: &RuntimeBackendEndpoint,
     connection_policy: &RuntimeBackendConnectionPolicy,
 ) -> Result<HttpPeer, String> {
+    build_pingora_http_peer_with_address(endpoint, connection_policy).map(|(peer, _)| peer)
+}
+
+pub(crate) fn build_pingora_http_peer_with_address(
+    endpoint: &RuntimeBackendEndpoint,
+    connection_policy: &RuntimeBackendConnectionPolicy,
+) -> Result<(HttpPeer, SocketAddr), String> {
     let address = (endpoint.authority_host.as_str(), endpoint.authority_port)
         .to_socket_addrs()
         .map_err(|error| {
@@ -45,5 +52,5 @@ pub fn build_pingora_http_peer(
         RuntimeBackendTransportKind::H2 => ALPN::H2,
     };
     peer.options.max_h2_streams = connection_policy.max_inflight;
-    Ok(peer)
+    Ok((peer, address))
 }
