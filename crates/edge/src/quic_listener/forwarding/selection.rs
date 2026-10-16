@@ -21,10 +21,10 @@ use crate::resilience::{
 /// Selects an eligible backend and builds retry/hedge policy inputs without
 /// coupling those decisions to an upstream wire protocol.
 #[derive(Clone, Copy, Debug, Default)]
-pub(super) struct ForwardingSelectionService;
+pub(crate) struct ForwardingSelectionService;
 
 impl ForwardingSelectionService {
-    pub(super) fn select_backend(
+    pub(crate) fn select_backend(
         request: &TargetResolutionRequest<'_>,
         upstream_pool: &Arc<RwLock<UpstreamPool>>,
         begin_request: bool,

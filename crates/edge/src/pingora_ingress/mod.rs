@@ -1,7 +1,11 @@
-use std::sync::Arc;
+use std::{
+    sync::{Arc, RwLock},
+    time::Instant,
+};
 
 use async_trait::async_trait;
 use bytes::Bytes;
+use impulse_lb::upstream_pool::UpstreamPool;
 use pingora_core::{
     Error, InternalError, Result, server::configuration::ServerConf, services::listening::Service,
     upstreams::peer::HttpPeer,
@@ -11,7 +15,8 @@ use pingora_proxy::{HttpProxy, ProxyHttp, Session, http_proxy_service_with_name}
 
 use crate::{
     quic_listener::{
-        AdmissionPolicyDecision, admission_rejection_response, validate_http_request_parts,
+        AdmissionPolicyDecision, ForwardingSelectionService, TargetResolutionRequest,
+        admission_rejection_response, validate_http_request_parts,
     },
     request_pipeline::{
         PipelineRequest, PipelineRoute, ResolvedRequestPolicy, ResolvedRouteTarget,
@@ -25,6 +30,24 @@ pub(crate) struct PingoraRequestContext {
     pub(crate) route: Option<ResolvedRouteTarget>,
     pub(crate) policy: Option<ResolvedRequestPolicy>,
     pub(crate) terminal_outcome: TerminalOutcomeGuard,
+    method: Option<String>,
+    path: Option<String>,
+    authority: Option<String>,
+    selected_backend: Option<PingoraSelectedBackend>,
+}
+
+struct PingoraSelectedBackend {
+    pool: Arc<RwLock<UpstreamPool>>,
+    index: usize,
+    selected_at: Instant,
+}
+
+impl Drop for PingoraSelectedBackend {
+    fn drop(&mut self) {
+        if let Ok(mut pool) = self.pool.write() {
+            pool.finish_request(self.index, self.selected_at.elapsed(), None);
+        }
+    }
 }
 
 pub(crate) struct PingoraIngressService {
@@ -52,6 +75,10 @@ impl ProxyHttp for PingoraIngressService {
             route: None,
             policy: None,
             terminal_outcome: TerminalOutcomeGuard::default(),
+            method: None,
+            path: None,
+            authority: None,
+            selected_backend: None,
         }
     }
 
@@ -185,18 +212,85 @@ impl ProxyHttp for PingoraIngressService {
 
         ctx.route = Some(route);
         ctx.policy = Some(pipeline.policy);
+        ctx.method = Some(validated.method);
+        ctx.path = Some(validated.path);
+        ctx.authority = validated.authority;
         Ok(false)
     }
 
     async fn upstream_peer(
         &self,
-        _session: &mut Session,
-        _ctx: &mut Self::CTX,
+        session: &mut Session,
+        ctx: &mut Self::CTX,
     ) -> Result<Box<HttpPeer>> {
-        Error::e_explain(
-            InternalError,
-            "Pingora ingress upstream selection is not configured",
+        let route = ctx.route.as_ref().ok_or_else(|| {
+            Error::explain(
+                InternalError,
+                "Pingora ingress request filter did not resolve a route",
+            )
+        })?;
+        let method = ctx.method.as_deref().ok_or_else(|| {
+            Error::explain(
+                InternalError,
+                "Pingora ingress request filter did not validate a method",
+            )
+        })?;
+        let path = ctx.path.as_deref().ok_or_else(|| {
+            Error::explain(
+                InternalError,
+                "Pingora ingress request filter did not validate a path",
+            )
+        })?;
+        let state = ctx.runtime.shared_state.generation_state();
+        let pool = state
+            .upstream_pools
+            .get(route.upstream_name.as_ref())
+            .cloned()
+            .ok_or_else(|| {
+                Error::explain(
+                    InternalError,
+                    format!(
+                        "Pingora ingress upstream pool is missing: {}",
+                        route.upstream_name
+                    ),
+                )
+            })?;
+        let request = session.req_header();
+        let header_lookup = |name: &str| {
+            request
+                .headers
+                .get(name)
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_owned)
+        };
+        let selected = ForwardingSelectionService::select_backend(
+            &TargetResolutionRequest::new(
+                method,
+                path,
+                ctx.authority.as_deref(),
+                None,
+                Some(&header_lookup),
+            ),
+            &pool,
+            true,
         )
+        .map_err(|error| Error::because(InternalError, "backend selection failed", error))?;
+        let selected_backend = PingoraSelectedBackend {
+            pool,
+            index: selected.backend_index,
+            selected_at: Instant::now(),
+        };
+        let peer = ctx
+            .runtime
+            .shared_state
+            .shared_services()
+            .transport_pool
+            .pingora_peer(&selected.backend_addr, ctx.runtime.generation)
+            .map_err(|error| {
+                Error::because(InternalError, "backend peer creation failed", error)
+            })?;
+        ctx.selected_backend = Some(selected_backend);
+        Ok(Box::new(peer))
     }
 }
 
