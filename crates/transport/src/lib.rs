@@ -17,7 +17,7 @@ pub use exchange::{
     UpstreamBodyFrame, UpstreamCancellation, UpstreamConnectionReuse, UpstreamExchangeCompletion,
     UpstreamExchangeLifecycle, UpstreamExchangeOutcome, UpstreamInflightPermit,
     UpstreamRequestBody, UpstreamRequestHead, UpstreamResponseBody, UpstreamResponseHead,
-    UpstreamTrailers,
+    UpstreamTrailers, UpstreamTunnel, UpstreamTunnelIo, UpstreamUpgrade,
 };
 pub use h2_client::{ConnectObservation, ConnectObserver, SharedDnsResolver, TlsClientConfig};
 pub use transport_pool::{

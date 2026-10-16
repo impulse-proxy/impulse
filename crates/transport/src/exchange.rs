@@ -1,7 +1,10 @@
 use bytes::Bytes;
 use hyper::http::{HeaderMap, Method, StatusCode, Uri, Version};
 use impulse_errors::ProxyError;
-use tokio::sync::{OwnedSemaphorePermit, mpsc, oneshot};
+use tokio::{
+    io::{AsyncRead, AsyncWrite},
+    sync::{OwnedSemaphorePermit, mpsc, oneshot},
+};
 
 #[derive(Clone, Debug)]
 pub struct UpstreamRequestHead {
@@ -70,4 +73,17 @@ pub struct UpstreamExchangeLifecycle {
     pub cancellation: UpstreamCancellation,
     pub completion: oneshot::Sender<UpstreamExchangeCompletion>,
     pub inflight_permit: UpstreamInflightPermit,
+}
+
+pub trait UpstreamTunnelIo: AsyncRead + AsyncWrite + Send + Unpin {}
+
+impl<T> UpstreamTunnelIo for T where T: AsyncRead + AsyncWrite + Send + Unpin {}
+
+pub struct UpstreamTunnel {
+    pub io: Box<dyn UpstreamTunnelIo>,
+    pub lifecycle: UpstreamExchangeLifecycle,
+}
+
+pub struct UpstreamUpgrade {
+    pub tunnel: oneshot::Receiver<Result<UpstreamTunnel, ProxyError>>,
 }
