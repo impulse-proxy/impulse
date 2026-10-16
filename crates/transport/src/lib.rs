@@ -6,6 +6,7 @@
 //! remain internal details behind [`UpstreamTransportPool`].
 
 mod client_rotation;
+mod connection_identity;
 mod exchange;
 mod h1_client;
 mod h1_pool;
@@ -14,6 +15,7 @@ mod h2_pool;
 mod pingora_peer;
 mod transport_pool;
 
+pub use connection_identity::{PingoraUpstreamConnectionIdentity, PingoraUpstreamProxyIdentity};
 pub use exchange::{
     UpstreamBodyFrame, UpstreamCancellation, UpstreamConnectionReuse, UpstreamExchangeCompletion,
     UpstreamExchangeLifecycle, UpstreamExchangeOutcome, UpstreamExchangeRequest,

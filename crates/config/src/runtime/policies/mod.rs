@@ -183,7 +183,7 @@ impl RuntimeRouteMatchPolicy {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RuntimeBackendTransportKind {
     Http1,
     H2,
