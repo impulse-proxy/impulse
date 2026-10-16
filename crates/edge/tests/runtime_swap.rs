@@ -418,6 +418,96 @@ fn generation_owned_reload_swaps_backend_targets_without_changing_listener_ident
 
 #[test]
 #[serial]
+fn runtime_activation_and_rollback_restore_the_retained_serving_configuration() {
+    if !local_listener_bind_available() {
+        return;
+    }
+
+    let mut harness = RuntimeSwapHarness::new();
+    let original_backend = harness.start_h1_static_backend(b"generation-zero");
+    let activated_backend = harness.start_h1_static_backend(b"generation-one");
+    let config = harness.make_config(HashMap::from([(
+        "api".to_string(),
+        single_backend_upstream(original_backend),
+    )]));
+    harness
+        .start_listener(config)
+        .expect("start runtime activation listener");
+
+    harness
+        .rewrite_config(|config| {
+            config
+                .upstream
+                .get_mut("api")
+                .expect("runtime activation upstream")
+                .backends[0]
+                .address = format!("http://{activated_backend}");
+        })
+        .expect("write activation candidate");
+
+    let activation = harness
+        .trigger_runtime_activate()
+        .expect("activate runtime candidate");
+    assert_eq!(activation["active_generation"], 1);
+    assert_eq!(activation["activated_generation"], 1);
+    let activated = harness
+        .run_request(H3RequestSpec::get("localhost", "/"))
+        .expect("request after activation");
+    activated.assert_status(200);
+    activated.assert_body_bytes(b"generation-one");
+
+    let rollback = harness
+        .trigger_runtime_rollback(0)
+        .expect("rollback to retained generation");
+    assert_eq!(rollback["active_generation"], 2);
+    assert_eq!(rollback["rolled_back_to"], 0);
+    let restored = harness
+        .run_request(H3RequestSpec::get("localhost", "/"))
+        .expect("request after rollback");
+    restored.assert_status(200);
+    restored.assert_body_bytes(b"generation-zero");
+}
+
+#[test]
+#[serial]
+fn failed_runtime_activation_keeps_the_active_generation_serving() {
+    let Some(mut harness) = start_static_runtime_swap_listener(b"active-generation", |_| {}) else {
+        return;
+    };
+
+    harness
+        .rewrite_config(|config| {
+            config.listen.port = config.listen.port.saturating_add(1);
+        })
+        .expect("write incompatible activation candidate");
+
+    let rejection = harness
+        .trigger_runtime_activate_expect(http::StatusCode::CONFLICT)
+        .expect("activation rejection");
+    assert_eq!(rejection["active_generation"], 0);
+    assert_eq!(rejection["activated_generation"], serde_json::Value::Null);
+    assert!(
+        rejection["rejected_changes"]
+            .as_array()
+            .is_some_and(|changes| !changes.is_empty()),
+        "failed activation should expose its rejected changes"
+    );
+    assert_eq!(
+        harness
+            .current_generation()
+            .expect("generation after failed activation"),
+        0
+    );
+
+    let response = harness
+        .run_request(H3RequestSpec::get("localhost", "/"))
+        .expect("request after failed activation");
+    response.assert_status(200);
+    response.assert_body_bytes(b"active-generation");
+}
+
+#[test]
+#[serial]
 fn listener_cert_rotation_stays_scoped_to_reload_certs_and_does_not_activate_generation() {
     let Some(harness) = start_static_runtime_swap_listener(b"listener-cert-reload", |_| {}) else {
         return;

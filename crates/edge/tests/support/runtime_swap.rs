@@ -371,6 +371,60 @@ impl RuntimeSwapHarness {
         self.trigger_runtime_reload_expect(StatusCode::ACCEPTED)
     }
 
+    pub fn trigger_runtime_activate(&self) -> Result<JsonValue, String> {
+        self.trigger_runtime_activate_expect(StatusCode::ACCEPTED)
+    }
+
+    pub fn trigger_runtime_activate_expect(
+        &self,
+        expected_status: StatusCode,
+    ) -> Result<JsonValue, String> {
+        let base = self
+            .current_config
+            .as_ref()
+            .ok_or_else(|| "listener not started".to_string())?
+            .observability
+            .control_api
+            .runtime_path
+            .clone();
+        let path = format!("{}/activate", base.trim_end_matches('/'));
+        let token = self.control_api_token()?;
+        let body = serde_json::json!({ "expected_generation": self.current_generation()? });
+        self.rt.block_on(self.poll_control_api_json_with_body(
+            Method::POST,
+            path,
+            token,
+            Some(body),
+            expected_status,
+            Duration::from_secs(5),
+        ))
+    }
+
+    pub fn trigger_runtime_rollback(&self, target_generation: u64) -> Result<JsonValue, String> {
+        let base = self
+            .current_config
+            .as_ref()
+            .ok_or_else(|| "listener not started".to_string())?
+            .observability
+            .control_api
+            .runtime_path
+            .clone();
+        let path = format!("{}/rollback", base.trim_end_matches('/'));
+        let token = self.control_api_token()?;
+        let body = serde_json::json!({
+            "target_generation": target_generation,
+            "expected_active_generation": self.current_generation()?,
+        });
+        self.rt.block_on(self.poll_control_api_json_with_body(
+            Method::POST,
+            path,
+            token,
+            Some(body),
+            StatusCode::ACCEPTED,
+            Duration::from_secs(5),
+        ))
+    }
+
     pub fn trigger_runtime_reload_expect(
         &self,
         expected_status: StatusCode,
