@@ -13,7 +13,10 @@ mod h2_client;
 mod h2_pool;
 mod transport_pool;
 
-pub use exchange::{UpstreamRequestHead, UpstreamResponseHead};
+pub use exchange::{
+    UpstreamBodyFrame, UpstreamRequestBody, UpstreamRequestHead, UpstreamResponseBody,
+    UpstreamResponseHead, UpstreamTrailers,
+};
 pub use h2_client::{ConnectObservation, ConnectObserver, SharedDnsResolver, TlsClientConfig};
 pub use transport_pool::{
     BackendUpgradeLease, BackendUpgradeResponse, TransportClientRotation, UpstreamTransportPool,
