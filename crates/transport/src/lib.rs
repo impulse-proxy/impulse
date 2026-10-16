@@ -6,13 +6,17 @@
 //! remain internal details behind [`UpstreamTransportPool`].
 
 mod client_rotation;
+mod connection_identity;
 mod exchange;
 mod h1_client;
 mod h1_pool;
 mod h2_client;
 mod h2_pool;
+mod pingora_peer;
+mod pingora_pool;
 mod transport_pool;
 
+pub use connection_identity::{PingoraUpstreamConnectionIdentity, PingoraUpstreamProxyIdentity};
 pub use exchange::{
     UpstreamBodyFrame, UpstreamCancellation, UpstreamConnectionReuse, UpstreamExchangeCompletion,
     UpstreamExchangeLifecycle, UpstreamExchangeOutcome, UpstreamExchangeRequest,
@@ -21,6 +25,8 @@ pub use exchange::{
     UpstreamUpgrade,
 };
 pub use h2_client::{ConnectObservation, ConnectObserver, SharedDnsResolver, TlsClientConfig};
+pub use pingora_peer::build_pingora_http_peer;
+pub use pingora_pool::{PingoraPool, PingoraPoolLease};
 pub use transport_pool::{
     BackendUpgradeLease, BackendUpgradeResponse, TransportClientRotation, UpstreamTransportPool,
 };
