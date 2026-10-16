@@ -21,8 +21,7 @@ use boring::{
 use bytes::Bytes;
 use http::{Request, Response, StatusCode};
 use http_body_util::{BodyExt, combinators::BoxBody};
-use hyper::{body::Incoming, upgrade};
-use hyper_util::rt::TokioIo;
+use hyper::body::Incoming;
 #[cfg(test)]
 use impulse_bridge::response::should_strip_response_header;
 use impulse_bridge::response::{

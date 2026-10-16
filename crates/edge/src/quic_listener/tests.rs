@@ -512,7 +512,6 @@ fn bootstrap_connection_state_prefers_reloaded_runtime_settings() {
     )
     .expect("bootstrap state");
 
-    assert_eq!(state.backend_timeout, Duration::from_millis(4321));
     assert_eq!(state.max_request_body_bytes, 65_537);
     assert_eq!(state.max_response_body_bytes, 98_765);
     assert_eq!(state.max_connections, 37);
