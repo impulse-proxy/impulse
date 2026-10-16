@@ -17,9 +17,11 @@ use impulse_config::runtime::{
     RuntimeBackendConnectionPolicy, RuntimeBackendTransportKind, RuntimeUpstream,
 };
 use impulse_errors::{PoolError, ProxyError};
+use pingora_core::{Error, InternalError, Result as PingoraResult, upstreams::peer::HttpPeer};
 use tokio::sync::{OwnedSemaphorePermit, mpsc};
 
 use crate::{
+    PingoraUpstreamConnectionIdentity,
     client_rotation::BackendClientRotation,
     exchange::{
         UpstreamBodyFrame, UpstreamCancellation, UpstreamConnectionReuse,
@@ -31,6 +33,7 @@ use crate::{
     h1_pool::H1Pool,
     h2_client::{ConnectObserver, SharedDnsResolver, TlsClientConfig},
     h2_pool::H2Pool,
+    pingora_h1::PingoraH1UpstreamSession,
     pingora_pool::{PingoraPool, PingoraPoolLease},
 };
 
@@ -99,6 +102,18 @@ impl BackendUpgradeResponse {
 }
 
 impl UpstreamTransportPool {
+    pub async fn acquire_pingora_h1_session(
+        &self,
+        peer: HttpPeer,
+        identity: &PingoraUpstreamConnectionIdentity,
+    ) -> PingoraResult<PingoraH1UpstreamSession> {
+        let pool = self
+            .pingora_pool
+            .acquire()
+            .ok_or_else(|| Error::explain(InternalError, "Pingora upstream pool is draining"))?;
+        PingoraH1UpstreamSession::acquire(pool, peer, identity).await
+    }
+
     pub fn acquire_pingora_pool(&self) -> Option<PingoraPoolLease> {
         self.pingora_pool.acquire()
     }
