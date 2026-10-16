@@ -21,14 +21,14 @@ use tokio::{
 };
 
 use crate::{
-    PingoraPoolLease, PingoraUpstreamConnectionIdentity, UpstreamBodyFrame, UpstreamCancellation,
+    PingoraUpstreamConnectionIdentity, UpstreamBody, UpstreamBodyFrame, UpstreamCancellation,
     UpstreamConnectionReuse, UpstreamExchangeCompletion, UpstreamExchangeLifecycle,
-    UpstreamExchangeOutcome, UpstreamExchangeResponse, UpstreamRequestBody, UpstreamRequestHead,
-    UpstreamResponseHead, UpstreamTunnel, UpstreamUpgrade, classify_pingora_h1_error,
-    exchange::upstream_response_body_channel,
+    UpstreamExchangeOutcome, UpstreamExchangeResponse, UpstreamRequestHead, UpstreamResponseHead,
+    UpstreamTunnel, UpstreamUpgrade, exchange::upstream_response_body_channel,
+    pingora_failure::classify_pingora_h1_error, pingora_pool::PingoraPoolLease,
 };
 
-pub fn translate_pingora_h1_request_header(
+pub(crate) fn translate_pingora_h1_request_header(
     head: &UpstreamRequestHead,
 ) -> Result<Box<RequestHeader>> {
     let target = if head.method == Method::CONNECT {
@@ -54,8 +54,7 @@ pub fn translate_pingora_h1_request_header(
     }
     Ok(Box::new(translated))
 }
-
-pub struct PingoraH1UpstreamSession {
+pub(crate) struct PingoraH1UpstreamSession {
     pool: PingoraPoolLease,
     peer: HttpPeer,
     session: Option<HttpSession>,
@@ -138,7 +137,7 @@ impl PingoraH1UpstreamSession {
     pub async fn write_request(
         &mut self,
         head: &UpstreamRequestHead,
-        mut body: UpstreamRequestBody,
+        mut body: UpstreamBody,
     ) -> Result<(), ProxyError> {
         if self.state != PingoraH1ExchangeState::Acquired {
             self.close().await;
@@ -158,7 +157,7 @@ impl PingoraH1UpstreamSession {
             return Err(classify_pingora_h1_error(&error));
         }
 
-        while let Some(frame) = body.frames.recv().await {
+        while let Some(frame) = body.recv().await {
             match frame {
                 Ok(UpstreamBodyFrame::Data(data)) if data.is_empty() => {}
                 Ok(UpstreamBodyFrame::Data(data)) => {
@@ -332,7 +331,6 @@ impl PingoraH1UpstreamSession {
         }
     }
 }
-
 struct PingoraH1TunnelLease {
     stream: Stream,
     _pool: PingoraPoolLease,
@@ -487,6 +485,3 @@ async fn pump_pingora_h1_response(
         }
     }
 }
-
-#[cfg(test)]
-mod tests;

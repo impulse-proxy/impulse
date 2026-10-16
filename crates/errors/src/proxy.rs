@@ -4,8 +4,7 @@ use thiserror::Error;
 
 use crate::{
     BridgeError, PoolError, UpstreamErrorCategory, UpstreamErrorClassification,
-    UpstreamHealthFailureMapping, UpstreamRetryability, UpstreamTerminalErrorKind,
-    UpstreamTlsReason, classify_retryability, upstream::UpstreamErrorDetails,
+    UpstreamHealthFailureMapping, UpstreamRetryability, UpstreamTlsReason, classify_retryability,
 };
 
 #[derive(Debug, Error)]
@@ -31,7 +30,6 @@ pub enum ProxyError {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum UpstreamProxyErrorKind {
-    Send,
     Transport,
     Timeout,
     Protocol,
@@ -69,23 +67,8 @@ fn passive_health_failure_for_classification(
     }
 }
 
-pub fn classify_upstream_send_error(
-    err: &hyper_util::client::legacy::Error,
-) -> ClassifiedUpstreamProxyError {
-    let details = UpstreamErrorDetails::from_error_chain(err, err.is_connect());
-    let classification = details.classify();
-    ClassifiedUpstreamProxyError {
-        kind: UpstreamProxyErrorKind::Send,
-        detail: details.detail,
-        classification,
-        health_failure: passive_health_failure_for_classification(classification),
-        retryability: UpstreamRetryability::Terminal(UpstreamTerminalErrorKind::PoolSend),
-    }
-}
-
 pub fn classify_upstream_proxy_error(err: &ProxyError) -> Option<ClassifiedUpstreamProxyError> {
     match err {
-        ProxyError::Pool(PoolError::Send(send_err)) => Some(classify_upstream_send_error(send_err)),
         ProxyError::Transport(detail) => {
             let classification = UpstreamErrorClassification::transport();
             Some(ClassifiedUpstreamProxyError {
@@ -130,10 +113,6 @@ pub fn classify_upstream_proxy_error(err: &ProxyError) -> Option<ClassifiedUpstr
 
 #[cfg(test)]
 mod tests {
-    use bytes::Bytes;
-    use http_body_util::Empty;
-    use hyper::Uri;
-    use hyper_util::{client::legacy::Client, rt::TokioExecutor};
     use impulse_lb::health::HealthFailureReason;
 
     use super::{ProxyError, UpstreamProxyErrorKind, classify_upstream_proxy_error};
@@ -142,17 +121,6 @@ mod tests {
         UpstreamHealthFailureMapping, UpstreamRetryReason, UpstreamRetryability,
         UpstreamTerminalErrorKind, UpstreamTlsReason,
     };
-
-    async fn connect_send_error() -> hyper_util::client::legacy::Error {
-        let client: Client<hyper_util::client::legacy::connect::HttpConnector, Empty<Bytes>> =
-            Client::builder(TokioExecutor::new()).build_http();
-        let uri: Uri = "http://127.0.0.1:1/".parse().expect("valid local uri");
-
-        client
-            .get(uri)
-            .await
-            .expect_err("connect to unused port should fail")
-    }
 
     #[test]
     fn display_covers_proxy_error_variants() {
@@ -310,29 +278,5 @@ mod tests {
             protocol.retryability,
             UpstreamRetryability::Terminal(UpstreamTerminalErrorKind::Protocol)
         );
-    }
-
-    #[tokio::test]
-    async fn pool_send_classifies_as_terminal_send_error() {
-        let err = ProxyError::Pool(PoolError::Send(connect_send_error().await));
-        let classified = classify_upstream_proxy_error(&err).expect("send should classify");
-
-        assert_eq!(classified.kind, UpstreamProxyErrorKind::Send);
-        assert_eq!(
-            classified.classification.category,
-            UpstreamErrorCategory::Transport
-        );
-        assert_eq!(
-            classified.health_failure,
-            Some(UpstreamHealthFailureMapping {
-                failure_reason: HealthFailureReason::Transport,
-                metrics_reason: "transport",
-            })
-        );
-        assert_eq!(
-            classified.retryability,
-            UpstreamRetryability::Terminal(UpstreamTerminalErrorKind::PoolSend)
-        );
-        assert!(!classified.detail.is_empty());
     }
 }

@@ -11,7 +11,6 @@ pub enum UpstreamRetryReason {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum UpstreamTerminalErrorKind {
-    PoolSend,
     Tls,
     Protocol,
     Bridge,
@@ -131,9 +130,6 @@ pub fn classify_retryability(err: &ProxyError) -> UpstreamRetryability {
     match err {
         ProxyError::Transport(_) => UpstreamRetryability::Retryable(UpstreamRetryReason::Transport),
         ProxyError::Timeout => UpstreamRetryability::Retryable(UpstreamRetryReason::Timeout),
-        ProxyError::Pool(PoolError::Send(_)) => {
-            UpstreamRetryability::Terminal(UpstreamTerminalErrorKind::PoolSend)
-        }
         ProxyError::Pool(_) => UpstreamRetryability::Retryable(UpstreamRetryReason::Pool),
         ProxyError::Tls(_) => UpstreamRetryability::Terminal(UpstreamTerminalErrorKind::Tls),
         ProxyError::Protocol(_) => {
@@ -243,24 +239,8 @@ pub fn is_retryable(err: &ProxyError) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use bytes::Bytes;
-    use http_body_util::Empty;
-    use hyper::Uri;
-    use hyper_util::{client::legacy::Client, rt::TokioExecutor};
-
     use super::*;
     use crate::{BridgeError, PoolError, ProxyError};
-
-    async fn connect_send_error() -> hyper_util::client::legacy::Error {
-        let client: Client<hyper_util::client::legacy::connect::HttpConnector, Empty<Bytes>> =
-            Client::builder(TokioExecutor::new()).build_http();
-        let uri: Uri = "http://127.0.0.1:1/".parse().expect("valid local uri");
-
-        client
-            .get(uri)
-            .await
-            .expect_err("connect to unused port should fail")
-    }
 
     fn retry_facts() -> RetryPolicyFacts {
         RetryPolicyFacts {
@@ -613,8 +593,8 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn classify_retryability_keeps_pool_send_terminal_and_internal_pool_paths_retryable() {
+    #[test]
+    fn classify_retryability_keeps_pool_paths_retryable() {
         assert_eq!(
             classify_retryability(&ProxyError::Pool(PoolError::InflightLimiterClosed)),
             UpstreamRetryability::Retryable(UpstreamRetryReason::Pool)
@@ -626,17 +606,8 @@ mod tests {
             UpstreamRetryability::Retryable(UpstreamRetryReason::Pool)
         );
 
-        assert_eq!(
-            classify_retryability(&ProxyError::Pool(PoolError::Send(
-                connect_send_error().await
-            ))),
-            UpstreamRetryability::Terminal(UpstreamTerminalErrorKind::PoolSend)
-        );
         assert!(is_retryable(&ProxyError::Pool(PoolError::UnknownBackend(
             "missing".to_string()
-        ))));
-        assert!(!is_retryable(&ProxyError::Pool(PoolError::Send(
-            connect_send_error().await
         ))));
     }
 

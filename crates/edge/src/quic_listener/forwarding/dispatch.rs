@@ -9,7 +9,7 @@ use impulse_lb::alternate_backend::{
 use impulse_transport::{
     UpstreamBodyFrame, UpstreamCancellation, UpstreamConnectionReuse, UpstreamExchangeCompletion,
     UpstreamExchangeOutcome, UpstreamExchangeRequest, UpstreamExchangeResponse,
-    UpstreamRequestBody, UpstreamRequestHead, UpstreamTrailers,
+    UpstreamRequestHead,
 };
 
 use super::{
@@ -122,7 +122,7 @@ impl QUICListener {
                             let Ok(headers) = frame.into_trailers() else {
                                 continue;
                             };
-                            UpstreamBodyFrame::Trailers(UpstreamTrailers { headers })
+                            UpstreamBodyFrame::Trailers(headers)
                         }
                     },
                     Err(never) => match never {},
@@ -145,7 +145,7 @@ impl QUICListener {
                     version: parts.version,
                     headers: parts.headers,
                 },
-                body: UpstreamRequestBody { frames: frame_rx },
+                body: frame_rx,
                 cancellation: UpstreamCancellation {
                     signal: cancellation_signal,
                 },

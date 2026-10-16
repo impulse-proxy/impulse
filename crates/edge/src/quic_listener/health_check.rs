@@ -1,4 +1,3 @@
-use http_body_util::Full;
 use impulse_errors::classify_upstream_proxy_error;
 
 use super::*;
@@ -126,12 +125,8 @@ impl QUICListener {
                                 continue;
                             }
 
-                            let request = match http::Request::builder()
-                                .method("GET")
-                                .uri(&job.health_uri)
-                                .body(BoxBody::new(Full::new(Bytes::new())))
-                            {
-                                Ok(req) => req,
+                            let health_uri = match job.health_uri.parse() {
+                                Ok(uri) => uri,
                                 Err(_) => continue,
                             };
 
@@ -140,11 +135,7 @@ impl QUICListener {
                             let transport_pool = Arc::clone(&transport_pool);
                             let task = pending.spawn(async move {
                                 transport_pool
-                                    .send_backend_request_with_timeout(
-                                        &backend_identity,
-                                        request,
-                                        timeout,
-                                    )
+                                    .send_health_check(&backend_identity, health_uri, timeout)
                                     .await
                             });
                             pending_job_indices.insert(task.id(), job_index);
@@ -191,19 +182,18 @@ impl QUICListener {
 
                             let evaluation = match result {
                                 Ok(response) => {
-                                    let outcome = match classify_active_health_check_response(
-                                        response.status(),
-                                    ) {
-                                        HealthClassification::Success => {
-                                            BackendHealthObservationOutcome::Success
-                                        }
-                                        HealthClassification::Failure => {
-                                            BackendHealthObservationOutcome::Failure
-                                        }
-                                        HealthClassification::Neutral => {
-                                            BackendHealthObservationOutcome::Neutral
-                                        }
-                                    };
+                                    let outcome =
+                                        match classify_active_health_check_response(response) {
+                                            HealthClassification::Success => {
+                                                BackendHealthObservationOutcome::Success
+                                            }
+                                            HealthClassification::Failure => {
+                                                BackendHealthObservationOutcome::Failure
+                                            }
+                                            HealthClassification::Neutral => {
+                                                BackendHealthObservationOutcome::Neutral
+                                            }
+                                        };
                                     evaluate_active_health_check(
                                         BackendIdentity::new(job.backend_identity.clone()),
                                         outcome,

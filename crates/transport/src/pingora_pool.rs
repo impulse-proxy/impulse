@@ -12,7 +12,7 @@ struct PingoraPoolGeneration {
 }
 
 #[derive(Clone)]
-pub struct PingoraPoolLease {
+pub(crate) struct PingoraPoolLease {
     generation: Arc<PingoraPoolGeneration>,
 }
 
@@ -30,7 +30,7 @@ impl PingoraPoolLease {
     }
 }
 
-pub struct PingoraPool {
+pub(crate) struct PingoraPool {
     active: RwLock<Option<Arc<PingoraPoolGeneration>>>,
 }
 

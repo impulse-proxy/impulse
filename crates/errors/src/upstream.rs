@@ -1,28 +1,6 @@
 //! Shared upstream error-detail classification and health-mapping contract.
 
-use std::error::Error as StdError;
-
 use impulse_lb::health::HealthFailureReason;
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct UpstreamErrorDetails {
-    pub detail: String,
-    pub is_connect: bool,
-}
-
-impl UpstreamErrorDetails {
-    pub fn new(detail: String, is_connect: bool) -> Self {
-        Self { detail, is_connect }
-    }
-
-    pub fn from_error_chain(err: &(dyn StdError + 'static), is_connect: bool) -> Self {
-        Self::new(format_error_chain(err), is_connect)
-    }
-
-    pub fn classify(&self) -> UpstreamErrorClassification {
-        classify_upstream_error_detail(&self.detail, self.is_connect)
-    }
-}
 
 pub fn classify_upstream_error_detail(
     detail: &str,
@@ -35,10 +13,7 @@ pub fn classify_upstream_error_detail(
 
     // TLS alert/certificate vocabulary is unambiguous regardless of whether the
     // underlying HTTP client reports the failure as a connect-phase or
-    // send-phase error. In particular, a fresh HTTP/2 connection's TLS
-    // handshake can fail while the first request is being sent (hyper-util
-    // reports this as `SendRequest`, not `Connect`), so gating this detection
-    // on `is_connect` misses exactly the case it exists to catch.
+    // send-phase error, so gating this detection on `is_connect` can miss it.
     if normalized.contains("client_certificate_missing") {
         return UpstreamErrorClassification::tls(UpstreamTlsReason::ClientCertificateMissing);
     }
@@ -105,17 +80,6 @@ pub fn classify_upstream_error_detail(
     }
 
     UpstreamErrorClassification::transport()
-}
-
-pub(crate) fn format_error_chain(err: &(dyn StdError + 'static)) -> String {
-    let mut detail = err.to_string();
-    let mut source = err.source();
-    while let Some(cause) = source {
-        detail.push_str(": ");
-        detail.push_str(&cause.to_string());
-        source = cause.source();
-    }
-    detail
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -226,41 +190,12 @@ impl UpstreamErrorClassification {
 
 #[cfg(test)]
 mod tests {
-    use std::{error::Error as StdError, fmt};
-
     use impulse_lb::health::HealthFailureReason;
 
     use super::{
-        UpstreamErrorCategory, UpstreamErrorClassification, UpstreamErrorDetails,
-        UpstreamHealthFailureMapping, UpstreamTlsReason, classify_upstream_error_detail,
-        format_error_chain,
+        UpstreamErrorCategory, UpstreamErrorClassification, UpstreamHealthFailureMapping,
+        UpstreamTlsReason, classify_upstream_error_detail,
     };
-
-    #[derive(Debug)]
-    struct ErrorChainOuter(ErrorChainInner);
-
-    #[derive(Debug)]
-    struct ErrorChainInner;
-
-    impl fmt::Display for ErrorChainOuter {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            write!(f, "outer error")
-        }
-    }
-
-    impl fmt::Display for ErrorChainInner {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            write!(f, "inner error")
-        }
-    }
-
-    impl StdError for ErrorChainOuter {
-        fn source(&self) -> Option<&(dyn StdError + 'static)> {
-            Some(&self.0)
-        }
-    }
-
-    impl StdError for ErrorChainInner {}
 
     mod classification_contracts {
         use super::*;
@@ -322,39 +257,6 @@ mod tests {
                 classify_upstream_error_detail("UNKNOWN ISSUER from backend cert", true),
                 UpstreamErrorClassification::tls(UpstreamTlsReason::UnknownIssuer)
             );
-        }
-
-        #[test]
-        fn upstream_error_details_classify_matches_shared_detail_classifier() {
-            let details = UpstreamErrorDetails::new(
-                "certificate not valid for dns name api.example.com".to_string(),
-                true,
-            );
-
-            assert_eq!(
-                details.classify(),
-                classify_upstream_error_detail(&details.detail, details.is_connect)
-            );
-        }
-    }
-
-    mod formatting_contracts {
-        use super::*;
-
-        #[test]
-        fn format_error_chain_flattens_all_sources() {
-            let formatted = format_error_chain(&ErrorChainOuter(ErrorChainInner));
-
-            assert_eq!(formatted, "outer error: inner error");
-        }
-
-        #[test]
-        fn upstream_error_details_from_error_chain_preserves_stable_joined_detail() {
-            let details =
-                UpstreamErrorDetails::from_error_chain(&ErrorChainOuter(ErrorChainInner), true);
-
-            assert_eq!(details.detail, "outer error: inner error");
-            assert!(details.is_connect);
         }
     }
 

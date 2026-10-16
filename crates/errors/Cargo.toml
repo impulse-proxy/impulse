@@ -7,12 +7,5 @@ license.workspace = true
 [dependencies]
 thiserror = { workspace = true }
 http = { workspace = true }
-hyper-util = { workspace = true }
-quiche = { workspace = true }
 impulse-lb = { path = "../lb" }
 
-[dev-dependencies]
-bytes.workspace = true
-http-body-util.workspace = true
-hyper.workspace = true
-tokio.workspace = true

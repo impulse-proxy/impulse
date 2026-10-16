@@ -15,7 +15,7 @@ use impulse_bridge::response::{
     ResponseNormalizationProtocol, ResponseProtocolConstraints, normalize_upstream_response,
 };
 use impulse_lb::upstream_pool::UpstreamPool;
-use impulse_transport::{UpstreamBodyFrame, UpstreamExchangeResponse, UpstreamResponseBody};
+use impulse_transport::{UpstreamBody, UpstreamBodyFrame, UpstreamExchangeResponse};
 
 use super::{
     context::BootstrapDispatchCtx,
@@ -46,7 +46,7 @@ pub(in crate::quic_listener) struct BootstrapStreamingBody {
 
 enum BootstrapStreamingBodyInner {
     Hyper(Incoming),
-    Exchange(UpstreamResponseBody),
+    Exchange(UpstreamBody),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -103,7 +103,7 @@ impl BootstrapStreamingBody {
     }
 
     fn with_response_guardrails(
-        inner: UpstreamResponseBody,
+        inner: UpstreamBody,
         max_body_bytes: usize,
         declared_content_length: Option<usize>,
         upstream_pool: Arc<RwLock<UpstreamPool>>,
@@ -177,14 +177,12 @@ impl Body for BootstrapStreamingBody {
             BootstrapStreamingBodyInner::Hyper(body) => Pin::new(body)
                 .poll_frame(cx)
                 .map(|frame| frame.map(|frame| frame.map_err(|_| ()))),
-            BootstrapStreamingBodyInner::Exchange(body) => body.frames.poll_recv(cx).map(|frame| {
+            BootstrapStreamingBodyInner::Exchange(body) => body.poll_recv(cx).map(|frame| {
                 frame.map(|frame| {
                     frame
                         .map(|frame| match frame {
                             UpstreamBodyFrame::Data(data) => Frame::data(data),
-                            UpstreamBodyFrame::Trailers(trailers) => {
-                                Frame::trailers(trailers.headers)
-                            }
+                            UpstreamBodyFrame::Trailers(trailers) => Frame::trailers(trailers),
                         })
                         .map_err(|_| ())
                 })

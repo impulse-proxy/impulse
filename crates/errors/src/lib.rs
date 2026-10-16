@@ -13,8 +13,7 @@ mod upstream;
 pub use bridge::BridgeError;
 pub use pool::PoolError;
 pub use proxy::{
-    ClassifiedUpstreamProxyError, ProxyError, UpstreamProxyErrorKind,
-    classify_upstream_proxy_error, classify_upstream_send_error,
+    ClassifiedUpstreamProxyError, ProxyError, UpstreamProxyErrorKind, classify_upstream_proxy_error,
 };
 pub use retry::{
     HedgeOutcomeTelemetryReason, HedgePolicyDecision, HedgePolicyDenialReason, HedgePolicyFacts,

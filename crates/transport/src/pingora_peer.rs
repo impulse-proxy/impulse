@@ -1,4 +1,4 @@
-use std::net::ToSocketAddrs;
+use std::net::{SocketAddr, ToSocketAddrs};
 
 use impulse_config::{
     backend_endpoint::BackendScheme,
@@ -8,11 +8,10 @@ use impulse_config::{
 };
 use pingora_core::upstreams::peer::{ALPN, HttpPeer};
 
-/// Build a Pingora peer from an already validated runtime backend.
-pub fn build_pingora_http_peer(
+pub(crate) fn build_pingora_http_peer(
     endpoint: &RuntimeBackendEndpoint,
     connection_policy: &RuntimeBackendConnectionPolicy,
-) -> Result<HttpPeer, String> {
+) -> Result<(HttpPeer, SocketAddr), String> {
     let address = (endpoint.authority_host.as_str(), endpoint.authority_port)
         .to_socket_addrs()
         .map_err(|error| {
@@ -45,5 +44,5 @@ pub fn build_pingora_http_peer(
         RuntimeBackendTransportKind::H2 => ALPN::H2,
     };
     peer.options.max_h2_streams = connection_policy.max_inflight;
-    Ok(peer)
+    Ok((peer, address))
 }
