@@ -26,7 +26,7 @@ pub use exchange::{
     UpstreamUpgrade,
 };
 pub use h2_client::{ConnectObservation, ConnectObserver, SharedDnsResolver, TlsClientConfig};
-pub use pingora_h1::PingoraH1UpstreamSession;
+pub use pingora_h1::{PingoraH1UpstreamSession, translate_pingora_h1_request_header};
 pub use pingora_peer::build_pingora_http_peer;
 pub use pingora_pool::{PingoraPool, PingoraPoolLease};
 pub use transport_pool::{

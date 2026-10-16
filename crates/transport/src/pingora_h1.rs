@@ -1,11 +1,40 @@
+use hyper::{Method, http::Version};
 use impulse_config::runtime::RuntimeBackendTransportKind;
 use pingora_core::{
     Error, InternalError, Result,
     protocols::http::{client::HttpSession as PingoraHttpSession, v1::client::HttpSession},
     upstreams::peer::HttpPeer,
 };
+use pingora_http::RequestHeader;
 
-use crate::{PingoraPoolLease, PingoraUpstreamConnectionIdentity};
+use crate::{PingoraPoolLease, PingoraUpstreamConnectionIdentity, UpstreamRequestHead};
+
+pub fn translate_pingora_h1_request_header(
+    head: &UpstreamRequestHead,
+) -> Result<Box<RequestHeader>> {
+    let target = if head.method == Method::CONNECT {
+        head.uri
+            .authority()
+            .map(|authority| authority.as_str())
+            .or_else(|| head.uri.path_and_query().map(|target| target.as_str()))
+            .unwrap_or_default()
+    } else {
+        head.uri
+            .path_and_query()
+            .map(|target| target.as_str())
+            .unwrap_or("/")
+    };
+    let mut translated = RequestHeader::build(
+        head.method.clone(),
+        target.as_bytes(),
+        Some(head.headers.len()),
+    )?;
+    translated.set_version(Version::HTTP_11);
+    for (name, value) in &head.headers {
+        translated.append_header(name.clone(), value.clone())?;
+    }
+    Ok(Box::new(translated))
+}
 
 pub struct PingoraH1UpstreamSession {
     pool: PingoraPoolLease,
