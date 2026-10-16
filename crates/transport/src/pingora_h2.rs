@@ -13,7 +13,7 @@ use crate::{
     PingoraPoolLease, PingoraUpstreamConnectionIdentity, UpstreamBodyFrame, UpstreamCancellation,
     UpstreamConnectionReuse, UpstreamExchangeCompletion, UpstreamExchangeLifecycle,
     UpstreamExchangeOutcome, UpstreamExchangeResponse, UpstreamRequestBody, UpstreamRequestHead,
-    UpstreamResponseHead, UpstreamTrailers, classify_pingora_h1_error,
+    UpstreamResponseHead, UpstreamTrailers, classify_pingora_h2_error,
     exchange::upstream_response_body_channel,
 };
 
@@ -147,12 +147,12 @@ impl PingoraH2UpstreamSession {
             Ok(header) => header,
             Err(error) => {
                 self.close().await;
-                return Err(classify_pingora_h1_error(&error));
+                return Err(classify_pingora_h2_error(&error, self.reused));
             }
         };
         if let Err(error) = self.session_mut().write_request_header(header, false) {
             self.close().await;
-            return Err(classify_pingora_h1_error(&error));
+            return Err(classify_pingora_h2_error(&error, self.reused));
         }
 
         let mut ended = false;
@@ -168,7 +168,7 @@ impl PingoraH2UpstreamSession {
                 Ok(UpstreamBodyFrame::Data(data)) => {
                     if let Err(error) = self.session_mut().write_request_body(data, false).await {
                         self.close().await;
-                        return Err(classify_pingora_h1_error(&error));
+                        return Err(classify_pingora_h2_error(&error, self.reused));
                     }
                 }
                 Ok(UpstreamBodyFrame::Trailers(trailers)) => {
@@ -194,7 +194,7 @@ impl PingoraH2UpstreamSession {
         if !ended {
             if let Err(error) = self.session_mut().finish_request_body() {
                 self.close().await;
-                return Err(classify_pingora_h1_error(&error));
+                return Err(classify_pingora_h2_error(&error, self.reused));
             }
         }
         self.state = PingoraH2ExchangeState::RequestComplete;
@@ -233,8 +233,8 @@ impl PingoraH2UpstreamSession {
             response_header = self.session_mut().read_response_header() => response_header,
         };
         if let Err(error) = response_header {
-            let outcome_error = classify_pingora_h1_error(&error);
-            let return_error = classify_pingora_h1_error(&error);
+            let outcome_error = classify_pingora_h2_error(&error, self.reused);
+            let return_error = classify_pingora_h2_error(&error, self.reused);
             let connection_reuse = pingora_h2_error_reuse(&error);
             self.close().await;
             finish_pingora_h2_exchange(
@@ -378,8 +378,8 @@ async fn fail_pingora_h2_response(
     error: Box<Error>,
     cancellation_open: &mut bool,
 ) {
-    let frame_error = classify_pingora_h1_error(&error);
-    let outcome_error = classify_pingora_h1_error(&error);
+    let frame_error = classify_pingora_h2_error(&error, session.reused);
+    let outcome_error = classify_pingora_h2_error(&error, session.reused);
     let connection_reuse = pingora_h2_error_reuse(&error);
     let mut lifecycle = lifecycle;
     let delivered = send_pingora_h2_response_frame(

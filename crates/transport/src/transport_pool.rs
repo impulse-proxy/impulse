@@ -33,7 +33,7 @@ use crate::{
     h1_pool::H1Pool,
     h2_client::{ConnectObserver, SharedDnsResolver, TlsClientConfig},
     h2_pool::H2Pool,
-    pingora_failure::classify_pingora_h1_error,
+    pingora_failure::{classify_pingora_h1_error, classify_pingora_h2_error},
     pingora_h1::PingoraH1UpstreamSession,
     pingora_h2::PingoraH2UpstreamSession,
     pingora_pool::{PingoraPool, PingoraPoolLease},
@@ -114,7 +114,7 @@ impl UpstreamTransportPool {
         })?;
         PingoraH2UpstreamSession::acquire(pool, peer, identity)
             .await
-            .map_err(|error| classify_pingora_h1_error(&error))
+            .map_err(|error| classify_pingora_h2_error(&error, false))
     }
 
     pub async fn acquire_pingora_h1_session(
