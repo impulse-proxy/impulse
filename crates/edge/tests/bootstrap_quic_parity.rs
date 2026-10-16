@@ -11,7 +11,7 @@ use std::{
 };
 
 use bytes::Bytes;
-use http_body_util::Full;
+use http_body_util::{BodyExt, Full};
 use hyper::{Request, Response, body::Incoming};
 use impulse_config::config::{
     ApiKeyAuth, DistributedQuotaPolicy, DistributedQuotaSelector, DistributedQuotaWindow,
@@ -27,9 +27,9 @@ use support::{
     net::local_listener_bind_available,
     parity::{BootstrapQuicParityHarness, ParityRequestSpec, make_backend, make_upstream},
     request_path::{
-        BootstrapRequestSpec, H3RequestSpec, run_bootstrap_h1_websocket_handshake_to,
-        run_bootstrap_request_to, run_request_to, run_two_chunk_bootstrap_post_to,
-        run_two_chunk_post_to,
+        BootstrapRequestSpec, H3RequestSpec, cancel_bootstrap_post_to, cancel_h3_post_to,
+        run_bootstrap_h1_websocket_handshake_to, run_bootstrap_request_to, run_request_to,
+        run_two_chunk_bootstrap_post_to, run_two_chunk_post_to,
     },
 };
 
@@ -966,6 +966,224 @@ fn bootstrap_and_quic_admission_overload_shed_contracts_match() {
 }
 
 // Response normalization parity
+
+#[test]
+fn bootstrap_and_quic_empty_request_and_response_bodies_match() {
+    if !local_listener_bind_available() {
+        return;
+    }
+
+    let mut harness = BootstrapQuicParityHarness::new();
+    let backend_addr = harness.start_h1_backend(|req: Request<Incoming>| async move {
+        let body = req
+            .into_body()
+            .collect()
+            .await
+            .expect("collect empty request body")
+            .to_bytes();
+        Ok::<_, Infallible>(
+            Response::builder()
+                .header("x-request-body-bytes", body.len().to_string())
+                .body(Full::new(Bytes::new()))
+                .expect("response"),
+        )
+    });
+    start_single_route_listener(&mut harness, "/empty", backend_addr.to_string());
+
+    let mut request = ParityRequestSpec::get("localhost", "/empty");
+    request.selected_response_headers = &["x-request-body-bytes"];
+    let pair = harness
+        .run_parity_pair(request)
+        .expect("empty body parity pair");
+
+    assert_eq!(pair.quic.response.status, 200);
+    assert_eq!(pair.bootstrap.response.status, 200);
+    assert!(pair.quic.response.body.is_empty());
+    assert!(pair.bootstrap.response.body.is_empty());
+    assert_eq!(
+        pair.bootstrap.response.selected_headers,
+        pair.quic.response.selected_headers
+    );
+    assert_eq!(
+        pair.quic.response.selected_headers,
+        vec![(String::from("x-request-body-bytes"), String::from("0"))]
+    );
+}
+
+#[test]
+fn bootstrap_and_quic_streaming_request_bodies_match() {
+    if !local_listener_bind_available() {
+        return;
+    }
+
+    let mut harness = BootstrapQuicParityHarness::new();
+    let backend_addr = harness.start_h1_backend(|req: Request<Incoming>| async move {
+        let body = req
+            .into_body()
+            .collect()
+            .await
+            .expect("collect streamed request body")
+            .to_bytes();
+        Ok::<_, Infallible>(Response::new(Full::new(body)))
+    });
+    start_single_route_listener(&mut harness, "/stream-request", backend_addr.to_string());
+    let listen_addr = harness.listen_addr();
+
+    let (quic, reset) = run_two_chunk_post_to(
+        listen_addr,
+        "localhost",
+        "/stream-request",
+        b"first-".to_vec(),
+        b"second".to_vec(),
+        Duration::from_millis(25),
+    )
+    .expect("quic streamed request");
+    let bootstrap = run_two_chunk_bootstrap_post_to(
+        listen_addr,
+        harness.cert_path(),
+        "localhost",
+        "/stream-request",
+        b"first-".to_vec(),
+        b"second".to_vec(),
+        Duration::from_millis(25),
+    )
+    .expect("bootstrap streamed request");
+
+    assert!(!reset);
+    assert_eq!(quic.status, 200);
+    assert_eq!(bootstrap.status, 200);
+    assert_eq!(quic.body, b"first-second");
+    assert_eq!(bootstrap.body, quic.body);
+}
+
+#[test]
+fn bootstrap_and_quic_streaming_response_bodies_match() {
+    if !local_listener_bind_available() {
+        return;
+    }
+
+    let mut harness = BootstrapQuicParityHarness::new();
+    let backend_addr = harness.start_h1_chunked_backend(vec![b"first-", b"second", b"-third"]);
+    start_single_route_listener(&mut harness, "/stream-response", backend_addr.to_string());
+
+    let pair = harness
+        .run_parity_pair(ParityRequestSpec::get("localhost", "/stream-response"))
+        .expect("streaming response parity pair");
+
+    assert_eq!(pair.quic.response.status, 200);
+    assert_eq!(pair.bootstrap.response.status, 200);
+    assert_eq!(pair.quic.response.body, b"first-second-third");
+    assert_eq!(pair.bootstrap.response.body, pair.quic.response.body);
+}
+
+#[test]
+#[ignore = "bootstrap path does not yet preserve upstream response trailers"]
+fn bootstrap_and_quic_response_trailers_match() {
+    if !local_listener_bind_available() {
+        return;
+    }
+
+    let mut harness = BootstrapQuicParityHarness::new();
+    let mut trailers = http::HeaderMap::new();
+    trailers.insert("grpc-status", http::HeaderValue::from_static("0"));
+    trailers.insert("grpc-message", http::HeaderValue::from_static("ok"));
+    let backend_addr = harness.start_h2_trailer_backend(vec![b"hello\n"], trailers);
+    start_single_route_listener(&mut harness, "/trailers", format!("https://{backend_addr}"));
+
+    let pair = harness
+        .run_parity_pair(ParityRequestSpec::get("localhost", "/trailers"))
+        .expect("trailer parity pair");
+
+    assert_eq!(pair.quic.response.status, 200);
+    assert_eq!(pair.bootstrap.response.status, 200);
+    assert_eq!(pair.bootstrap.response.body, pair.quic.response.body);
+    assert_eq!(
+        pair.bootstrap.response.trailers,
+        pair.quic.response.trailers
+    );
+    assert!(
+        pair.quic
+            .response
+            .trailers
+            .iter()
+            .any(|(name, value)| { name.eq_ignore_ascii_case("grpc-status") && value == "0" })
+    );
+    assert!(
+        pair.quic
+            .response
+            .trailers
+            .iter()
+            .any(|(name, value)| { name.eq_ignore_ascii_case("grpc-message") && value == "ok" })
+    );
+}
+
+#[test]
+#[serial]
+fn bootstrap_and_quic_early_upstream_eof_reject_incomplete_bodies() {
+    if !local_listener_bind_available() {
+        return;
+    }
+
+    let mut harness = BootstrapQuicParityHarness::new();
+    let backend_addr = harness.start_h1_raw_response_backend(
+        b"HTTP/1.1 200 OK\r\ncontent-length: 12\r\nconnection: close\r\n\r\nshort".to_vec(),
+    );
+    start_single_route_listener(&mut harness, "/early-eof", backend_addr.to_string());
+    let request = ParityRequestSpec::get("localhost", "/early-eof");
+
+    assert!(harness.run_quic(request).is_err());
+    assert!(harness.run_bootstrap(request).is_err());
+}
+
+#[test]
+#[serial]
+fn bootstrap_and_quic_downstream_cancellation_release_capacity() {
+    if !local_listener_bind_available() {
+        return;
+    }
+
+    let mut harness = BootstrapQuicParityHarness::new();
+    let backend_addr = harness.start_h1_backend(|req: Request<Incoming>| async move {
+        let _ = req.into_body().collect().await;
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from_static(b"complete"))))
+    });
+    let mut config = harness.make_config(HashMap::from([(
+        "api".to_string(),
+        make_upstream(
+            "/cancel",
+            vec![make_backend("backend-a", backend_addr.to_string())],
+            None,
+            "round-robin",
+        ),
+    )]));
+    config.performance.global_inflight_limit = 1;
+    let listen_addr = harness
+        .start_listener(config)
+        .expect("listener with bootstrap");
+
+    cancel_h3_post_to(listen_addr, "localhost", "/cancel").expect("cancel quic request");
+    thread::sleep(Duration::from_millis(100));
+    assert_eq!(
+        harness
+            .run_quic(ParityRequestSpec::get("localhost", "/cancel"))
+            .expect("quic request after cancellation")
+            .response
+            .status,
+        200
+    );
+
+    cancel_bootstrap_post_to(listen_addr, harness.cert_path(), "localhost", "/cancel")
+        .expect("cancel bootstrap request");
+    thread::sleep(Duration::from_millis(100));
+    assert_eq!(
+        harness
+            .run_bootstrap(ParityRequestSpec::get("localhost", "/cancel"))
+            .expect("bootstrap request after cancellation")
+            .response
+            .status,
+        200
+    );
+}
 
 #[test]
 fn bootstrap_and_quic_response_normalization_strip_same_hop_headers() {

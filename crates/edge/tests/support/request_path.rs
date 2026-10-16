@@ -297,6 +297,23 @@ impl QuicRequestPathHarness {
             &self.tls.cert_path,
             &self.tls.key_path,
             chunks,
+            None,
+        ));
+        let addr = fixture.addr;
+        self.backends.push(fixture);
+        addr
+    }
+
+    pub fn start_h2_trailer_backend(
+        &mut self,
+        chunks: Vec<&'static [u8]>,
+        trailers: http::HeaderMap,
+    ) -> SocketAddr {
+        let fixture = self.rt.block_on(start_h2_streaming_backend(
+            &self.tls.cert_path,
+            &self.tls.key_path,
+            chunks,
+            Some(trailers),
         ));
         let addr = fixture.addr;
         self.backends.push(fixture);
@@ -427,6 +444,7 @@ impl<'a> H3RequestSpec<'a> {
 pub struct H3Response {
     pub status: u16,
     pub headers: Vec<(String, String)>,
+    pub trailers: Vec<(String, String)>,
     pub body: Vec<u8>,
 }
 
@@ -493,6 +511,7 @@ impl<'a> BootstrapRequestSpec<'a> {
 pub struct BootstrapResponse {
     pub status: u16,
     pub headers: Vec<(String, String)>,
+    pub trailers: Vec<(String, String)>,
     pub body: Vec<u8>,
 }
 
@@ -576,6 +595,42 @@ pub fn run_two_chunk_bootstrap_post_to(
             chunk2,
             delay_between_chunks,
         ))
+}
+
+pub fn cancel_bootstrap_post_to(
+    addr: SocketAddr,
+    cert_path: &str,
+    authority: &str,
+    path: &str,
+) -> Result<(), String> {
+    tokio::runtime::Runtime::new()
+        .expect("runtime")
+        .block_on(async move {
+            let (mut sender, conn_task) = connect_bootstrap_h2(addr, cert_path).await?;
+            sender
+                .ready()
+                .await
+                .map_err(|err| format!("sender ready: {err}"))?;
+            let request = Request::builder()
+                .method("POST")
+                .uri(path)
+                .header("host", authority)
+                .header("content-length", "2")
+                .body(
+                    TwoChunkDelayedBody::new(
+                        Bytes::from_static(b"a"),
+                        Bytes::from_static(b"b"),
+                        Duration::from_secs(30),
+                    )
+                    .boxed(),
+                )
+                .map_err(|err| format!("request build: {err}"))?;
+            let request_task = tokio::spawn(async move { sender.send_request(request).await });
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            request_task.abort();
+            conn_task.abort();
+            Ok(())
+        })
 }
 
 async fn run_bootstrap_h2_request(
@@ -686,6 +741,7 @@ async fn run_bootstrap_h1_websocket_handshake(
                             )
                         })
                         .collect(),
+                    trailers: Vec::new(),
                     body: response
                         .into_body()
                         .collect()
@@ -764,17 +820,29 @@ async fn read_bootstrap_h2_response(
         })
         .collect::<Result<Vec<_>, _>>()?;
     let mut body = Vec::new();
+    let mut trailers = Vec::new();
 
     while let Some(frame) = response.body_mut().frame().await {
         let frame = frame.map_err(|err| format!("read frame: {err}"))?;
-        if let Ok(data) = frame.into_data() {
-            body.extend_from_slice(&data);
+        match frame.into_data() {
+            Ok(data) => body.extend_from_slice(&data),
+            Err(frame) => {
+                if let Ok(values) = frame.into_trailers() {
+                    trailers.extend(values.iter().map(|(name, value)| {
+                        (
+                            name.as_str().to_string(),
+                            value.to_str().unwrap_or_default().to_string(),
+                        )
+                    }));
+                }
+            }
         }
     }
 
     Ok(BootstrapResponse {
         status,
         headers,
+        trailers,
         body,
     })
 }
@@ -928,6 +996,42 @@ pub fn run_two_chunk_post_to_with_response_timeout(
     delay_between_chunks: Duration,
     response_timeout: Duration,
 ) -> Result<(H3Response, bool), String> {
+    run_two_chunk_post(
+        addr,
+        authority,
+        path,
+        chunk1,
+        chunk2,
+        delay_between_chunks,
+        response_timeout,
+        false,
+    )
+}
+
+pub fn cancel_h3_post_to(addr: SocketAddr, authority: &str, path: &str) -> Result<(), String> {
+    run_two_chunk_post(
+        addr,
+        authority,
+        path,
+        vec![b'a'],
+        vec![b'b'],
+        Duration::ZERO,
+        Duration::from_secs(REQUEST_TIMEOUT_SECS),
+        true,
+    )
+    .map(|_| ())
+}
+
+fn run_two_chunk_post(
+    addr: SocketAddr,
+    authority: &str,
+    path: &str,
+    chunk1: Vec<u8>,
+    chunk2: Vec<u8>,
+    delay_between_chunks: Duration,
+    response_timeout: Duration,
+    cancel_after_first_chunk: bool,
+) -> Result<(H3Response, bool), String> {
     let socket = UdpSocket::bind("0.0.0.0:0").map_err(|err| err.to_string())?;
     let local_addr = socket.local_addr().map_err(|err| err.to_string())?;
 
@@ -968,6 +1072,8 @@ pub fn run_two_chunk_post_to_with_response_timeout(
     let mut status = 0u16;
     let mut headers = Vec::new();
     let mut body = Vec::new();
+    let mut trailers = Vec::new();
+    let mut received_response_headers = false;
     let mut got_reset = false;
     let mut request_stream_stopped = false;
 
@@ -1050,6 +1156,24 @@ pub fn run_two_chunk_post_to_with_response_timeout(
                     match h3_conn.send_body(&mut conn, sid, &chunk1[chunk1_written..], false) {
                         Ok(written) => {
                             chunk1_written += written;
+                            if cancel_after_first_chunk && chunk1_written == chunk1.len() {
+                                conn.stream_shutdown(sid, quiche::Shutdown::Write, 0)
+                                    .map_err(|err| format!("cancel request stream: {err:?}"))?;
+                                while let Ok((write, send_info)) = conn.send(&mut out) {
+                                    socket
+                                        .send_to(&out[..write], send_info.to)
+                                        .map_err(|err| format!("send cancellation: {err:?}"))?;
+                                }
+                                return Ok((
+                                    H3Response {
+                                        status: 0,
+                                        headers: Vec::new(),
+                                        trailers: Vec::new(),
+                                        body: Vec::new(),
+                                    },
+                                    true,
+                                ));
+                            }
                         }
                         Err(quiche::h3::Error::Done | quiche::h3::Error::StreamBlocked) => {}
                         Err(quiche::h3::Error::TransportError(quiche::Error::StreamStopped(_))) => {
@@ -1083,13 +1207,19 @@ pub fn run_two_chunk_post_to_with_response_timeout(
             loop {
                 match h3_conn.poll(&mut conn) {
                     Ok((_stream_id, quiche::h3::Event::Headers { list, .. })) => {
+                        let target = if received_response_headers {
+                            &mut trailers
+                        } else {
+                            received_response_headers = true;
+                            &mut headers
+                        };
                         for header in &list {
                             let name = String::from_utf8_lossy(header.name()).to_string();
                             let value = String::from_utf8_lossy(header.value()).to_string();
                             if name == ":status" {
                                 status = value.parse::<u16>().unwrap_or_default();
                             }
-                            headers.push((name, value));
+                            target.push((name, value));
                         }
                     }
                     Ok((stream_id, quiche::h3::Event::Data)) => loop {
@@ -1104,6 +1234,7 @@ pub fn run_two_chunk_post_to_with_response_timeout(
                             H3Response {
                                 status,
                                 headers,
+                                trailers,
                                 body,
                             },
                             got_reset,
@@ -1115,6 +1246,7 @@ pub fn run_two_chunk_post_to_with_response_timeout(
                             H3Response {
                                 status,
                                 headers,
+                                trailers,
                                 body,
                             },
                             got_reset,
@@ -1373,6 +1505,7 @@ pub async fn start_h2_streaming_backend(
     cert_path: &str,
     key_path: &str,
     chunks: Vec<&'static [u8]>,
+    trailers: Option<http::HeaderMap>,
 ) -> BackendFixture {
     let mut tls_config = ServerConfig::builder()
         .with_no_client_auth()
@@ -1394,6 +1527,7 @@ pub async fn start_h2_streaming_backend(
             };
             let acceptor = acceptor.clone();
             let chunks = chunks.clone();
+            let trailers = trailers.clone();
             tokio::spawn(async move {
                 let tls_stream = match acceptor.accept(stream).await {
                     Ok(stream) => stream,
@@ -1405,6 +1539,7 @@ pub async fn start_h2_streaming_backend(
                             .iter()
                             .map(|chunk| Bytes::from_static(chunk))
                             .collect::<Vec<_>>(),
+                        trailers.clone(),
                     );
                     async move { Ok::<_, hyper::Error>(Response::new(body)) }
                 });
@@ -1676,7 +1811,9 @@ fn run_h3_request(addr: SocketAddr, request: H3RequestSpec<'_>) -> Result<H3Resp
     let mut buf = [0u8; MAX_DATAGRAM_SIZE_BYTES];
     let mut status = 0;
     let mut headers = Vec::new();
+    let mut trailers = Vec::new();
     let mut body = Vec::new();
+    let mut received_response_headers = false;
     let mut request_sent = false;
     let start = Instant::now();
 
@@ -1761,13 +1898,19 @@ fn run_h3_request(addr: SocketAddr, request: H3RequestSpec<'_>) -> Result<H3Resp
             loop {
                 match h3_conn.poll(&mut conn) {
                     Ok((_stream_id, quiche::h3::Event::Headers { list, .. })) => {
+                        let target = if received_response_headers {
+                            &mut trailers
+                        } else {
+                            received_response_headers = true;
+                            &mut headers
+                        };
                         for header in &list {
                             let name = String::from_utf8_lossy(header.name()).to_string();
                             let value = String::from_utf8_lossy(header.value()).to_string();
                             if name == ":status" {
                                 status = value.parse::<u16>().unwrap_or_default();
                             }
-                            headers.push((name, value));
+                            target.push((name, value));
                         }
                     }
                     Ok((stream_id, quiche::h3::Event::Data)) => loop {
@@ -1781,6 +1924,7 @@ fn run_h3_request(addr: SocketAddr, request: H3RequestSpec<'_>) -> Result<H3Resp
                         return Ok(H3Response {
                             status,
                             headers,
+                            trailers,
                             body,
                         });
                     }
@@ -1817,12 +1961,14 @@ pub fn read_test_key(key_path: &str) -> PrivateKeyDer<'static> {
 
 struct ChunkSequenceBody {
     chunks: std::vec::IntoIter<Bytes>,
+    trailers: Option<http::HeaderMap>,
 }
 
 impl ChunkSequenceBody {
-    fn new(chunks: Vec<Bytes>) -> Self {
+    fn new(chunks: Vec<Bytes>, trailers: Option<http::HeaderMap>) -> Self {
         Self {
             chunks: chunks.into_iter(),
+            trailers,
         }
     }
 }
@@ -1835,6 +1981,13 @@ impl Body for ChunkSequenceBody {
         mut self: std::pin::Pin<&mut Self>,
         _cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
-        std::task::Poll::Ready(self.chunks.next().map(|chunk| Ok(Frame::data(chunk))))
+        if let Some(chunk) = self.chunks.next() {
+            return std::task::Poll::Ready(Some(Ok(Frame::data(chunk))));
+        }
+        std::task::Poll::Ready(
+            self.trailers
+                .take()
+                .map(|trailers| Ok(Frame::trailers(trailers))),
+        )
     }
 }

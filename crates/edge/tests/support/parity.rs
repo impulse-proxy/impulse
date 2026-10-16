@@ -49,6 +49,7 @@ pub struct ParityResponseSnapshot {
     pub status: u16,
     pub body: Vec<u8>,
     pub selected_headers: Vec<(String, String)>,
+    pub trailers: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -129,6 +130,14 @@ impl BootstrapQuicParityHarness {
         self.inner.start_h2_static_backend(body)
     }
 
+    pub fn start_h2_trailer_backend(
+        &mut self,
+        chunks: Vec<&'static [u8]>,
+        trailers: http::HeaderMap,
+    ) -> SocketAddr {
+        self.inner.start_h2_trailer_backend(chunks, trailers)
+    }
+
     pub fn run_quic(&self, request: ParityRequestSpec<'_>) -> Result<ParityObservation, String> {
         let before = self.capture_metrics(request.capture_metrics_delta);
         let response = self.inner.run_request(H3RequestSpec {
@@ -207,6 +216,7 @@ fn snapshot_h3_response(
         status: response.status,
         body: response.body,
         selected_headers: select_headers(response.headers, selected_response_headers),
+        trailers: sorted_headers(response.trailers),
     }
 }
 
@@ -218,6 +228,7 @@ fn snapshot_bootstrap_response(
         status: response.status,
         body: response.body,
         selected_headers: select_headers(response.headers, selected_response_headers),
+        trailers: sorted_headers(response.trailers),
     }
 }
 
@@ -240,6 +251,16 @@ fn select_headers(
             .then_with(|| left.1.cmp(&right.1))
     });
     selected
+}
+
+fn sorted_headers(mut headers: Vec<(String, String)>) -> Vec<(String, String)> {
+    headers.sort_by(|left, right| {
+        left.0
+            .to_ascii_lowercase()
+            .cmp(&right.0.to_ascii_lowercase())
+            .then_with(|| left.1.cmp(&right.1))
+    });
+    headers
 }
 
 fn join_metrics_delta(
