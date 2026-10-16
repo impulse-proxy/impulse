@@ -178,11 +178,11 @@ pub(crate) struct OverloadDecision {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct AdmissionRejectionResponse {
-    pub(super) status: StatusCode,
-    pub(super) body: &'static [u8],
-    pub(super) www_authenticate: Option<&'static str>,
-    pub(super) retry_after_seconds: Option<u32>,
+pub(crate) struct AdmissionRejectionResponse {
+    pub(crate) status: StatusCode,
+    pub(crate) body: &'static [u8],
+    pub(crate) www_authenticate: Option<&'static str>,
+    pub(crate) retry_after_seconds: Option<u32>,
 }
 
 #[derive(Debug, Clone)]
@@ -369,7 +369,7 @@ fn overload_decision_for_route_queue_rejection(
     overload_decision(reason, retry_after_seconds)
 }
 
-pub(super) fn admission_rejection_response(
+pub(crate) fn admission_rejection_response(
     decision: &AdmissionPolicyDecision,
 ) -> Option<AdmissionRejectionResponse> {
     match decision {

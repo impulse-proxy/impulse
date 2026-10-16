@@ -115,7 +115,9 @@ mod token_bucket;
 mod validation;
 mod workers;
 
-pub(crate) use admission::{AdmissionPolicyDecision, evaluate_forwarding_pre_admission_policy};
+pub(crate) use admission::{
+    AdmissionPolicyDecision, admission_rejection_response, evaluate_forwarding_pre_admission_policy,
+};
 pub use async_runtime::configure_async_runtime;
 pub(in crate::quic_listener) use async_runtime::{
     runtime_handle, spawn_async_task, spawn_supervised_async_task,
@@ -144,6 +146,7 @@ pub(in crate::quic_listener) use protocol::{
 };
 pub use runtime_state::ListenerWorkerRuntimeState;
 pub(crate) use token_bucket::{PerSourceTokenBucket, TokenBucket};
+pub(crate) use validation::validate_http_request_parts;
 use validation::{
     RequestBufferError, extract_header_value, generated_span_id, generated_trace_id,
     parse_traceparent, validate_request_headers,
