@@ -1385,7 +1385,13 @@ impl QUICListener {
                             };
                         let _ = Self::send_simple_response(h3, quic, stream_id, status, body);
                     } else {
-                        let _ = h3.send_body(quic, stream_id, b"", true);
+                        // The advertised response is incomplete, so a clean FIN would
+                        // incorrectly present truncated bytes as a successful response.
+                        let _ = quic.stream_shutdown(
+                            stream_id,
+                            quiche::Shutdown::Write,
+                            0x102, // H3_INTERNAL_ERROR
+                        );
                     }
                     let upstream_name = routing_index.lookup(&req.path, req.authority.as_deref());
                     let upstream_pool = upstream_name.and_then(|n| upstream_pools.get(n));

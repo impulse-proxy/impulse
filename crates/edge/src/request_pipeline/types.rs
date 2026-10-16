@@ -5,7 +5,7 @@ use impulse_errors::ProxyError;
 
 use super::{outcome::TerminalOutcomeGuard, policy::ResolvedRequestPolicy};
 use crate::{
-    quic_listener::admission::AdmissionPolicyDecision, routing::decision::RouteDecisionReason,
+    quic_listener::AdmissionPolicyDecision, routing::decision::RouteDecisionReason,
     runtime::activation::GenerationId,
 };
 

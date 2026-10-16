@@ -35,8 +35,8 @@ use super::{
 };
 use crate::{
     request_pipeline::{
-        PipelineRequest, PipelineRoute, ResolvedRequestPolicy, TerminalOutcomeGuard,
-        evaluate_pipeline,
+        PipelineRequest, PipelineResolution, PipelineRoute, ResolvedRequestPolicy,
+        TerminalOutcomeGuard, evaluate_pipeline,
     },
     runtime::connection::{
         auth::{
@@ -482,7 +482,11 @@ pub(in crate::quic_listener) fn evaluate_bootstrap_request_policy(
         }
     };
 
-    let pipeline_evaluation = evaluate_pipeline(
+    let PipelineResolution {
+        route: _,
+        policy: request_policy,
+        admission,
+    } = evaluate_pipeline(
         &input.request_ctx.runtime.resilience,
         PipelineRoute::new(&resolved.upstream_name, &resolved.upstream_policy),
         PipelineRequest {
@@ -495,7 +499,6 @@ pub(in crate::quic_listener) fn evaluate_bootstrap_request_policy(
             terminal_outcome: input.request_ctx.terminal_outcome.clone(),
         },
     );
-    let admission = pipeline_evaluation.admission;
     input
         .request_ctx
         .runtime
@@ -690,7 +693,7 @@ pub(in crate::quic_listener) fn evaluate_bootstrap_request_policy(
         backend_addr: resolved.backend_addr,
         backend_index: resolved.backend_index,
         upstream_name: resolved.upstream_name,
-        request_policy: pipeline_evaluation.policy,
+        request_policy,
         upstream_pool: resolved.upstream_pool,
     })
 }

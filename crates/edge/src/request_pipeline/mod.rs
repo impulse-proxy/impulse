@@ -9,7 +9,9 @@ mod types;
 
 pub(crate) use outcome::TerminalOutcomeGuard;
 pub(crate) use pipeline::evaluate_pipeline;
-pub(crate) use policy::{ResolvedRequestPolicy, resolve_policy};
+pub(crate) use policy::ResolvedRequestPolicy;
+#[cfg(test)]
+pub(crate) use policy::resolve_policy;
 pub(crate) use routing::{RouteResolutionError, resolve_route};
 pub(crate) use types::{
     PipelineRequest, PipelineResolution, PipelineResult, PipelineRoute, RequestHeaderLookup,

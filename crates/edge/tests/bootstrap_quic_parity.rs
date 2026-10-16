@@ -2504,14 +2504,16 @@ fn bootstrap_and_quic_malformed_content_length_rejections_match() {
         selected_response_headers: &[],
         capture_metrics_delta: false,
     };
-    let pair = harness
-        .run_parity_pair(request)
-        .expect("malformed framing parity pair");
+    let quic = harness
+        .run_quic(request)
+        .expect("quic malformed framing response");
 
-    assert_eq!(pair.quic.response.status, 400);
-    assert_eq!(pair.bootstrap.response.status, 400);
-    assert_eq!(pair.bootstrap.response.body, pair.quic.response.body);
-    assert_eq!(pair.quic.response.body, b"invalid content-length header\n");
+    assert_eq!(quic.response.status, 400);
+    assert_eq!(quic.response.body, b"invalid content-length header\n");
+    assert!(
+        harness.run_bootstrap(request).is_err(),
+        "HTTP/2 must reject an invalid content-length before application dispatch"
+    );
 }
 
 #[test]
@@ -2949,5 +2951,6 @@ fn parity_snapshot_from_response(
         status,
         body,
         selected_headers,
+        trailers: Vec::new(),
     }
 }

@@ -1,5 +1,5 @@
 use crate::{
-    quic_listener::admission::{AdmissionPolicyDecision, evaluate_forwarding_pre_admission_policy},
+    quic_listener::{AdmissionPolicyDecision, evaluate_forwarding_pre_admission_policy},
     request_pipeline::{PipelineRequest, ResolvedRequestPolicy},
     resilience::runtime::RuntimeResilience,
 };

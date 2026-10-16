@@ -116,6 +116,7 @@ mod token_bucket;
 mod validation;
 mod workers;
 
+pub(crate) use admission::{AdmissionPolicyDecision, evaluate_forwarding_pre_admission_policy};
 pub use async_runtime::configure_async_runtime;
 pub(in crate::quic_listener) use async_runtime::{
     runtime_handle, spawn_async_task, spawn_supervised_async_task,
