@@ -6,5 +6,5 @@ mod routing;
 mod types;
 
 pub(crate) use policy::{RequestPolicyService, ResolvedRequestPolicy};
-pub(crate) use routing::{RouteResolutionError, RouteResolutionService};
+pub(crate) use routing::{RouteResolutionError, resolve_route};
 pub(crate) use types::{PipelineRequest, RequestHeaderLookup, ResolvedRouteTarget};
