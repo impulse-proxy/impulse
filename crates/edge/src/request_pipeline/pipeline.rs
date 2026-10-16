@@ -1,5 +1,6 @@
 use super::{
-    PipelineRequest, PipelineResolution, PipelineRoute, evaluate_admission, resolve_policy,
+    PipelineRequest, PipelineResolution, PipelineRoute, admission::evaluate_admission,
+    policy::resolve_policy,
 };
 use crate::resilience::runtime::RuntimeResilience;
 

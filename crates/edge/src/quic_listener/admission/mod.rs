@@ -69,10 +69,7 @@ mod jwks_cache;
 mod jwks_refresh;
 mod jwt;
 mod key_resolution;
-mod service;
 mod startup;
-
-pub(in crate::quic_listener) use service::RequestAdmissionService;
 
 #[cfg(test)]
 pub(super) use self::jwks_cache::{

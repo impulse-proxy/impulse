@@ -7,7 +7,6 @@ mod policy;
 mod routing;
 mod types;
 
-pub(crate) use admission::evaluate_admission;
 pub(crate) use outcome::TerminalOutcomeGuard;
 pub(crate) use pipeline::evaluate_pipeline;
 pub(crate) use policy::{ResolvedRequestPolicy, resolve_policy};

@@ -5,7 +5,7 @@ use crate::{
 };
 
 /// Evaluates admission for a resolved request using the active resilience state.
-pub(crate) fn evaluate_admission(
+pub(super) fn evaluate_admission(
     resilience: &RuntimeResilience,
     policy: &ResolvedRequestPolicy,
     route: &str,
