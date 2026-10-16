@@ -1,4 +1,9 @@
-use std::{collections::BTreeMap, net::SocketAddr, path::PathBuf};
+use std::{
+    collections::{BTreeMap, hash_map::DefaultHasher},
+    hash::{Hash, Hasher},
+    net::SocketAddr,
+    path::PathBuf,
+};
 
 use impulse_config::runtime::RuntimeBackendTransportKind;
 use pingora_core::upstreams::peer::Proxy;
@@ -63,5 +68,11 @@ impl PingoraUpstreamConnectionIdentity {
             proxy: proxy.map(Into::into),
             generation,
         }
+    }
+
+    pub fn pool_key(&self) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        self.hash(&mut hasher);
+        hasher.finish()
     }
 }
