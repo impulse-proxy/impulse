@@ -9,20 +9,9 @@ bytes.workspace = true
 http-body-util.workspace = true
 hyper.workspace = true
 hyper-util.workspace = true
-hyper-rustls.workspace = true
 h2 = "0.4"
-log.workspace = true
-rustls.workspace = true
-rustls-pki-types.workspace = true
 tokio.workspace = true
-tower-service = "0.3"
-webpki-roots.workspace = true
 pingora-core.workspace = true
 pingora-http.workspace = true
 impulse-errors = { path = "../errors" }
 impulse-config = { path = "../config" }
-
-[dev-dependencies]
-rcgen = "0.12"
-tempfile = "3"
-tokio-rustls.workspace = true

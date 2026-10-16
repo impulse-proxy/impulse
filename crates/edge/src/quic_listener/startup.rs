@@ -8,7 +8,7 @@ use std::{
 use impulse_config::runtime::{ListenerRuntimeConfig, RuntimeBackendAddressKind, RuntimeConfig};
 use impulse_errors::ProxyError;
 use impulse_lb::upstream_pool::UpstreamPool;
-use impulse_transport::{ConnectObservation, ConnectObserver, UpstreamTransportPool};
+use impulse_transport::UpstreamTransportPool;
 use log::{debug, info, warn};
 use socket2::{Domain, Protocol, Socket, Type};
 use tokio::sync::Semaphore;
@@ -102,15 +102,6 @@ impl QUICListener {
             shared_state,
             socket,
         })
-    }
-
-    fn record_backend_connect(
-        metrics: &crate::Metrics,
-        backend: &str,
-        hostname: &str,
-        resolved_addr: StdSocketAddr,
-    ) {
-        metrics.record_backend_connect(backend, hostname, resolved_addr);
     }
 
     pub fn build_shared_state(config: &RuntimeConfig) -> Result<SharedRuntimeState, ProxyError> {
@@ -278,21 +269,11 @@ impl QUICListener {
         let backend_lifecycle = Arc::new(BackendLifecycleCoordinator::new(Arc::clone(
             &backend_resolution_store,
         )));
-        let connect_metrics = Arc::clone(&metrics);
-        let connect_observer: ConnectObserver = Arc::new(move |observation: ConnectObservation| {
-            Self::record_backend_connect(
-                &connect_metrics,
-                &observation.backend,
-                &observation.hostname,
-                observation.resolved_addr,
-            );
-        });
         let transport_pool = Arc::new(
             UpstreamTransportPool::from_runtime_upstreams(
                 config.upstreams.values(),
                 &transport_policy.backend_connections,
                 backend_dns_resolver.clone(),
-                Some(connect_observer),
             )
             .map_err(ProxyError::Tls)?,
         );

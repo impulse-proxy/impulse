@@ -7,18 +7,12 @@
 
 use std::{
     collections::HashMap,
-    convert::Infallible,
-    future::Future,
     net::{SocketAddr, ToSocketAddrs},
     sync::Arc,
     time::Duration,
 };
 
-use http_body_util::{BodyExt, combinators::BoxBody};
-use hyper::{
-    Method, Request,
-    body::{Bytes, Incoming},
-};
+use hyper::Method;
 use impulse_config::runtime::{
     RuntimeBackendConnectionPolicy, RuntimeBackendTransportKind, RuntimeUpstream,
 };
@@ -30,18 +24,16 @@ use crate::{
     PingoraUpstreamConnectionIdentity,
     client_rotation::BackendClientRotation,
     exchange::{
-        UpstreamBodyFrame, UpstreamCancellation, UpstreamConnectionReuse,
-        UpstreamExchangeCompletion, UpstreamExchangeLifecycle, UpstreamExchangeOutcome,
-        UpstreamExchangeRequest, UpstreamExchangeResponse, UpstreamInflightPermit,
-        UpstreamResponseHead, UpstreamTrailers, upstream_response_body_channel,
+        UpstreamCancellation, UpstreamConnectionReuse, UpstreamExchangeCompletion,
+        UpstreamExchangeLifecycle, UpstreamExchangeOutcome, UpstreamExchangeRequest,
+        UpstreamExchangeResponse, UpstreamInflightPermit,
     },
-    h2_client::{ConnectObserver, SharedDnsResolver, TlsClientConfig},
-    h2_pool::H2Pool,
     pingora_failure::{classify_pingora_h1_error, classify_pingora_h2_error},
     pingora_h1::PingoraH1UpstreamSession,
     pingora_h2::PingoraH2UpstreamSession,
     pingora_peer::build_pingora_http_peer_with_address,
     pingora_pool::{PingoraPool, PingoraPoolLease},
+    runtime_config::{SharedDnsResolver, TlsClientConfig},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,22 +60,15 @@ impl TransportClientRotation {
     pub fn rotated(self) -> bool {
         self.rotation.changed()
     }
-
-    /// Returns generation movement for protocols that track reusable client generations.
-    pub fn generations(self) -> Option<(u64, u64)> {
-        self.rotation.generations()
-    }
 }
 
 /// Canonical transport façade used by edge/runtime code for backend execution.
 pub struct UpstreamTransportPool {
     backend_entries: HashMap<String, BackendTransportEntry>,
     inflight_limits: HashMap<String, Arc<Semaphore>>,
-    h2_pool: H2Pool,
     pingora_backends: HashMap<String, PingoraBackend>,
     pingora_pool: PingoraPool,
     dns_resolver: SharedDnsResolver,
-    execution_timeout: Duration,
 }
 
 impl UpstreamTransportPool {
@@ -224,131 +209,6 @@ impl UpstreamTransportPool {
         }
     }
 
-    pub async fn send_h2_exchange(
-        &self,
-        backend: &str,
-        request: UpstreamExchangeRequest,
-    ) -> Result<UpstreamExchangeResponse, ProxyError> {
-        if self.backend_entry(backend) != Some(BackendTransportEntry::H2) {
-            return Err(match self.backend_entry(backend) {
-                Some(BackendTransportEntry::Http1) => ProxyError::Protocol(format!(
-                    "backend '{backend}' is not configured for HTTP/2"
-                )),
-                None => ProxyError::Pool(PoolError::UnknownBackend(backend.to_string())),
-                Some(BackendTransportEntry::H2) => unreachable!(),
-            });
-        }
-
-        let UpstreamExchangeRequest {
-            head,
-            body,
-            mut cancellation,
-            completion,
-        } = request;
-        let mut hyper_request = Request::new(body.boxed());
-        *hyper_request.method_mut() = head.method;
-        *hyper_request.uri_mut() = head.uri;
-        *hyper_request.version_mut() = head.version;
-        *hyper_request.headers_mut() = head.headers;
-
-        let send = tokio::time::timeout(
-            self.execution_timeout,
-            self.h2_pool.send_exchange(backend, hyper_request),
-        );
-        tokio::pin!(send);
-        let sent = tokio::select! {
-            cancellation_result = &mut cancellation.signal => {
-                if cancellation_result.is_ok() {
-                    let _ = completion.send(UpstreamExchangeCompletion {
-                        outcome: UpstreamExchangeOutcome::Cancelled,
-                        connection_reuse: UpstreamConnectionReuse::Close,
-                    });
-                    return Err(ProxyError::Transport("upstream exchange cancelled".to_string()));
-                }
-                send.await
-            }
-            result = &mut send => result,
-        };
-        let (response, permit) = match sent {
-            Ok(Ok(response)) => response,
-            Ok(Err(error)) => {
-                let detail = error.to_string();
-                let _ = completion.send(UpstreamExchangeCompletion {
-                    outcome: UpstreamExchangeOutcome::Failed(ProxyError::Transport(detail)),
-                    connection_reuse: UpstreamConnectionReuse::Close,
-                });
-                return Err(ProxyError::Pool(error));
-            }
-            Err(_) => {
-                let _ = completion.send(UpstreamExchangeCompletion {
-                    outcome: UpstreamExchangeOutcome::Failed(ProxyError::Timeout),
-                    connection_reuse: UpstreamConnectionReuse::Close,
-                });
-                return Err(ProxyError::Timeout);
-            }
-        };
-        let lifecycle = UpstreamExchangeLifecycle {
-            cancellation,
-            completion,
-            inflight_permit: UpstreamInflightPermit { _permit: permit },
-        };
-        let (parts, response_body) = response.into_parts();
-        let response_head = UpstreamResponseHead {
-            status: parts.status,
-            version: parts.version,
-            headers: parts.headers,
-        };
-        let (frames, body) = upstream_response_body_channel();
-        tokio::spawn(pump_hyper_response(
-            response_body,
-            frames,
-            lifecycle,
-            "HTTP/2",
-        ));
-        Ok(UpstreamExchangeResponse {
-            head: response_head,
-            body,
-            upgrade: None,
-        })
-    }
-
-    /// Execute a canonical upstream request against the resolved backend target.
-    pub async fn send_backend_request(
-        &self,
-        backend: &str,
-        req: Request<BoxBody<Bytes, Infallible>>,
-    ) -> Result<hyper::Response<Incoming>, ProxyError> {
-        self.execute(backend, req).await
-    }
-
-    /// Execute a request with a caller-specific timeout.
-    ///
-    /// Health checks use this to keep a slow backend from consuming the
-    /// pool-wide request timeout.
-    pub async fn send_backend_request_with_timeout(
-        &self,
-        backend: &str,
-        req: Request<BoxBody<Bytes, Infallible>>,
-        timeout: Duration,
-    ) -> Result<hyper::Response<Incoming>, ProxyError> {
-        match self.backend_entry(backend) {
-            Some(BackendTransportEntry::Http1) => Err(ProxyError::Protocol(format!(
-                "backend '{backend}' requires the shared upstream exchange"
-            ))),
-            Some(BackendTransportEntry::H2) => {
-                self.execute_with_timeout_duration(
-                    backend,
-                    self.h2_pool.send(backend, req),
-                    timeout,
-                )
-                .await
-            }
-            None => Err(ProxyError::Pool(PoolError::UnknownBackend(
-                backend.to_string(),
-            ))),
-        }
-    }
-
     pub async fn send_health_check(
         &self,
         backend: &str,
@@ -429,53 +289,27 @@ impl UpstreamTransportPool {
     where
         I: IntoIterator<Item = (String, RuntimeBackendTransportKind)>,
     {
-        Self::new_runtime_with_observer(
-            backends,
-            backend_tls,
-            connection_policy.max_inflight,
-            connection_policy.max_idle_per_backend,
-            connection_policy.pool_idle_timeout,
-            connection_policy.connect_timeout,
-            connection_policy.execution_timeout,
-            dns_resolver,
-            None,
-            None,
-        )
+        Self::new_runtime(backends, backend_tls, connection_policy, dns_resolver, None)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn new_runtime_with_observer<I>(
+    fn new_runtime<I>(
         backends: I,
         backend_tls: HashMap<String, TlsClientConfig>,
-        max_inflight: usize,
-        max_idle_per_backend: usize,
-        pool_idle_timeout: Duration,
-        connect_timeout: Duration,
-        execution_timeout: Duration,
+        connection_policy: RuntimeBackendConnectionPolicy,
         dns_resolver: SharedDnsResolver,
-        connect_observer: Option<ConnectObserver>,
         configured_pingora_backends: Option<HashMap<String, PingoraBackend>>,
     ) -> Result<Self, String>
     where
         I: IntoIterator<Item = (String, RuntimeBackendTransportKind)>,
     {
-        let connection_policy = RuntimeBackendConnectionPolicy {
-            max_inflight,
-            max_idle_per_backend,
-            pool_idle_timeout,
-            connect_timeout,
-            execution_timeout,
-        };
-        let backend_tls_for_pingora = backend_tls.clone();
         let mut backend_entries = HashMap::new();
         let mut pingora_backends = configured_pingora_backends.unwrap_or_default();
         let mut inflight_limits = HashMap::new();
-        let mut h2_backends = Vec::new();
 
         for (backend, runtime_transport) in backends {
             let entry = Self::resolve_runtime_transport(runtime_transport);
             if !pingora_backends.contains_key(&backend) {
-                let tls = backend_tls_for_pingora.get(&backend);
+                let tls = backend_tls.get(&backend);
                 if let Ok(config) = Self::fallback_pingora_backend(
                     &backend,
                     runtime_transport,
@@ -488,33 +322,16 @@ impl UpstreamTransportPool {
             backend_entries.insert(backend.clone(), entry);
             inflight_limits.insert(
                 backend.clone(),
-                Arc::new(Semaphore::new(max_inflight.max(1))),
+                Arc::new(Semaphore::new(connection_policy.max_inflight.max(1))),
             );
-            match entry {
-                BackendTransportEntry::Http1 => {}
-                BackendTransportEntry::H2 => h2_backends.push(backend),
-            }
         }
-
-        let h2_pool = H2Pool::new_with_observer(
-            h2_backends,
-            backend_tls,
-            max_inflight,
-            max_idle_per_backend,
-            pool_idle_timeout,
-            connect_timeout,
-            dns_resolver.clone(),
-            connect_observer,
-        )?;
 
         Ok(Self {
             backend_entries,
             inflight_limits,
-            h2_pool,
             pingora_backends,
             pingora_pool: PingoraPool::new(0),
-            dns_resolver: dns_resolver.clone(),
-            execution_timeout,
+            dns_resolver,
         })
     }
 
@@ -530,13 +347,11 @@ impl UpstreamTransportPool {
         upstreams: I,
         connection_policy: &RuntimeBackendConnectionPolicy,
         dns_resolver: SharedDnsResolver,
-        connect_observer: Option<ConnectObserver>,
     ) -> Result<Self, String>
     where
         I: IntoIterator<Item = &'a RuntimeUpstream>,
     {
         let mut backends = Vec::new();
-        let mut backend_tls = HashMap::new();
         let mut pingora_backends = HashMap::new();
 
         for upstream in upstreams {
@@ -567,25 +382,14 @@ impl UpstreamTransportPool {
                         identity,
                     },
                 );
-                if matches!(
-                    backend.endpoint.transport_kind,
-                    RuntimeBackendTransportKind::H2
-                ) {
-                    backend_tls.insert(backend_addr, tls.clone());
-                }
             }
         }
 
-        Self::new_runtime_with_observer(
+        Self::new_runtime(
             backends,
-            backend_tls,
-            connection_policy.max_inflight,
-            connection_policy.max_idle_per_backend,
-            connection_policy.pool_idle_timeout,
-            connection_policy.connect_timeout,
-            connection_policy.execution_timeout,
+            HashMap::new(),
+            connection_policy.clone(),
             dns_resolver,
-            connect_observer,
             Some(pingora_backends),
         )
     }
@@ -665,84 +469,17 @@ impl UpstreamTransportPool {
         }
     }
 
-    async fn execute(
-        &self,
-        backend: &str,
-        req: Request<BoxBody<Bytes, Infallible>>,
-    ) -> Result<hyper::Response<Incoming>, ProxyError> {
-        match self.backend_entry(backend) {
-            Some(BackendTransportEntry::Http1) => Err(ProxyError::Protocol(format!(
-                "backend '{backend}' requires the shared upstream exchange"
-            ))),
-            Some(BackendTransportEntry::H2) => {
-                self.execute_with_timeout(backend, self.h2_pool.send(backend, req))
-                    .await
-            }
-            None => Err(ProxyError::Pool(PoolError::UnknownBackend(
-                backend.to_string(),
-            ))),
-        }
-    }
-
     pub fn rotate_backend_client(&self, backend: &str) -> Result<TransportClientRotation, String> {
         match self.backend_entry(backend) {
-            Some(BackendTransportEntry::Http1) => Ok(TransportClientRotation {
-                rotation: BackendClientRotation::recreated(),
-            }),
-            Some(BackendTransportEntry::H2) => self
-                .h2_pool
-                .rotate_backend_client(backend)
-                .map(Self::transport_rotation),
+            Some(BackendTransportEntry::Http1 | BackendTransportEntry::H2) => {
+                Ok(TransportClientRotation {
+                    rotation: BackendClientRotation::recreated(),
+                })
+            }
             None => Ok(TransportClientRotation {
                 rotation: BackendClientRotation::missing_backend(),
             }),
         }
-    }
-
-    pub fn rotate_backend_client_with_tls(
-        &self,
-        backend: &str,
-        tls: TlsClientConfig,
-    ) -> Result<TransportClientRotation, String> {
-        match self.backend_entry(backend) {
-            Some(BackendTransportEntry::Http1) => Ok(TransportClientRotation {
-                rotation: BackendClientRotation::recreated(),
-            }),
-            Some(BackendTransportEntry::H2) => self
-                .h2_pool
-                .rotate_backend_client_with_tls(backend, tls)
-                .map(Self::transport_rotation),
-            None => Ok(TransportClientRotation {
-                rotation: BackendClientRotation::missing_backend(),
-            }),
-        }
-    }
-
-    fn transport_rotation(rotation: BackendClientRotation) -> TransportClientRotation {
-        TransportClientRotation { rotation }
-    }
-
-    async fn execute_with_timeout<F, T>(&self, _backend: &str, send: F) -> Result<T, ProxyError>
-    where
-        F: Future<Output = Result<T, PoolError>>,
-    {
-        self.execute_with_timeout_duration(_backend, send, self.execution_timeout)
-            .await
-    }
-
-    async fn execute_with_timeout_duration<F, T>(
-        &self,
-        _backend: &str,
-        send: F,
-        timeout: Duration,
-    ) -> Result<T, ProxyError>
-    where
-        F: Future<Output = Result<T, PoolError>>,
-    {
-        tokio::time::timeout(timeout, send)
-            .await
-            .map_err(|_| ProxyError::Timeout)?
-            .map_err(ProxyError::Pool)
     }
 }
 
@@ -763,139 +500,10 @@ fn finish_pingora_dispatch_failure(
     });
 }
 
-fn finish_hyper_exchange(
-    lifecycle: UpstreamExchangeLifecycle,
-    outcome: UpstreamExchangeOutcome,
-    connection_reuse: UpstreamConnectionReuse,
-) {
-    let _ = lifecycle.completion.send(UpstreamExchangeCompletion {
-        outcome,
-        connection_reuse,
-    });
-}
-
-async fn send_hyper_response_frame(
-    frames: &mpsc::Sender<Result<UpstreamBodyFrame, ProxyError>>,
-    frame: Result<UpstreamBodyFrame, ProxyError>,
-    cancellation: &mut UpstreamCancellation,
-    cancellation_open: &mut bool,
-) -> bool {
-    if !*cancellation_open {
-        return frames.send(frame).await.is_ok();
-    }
-
-    tokio::select! {
-        cancellation_result = &mut cancellation.signal => {
-            if cancellation_result.is_ok() {
-                false
-            } else {
-                *cancellation_open = false;
-                frames.send(frame).await.is_ok()
-            }
-        }
-        permit = frames.reserve() => match permit {
-            Ok(permit) => {
-                permit.send(frame);
-                true
-            }
-            Err(_) => false,
-        },
-    }
-}
-
-async fn pump_hyper_response(
-    mut body: Incoming,
-    frames: mpsc::Sender<Result<UpstreamBodyFrame, ProxyError>>,
-    mut lifecycle: UpstreamExchangeLifecycle,
-    protocol: &'static str,
-) {
-    let mut cancellation_open = true;
-    loop {
-        let next = if cancellation_open {
-            tokio::select! {
-                cancellation_result = &mut lifecycle.cancellation.signal => {
-                    if cancellation_result.is_ok() {
-                        finish_hyper_exchange(
-                            lifecycle,
-                            UpstreamExchangeOutcome::Cancelled,
-                            UpstreamConnectionReuse::Close,
-                        );
-                        return;
-                    }
-                    cancellation_open = false;
-                    continue;
-                }
-                frame = body.frame() => frame,
-            }
-        } else {
-            body.frame().await
-        };
-
-        let Some(frame) = next else {
-            finish_hyper_exchange(
-                lifecycle,
-                UpstreamExchangeOutcome::Completed,
-                UpstreamConnectionReuse::Reuse,
-            );
-            return;
-        };
-        let frame = match frame {
-            Ok(frame) => frame,
-            Err(error) => {
-                let detail = format!("{protocol} response body error: {error}");
-                let delivered = send_hyper_response_frame(
-                    &frames,
-                    Err(ProxyError::Transport(detail.clone())),
-                    &mut lifecycle.cancellation,
-                    &mut cancellation_open,
-                )
-                .await;
-                finish_hyper_exchange(
-                    lifecycle,
-                    if delivered {
-                        UpstreamExchangeOutcome::Failed(ProxyError::Transport(detail))
-                    } else {
-                        UpstreamExchangeOutcome::Cancelled
-                    },
-                    UpstreamConnectionReuse::Close,
-                );
-                return;
-            }
-        };
-        let frame = match frame.into_data() {
-            Ok(data) => Some(UpstreamBodyFrame::Data(data)),
-            Err(frame) => frame
-                .into_trailers()
-                .ok()
-                .map(|headers| UpstreamBodyFrame::Trailers(UpstreamTrailers { headers })),
-        };
-        let Some(frame) = frame else {
-            continue;
-        };
-        if !send_hyper_response_frame(
-            &frames,
-            Ok(frame),
-            &mut lifecycle.cancellation,
-            &mut cancellation_open,
-        )
-        .await
-        {
-            finish_hyper_exchange(
-                lifecycle,
-                UpstreamExchangeOutcome::Cancelled,
-                UpstreamConnectionReuse::Close,
-            );
-            return;
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashMap, convert::Infallible, time::Duration};
+    use std::{collections::HashMap, time::Duration};
 
-    use http_body_util::{BodyExt, Empty, combinators::BoxBody};
-    use hyper::{Request, body::Bytes};
     use impulse_config::{
         config::{
             Backend, ClientAuth, Config, ForwardedHeaderPolicy, ForwardedHeaderPolicyMode, Listen,
@@ -904,10 +512,9 @@ mod tests {
         },
         runtime::{RuntimeBackendConnectionPolicy, RuntimeBackendTransportKind, RuntimeConfig},
     };
-    use impulse_errors::{PoolError, ProxyError};
 
     use super::{BackendTransportEntry, UpstreamTransportPool};
-    use crate::h2_client::SharedDnsResolver;
+    use crate::SharedDnsResolver;
 
     fn connection_policy() -> RuntimeBackendConnectionPolicy {
         RuntimeBackendConnectionPolicy {
@@ -980,14 +587,6 @@ mod tests {
         .expect("runtime config")
     }
 
-    fn request() -> Request<BoxBody<Bytes, Infallible>> {
-        Request::builder()
-            .method("GET")
-            .uri("https://example.com/")
-            .body(Empty::<Bytes>::new().boxed())
-            .expect("request")
-    }
-
     #[test]
     fn from_runtime_upstreams_selects_backend_protocols_inside_the_transport_facade() {
         let runtime = runtime_config_with_backends(&[
@@ -999,7 +598,6 @@ mod tests {
             runtime.upstreams.values(),
             &runtime.policies.transport.backend_connections,
             SharedDnsResolver::new(),
-            None,
         )
         .expect("transport pool");
 
@@ -1040,13 +638,11 @@ mod tests {
             .expect("h2 rotation");
 
         assert!(http1_rotation.rotated());
-        assert_eq!(http1_rotation.generations(), None);
         assert!(h2_rotation.rotated());
-        assert_eq!(h2_rotation.generations(), Some((0, 1)));
     }
 
     #[tokio::test]
-    async fn h1_rotation_results_stay_effective_without_generation_movement() {
+    async fn h1_refresh_rotation_stays_effective() {
         let pool = UpstreamTransportPool::new_from_runtime_backends(
             [(
                 "http://127.0.0.1:8080".to_string(),
@@ -1067,12 +663,10 @@ mod tests {
 
         assert!(first_rotation.rotated());
         assert!(second_rotation.rotated());
-        assert_eq!(first_rotation.generations(), None);
-        assert_eq!(second_rotation.generations(), None);
     }
 
     #[test]
-    fn h2_rotation_results_report_generation_movement_on_each_rotation() {
+    fn h2_refresh_rotation_stays_effective() {
         let pool = UpstreamTransportPool::new_from_runtime_backends(
             [(
                 "https://api.internal:8443".to_string(),
@@ -1093,33 +687,6 @@ mod tests {
 
         assert!(first_rotation.rotated());
         assert!(second_rotation.rotated());
-        assert_eq!(first_rotation.generations(), Some((0, 1)));
-        assert_eq!(second_rotation.generations(), Some((1, 2)));
-    }
-
-    #[tokio::test]
-    async fn unknown_backend_send_fails_at_the_transport_facade_boundary() {
-        let pool = UpstreamTransportPool::new_from_runtime_backends(
-            [(
-                "https://api.internal:8443".to_string(),
-                RuntimeBackendTransportKind::H2,
-            )],
-            HashMap::new(),
-            connection_policy(),
-            SharedDnsResolver::new(),
-        )
-        .expect("transport pool");
-
-        let err = pool
-            .send_backend_request("missing-backend", request())
-            .await
-            .expect_err("missing backend should fail");
-
-        assert!(matches!(
-            err,
-            ProxyError::Pool(PoolError::UnknownBackend(ref backend))
-                if backend == "missing-backend"
-        ));
     }
 
     #[test]
@@ -1140,6 +707,5 @@ mod tests {
             .expect("missing backend rotation should not error");
 
         assert!(!rotation.rotated());
-        assert_eq!(rotation.generations(), None);
     }
 }
