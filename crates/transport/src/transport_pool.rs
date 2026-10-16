@@ -31,6 +31,7 @@ use crate::{
     h1_pool::H1Pool,
     h2_client::{ConnectObserver, SharedDnsResolver, TlsClientConfig},
     h2_pool::H2Pool,
+    pingora_pool::{PingoraPool, PingoraPoolLease},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,6 +62,7 @@ pub struct UpstreamTransportPool {
     backend_entries: HashMap<String, BackendTransportEntry>,
     h1_pool: H1Pool,
     h2_pool: H2Pool,
+    pingora_pool: PingoraPool,
     execution_timeout: Duration,
 }
 
@@ -97,6 +99,18 @@ impl BackendUpgradeResponse {
 }
 
 impl UpstreamTransportPool {
+    pub fn acquire_pingora_pool(&self) -> Option<PingoraPoolLease> {
+        self.pingora_pool.acquire()
+    }
+
+    pub fn rotate_pingora_pool(&self, generation: u64) {
+        self.pingora_pool.rotate(generation);
+    }
+
+    pub fn drain_pingora_pool(&self) {
+        self.pingora_pool.drain();
+    }
+
     pub async fn send_exchange(
         &self,
         backend: &str,
@@ -447,6 +461,7 @@ impl UpstreamTransportPool {
             backend_entries,
             h1_pool,
             h2_pool,
+            pingora_pool: PingoraPool::new(0),
             execution_timeout,
         })
     }

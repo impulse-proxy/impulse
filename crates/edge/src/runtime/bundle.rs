@@ -465,6 +465,11 @@ impl RuntimeBundleHandle {
                     expected_generation, previous_generation
                 )));
             }
+            bundle
+                .shared_state
+                .shared_services()
+                .transport_pool
+                .rotate_pingora_pool(generation);
             // --- old-generation teardown boundary: BEGIN ---
             // The previous bundle's generation-owned state is now unreachable to
             // new readers; existing readers keep their clone until it drains.
@@ -478,6 +483,11 @@ impl RuntimeBundleHandle {
             .generation_state()
             .generation_tasks
             .retire_generation(Duration::from_secs(5));
+        previous
+            .shared_state
+            .shared_services()
+            .transport_pool
+            .drain_pingora_pool();
         // --- old-generation teardown boundary: END ---
         info!(
             "runtime generation swap committed: {} -> {} (lifecycle phase {:?})",
