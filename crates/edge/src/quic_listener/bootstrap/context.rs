@@ -2,7 +2,7 @@ use std::{
     collections::HashMap,
     net::SocketAddr,
     sync::{Arc, RwLock},
-    time::{Duration, Instant},
+    time::Instant,
 };
 
 use impulse_config::{backend_endpoint::BackendEndpoint, runtime::RuntimeUpstreamPolicy};
@@ -23,7 +23,6 @@ pub(in crate::quic_listener) struct BootstrapBodyLimits {
 pub(in crate::quic_listener) struct BootstrapRuntimeCtx {
     pub(in crate::quic_listener) runtime_generation: crate::runtime::activation::GenerationId,
     pub(in crate::quic_listener) alt_svc: String,
-    pub(in crate::quic_listener) backend_timeout: Duration,
     pub(in crate::quic_listener) body_limits: BootstrapBodyLimits,
     pub(in crate::quic_listener) transport_pool: Arc<UpstreamTransportPool>,
     pub(in crate::quic_listener) backend_endpoints: Arc<HashMap<String, BackendEndpoint>>,
@@ -41,7 +40,6 @@ impl BootstrapRuntimeCtx {
         Self {
             runtime_generation: state.runtime_generation,
             alt_svc: state.alt_svc_value.clone(),
-            backend_timeout: state.backend_timeout,
             body_limits: BootstrapBodyLimits {
                 max_request_body_bytes: state.max_request_body_bytes,
                 max_response_body_bytes: state.max_response_body_bytes,
@@ -69,6 +67,5 @@ pub(in crate::quic_listener) struct BootstrapRequestCtx<'a> {
 pub(in crate::quic_listener) struct BootstrapDispatchCtx<'a> {
     pub(in crate::quic_listener) request: BootstrapRequestCtx<'a>,
     pub(in crate::quic_listener) request_id: u64,
-    pub(in crate::quic_listener) request_path: &'a str,
     pub(in crate::quic_listener) is_websocket_upgrade: bool,
 }

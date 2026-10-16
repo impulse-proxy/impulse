@@ -1,22 +1,25 @@
 use std::convert::Infallible;
 
 use bytes::Bytes;
-use http::{Request, Response, StatusCode, Uri, response::Builder as ResponseBuilder};
+use http::{Request, Response, StatusCode, response::Builder as ResponseBuilder};
 use http_body_util::{BodyExt, Full, combinators::BoxBody};
-use hyper::{body::Incoming, client::conn::http1 as client_http1, upgrade, upgrade::OnUpgrade};
+use hyper::{body::Incoming, upgrade, upgrade::OnUpgrade};
 use hyper_util::rt::TokioIo;
 use impulse_config::backend_endpoint::BackendScheme;
 use impulse_errors::ProxyError;
-use log::{debug, warn};
+use impulse_transport::{
+    UpstreamConnectionReuse, UpstreamExchangeCompletion, UpstreamExchangeOutcome,
+    UpstreamExchangeResponse, UpstreamTunnel,
+};
+use log::debug;
 
 use super::{
-    dispatch::BootstrapDispatchInput,
+    dispatch::{BootstrapDispatchInput, dispatch_bootstrap_http},
     intake::bootstrap_error_response,
-    outcome::{finish_bootstrap_backend_request_accounting, observe_bootstrap_dispatch_failure},
+    outcome::finish_bootstrap_backend_request_accounting,
     request::{
         BootstrapBackendFailureReason, BootstrapLifecycleStage, BootstrapPreparedRoute,
         BootstrapTerminalOutcome, BootstrapTerminalResponse, BootstrapTerminalResult,
-        BootstrapTimeoutReason,
     },
 };
 use crate::quic_listener::protocol::is_websocket_upgrade_request;
@@ -49,7 +52,7 @@ pub(in crate::quic_listener) fn capture_bootstrap_websocket_flow(
 
 pub(in crate::quic_listener) async fn dispatch_bootstrap_websocket(
     input: BootstrapDispatchInput<'_>,
-) -> BootstrapTerminalResult<Response<Incoming>> {
+) -> BootstrapTerminalResult<UpstreamExchangeResponse> {
     if input.prepared_route.endpoint.scheme() != BackendScheme::Http {
         return Err(BootstrapTerminalResponse::new(
             BootstrapLifecycleStage::Dispatch,
@@ -62,151 +65,12 @@ pub(in crate::quic_listener) async fn dispatch_bootstrap_websocket(
         ));
     }
 
-    let backend_target = input.prepared_route.endpoint.authority().to_string();
-    let upstream_path_uri = match Uri::try_from(input.dispatch_ctx.request_path) {
-        Ok(uri) => uri,
-        Err(_) => {
-            return Err(BootstrapTerminalResponse::new(
-                BootstrapLifecycleStage::Dispatch,
-                BootstrapTerminalOutcome::BackendFailed(
-                    BootstrapBackendFailureReason::RequestBuildFailed,
-                ),
-                bootstrap_error_response(
-                    &input.dispatch_ctx.request.runtime.alt_svc,
-                    StatusCode::BAD_GATEWAY,
-                    b"bad uri\n",
-                ),
-            ));
-        }
-    };
-    let (mut parts, body) = input.upstream_req.into_parts();
-    parts.uri = upstream_path_uri;
-    let upstream_req = Request::from_parts(parts, body);
-
-    let stream = match tokio::time::timeout(
-        input.dispatch_ctx.request.runtime.backend_timeout,
-        tokio::net::TcpStream::connect(&backend_target),
-    )
-    .await
-    {
-        Ok(Ok(stream)) => {
-            if let Ok(resolved_addr) = stream.peer_addr() {
-                input
-                    .dispatch_ctx
-                    .request
-                    .runtime
-                    .metrics
-                    .record_backend_connect(
-                        &backend_target,
-                        input.prepared_route.endpoint.authority_host(),
-                        resolved_addr,
-                    );
-            }
-            stream
-        }
-        Ok(Err(err)) => {
-            warn!("Bootstrap WebSocket connect error: {}", err);
-            return Err(BootstrapTerminalResponse::new(
-                BootstrapLifecycleStage::Dispatch,
-                BootstrapTerminalOutcome::BackendFailed(
-                    BootstrapBackendFailureReason::DispatchFailed,
-                ),
-                bootstrap_error_response(
-                    &input.dispatch_ctx.request.runtime.alt_svc,
-                    StatusCode::BAD_GATEWAY,
-                    b"upstream error\n",
-                ),
-            ));
-        }
-        Err(_) => {
-            return Err(BootstrapTerminalResponse::new(
-                BootstrapLifecycleStage::Dispatch,
-                BootstrapTerminalOutcome::TimedOut(BootstrapTimeoutReason::Upstream),
-                bootstrap_error_response(
-                    &input.dispatch_ctx.request.runtime.alt_svc,
-                    StatusCode::GATEWAY_TIMEOUT,
-                    b"upstream timeout\n",
-                ),
-            ));
-        }
-    };
-
-    let io = TokioIo::new(stream);
-    let (mut sender, conn) = match client_http1::handshake(io).await {
-        Ok(v) => v,
-        Err(err) => {
-            warn!("Bootstrap WebSocket handshake setup failed: {}", err);
-            return Err(BootstrapTerminalResponse::new(
-                BootstrapLifecycleStage::Dispatch,
-                BootstrapTerminalOutcome::BackendFailed(
-                    BootstrapBackendFailureReason::DispatchFailed,
-                ),
-                bootstrap_error_response(
-                    &input.dispatch_ctx.request.runtime.alt_svc,
-                    StatusCode::BAD_GATEWAY,
-                    b"upstream error\n",
-                ),
-            ));
-        }
-    };
-    tokio::spawn(async move {
-        let _ = conn.with_upgrades().await;
-    });
-
-    match tokio::time::timeout(
-        input.dispatch_ctx.request.runtime.backend_timeout,
-        sender.send_request(upstream_req),
-    )
-    .await
-    {
-        Ok(Ok(resp)) => Ok(resp),
-        Ok(Err(err)) => {
-            let proxy_err = ProxyError::Transport(err.to_string());
-            observe_bootstrap_dispatch_failure(
-                input.prepared_route,
-                input.dispatch_ctx.request.runtime.metrics.as_ref(),
-                input.dispatch_ctx.request.request_start,
-                input.dispatch_ctx.request_id,
-                StatusCode::BAD_GATEWAY,
-                &proxy_err,
-            );
-            Err(BootstrapTerminalResponse::new(
-                BootstrapLifecycleStage::Dispatch,
-                BootstrapTerminalOutcome::BackendFailed(
-                    BootstrapBackendFailureReason::DispatchFailed,
-                ),
-                bootstrap_error_response(
-                    &input.dispatch_ctx.request.runtime.alt_svc,
-                    StatusCode::BAD_GATEWAY,
-                    b"upstream error\n",
-                ),
-            ))
-        }
-        Err(_) => {
-            observe_bootstrap_dispatch_failure(
-                input.prepared_route,
-                input.dispatch_ctx.request.runtime.metrics.as_ref(),
-                input.dispatch_ctx.request.request_start,
-                input.dispatch_ctx.request_id,
-                StatusCode::GATEWAY_TIMEOUT,
-                &ProxyError::Timeout,
-            );
-            Err(BootstrapTerminalResponse::new(
-                BootstrapLifecycleStage::Dispatch,
-                BootstrapTerminalOutcome::TimedOut(BootstrapTimeoutReason::Upstream),
-                bootstrap_error_response(
-                    &input.dispatch_ctx.request.runtime.alt_svc,
-                    StatusCode::GATEWAY_TIMEOUT,
-                    b"upstream timeout\n",
-                ),
-            ))
-        }
-    }
+    dispatch_bootstrap_http(input).await
 }
 
 pub(in crate::quic_listener) fn write_bootstrap_websocket_upgrade(
     resp_builder: ResponseBuilder,
-    upstream_resp: &mut Response<Incoming>,
+    upstream_resp: UpstreamExchangeResponse,
     prepared_route: &BootstrapPreparedRoute,
     request_start: std::time::Instant,
     alt_svc: &str,
@@ -223,18 +87,48 @@ pub(in crate::quic_listener) fn write_bootstrap_websocket_upgrade(
                 .unwrap_or_else(|_| Response::new(boxed_full(Bytes::from_static(b"error\n")))));
         }
     };
-    let upstream_upgrade = upgrade::on(upstream_resp);
+    let Some(upstream_upgrade) = upstream_resp.upgrade else {
+        return Ok(Response::builder()
+            .status(StatusCode::BAD_GATEWAY)
+            .header("alt-svc", alt_svc)
+            .body(boxed_full(Bytes::from_static(b"upgrade setup error\n")))
+            .unwrap_or_else(|_| Response::new(boxed_full(Bytes::from_static(b"error\n")))));
+    };
     tokio::spawn(async move {
-        let (client, upstream) = match tokio::try_join!(client_upgrade, upstream_upgrade) {
-            Ok(v) => v,
-            Err(err) => {
-                debug!("Bootstrap WebSocket upgrade join failed: {}", err);
+        let (client, upstream) = tokio::join!(client_upgrade, upstream_upgrade.tunnel);
+        let UpstreamTunnel { mut io, lifecycle } = match upstream {
+            Ok(Ok(upstream)) => upstream,
+            Ok(Err(error)) => {
+                debug!("Bootstrap WebSocket upstream upgrade failed: {}", error);
+                return;
+            }
+            Err(_) => {
+                debug!("Bootstrap WebSocket upstream upgrade task stopped");
+                return;
+            }
+        };
+        let client = match client {
+            Ok(client) => client,
+            Err(error) => {
+                debug!("Bootstrap WebSocket client upgrade failed: {}", error);
+                let _ = lifecycle.completion.send(UpstreamExchangeCompletion {
+                    outcome: UpstreamExchangeOutcome::Failed(ProxyError::Transport(
+                        error.to_string(),
+                    )),
+                    connection_reuse: UpstreamConnectionReuse::Close,
+                });
                 return;
             }
         };
         let mut client = TokioIo::new(client);
-        let mut upstream = TokioIo::new(upstream);
-        let _ = tokio::io::copy_bidirectional(&mut client, &mut upstream).await;
+        let outcome = match tokio::io::copy_bidirectional(&mut client, &mut io).await {
+            Ok(_) => UpstreamExchangeOutcome::Completed,
+            Err(error) => UpstreamExchangeOutcome::Failed(ProxyError::Transport(error.to_string())),
+        };
+        let _ = lifecycle.completion.send(UpstreamExchangeCompletion {
+            outcome,
+            connection_reuse: UpstreamConnectionReuse::Close,
+        });
     });
     finish_bootstrap_backend_request_accounting(
         prepared_route,

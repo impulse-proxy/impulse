@@ -24,7 +24,6 @@ use crate::{
 pub(in crate::quic_listener) struct BootstrapConnectionState {
     pub(in crate::quic_listener) runtime_generation: crate::runtime::activation::GenerationId,
     pub(in crate::quic_listener) alt_svc_value: String,
-    pub(in crate::quic_listener) backend_timeout: Duration,
     pub(in crate::quic_listener) max_request_body_bytes: usize,
     pub(in crate::quic_listener) max_response_body_bytes: usize,
     pub(in crate::quic_listener) max_connections: usize,
@@ -122,7 +121,6 @@ pub(in crate::quic_listener) fn bootstrap_connection_state(
     Some(BootstrapConnectionState {
         runtime_generation,
         alt_svc_value: format!("h3=\":{}\"; ma=86400", listener_config.listen.listen.port),
-        backend_timeout: listener_config.policies.timeouts.backend_request,
         max_request_body_bytes: listener_config.policies.transport.max_request_body_bytes,
         max_response_body_bytes: listener_config.policies.transport.max_response_body_bytes,
         max_connections: listener_config

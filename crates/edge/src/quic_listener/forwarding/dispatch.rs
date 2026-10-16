@@ -22,7 +22,7 @@ use crate::{
 };
 
 const MAX_UPSTREAM_RETRY_ATTEMPTS: u8 = 1;
-type UpstreamRequest = Request<BoxBody<Bytes, Infallible>>;
+pub(in crate::quic_listener) type UpstreamRequest = Request<BoxBody<Bytes, Infallible>>;
 
 #[derive(Clone, Debug)]
 enum ResolvedAlternateBackend {
@@ -101,7 +101,7 @@ impl QUICListener {
         send_result
     }
 
-    fn into_upstream_exchange_request(
+    pub(in crate::quic_listener) fn into_upstream_exchange_request(
         request: UpstreamRequest,
     ) -> Result<
         (
