@@ -1,9 +1,11 @@
 use std::{collections::HashMap, net::IpAddr};
 
 use super::*;
-use crate::config::ControlApiRole;
-use crate::validator::{
-    helpers::validate_pem_certificate_directory, secrets::validate_secret_source_exclusivity,
+use crate::{
+    config::ControlApiRole,
+    validator::{
+        helpers::validate_pem_certificate_directory, secrets::validate_secret_source_exclusivity,
+    },
 };
 
 macro_rules! validation_error {

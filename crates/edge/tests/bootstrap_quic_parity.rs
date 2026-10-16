@@ -231,6 +231,124 @@ fn bootstrap_and_quic_route_resolution_choose_the_same_route_and_backend_result(
 }
 
 #[test]
+fn bootstrap_and_quic_route_precedence_matches() {
+    if !local_listener_bind_available() {
+        return;
+    }
+
+    let mut harness = BootstrapQuicParityHarness::new();
+    let default_long = harness.start_h1_static_backend(b"default long\n");
+    let wildcard_broad = harness.start_h1_static_backend(b"wildcard broad\n");
+    let wildcard_narrow = harness.start_h1_static_backend(b"wildcard narrow\n");
+    let exact_generic = harness.start_h1_static_backend(b"exact generic\n");
+    let exact_post = harness.start_h1_static_backend(b"exact post\n");
+
+    let upstreams = HashMap::from([
+        (
+            "default-long".to_string(),
+            routed_upstream(
+                None,
+                "/api/v1",
+                None,
+                "round-robin",
+                vec![make_backend("default-long-a", default_long.to_string())],
+            ),
+        ),
+        (
+            "wildcard-broad".to_string(),
+            routed_upstream(
+                Some("*.example.com"),
+                "/api",
+                None,
+                "round-robin",
+                vec![make_backend("wildcard-broad-a", wildcard_broad.to_string())],
+            ),
+        ),
+        (
+            "wildcard-narrow".to_string(),
+            routed_upstream(
+                Some("*.svc.example.com"),
+                "/api",
+                None,
+                "round-robin",
+                vec![make_backend(
+                    "wildcard-narrow-a",
+                    wildcard_narrow.to_string(),
+                )],
+            ),
+        ),
+        (
+            "exact-generic".to_string(),
+            routed_upstream(
+                Some("api.svc.example.com"),
+                "/api",
+                None,
+                "round-robin",
+                vec![make_backend("exact-generic-a", exact_generic.to_string())],
+            ),
+        ),
+        (
+            "exact-post".to_string(),
+            routed_upstream(
+                Some("api.svc.example.com"),
+                "/api",
+                Some("POST"),
+                "round-robin",
+                vec![make_backend("exact-post-a", exact_post.to_string())],
+            ),
+        ),
+    ]);
+
+    let config = harness.make_config(upstreams);
+    harness
+        .start_listener(config)
+        .expect("listener with bootstrap");
+
+    let cases = [
+        (
+            "GET",
+            "api.svc.example.com",
+            "/api/orders",
+            "exact generic\n",
+        ),
+        ("POST", "api.svc.example.com", "/api/orders", "exact post\n"),
+        (
+            "GET",
+            "edge.svc.example.com",
+            "/api/orders",
+            "wildcard narrow\n",
+        ),
+        ("GET", "edge.example.com", "/api/orders", "wildcard broad\n"),
+        (
+            "GET",
+            "api.svc.example.com",
+            "/api/v1/orders",
+            "default long\n",
+        ),
+    ];
+
+    for (method, authority, path, expected_body) in cases {
+        let pair = harness
+            .run_parity_pair(ParityRequestSpec {
+                method,
+                authority,
+                path,
+                headers: &[],
+                body: None,
+                user_agent: "impulse-bootstrap-quic-parity-test",
+                selected_response_headers: &[],
+                capture_metrics_delta: false,
+            })
+            .expect("route precedence parity pair");
+
+        assert_eq!(pair.quic.response.status, 200);
+        assert_eq!(pair.bootstrap.response.status, 200);
+        assert_eq!(pair.quic.response.body, expected_body.as_bytes());
+        assert_eq!(pair.bootstrap.response.body, pair.quic.response.body);
+    }
+}
+
+#[test]
 fn bootstrap_and_quic_route_resolution_share_observable_unrouted_behavior() {
     if !local_listener_bind_available() {
         return;
@@ -255,15 +373,29 @@ fn bootstrap_and_quic_route_resolution_share_observable_unrouted_behavior() {
         .start_listener(config)
         .expect("listener with bootstrap");
 
-    let request = ParityRequestSpec::get("unknown.example.com", "/missing");
-    let pair = harness
-        .run_parity_pair(request)
-        .expect("unrouted parity pair");
+    for (method, authority, path) in [
+        ("GET", "unknown.example.com", "/payments"),
+        ("GET", "api.example.com", "/payments-extra"),
+        ("POST", "api.example.com", "/payments"),
+    ] {
+        let pair = harness
+            .run_parity_pair(ParityRequestSpec {
+                method,
+                authority,
+                path,
+                headers: &[],
+                body: None,
+                user_agent: "impulse-bootstrap-quic-parity-test",
+                selected_response_headers: &[],
+                capture_metrics_delta: false,
+            })
+            .expect("unrouted parity pair");
 
-    assert_eq!(pair.quic.response.status, 502);
-    assert_eq!(pair.bootstrap.response.status, 502);
-    assert_eq!(pair.quic.response.body, b"no route\n");
-    assert_eq!(pair.bootstrap.response.body, pair.quic.response.body);
+        assert_eq!(pair.quic.response.status, 502);
+        assert_eq!(pair.bootstrap.response.status, 502);
+        assert_eq!(pair.quic.response.body, b"no route\n");
+        assert_eq!(pair.bootstrap.response.body, pair.quic.response.body);
+    }
 }
 
 // Authentication and admission parity
