@@ -1,5 +1,6 @@
 use bytes::Bytes;
 use impulse_errors::{UpstreamProxyErrorKind, classify_upstream_proxy_error};
+use impulse_transport::{UpstreamBodyFrame, UpstreamResponseBody};
 use tokio::sync::mpsc::error::TryRecvError;
 
 use super::*;
@@ -847,15 +848,13 @@ impl QUICListener {
 
     fn spawn_response_body_pump(
         req: &RequestEnvelope,
-        response_body: hyper::body::Incoming,
+        response_body: UpstreamResponseBody,
         deferred_start: Option<ResponseChunk>,
         pump: ResponseBodyPumpPlan,
     ) -> mpsc::Receiver<ResponseChunk> {
         let (chunk_tx, chunk_rx) = mpsc::channel::<ResponseChunk>(RESPONSE_CHUNK_CHANNEL_CAPACITY);
         let fail_tx = chunk_tx.clone();
         let fut = async move {
-            use http_body_util::BodyExt;
-
             let mut body = response_body;
             let mut deferred_start = deferred_start;
             let body_started_at = tokio::time::Instant::now();
@@ -891,7 +890,7 @@ impl QUICListener {
                         return;
                     }
                 };
-                let frame_fut = BodyExt::frame(&mut body);
+                let frame_fut = body.frames.recv();
                 let result = tokio::time::timeout(streaming.wait_timeout, frame_fut).await;
                 match result {
                     Err(_elapsed) => {
@@ -904,8 +903,8 @@ impl QUICListener {
                             .await;
                         return;
                     }
-                    Ok(Some(Ok(f))) => match f.into_data() {
-                        Ok(data) => {
+                    Ok(Some(Ok(frame))) => match frame {
+                        UpstreamBodyFrame::Data(data) => {
                             if !data.is_empty() {
                                 last_body_progress_at = tokio::time::Instant::now();
                             }
@@ -956,31 +955,25 @@ impl QUICListener {
                                 }
                             }
                         }
-                        Err(frame) => {
-                            if let Ok(trailers) = frame.into_trailers() {
-                                let trailer_headers = collect_h3_trailers(&trailers);
-                                if !trailer_headers.is_empty() {
-                                    if pump.defer_headers_until_body_validated {
-                                        buffered_trailers = Some(trailer_headers);
-                                    } else if chunk_tx
-                                        .send(ResponseChunk::Trailers {
-                                            headers: trailer_headers,
-                                        })
-                                        .await
-                                        .is_err()
-                                    {
-                                        return;
-                                    }
+                        UpstreamBodyFrame::Trailers(trailers) => {
+                            let trailer_headers = collect_h3_trailers(&trailers.headers);
+                            if !trailer_headers.is_empty() {
+                                if pump.defer_headers_until_body_validated {
+                                    buffered_trailers = Some(trailer_headers);
+                                } else if chunk_tx
+                                    .send(ResponseChunk::Trailers {
+                                        headers: trailer_headers,
+                                    })
+                                    .await
+                                    .is_err()
+                                {
+                                    return;
                                 }
                             }
                         }
                     },
-                    Ok(Some(Err(_))) => {
-                        let _ = chunk_tx
-                            .send(ResponseChunk::Error(ProxyError::Transport(
-                                "upstream body error".into(),
-                            )))
-                            .await;
+                    Ok(Some(Err(error))) => {
+                        let _ = chunk_tx.send(ResponseChunk::Error(error)).await;
                         return;
                     }
                     Ok(None) => {

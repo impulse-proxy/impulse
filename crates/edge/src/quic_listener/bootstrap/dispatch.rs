@@ -1,10 +1,10 @@
 use std::convert::Infallible;
 
 use bytes::Bytes;
-use http::{Request, Response, StatusCode};
+use http::{Request, StatusCode};
 use http_body_util::combinators::BoxBody;
-use hyper::body::Incoming;
 use impulse_errors::ProxyError;
+use impulse_transport::UpstreamExchangeResponse;
 
 use super::{
     context::BootstrapDispatchCtx,
@@ -17,6 +17,7 @@ use super::{
     },
     websocket::dispatch_bootstrap_websocket,
 };
+use crate::quic_listener::QUICListener;
 
 pub(in crate::quic_listener) struct BootstrapDispatchInput<'a> {
     pub(in crate::quic_listener) upstream_req: Request<BoxBody<Bytes, Infallible>>,
@@ -24,17 +25,22 @@ pub(in crate::quic_listener) struct BootstrapDispatchInput<'a> {
     pub(in crate::quic_listener) dispatch_ctx: BootstrapDispatchCtx<'a>,
 }
 
-async fn dispatch_bootstrap_http(
+pub(in crate::quic_listener) async fn dispatch_bootstrap_http(
     input: BootstrapDispatchInput<'_>,
-) -> BootstrapTerminalResult<Response<Incoming>> {
-    match input
-        .dispatch_ctx
-        .request
-        .runtime
-        .transport_pool
-        .send_backend_request(&input.prepared_route.backend_addr, input.upstream_req)
-        .await
-    {
+) -> BootstrapTerminalResult<UpstreamExchangeResponse> {
+    let send_result = match QUICListener::into_upstream_exchange_request(input.upstream_req) {
+        Ok((request, _cancellation, _completion)) => {
+            input
+                .dispatch_ctx
+                .request
+                .runtime
+                .transport_pool
+                .send_exchange(&input.prepared_route.backend_addr, request)
+                .await
+        }
+        Err(error) => Err(error),
+    };
+    match send_result {
         Ok(response) => Ok(response),
         Err(proxy_err) => {
             let status = match proxy_err {
@@ -74,7 +80,7 @@ async fn dispatch_bootstrap_http(
 
 pub(in crate::quic_listener) async fn dispatch_bootstrap_upstream(
     input: BootstrapDispatchInput<'_>,
-) -> BootstrapTerminalResult<Response<Incoming>> {
+) -> BootstrapTerminalResult<UpstreamExchangeResponse> {
     if input.dispatch_ctx.is_websocket_upgrade {
         dispatch_bootstrap_websocket(input).await
     } else {

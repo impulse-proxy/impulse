@@ -1,8 +1,7 @@
-use std::convert::Infallible;
-
 use http_body_util::combinators::BoxBody;
 use hyper::{Request, body::Bytes};
 use hyper_util::client::legacy::Client;
+use impulse_errors::ProxyError;
 
 use crate::h2_client::{
     ConnectObserver, DEFAULT_CONNECT_TIMEOUT, DEFAULT_MAX_IDLE_PER_HOST, DEFAULT_POOL_IDLE_TIMEOUT,
@@ -10,7 +9,7 @@ use crate::h2_client::{
 };
 
 pub(crate) struct H1Client {
-    client: Client<ObservedHttpConnector, BoxBody<Bytes, Infallible>>,
+    client: Client<ObservedHttpConnector, BoxBody<Bytes, ProxyError>>,
 }
 
 impl Default for H1Client {
@@ -60,7 +59,7 @@ impl H1Client {
 
     pub(crate) async fn send(
         &self,
-        req: Request<BoxBody<Bytes, Infallible>>,
+        req: Request<BoxBody<Bytes, ProxyError>>,
     ) -> Result<hyper::Response<hyper::body::Incoming>, hyper_util::client::legacy::Error> {
         self.client.request(req).await
     }

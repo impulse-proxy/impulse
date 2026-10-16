@@ -6,6 +6,11 @@ use impulse_errors::{
 use impulse_lb::alternate_backend::{
     AlternateBackendDecision, AlternateBackendFailureReason, choose_alternate_backend,
 };
+use impulse_transport::{
+    UpstreamBodyFrame, UpstreamCancellation, UpstreamConnectionReuse, UpstreamExchangeCompletion,
+    UpstreamExchangeOutcome, UpstreamExchangeRequest, UpstreamExchangeResponse,
+    UpstreamRequestBody, UpstreamRequestHead, UpstreamTrailers,
+};
 
 use super::{
     selection::{ForwardingSelectionService, RetryHedgePolicyInputs},
@@ -17,7 +22,7 @@ use crate::{
 };
 
 const MAX_UPSTREAM_RETRY_ATTEMPTS: u8 = 1;
-type UpstreamRequest = Request<BoxBody<Bytes, Infallible>>;
+pub(in crate::quic_listener) type UpstreamRequest = Request<BoxBody<Bytes, Infallible>>;
 
 #[derive(Clone, Debug)]
 enum ResolvedAlternateBackend {
@@ -82,11 +87,12 @@ impl QUICListener {
         request: UpstreamRequest,
         circuit_breakers: &crate::resilience::circuit_breaker::CircuitBreakers,
         transport: &UpstreamTransportPool,
-    ) -> Result<Response<Incoming>, ProxyError> {
+    ) -> Result<UpstreamExchangeResponse, ProxyError> {
         let breaker_permit =
             ForwardingSelectionService::allow_backend_request(circuit_breakers, backend)?;
 
-        let send_result = transport.send_backend_request(backend, request).await;
+        let (request, _cancellation, _completion) = Self::into_upstream_exchange_request(request)?;
+        let send_result = transport.send_exchange(backend, request).await;
         if send_result.is_ok() {
             breaker_permit.record_success();
         } else {
@@ -95,22 +101,59 @@ impl QUICListener {
         send_result
     }
 
-    async fn send_upstream_upgrade_request(
-        backend: &str,
+    pub(in crate::quic_listener) fn into_upstream_exchange_request(
         request: UpstreamRequest,
-        circuit_breakers: &crate::resilience::circuit_breaker::CircuitBreakers,
-        transport: &UpstreamTransportPool,
-    ) -> Result<impulse_transport::BackendUpgradeResponse, ProxyError> {
-        let breaker_permit =
-            ForwardingSelectionService::allow_backend_request(circuit_breakers, backend)?;
-
-        let send_result = transport.send_http1_upgrade_request(backend, request).await;
-        if send_result.is_ok() {
-            breaker_permit.record_success();
-        } else {
-            breaker_permit.record_failure();
+    ) -> Result<
+        (
+            UpstreamExchangeRequest,
+            oneshot::Sender<()>,
+            oneshot::Receiver<UpstreamExchangeCompletion>,
+        ),
+        ProxyError,
+    > {
+        let (parts, mut body) = request.into_parts();
+        let (frames, frame_rx) = mpsc::channel(REQUEST_CHUNK_CHANNEL_CAPACITY);
+        let body_pump = async move {
+            while let Some(frame) = body.frame().await {
+                let frame = match frame {
+                    Ok(frame) => match frame.into_data() {
+                        Ok(data) => UpstreamBodyFrame::Data(data),
+                        Err(frame) => {
+                            let Ok(headers) = frame.into_trailers() else {
+                                continue;
+                            };
+                            UpstreamBodyFrame::Trailers(UpstreamTrailers { headers })
+                        }
+                    },
+                    Err(never) => match never {},
+                };
+                if frames.send(Ok(frame)).await.is_err() {
+                    return;
+                }
+            }
+        };
+        if !spawn_async_task(body_pump, "upstream-exchange-request-body") {
+            return Err(ProxyError::Transport("runtime unavailable".into()));
         }
-        send_result
+        let (cancellation, cancellation_signal) = oneshot::channel();
+        let (completion_signal, completion) = oneshot::channel();
+        Ok((
+            UpstreamExchangeRequest {
+                head: UpstreamRequestHead {
+                    method: parts.method,
+                    uri: parts.uri,
+                    version: parts.version,
+                    headers: parts.headers,
+                },
+                body: UpstreamRequestBody { frames: frame_rx },
+                cancellation: UpstreamCancellation {
+                    signal: cancellation_signal,
+                },
+                completion: completion_signal,
+            },
+            cancellation,
+            completion,
+        ))
     }
 
     async fn forward_http1_websocket_tunnel(
@@ -125,41 +168,29 @@ impl QUICListener {
             mut body_rx,
         } = input;
         let request = pending_forward.build_http1_websocket_tunnel_request(&endpoint)?;
-        let mut response = Self::send_upstream_upgrade_request(
-            backend.as_ref(),
-            request,
-            circuit_breakers,
-            transport,
-        )
-        .await?;
+        let response =
+            Self::send_upstream_request(backend.as_ref(), request, circuit_breakers, transport)
+                .await?;
 
-        if response.response().status() != StatusCode::SWITCHING_PROTOCOLS {
-            let response = response.into_response();
-            let status = response.status();
-            let headers = response.headers().clone();
+        if response.head.status != StatusCode::SWITCHING_PROTOCOLS {
             return Ok(ForwardSuccess::Response {
-                status,
-                headers,
-                body: response.into_body(),
+                status: response.head.status,
+                headers: response.head.headers,
+                body: response.body,
             });
         }
 
-        let upgraded = upgrade::on(response.response_mut());
-        let headers = response.response().headers().clone();
-        let (_response, tunnel_lease) = response.into_parts();
+        let headers = response.head.headers;
+        let upgrade = response.upgrade.ok_or_else(|| {
+            ProxyError::Protocol("HTTP/1 upgrade response did not provide a tunnel".into())
+        })?;
+        let tunnel = upgrade
+            .tunnel
+            .await
+            .map_err(|_| ProxyError::Transport("upstream tunnel task stopped".into()))??;
         let (chunk_tx, chunk_rx) = mpsc::channel(RESPONSE_CHUNK_CHANNEL_CAPACITY);
         let fut = async move {
-            let _tunnel_lease = tunnel_lease;
-            let upgraded = match upgraded.await {
-                Ok(upgraded) => upgraded,
-                Err(err) => {
-                    let _ = chunk_tx
-                        .send(ResponseChunk::Error(ProxyError::Transport(err.to_string())))
-                        .await;
-                    return;
-                }
-            };
-            let io = TokioIo::new(upgraded);
+            let impulse_transport::UpstreamTunnel { io, lifecycle } = tunnel;
             let (mut reader, mut writer) = tokio::io::split(io);
             let write_fut = async {
                 while let Some(chunk) = body_rx.recv().await {
@@ -188,11 +219,20 @@ impl QUICListener {
             match tokio::try_join!(write_fut, read_fut) {
                 Ok(((), ())) => {
                     let _ = chunk_tx.send(ResponseChunk::End).await;
+                    let _ = lifecycle.completion.send(UpstreamExchangeCompletion {
+                        outcome: UpstreamExchangeOutcome::Completed,
+                        connection_reuse: UpstreamConnectionReuse::Close,
+                    });
                 }
                 Err(err) => {
+                    let detail = err.to_string();
                     let _ = chunk_tx
-                        .send(ResponseChunk::Error(ProxyError::Transport(err.to_string())))
+                        .send(ResponseChunk::Error(ProxyError::Transport(detail.clone())))
                         .await;
+                    let _ = lifecycle.completion.send(UpstreamExchangeCompletion {
+                        outcome: UpstreamExchangeOutcome::Failed(ProxyError::Transport(detail)),
+                        connection_reuse: UpstreamConnectionReuse::Close,
+                    });
                 }
             }
         };
@@ -253,7 +293,7 @@ impl QUICListener {
     async fn retry_primary_error(
         primary_err: ProxyError,
         retry_ctx: RetryExecutionCtx<'_>,
-    ) -> Result<Response<Incoming>, ProxyError> {
+    ) -> Result<UpstreamExchangeResponse, ProxyError> {
         let RetryExecutionCtx {
             request_id,
             route_name,
@@ -399,7 +439,7 @@ impl QUICListener {
                     })?;
                     let (alternate_backend_available, alternate_backend_failure) =
                         alternate_backend_policy_state(alternate_backend.as_ref());
-                    let response: Response<Incoming> = match policy.hedge_before_delay(
+                    let response: UpstreamExchangeResponse = match policy.hedge_before_delay(
                         alternate_backend_available,
                         alternate_backend_failure,
                     ) {
@@ -588,11 +628,10 @@ impl QUICListener {
                         }
                     };
 
-                    let (parts, body) = response.into_parts();
                     ForwardSuccess::Response {
-                        status: parts.status,
-                        headers: parts.headers,
-                        body,
+                        status: response.head.status,
+                        headers: response.head.headers,
+                        body: response.body,
                     }
                 };
                 Ok(forward_success)

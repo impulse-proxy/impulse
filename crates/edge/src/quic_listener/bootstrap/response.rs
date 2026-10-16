@@ -15,6 +15,7 @@ use impulse_bridge::response::{
     ResponseNormalizationProtocol, ResponseProtocolConstraints, normalize_upstream_response,
 };
 use impulse_lb::upstream_pool::UpstreamPool;
+use impulse_transport::{UpstreamBodyFrame, UpstreamExchangeResponse, UpstreamResponseBody};
 
 use super::{
     context::BootstrapDispatchCtx,
@@ -33,7 +34,7 @@ use crate::runtime::connection::guardrails::{
     ResponseBodyGuardrailDecision, ResponseBodyGuardrailInput, checked_response_body_guardrails,
 };
 pub(in crate::quic_listener) struct BootstrapStreamingBody {
-    inner: Incoming,
+    inner: BootstrapStreamingBodyInner,
     guardrails: Option<ResponseBodyGuardrailConfig>,
     declared_content_length: Option<usize>,
     bytes_seen: usize,
@@ -41,6 +42,11 @@ pub(in crate::quic_listener) struct BootstrapStreamingBody {
     capped: bool,
     terminal: Option<BootstrapStreamingTerminal>,
     backend_accounting: Option<BootstrapBackendAccounting>,
+}
+
+enum BootstrapStreamingBodyInner {
+    Hyper(Incoming),
+    Exchange(UpstreamResponseBody),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,7 +91,7 @@ struct BootstrapBackendAccounting {
 impl BootstrapStreamingBody {
     pub(in crate::quic_listener) fn new(inner: Incoming) -> Self {
         Self {
-            inner,
+            inner: BootstrapStreamingBodyInner::Hyper(inner),
             guardrails: None,
             declared_content_length: None,
             bytes_seen: 0,
@@ -97,7 +103,7 @@ impl BootstrapStreamingBody {
     }
 
     fn with_response_guardrails(
-        inner: Incoming,
+        inner: UpstreamResponseBody,
         max_body_bytes: usize,
         declared_content_length: Option<usize>,
         upstream_pool: Arc<RwLock<UpstreamPool>>,
@@ -106,7 +112,7 @@ impl BootstrapStreamingBody {
         status: Option<u16>,
     ) -> Self {
         Self {
-            inner,
+            inner: BootstrapStreamingBodyInner::Exchange(inner),
             guardrails: Some(ResponseBodyGuardrailConfig {
                 idle_timeout: Duration::MAX,
                 total_timeout: Duration::MAX,
@@ -167,7 +173,25 @@ impl Body for BootstrapStreamingBody {
             return Poll::Ready(None);
         }
 
-        match Pin::new(&mut self.inner).poll_frame(cx) {
+        let frame = match &mut self.inner {
+            BootstrapStreamingBodyInner::Hyper(body) => Pin::new(body)
+                .poll_frame(cx)
+                .map(|frame| frame.map(|frame| frame.map_err(|_| ()))),
+            BootstrapStreamingBodyInner::Exchange(body) => body.frames.poll_recv(cx).map(|frame| {
+                frame.map(|frame| {
+                    frame
+                        .map(|frame| match frame {
+                            UpstreamBodyFrame::Data(data) => Frame::data(data),
+                            UpstreamBodyFrame::Trailers(trailers) => {
+                                Frame::trailers(trailers.headers)
+                            }
+                        })
+                        .map_err(|_| ())
+                })
+            }),
+        };
+
+        match frame {
             Poll::Ready(Some(Ok(frame))) => {
                 if let Some(guardrails) = self.guardrails
                     && let Some(data) = frame.data_ref()
@@ -244,7 +268,7 @@ fn bootstrap_response_body_too_large_response(
 }
 
 pub(in crate::quic_listener) struct BootstrapWritebackInput<'a> {
-    pub(in crate::quic_listener) upstream_resp: Response<Incoming>,
+    pub(in crate::quic_listener) upstream_resp: UpstreamExchangeResponse,
     pub(in crate::quic_listener) prepared_route: &'a BootstrapPreparedRoute,
     pub(in crate::quic_listener) dispatch_ctx: BootstrapDispatchCtx<'a>,
     pub(in crate::quic_listener) suppress_downstream_body: bool,
@@ -253,14 +277,14 @@ pub(in crate::quic_listener) struct BootstrapWritebackInput<'a> {
 }
 
 pub(in crate::quic_listener) fn write_bootstrap_response(
-    mut input: BootstrapWritebackInput<'_>,
+    input: BootstrapWritebackInput<'_>,
 ) -> Result<BootstrapWritebackOutcome, hyper::Error> {
-    let status = input.upstream_resp.status();
+    let status = input.upstream_resp.head.status;
     let response_mode = BootstrapResponseMode::from_request_mode(input.request_mode, status);
     let normalized_response = normalize_upstream_response(ResponseNormalizationInput {
         upstream: impulse_bridge::response::UpstreamResponseView {
             status,
-            headers: input.upstream_resp.headers(),
+            headers: &input.upstream_resp.head.headers,
             trailers: None,
         },
         body_mode: if input.suppress_downstream_body {
@@ -272,7 +296,8 @@ pub(in crate::quic_listener) fn write_bootstrap_response(
     });
     let upstream_content_length = input
         .upstream_resp
-        .headers()
+        .head
+        .headers
         .get(http::header::CONTENT_LENGTH)
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.parse::<usize>().ok());
@@ -349,7 +374,7 @@ pub(in crate::quic_listener) fn write_bootstrap_response(
             terminal: BootstrapTerminalOutcome::AcceptedWebsocketUpgrade,
             response: write_bootstrap_websocket_upgrade(
                 resp_builder,
-                &mut input.upstream_resp,
+                input.upstream_resp,
                 input.prepared_route,
                 input.dispatch_ctx.request.request_start,
                 &input.dispatch_ctx.request.runtime.alt_svc,
@@ -371,7 +396,7 @@ pub(in crate::quic_listener) fn write_bootstrap_response(
         boxed_full(Bytes::new())
     } else {
         BootstrapStreamingBody::with_response_guardrails(
-            input.upstream_resp.into_body(),
+            input.upstream_resp.body,
             input
                 .dispatch_ctx
                 .request

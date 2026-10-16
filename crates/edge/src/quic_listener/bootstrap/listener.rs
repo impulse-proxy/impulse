@@ -309,7 +309,6 @@ pub(in crate::quic_listener) fn spawn_bootstrap_tls_listener(
                                 }
                             };
 
-                            let request_path = if path.is_empty() { "/" } else { &path };
                             let request_size_decision = checked_request_body_ingress(
                                 RequestBodyGuardrailConfig {
                                     idle_timeout: Duration::ZERO,
@@ -455,7 +454,6 @@ pub(in crate::quic_listener) fn spawn_bootstrap_tls_listener(
                             let dispatch_ctx = BootstrapDispatchCtx {
                                 request: request_ctx,
                                 request_id,
-                                request_path,
                                 is_websocket_upgrade: request_mode.is_websocket_upgrade(),
                             };
                             let upstream_resp =

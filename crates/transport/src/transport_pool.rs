@@ -7,19 +7,27 @@
 
 use std::{collections::HashMap, convert::Infallible, future::Future, time::Duration};
 
-use http_body_util::combinators::BoxBody;
+use http_body_util::{BodyExt, combinators::BoxBody};
 use hyper::{
-    Request,
+    Method, Request,
     body::{Bytes, Incoming},
 };
+use hyper_util::rt::TokioIo;
 use impulse_config::runtime::{
     RuntimeBackendConnectionPolicy, RuntimeBackendTransportKind, RuntimeUpstream,
 };
 use impulse_errors::{PoolError, ProxyError};
-use tokio::sync::OwnedSemaphorePermit;
+use tokio::sync::{OwnedSemaphorePermit, mpsc};
 
 use crate::{
     client_rotation::BackendClientRotation,
+    exchange::{
+        UpstreamBodyFrame, UpstreamCancellation, UpstreamConnectionReuse,
+        UpstreamExchangeCompletion, UpstreamExchangeLifecycle, UpstreamExchangeOutcome,
+        UpstreamExchangeRequest, UpstreamExchangeResponse, UpstreamInflightPermit,
+        UpstreamResponseHead, UpstreamTrailers, UpstreamTunnel, UpstreamUpgrade,
+        upstream_response_body_channel,
+    },
     h1_pool::H1Pool,
     h2_client::{ConnectObserver, SharedDnsResolver, TlsClientConfig},
     h2_pool::H2Pool,
@@ -89,6 +97,216 @@ impl BackendUpgradeResponse {
 }
 
 impl UpstreamTransportPool {
+    pub async fn send_exchange(
+        &self,
+        backend: &str,
+        request: UpstreamExchangeRequest,
+    ) -> Result<UpstreamExchangeResponse, ProxyError> {
+        match self.backend_entry(backend) {
+            Some(BackendTransportEntry::Http1) => self.send_h1_exchange(backend, request).await,
+            Some(BackendTransportEntry::H2) => self.send_h2_exchange(backend, request).await,
+            None => Err(ProxyError::Pool(PoolError::UnknownBackend(
+                backend.to_string(),
+            ))),
+        }
+    }
+
+    pub async fn send_h1_exchange(
+        &self,
+        backend: &str,
+        request: UpstreamExchangeRequest,
+    ) -> Result<UpstreamExchangeResponse, ProxyError> {
+        if self.backend_entry(backend) != Some(BackendTransportEntry::Http1) {
+            return Err(match self.backend_entry(backend) {
+                Some(BackendTransportEntry::H2) => ProxyError::Protocol(format!(
+                    "backend '{backend}' is not configured for HTTP/1"
+                )),
+                None => ProxyError::Pool(PoolError::UnknownBackend(backend.to_string())),
+                Some(BackendTransportEntry::Http1) => unreachable!(),
+            });
+        }
+
+        let UpstreamExchangeRequest {
+            head,
+            body,
+            mut cancellation,
+            completion,
+        } = request;
+        let expects_tunnel =
+            head.method == Method::CONNECT || head.headers.contains_key(hyper::header::UPGRADE);
+        let mut hyper_request = Request::new(body.boxed());
+        *hyper_request.method_mut() = head.method.clone();
+        *hyper_request.uri_mut() = head.uri;
+        *hyper_request.version_mut() = head.version;
+        *hyper_request.headers_mut() = head.headers;
+
+        let send = tokio::time::timeout(
+            self.execution_timeout,
+            self.h1_pool.send_exchange(backend, hyper_request),
+        );
+        tokio::pin!(send);
+        let sent = tokio::select! {
+            cancellation_result = &mut cancellation.signal => {
+                if cancellation_result.is_ok() {
+                    let _ = completion.send(UpstreamExchangeCompletion {
+                        outcome: UpstreamExchangeOutcome::Cancelled,
+                        connection_reuse: UpstreamConnectionReuse::Close,
+                    });
+                    return Err(ProxyError::Transport("upstream exchange cancelled".to_string()));
+                }
+                send.await
+            }
+            result = &mut send => result,
+        };
+        let (mut response, permit) = match sent {
+            Ok(Ok(response)) => response,
+            Ok(Err(error)) => {
+                let detail = error.to_string();
+                let _ = completion.send(UpstreamExchangeCompletion {
+                    outcome: UpstreamExchangeOutcome::Failed(ProxyError::Transport(detail)),
+                    connection_reuse: UpstreamConnectionReuse::Close,
+                });
+                return Err(ProxyError::Pool(error));
+            }
+            Err(_) => {
+                let _ = completion.send(UpstreamExchangeCompletion {
+                    outcome: UpstreamExchangeOutcome::Failed(ProxyError::Timeout),
+                    connection_reuse: UpstreamConnectionReuse::Close,
+                });
+                return Err(ProxyError::Timeout);
+            }
+        };
+        let lifecycle = UpstreamExchangeLifecycle {
+            cancellation,
+            completion,
+            inflight_permit: UpstreamInflightPermit { _permit: permit },
+        };
+        let tunnel_response = expects_tunnel
+            && (response.status() == hyper::StatusCode::SWITCHING_PROTOCOLS
+                || (head.method == Method::CONNECT && response.status().is_success()));
+        let upgrade = tunnel_response.then(|| hyper::upgrade::on(&mut response));
+        let (parts, response_body) = response.into_parts();
+        let response_head = UpstreamResponseHead {
+            status: parts.status,
+            version: parts.version,
+            headers: parts.headers,
+        };
+
+        if let Some(on_upgrade) = upgrade {
+            drop(response_body);
+            let (frames, body) = upstream_response_body_channel();
+            drop(frames);
+            let (tunnel_sender, tunnel) = tokio::sync::oneshot::channel();
+            tokio::spawn(forward_h1_upgrade(on_upgrade, lifecycle, tunnel_sender));
+            return Ok(UpstreamExchangeResponse {
+                head: response_head,
+                body,
+                upgrade: Some(UpstreamUpgrade { tunnel }),
+            });
+        }
+
+        let (frames, body) = upstream_response_body_channel();
+        tokio::spawn(pump_hyper_response(
+            response_body,
+            frames,
+            lifecycle,
+            "HTTP/1",
+        ));
+        Ok(UpstreamExchangeResponse {
+            head: response_head,
+            body,
+            upgrade: None,
+        })
+    }
+
+    pub async fn send_h2_exchange(
+        &self,
+        backend: &str,
+        request: UpstreamExchangeRequest,
+    ) -> Result<UpstreamExchangeResponse, ProxyError> {
+        if self.backend_entry(backend) != Some(BackendTransportEntry::H2) {
+            return Err(match self.backend_entry(backend) {
+                Some(BackendTransportEntry::Http1) => ProxyError::Protocol(format!(
+                    "backend '{backend}' is not configured for HTTP/2"
+                )),
+                None => ProxyError::Pool(PoolError::UnknownBackend(backend.to_string())),
+                Some(BackendTransportEntry::H2) => unreachable!(),
+            });
+        }
+
+        let UpstreamExchangeRequest {
+            head,
+            body,
+            mut cancellation,
+            completion,
+        } = request;
+        let mut hyper_request = Request::new(body.boxed());
+        *hyper_request.method_mut() = head.method;
+        *hyper_request.uri_mut() = head.uri;
+        *hyper_request.version_mut() = head.version;
+        *hyper_request.headers_mut() = head.headers;
+
+        let send = tokio::time::timeout(
+            self.execution_timeout,
+            self.h2_pool.send_exchange(backend, hyper_request),
+        );
+        tokio::pin!(send);
+        let sent = tokio::select! {
+            cancellation_result = &mut cancellation.signal => {
+                if cancellation_result.is_ok() {
+                    let _ = completion.send(UpstreamExchangeCompletion {
+                        outcome: UpstreamExchangeOutcome::Cancelled,
+                        connection_reuse: UpstreamConnectionReuse::Close,
+                    });
+                    return Err(ProxyError::Transport("upstream exchange cancelled".to_string()));
+                }
+                send.await
+            }
+            result = &mut send => result,
+        };
+        let (response, permit) = match sent {
+            Ok(Ok(response)) => response,
+            Ok(Err(error)) => {
+                let detail = error.to_string();
+                let _ = completion.send(UpstreamExchangeCompletion {
+                    outcome: UpstreamExchangeOutcome::Failed(ProxyError::Transport(detail)),
+                    connection_reuse: UpstreamConnectionReuse::Close,
+                });
+                return Err(ProxyError::Pool(error));
+            }
+            Err(_) => {
+                let _ = completion.send(UpstreamExchangeCompletion {
+                    outcome: UpstreamExchangeOutcome::Failed(ProxyError::Timeout),
+                    connection_reuse: UpstreamConnectionReuse::Close,
+                });
+                return Err(ProxyError::Timeout);
+            }
+        };
+        let lifecycle = UpstreamExchangeLifecycle {
+            cancellation,
+            completion,
+            inflight_permit: UpstreamInflightPermit { _permit: permit },
+        };
+        let (parts, response_body) = response.into_parts();
+        let response_head = UpstreamResponseHead {
+            status: parts.status,
+            version: parts.version,
+            headers: parts.headers,
+        };
+        let (frames, body) = upstream_response_body_channel();
+        tokio::spawn(pump_hyper_response(
+            response_body,
+            frames,
+            lifecycle,
+            "HTTP/2",
+        ));
+        Ok(UpstreamExchangeResponse {
+            head: response_head,
+            body,
+            upgrade: None,
+        })
+    }
+
     /// Execute a canonical upstream request against the resolved backend target.
     pub async fn send_backend_request(
         &self,
@@ -367,6 +585,182 @@ impl UpstreamTransportPool {
             .await
             .map_err(|_| ProxyError::Timeout)?
             .map_err(ProxyError::Pool)
+    }
+}
+
+fn finish_hyper_exchange(
+    lifecycle: UpstreamExchangeLifecycle,
+    outcome: UpstreamExchangeOutcome,
+    connection_reuse: UpstreamConnectionReuse,
+) {
+    let _ = lifecycle.completion.send(UpstreamExchangeCompletion {
+        outcome,
+        connection_reuse,
+    });
+}
+
+async fn send_hyper_response_frame(
+    frames: &mpsc::Sender<Result<UpstreamBodyFrame, ProxyError>>,
+    frame: Result<UpstreamBodyFrame, ProxyError>,
+    cancellation: &mut UpstreamCancellation,
+    cancellation_open: &mut bool,
+) -> bool {
+    if !*cancellation_open {
+        return frames.send(frame).await.is_ok();
+    }
+
+    tokio::select! {
+        cancellation_result = &mut cancellation.signal => {
+            if cancellation_result.is_ok() {
+                false
+            } else {
+                *cancellation_open = false;
+                frames.send(frame).await.is_ok()
+            }
+        }
+        permit = frames.reserve() => match permit {
+            Ok(permit) => {
+                permit.send(frame);
+                true
+            }
+            Err(_) => false,
+        },
+    }
+}
+
+async fn pump_hyper_response(
+    mut body: Incoming,
+    frames: mpsc::Sender<Result<UpstreamBodyFrame, ProxyError>>,
+    mut lifecycle: UpstreamExchangeLifecycle,
+    protocol: &'static str,
+) {
+    let mut cancellation_open = true;
+    loop {
+        let next = if cancellation_open {
+            tokio::select! {
+                cancellation_result = &mut lifecycle.cancellation.signal => {
+                    if cancellation_result.is_ok() {
+                        finish_hyper_exchange(
+                            lifecycle,
+                            UpstreamExchangeOutcome::Cancelled,
+                            UpstreamConnectionReuse::Close,
+                        );
+                        return;
+                    }
+                    cancellation_open = false;
+                    continue;
+                }
+                frame = body.frame() => frame,
+            }
+        } else {
+            body.frame().await
+        };
+
+        let Some(frame) = next else {
+            finish_hyper_exchange(
+                lifecycle,
+                UpstreamExchangeOutcome::Completed,
+                UpstreamConnectionReuse::Reuse,
+            );
+            return;
+        };
+        let frame = match frame {
+            Ok(frame) => frame,
+            Err(error) => {
+                let detail = format!("{protocol} response body error: {error}");
+                let delivered = send_hyper_response_frame(
+                    &frames,
+                    Err(ProxyError::Transport(detail.clone())),
+                    &mut lifecycle.cancellation,
+                    &mut cancellation_open,
+                )
+                .await;
+                finish_hyper_exchange(
+                    lifecycle,
+                    if delivered {
+                        UpstreamExchangeOutcome::Failed(ProxyError::Transport(detail))
+                    } else {
+                        UpstreamExchangeOutcome::Cancelled
+                    },
+                    UpstreamConnectionReuse::Close,
+                );
+                return;
+            }
+        };
+        let frame = match frame.into_data() {
+            Ok(data) => Some(UpstreamBodyFrame::Data(data)),
+            Err(frame) => frame
+                .into_trailers()
+                .ok()
+                .map(|headers| UpstreamBodyFrame::Trailers(UpstreamTrailers { headers })),
+        };
+        let Some(frame) = frame else {
+            continue;
+        };
+        if !send_hyper_response_frame(
+            &frames,
+            Ok(frame),
+            &mut lifecycle.cancellation,
+            &mut cancellation_open,
+        )
+        .await
+        {
+            finish_hyper_exchange(
+                lifecycle,
+                UpstreamExchangeOutcome::Cancelled,
+                UpstreamConnectionReuse::Close,
+            );
+            return;
+        }
+    }
+}
+
+async fn forward_h1_upgrade(
+    on_upgrade: hyper::upgrade::OnUpgrade,
+    mut lifecycle: UpstreamExchangeLifecycle,
+    tunnel_sender: tokio::sync::oneshot::Sender<Result<UpstreamTunnel, ProxyError>>,
+) {
+    tokio::pin!(on_upgrade);
+    let upgraded = tokio::select! {
+        cancellation_result = &mut lifecycle.cancellation.signal => {
+            if cancellation_result.is_ok() {
+                let _ = tunnel_sender.send(Err(ProxyError::Transport(
+                    "upstream exchange cancelled".to_string(),
+                )));
+                finish_hyper_exchange(
+                    lifecycle,
+                    UpstreamExchangeOutcome::Cancelled,
+                    UpstreamConnectionReuse::Close,
+                );
+                return;
+            }
+            on_upgrade.await
+        }
+        upgraded = &mut on_upgrade => upgraded,
+    };
+    let upgraded = match upgraded {
+        Ok(upgraded) => upgraded,
+        Err(error) => {
+            let detail = format!("HTTP/1 upgrade failed: {error}");
+            let _ = tunnel_sender.send(Err(ProxyError::Transport(detail.clone())));
+            finish_hyper_exchange(
+                lifecycle,
+                UpstreamExchangeOutcome::Failed(ProxyError::Transport(detail)),
+                UpstreamConnectionReuse::Close,
+            );
+            return;
+        }
+    };
+    let tunnel = UpstreamTunnel {
+        io: Box::new(TokioIo::new(upgraded)),
+        lifecycle,
+    };
+    if let Err(Ok(tunnel)) = tunnel_sender.send(Ok(tunnel)) {
+        finish_hyper_exchange(
+            tunnel.lifecycle,
+            UpstreamExchangeOutcome::Cancelled,
+            UpstreamConnectionReuse::Close,
+        );
     }
 }
 

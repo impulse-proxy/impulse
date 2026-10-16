@@ -1,6 +1,5 @@
 use std::{
     collections::HashMap,
-    convert::Infallible,
     future::Future,
     io,
     net::SocketAddr,
@@ -24,6 +23,7 @@ use hyper_util::{
     rt::TokioIo,
 };
 use impulse_config::runtime::{RuntimeBackendTlsPolicy, RuntimeUpstream};
+use impulse_errors::ProxyError;
 use log::warn;
 use rustls::{
     ClientConfig, DigitallySignedStruct, RootCertStore, SignatureScheme,
@@ -286,7 +286,7 @@ impl Service<Name> for SharedDnsResolver {
 }
 
 pub(crate) struct H2Client {
-    client: Client<HttpsConnector<ObservedHttpConnector>, BoxBody<Bytes, Infallible>>,
+    client: Client<HttpsConnector<ObservedHttpConnector>, BoxBody<Bytes, ProxyError>>,
 }
 
 impl Default for H2Client {
@@ -364,7 +364,7 @@ impl H2Client {
 
     pub(crate) async fn send(
         &self,
-        req: Request<BoxBody<Bytes, Infallible>>,
+        req: Request<BoxBody<Bytes, ProxyError>>,
     ) -> Result<hyper::Response<hyper::body::Incoming>, hyper_util::client::legacy::Error> {
         self.client.request(req).await
     }
