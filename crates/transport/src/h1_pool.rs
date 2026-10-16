@@ -5,12 +5,12 @@ use std::{
     time::Duration,
 };
 
-use http_body_util::combinators::BoxBody;
+use http_body_util::{BodyExt, combinators::BoxBody};
 use hyper::{
     Request,
     body::{Bytes, Incoming},
 };
-use impulse_errors::PoolError;
+use impulse_errors::{PoolError, ProxyError};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, TryAcquireError};
 
 use crate::{
@@ -89,13 +89,31 @@ impl H1Pool {
         let _permit = Self::acquire_inflight_permit(handle, backend)?;
         let client = Self::current_client(handle)?;
 
-        client.send(req).await.map_err(PoolError::Send)
+        client
+            .send(Self::map_legacy_request(req))
+            .await
+            .map_err(PoolError::Send)
     }
 
     pub(crate) async fn send_upgrade(
         &self,
         backend: &str,
         req: Request<BoxBody<Bytes, Infallible>>,
+    ) -> Result<(hyper::Response<Incoming>, OwnedSemaphorePermit), PoolError> {
+        let handle = self.backend_handle(backend)?;
+        let permit = Self::acquire_inflight_permit(handle, backend)?;
+        let client = Self::current_client(handle)?;
+        let response = client
+            .send(Self::map_legacy_request(req))
+            .await
+            .map_err(PoolError::Send)?;
+        Ok((response, permit))
+    }
+
+    pub(crate) async fn send_exchange(
+        &self,
+        backend: &str,
+        req: Request<BoxBody<Bytes, ProxyError>>,
     ) -> Result<(hyper::Response<Incoming>, OwnedSemaphorePermit), PoolError> {
         let handle = self.backend_handle(backend)?;
         let permit = Self::acquire_inflight_permit(handle, backend)?;
@@ -153,5 +171,16 @@ impl H1Pool {
             .read()
             .map(|state| Arc::clone(&state.client))
             .map_err(|_| PoolError::InflightLimiterClosed)
+    }
+
+    fn map_legacy_request(
+        req: Request<BoxBody<Bytes, Infallible>>,
+    ) -> Request<BoxBody<Bytes, ProxyError>> {
+        let (parts, body) = req.into_parts();
+        Request::from_parts(
+            parts,
+            body.map_err(|never| -> ProxyError { match never {} })
+                .boxed(),
+        )
     }
 }
