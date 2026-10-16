@@ -487,3 +487,6 @@ async fn pump_pingora_h1_response(
         }
     }
 }
+
+#[cfg(test)]
+mod tests;
