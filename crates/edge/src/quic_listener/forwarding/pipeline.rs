@@ -2,11 +2,10 @@ use impulse_errors::ProxyError;
 
 use super::resolve::ForwardTargetResolution;
 use crate::{
-    quic_listener::{
-        LbHeaderLookup,
-        admission::{AdmissionPolicyDecision, RequestAdmissionService},
+    quic_listener::admission::AdmissionPolicyDecision,
+    request_pipeline::{
+        PipelineRequest, ResolvedRequestPolicy, evaluate_admission, resolve_policy,
     },
-    request_pipeline::{PipelineRequest, ResolvedRequestPolicy, resolve_policy},
     resilience::runtime::RuntimeResilience,
 };
 
@@ -76,24 +75,8 @@ impl<'a> ForwardingRequestPipeline<'a> {
         route: PipelineRoute<'_>,
         request: PipelineRequest<'_>,
     ) -> PipelinePolicyAdmission {
-        let PipelineRequest {
-            method,
-            path,
-            authority,
-            peer_address,
-            headers,
-            runtime_generation: _runtime_generation,
-        } = request;
         let policy = resolve_policy(route.upstream_policy);
-        let admission = RequestAdmissionService::new(self.resilience).evaluate_pre_auth(
-            &policy.local_auth_policy,
-            headers,
-            route.upstream_name,
-            method,
-            path,
-            authority,
-            peer_address,
-        );
+        let admission = evaluate_admission(self.resilience, &policy, route.upstream_name, &request);
 
         PipelinePolicyAdmission { policy, admission }
     }

@@ -138,14 +138,14 @@ impl OverloadDecisionReason {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct UnauthorizedDecision {
+pub(crate) struct UnauthorizedDecision {
     pub(super) challenge: AuthChallengeKind,
     pub(super) status: StatusCode,
     pub(super) body: &'static [u8],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct RateLimitedDecision {
+pub(crate) struct RateLimitedDecision {
     pub(super) rule_name: String,
     pub(super) route: String,
     pub(super) status: StatusCode,
@@ -173,7 +173,7 @@ pub(super) enum OverloadDecisionReason {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct OverloadDecision {
+pub(crate) struct OverloadDecision {
     pub(super) reason: OverloadDecisionReason,
     pub(super) status: StatusCode,
     pub(super) body: &'static [u8],
@@ -221,7 +221,7 @@ pub(super) enum PostAuthAdmissionExecution {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum AdmissionPolicyDecision {
+pub(crate) enum AdmissionPolicyDecision {
     AdmitReady,
     Unauthorized(UnauthorizedDecision),
     RateLimited(RateLimitedDecision),
@@ -229,7 +229,7 @@ pub(super) enum AdmissionPolicyDecision {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn evaluate_forwarding_pre_admission_policy(
+pub(crate) fn evaluate_forwarding_pre_admission_policy(
     policy: &RuntimeUpstreamPolicy,
     header_lookup: Option<&LbHeaderLookup<'_>>,
     brownout: &BrownoutController,

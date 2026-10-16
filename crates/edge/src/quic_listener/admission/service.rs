@@ -1,24 +1,18 @@
 use std::{
     collections::HashMap,
-    net::SocketAddr,
     sync::{Arc, RwLock},
     time::Duration,
 };
 
-use impulse_config::runtime::RuntimeUpstreamPolicy;
 use impulse_lb::upstream_pool::UpstreamPool;
 use tokio::sync::Semaphore;
 
 use super::{
-    AdmissionPolicyDecision, LbHeaderLookup, PendingForward, PostAuthAdmissionExecution,
-    RuntimeResilience, evaluate_forwarding_pre_admission_policy,
+    PendingForward, PostAuthAdmissionExecution, RuntimeResilience,
     execute_forwarding_post_auth_admission,
 };
 
-/// Protocol-neutral admission boundary for an already resolved request.
-///
-/// It owns the ordering of pre-auth and post-auth admission checks while the
-/// protocol adapter retains metrics observation and response serialization.
+/// Executes post-auth admission using the existing resilience state.
 #[derive(Clone, Copy)]
 pub(in crate::quic_listener) struct RequestAdmissionService<'a> {
     resilience: &'a RuntimeResilience,
@@ -27,32 +21,6 @@ pub(in crate::quic_listener) struct RequestAdmissionService<'a> {
 impl<'a> RequestAdmissionService<'a> {
     pub(in crate::quic_listener) const fn new(resilience: &'a RuntimeResilience) -> Self {
         Self { resilience }
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub(in crate::quic_listener) fn evaluate_pre_auth(
-        self,
-        policy: &RuntimeUpstreamPolicy,
-        header_lookup: Option<&LbHeaderLookup<'_>>,
-        route: &str,
-        method: &str,
-        path: &str,
-        authority: Option<&str>,
-        client_addr: SocketAddr,
-    ) -> AdmissionPolicyDecision {
-        evaluate_forwarding_pre_admission_policy(
-            policy,
-            header_lookup,
-            &self.resilience.brownout,
-            self.resilience.adaptive_admission.inflight_percent(),
-            route,
-            method,
-            path,
-            authority,
-            client_addr,
-            self.resilience.shed_retry_after_seconds,
-            &self.resilience.scoped_rate_limits,
-        )
     }
 
     pub(in crate::quic_listener) fn execute_post_auth(
