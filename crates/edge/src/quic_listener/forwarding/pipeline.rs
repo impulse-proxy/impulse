@@ -6,7 +6,7 @@ use crate::{
         LbHeaderLookup,
         admission::{AdmissionPolicyDecision, RequestAdmissionService},
     },
-    request_pipeline::{PipelineRequest, RequestPolicyService, ResolvedRequestPolicy},
+    request_pipeline::{PipelineRequest, ResolvedRequestPolicy, resolve_policy},
     resilience::runtime::RuntimeResilience,
 };
 
@@ -84,7 +84,7 @@ impl<'a> ForwardingRequestPipeline<'a> {
             headers,
             runtime_generation: _runtime_generation,
         } = request;
-        let policy = RequestPolicyService::resolve(route.upstream_policy);
+        let policy = resolve_policy(route.upstream_policy);
         let admission = RequestAdmissionService::new(self.resilience).evaluate_pre_auth(
             &policy.local_auth_policy,
             headers,

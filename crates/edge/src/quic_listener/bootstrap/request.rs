@@ -763,9 +763,7 @@ mod tests {
     use quiche::h3::NameValue;
 
     use super::*;
-    use crate::{
-        request_pipeline::RequestPolicyService, runtime::connection::request::PendingForward,
-    };
+    use crate::{request_pipeline::resolve_policy, runtime::connection::request::PendingForward};
 
     #[test]
     fn terminal_outcome_accepted_classification() {
@@ -906,7 +904,7 @@ mod tests {
     fn bootstrap_and_quic_request_builders_emit_same_standard_request_shape() {
         let endpoint = BackendEndpoint::parse("backend.internal:443").expect("endpoint");
         let policy = sample_bootstrap_policy();
-        let request_policy = RequestPolicyService::resolve(&policy);
+        let request_policy = resolve_policy(&policy);
         let logical_headers = vec![
             quiche::h3::Header::new(b"forwarded", b"for=1.2.3.4;proto=http;host=\"old.example\""),
             quiche::h3::Header::new(b"x-forwarded-for", b"1.2.3.4"),
@@ -1008,7 +1006,7 @@ mod tests {
     fn bootstrap_target_uses_same_forwarded_and_auth_header_contract_as_quic() {
         let endpoint = BackendEndpoint::parse("backend.internal:443").expect("endpoint");
         let policy = sample_bootstrap_policy();
-        let request_policy = RequestPolicyService::resolve(&policy);
+        let request_policy = resolve_policy(&policy);
         let mut bootstrap_headers = HeaderMap::new();
         bootstrap_headers.insert(
             http::header::AUTHORIZATION,

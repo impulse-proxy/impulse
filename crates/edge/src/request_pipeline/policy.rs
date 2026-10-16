@@ -7,21 +7,16 @@ use crate::runtime::connection::auth::{ExternalAuthFailureDisposition, ExternalA
 
 /// Resolves the policies selected by route resolution independently of the
 /// ingress protocol.
-#[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct RequestPolicyService;
-
-impl RequestPolicyService {
-    pub(crate) fn resolve(upstream_policy: &RuntimeUpstreamPolicy) -> ResolvedRequestPolicy {
-        ResolvedRequestPolicy {
-            local_auth_policy: upstream_policy.clone(),
-            host_policy: upstream_policy.host.0.clone(),
-            forwarded_header_policy: upstream_policy.forwarded_headers.0.clone(),
-            external_auth: upstream_policy
-                .upstream_auth
-                .external_auth
-                .clone()
-                .map(ExternalAuthPlan::new),
-        }
+pub(crate) fn resolve_policy(upstream_policy: &RuntimeUpstreamPolicy) -> ResolvedRequestPolicy {
+    ResolvedRequestPolicy {
+        local_auth_policy: upstream_policy.clone(),
+        host_policy: upstream_policy.host.0.clone(),
+        forwarded_header_policy: upstream_policy.forwarded_headers.0.clone(),
+        external_auth: upstream_policy
+            .upstream_auth
+            .external_auth
+            .clone()
+            .map(ExternalAuthPlan::new),
     }
 }
 
@@ -73,7 +68,7 @@ mod tests {
             ..RuntimeUpstreamPolicy::default()
         };
 
-        let resolved = RequestPolicyService::resolve(&upstream_policy);
+        let resolved = resolve_policy(&upstream_policy);
 
         assert_eq!(
             resolved.host_policy.host.as_deref(),
