@@ -538,3 +538,6 @@ async fn pump_pingora_h2_response(
         connection_reuse,
     );
 }
+
+#[cfg(test)]
+mod tests;
