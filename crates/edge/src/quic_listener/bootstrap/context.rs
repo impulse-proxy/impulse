@@ -10,7 +10,10 @@ use impulse_lb::upstream_pool::UpstreamPool;
 use impulse_transport::UpstreamTransportPool;
 
 use super::state::BootstrapConnectionState;
-use crate::{Metrics, resilience::runtime::RuntimeResilience, routing::index::RouteIndex};
+use crate::{
+    Metrics, request_pipeline::TerminalOutcomeGuard, resilience::runtime::RuntimeResilience,
+    routing::index::RouteIndex,
+};
 
 pub(in crate::quic_listener) struct BootstrapBodyLimits {
     pub(in crate::quic_listener) max_request_body_bytes: usize,
@@ -18,6 +21,7 @@ pub(in crate::quic_listener) struct BootstrapBodyLimits {
 }
 
 pub(in crate::quic_listener) struct BootstrapRuntimeCtx {
+    pub(in crate::quic_listener) runtime_generation: crate::runtime::activation::GenerationId,
     pub(in crate::quic_listener) alt_svc: String,
     pub(in crate::quic_listener) backend_timeout: Duration,
     pub(in crate::quic_listener) body_limits: BootstrapBodyLimits,
@@ -35,6 +39,7 @@ impl BootstrapRuntimeCtx {
         state: &BootstrapConnectionState,
     ) -> Self {
         Self {
+            runtime_generation: state.runtime_generation,
             alt_svc: state.alt_svc_value.clone(),
             backend_timeout: state.backend_timeout,
             body_limits: BootstrapBodyLimits {
@@ -57,6 +62,7 @@ pub(in crate::quic_listener) struct BootstrapRequestCtx<'a> {
     pub(in crate::quic_listener) runtime: &'a BootstrapRuntimeCtx,
     pub(in crate::quic_listener) peer: SocketAddr,
     pub(in crate::quic_listener) request_start: Instant,
+    pub(in crate::quic_listener) terminal_outcome: &'a TerminalOutcomeGuard,
 }
 
 #[derive(Clone, Copy)]

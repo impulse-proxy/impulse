@@ -26,7 +26,6 @@ use super::{
         forwarding::{
             BootstrapTargetResolutionInput, ResolutionContext, ResolutionObservation,
             TargetResolutionRequest, evaluate_pending_forward_external_auth,
-            pipeline::{ForwardingRequestPipeline, PipelineRequest, PipelineRoute},
         },
     },
     context::BootstrapRequestCtx,
@@ -35,7 +34,10 @@ use super::{
     response::{BootstrapStreamingBody, boxed_full},
 };
 use crate::{
-    request_pipeline::ResolvedRequestPolicy,
+    request_pipeline::{
+        PipelineRequest, PipelineResolution, PipelineRoute, ResolvedRequestPolicy,
+        TerminalOutcomeGuard, evaluate_pipeline,
+    },
     runtime::connection::{
         auth::{
             ExternalAuthDecision, ExternalAuthStateTransition, PendingHeaderMutation,
@@ -196,10 +198,6 @@ impl BootstrapTerminalResponse {
         })
     }
 
-    pub(in crate::quic_listener) fn into_response(self) -> Response<BoxBody<Bytes, Infallible>> {
-        self.response
-    }
-
     /// Log the terminal state at the terminalization boundary, then return the
     /// response. Phase 11: the terminal outcome is now *observed* rather than a
     /// dead byproduct, so bootstrap terminalization is traceable the same way the
@@ -207,8 +205,9 @@ impl BootstrapTerminalResponse {
     pub(in crate::quic_listener) fn into_observed_response(
         self,
         request_id: u64,
+        terminal_outcome: &TerminalOutcomeGuard,
     ) -> Response<BoxBody<Bytes, Infallible>> {
-        if !self.outcome.is_accepted() {
+        if terminal_outcome.record() && !self.outcome.is_accepted() {
             log::debug!(
                 "bootstrap request {} terminalized at stage={} outcome={}",
                 request_id,
@@ -483,18 +482,23 @@ pub(in crate::quic_listener) fn evaluate_bootstrap_request_policy(
         }
     };
 
-    let pipeline = ForwardingRequestPipeline::new(&input.request_ctx.runtime.resilience);
-    let pipeline_evaluation = pipeline.evaluate(
+    let PipelineResolution {
+        route: _,
+        policy: request_policy,
+        admission,
+    } = evaluate_pipeline(
+        &input.request_ctx.runtime.resilience,
         PipelineRoute::new(&resolved.upstream_name, &resolved.upstream_policy),
         PipelineRequest {
             method: input.intake.method.as_ref(),
             path: &input.intake.path,
             authority: input.intake.authority.as_deref(),
             peer_address: input.request_ctx.peer,
-            header_lookup: Some(&lb_header_lookup),
+            headers: Some(&lb_header_lookup),
+            runtime_generation: input.request_ctx.runtime.runtime_generation,
+            terminal_outcome: input.request_ctx.terminal_outcome.clone(),
         },
     );
-    let admission = pipeline_evaluation.admission;
     input
         .request_ctx
         .runtime
@@ -689,7 +693,7 @@ pub(in crate::quic_listener) fn evaluate_bootstrap_request_policy(
         backend_addr: resolved.backend_addr,
         backend_index: resolved.backend_index,
         upstream_name: resolved.upstream_name,
-        request_policy: pipeline_evaluation.policy,
+        request_policy,
         upstream_pool: resolved.upstream_pool,
     })
 }
@@ -762,9 +766,7 @@ mod tests {
     use quiche::h3::NameValue;
 
     use super::*;
-    use crate::{
-        request_pipeline::RequestPolicyService, runtime::connection::request::PendingForward,
-    };
+    use crate::{request_pipeline::resolve_policy, runtime::connection::request::PendingForward};
 
     #[test]
     fn terminal_outcome_accepted_classification() {
@@ -905,7 +907,7 @@ mod tests {
     fn bootstrap_and_quic_request_builders_emit_same_standard_request_shape() {
         let endpoint = BackendEndpoint::parse("backend.internal:443").expect("endpoint");
         let policy = sample_bootstrap_policy();
-        let request_policy = RequestPolicyService::resolve(&policy);
+        let request_policy = resolve_policy(&policy);
         let logical_headers = vec![
             quiche::h3::Header::new(b"forwarded", b"for=1.2.3.4;proto=http;host=\"old.example\""),
             quiche::h3::Header::new(b"x-forwarded-for", b"1.2.3.4"),
@@ -1007,7 +1009,7 @@ mod tests {
     fn bootstrap_target_uses_same_forwarded_and_auth_header_contract_as_quic() {
         let endpoint = BackendEndpoint::parse("backend.internal:443").expect("endpoint");
         let policy = sample_bootstrap_policy();
-        let request_policy = RequestPolicyService::resolve(&policy);
+        let request_policy = resolve_policy(&policy);
         let mut bootstrap_headers = HeaderMap::new();
         bootstrap_headers.insert(
             http::header::AUTHORIZATION,

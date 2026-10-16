@@ -2,7 +2,7 @@ use impulse_config::runtime::RuntimeUpstreamPolicy;
 
 use super::{selection::ForwardingSelectionService, *};
 use crate::{
-    request_pipeline::{RouteResolutionError, RouteResolutionService},
+    request_pipeline::{RouteResolutionError, resolve_route},
     runtime::connection::outcome::{RouteOutcomeTarget, observe_proxy_error_outcome},
 };
 
@@ -303,16 +303,20 @@ impl QUICListener {
         request: &TargetResolutionRequest<'_>,
         context: &ResolutionContext<'_>,
     ) -> Result<RouteResolution, ProxyError> {
-        let route_target = RouteResolutionService::new(context.routing_index)
-            .resolve(request.method, request.path, request.authority)
-            .map_err(|error| match error {
-                RouteResolutionError::EmptyMethodOrPath => {
-                    ProxyError::Transport("empty method or path".into())
-                }
-                RouteResolutionError::NoRoute => {
-                    ProxyError::Transport(format!("no route for {}", request.path))
-                }
-            })?;
+        let route_target = resolve_route(
+            context.routing_index,
+            request.method,
+            request.path,
+            request.authority,
+        )
+        .map_err(|error| match error {
+            RouteResolutionError::EmptyMethodOrPath => {
+                ProxyError::Transport("empty method or path".into())
+            }
+            RouteResolutionError::NoRoute => {
+                ProxyError::Transport(format!("no route for {}", request.path))
+            }
+        })?;
         let upstream_name = route_target.upstream_name.to_string();
         let upstream_pool = context
             .upstream_pools

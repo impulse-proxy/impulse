@@ -13,6 +13,7 @@ use tracing::Span;
 
 use crate::{
     Metrics, OverloadShedReason,
+    request_pipeline::TerminalOutcomeGuard,
     runtime::connection::{
         auth::{ExternalAuthResult, PendingHeaderMutation},
         outcome::{
@@ -62,7 +63,7 @@ pub struct RequestEnvelope {
     pub retry_count: u8,
     pub error_kind: Option<&'static str>,
     pub terminal_overload_reason: Option<OverloadShedReason>,
-    pub terminal_outcome_recorded: bool,
+    pub(crate) terminal_outcome: TerminalOutcomeGuard,
     pub(crate) empty_request_body_runtime: RequestBodyRuntime,
     pub execution: RequestExecutionState,
 }
@@ -136,7 +137,7 @@ impl RequestEnvelope {
             retry_count,
             error_kind,
             terminal_overload_reason: None,
-            terminal_outcome_recorded: false,
+            terminal_outcome: context.terminal_outcome.clone(),
             empty_request_body_runtime: RequestBodyRuntime::empty(context.start),
             execution: RequestExecutionState::DispatchReady(state),
         }
@@ -190,14 +191,19 @@ impl RequestEnvelope {
             retry_count,
             error_kind,
             terminal_overload_reason: None,
-            terminal_outcome_recorded: false,
+            terminal_outcome: context.terminal_outcome.clone(),
             empty_request_body_runtime: RequestBodyRuntime::empty(context.start),
             execution: RequestExecutionState::AwaitingAuth(state),
         }
     }
 
     pub fn mark_terminal_outcome_recorded(&mut self) {
-        self.terminal_outcome_recorded = true;
+        self.terminal_outcome.record();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn terminal_outcome_recorded(&self) -> bool {
+        self.terminal_outcome.is_recorded()
     }
 
     pub fn phase(&self) -> StreamPhase {
@@ -826,9 +832,8 @@ impl RequestEnvelope {
 
         let snapshot = self.terminal_snapshot();
         let terminal_state = reason.into_terminal_state(snapshot.clone());
-        if !self.terminal_outcome_recorded {
+        if self.terminal_outcome.record() {
             let _ = observe_terminal_request_outcome(metrics, &terminal_state);
-            self.terminal_outcome_recorded = true;
         }
         let should_finalize_backend = self.execution.should_finalize_backend_accounting();
         let buffered_body_bytes = Self::buffered_request_body_bytes(&self.execution);
@@ -939,6 +944,7 @@ impl RequestEnvelope {
                 authority: self.authority.clone(),
                 start: self.start,
                 total_request_deadline: self.total_request_deadline,
+                terminal_outcome: self.terminal_outcome.clone(),
             },
             routing,
             request_mode: RequestMode::from_intake(self.tunnel_mode, &self.method, None),
@@ -1049,6 +1055,7 @@ mod tests {
             authority: Some("example.com".into()),
             start,
             total_request_deadline: start + Duration::from_secs(30),
+            terminal_outcome: TerminalOutcomeGuard::default(),
         }
     }
 
@@ -1125,7 +1132,7 @@ mod tests {
             retry_count: 0,
             error_kind: None,
             terminal_overload_reason: None,
-            terminal_outcome_recorded: false,
+            terminal_outcome: context.terminal_outcome.clone(),
             empty_request_body_runtime: RequestBodyRuntime::empty(start),
             execution: RequestExecutionState::Admitted(AdmittedState {
                 context,
@@ -1180,7 +1187,7 @@ mod tests {
 
         assert_eq!(phase, StreamPhase::ReceivingRequest);
         assert_eq!(req.phase(), StreamPhase::Terminal);
-        assert!(req.terminal_outcome_recorded);
+        assert!(req.terminal_outcome_recorded());
         assert_eq!(metrics.request_buffered_bytes.load(Ordering::Relaxed), 0);
         assert_eq!(metrics.requests_failure.load(Ordering::Relaxed), 1);
         assert_eq!(global_sem.available_permits(), 1);
@@ -1225,7 +1232,7 @@ mod tests {
 
         assert_eq!(phase, StreamPhase::SendingResponse);
         assert_eq!(req.phase(), StreamPhase::Terminal);
-        assert!(req.terminal_outcome_recorded);
+        assert!(req.terminal_outcome_recorded());
         assert_eq!(metrics.requests_failure.load(Ordering::Relaxed), 0);
         assert_eq!(global_sem.available_permits(), 1);
         assert_eq!(upstream_sem.available_permits(), 1);
@@ -1235,6 +1242,7 @@ mod tests {
     #[test]
     fn invalid_transitions_return_error_instead_of_panicking() {
         let start = Instant::now();
+        let context = make_request_context(start);
         let mut dispatch_ready = RequestEnvelope {
             request_id: 1,
             trace_id: None,
@@ -1262,10 +1270,10 @@ mod tests {
             retry_count: 0,
             error_kind: None,
             terminal_overload_reason: None,
-            terminal_outcome_recorded: false,
+            terminal_outcome: context.terminal_outcome.clone(),
             empty_request_body_runtime: RequestBodyRuntime::empty(start),
             execution: RequestExecutionState::DispatchReady(DispatchReadyState {
-                context: make_request_context(start),
+                context,
                 routing: make_routing_snapshot(),
                 request_mode: RequestMode::Normal,
                 request_body: RequestBodyState::Open,

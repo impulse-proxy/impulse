@@ -4,7 +4,6 @@ mod lb_key;
 mod orchestration;
 mod orchestration_service;
 mod outcome;
-pub(in crate::quic_listener) mod pipeline;
 mod prepare;
 mod resolve;
 mod response;
@@ -28,6 +27,7 @@ use super::*;
 
 // Shared forwarding dependencies passed through extracted submodules.
 pub(in crate::quic_listener) struct ForwardingSharedCtx<'a> {
+    pub(in crate::quic_listener) runtime_generation: crate::runtime::activation::GenerationId,
     pub(in crate::quic_listener) metrics: Arc<Metrics>,
     pub(in crate::quic_listener) resilience: &'a RuntimeResilience,
     pub(in crate::quic_listener) routing_index: &'a RouteIndex,

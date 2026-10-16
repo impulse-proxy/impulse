@@ -116,6 +116,7 @@ mod token_bucket;
 mod validation;
 mod workers;
 
+pub(crate) use admission::{AdmissionPolicyDecision, evaluate_forwarding_pre_admission_policy};
 pub use async_runtime::configure_async_runtime;
 pub(in crate::quic_listener) use async_runtime::{
     runtime_handle, spawn_async_task, spawn_supervised_async_task,
@@ -172,7 +173,7 @@ struct ListenerRuntimeSettings {
     new_connections_burst: u32,
 }
 
-type LbHeaderLookup<'a> = dyn Fn(&str) -> Option<String> + 'a;
+type LbHeaderLookup<'a> = crate::request_pipeline::RequestHeaderLookup<'a>;
 
 impl QUICListener {
     fn random_reset_token() -> u128 {
@@ -391,6 +392,7 @@ impl QUICListener {
         }
 
         let shared_ctx = ForwardingSharedCtx {
+            runtime_generation: self.runtime_generation,
             metrics: Arc::clone(&self.metrics),
             resilience: &self.resilience,
             routing_index: &self.routing_index,
@@ -474,6 +476,7 @@ impl QUICListener {
         let mut send_buf = [0u8; MAX_DATAGRAM_SIZE_BYTES];
         let mut to_remove = Vec::new();
         let shared_ctx = ForwardingSharedCtx {
+            runtime_generation: self.runtime_generation,
             metrics: Arc::clone(&self.metrics),
             resilience: &self.resilience,
             routing_index: &self.routing_index,

@@ -678,14 +678,20 @@ async fn run_bootstrap_h2_request(
         .await
         .map_err(|err| format!("sender ready: {err}"))?;
 
+    let uri = if request.method.eq_ignore_ascii_case("CONNECT") {
+        http::Uri::builder()
+            .authority(request.authority)
+            .build()
+            .map_err(|err| format!("uri build: {err}"))?
+    } else {
+        http::Uri::builder()
+            .path_and_query(request.path)
+            .build()
+            .map_err(|err| format!("uri build: {err}"))?
+    };
     let mut builder = Request::builder()
         .method(request.method)
-        .uri(
-            http::Uri::builder()
-                .path_and_query(request.path)
-                .build()
-                .map_err(|err| format!("uri build: {err}"))?,
-        )
+        .uri(uri)
         .header("host", request.authority)
         .header("user-agent", request.user_agent);
     for (name, value) in request.headers {
@@ -1079,7 +1085,7 @@ fn run_two_chunk_post(
     config.set_max_idle_timeout(QUIC_IDLE_TIMEOUT_MS);
     config.set_max_recv_udp_payload_size(MAX_UDP_PAYLOAD_BYTES);
     config.set_max_send_udp_payload_size(MAX_UDP_PAYLOAD_BYTES);
-    let window = (total_len as u64 + 1) * 2;
+    let window = ((total_len as u64 + 1) * 2).max(QUIC_INITIAL_STREAM_DATA);
     config.set_initial_max_data(window * 4);
     config.set_initial_max_stream_data_bidi_local(window);
     config.set_initial_max_stream_data_bidi_remote(window);
@@ -1902,13 +1908,25 @@ fn run_h3_request(addr: SocketAddr, request: H3RequestSpec<'_>) -> Result<H3Resp
 
         if let Some(h3_conn) = h3.as_mut() {
             if conn.is_established() && !request_sent {
-                let mut request_headers = vec![
-                    quiche::h3::Header::new(b":method", request.method.as_bytes()),
-                    quiche::h3::Header::new(b":scheme", b"https"),
-                    quiche::h3::Header::new(b":authority", request.authority.as_bytes()),
-                    quiche::h3::Header::new(b":path", request.path.as_bytes()),
-                    quiche::h3::Header::new(b"user-agent", request.user_agent.as_bytes()),
-                ];
+                let mut request_headers = vec![quiche::h3::Header::new(
+                    b":method",
+                    request.method.as_bytes(),
+                )];
+                if !request.method.eq_ignore_ascii_case("CONNECT") {
+                    request_headers.push(quiche::h3::Header::new(b":scheme", b"https"));
+                }
+                request_headers.push(quiche::h3::Header::new(
+                    b":authority",
+                    request.authority.as_bytes(),
+                ));
+                if !request.method.eq_ignore_ascii_case("CONNECT") {
+                    request_headers
+                        .push(quiche::h3::Header::new(b":path", request.path.as_bytes()));
+                }
+                request_headers.push(quiche::h3::Header::new(
+                    b"user-agent",
+                    request.user_agent.as_bytes(),
+                ));
                 request_headers.extend(request.headers.iter().map(|(name, value)| {
                     quiche::h3::Header::new(name.as_bytes(), value.as_bytes())
                 }));

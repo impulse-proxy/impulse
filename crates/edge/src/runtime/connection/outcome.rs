@@ -1017,6 +1017,7 @@ mod tests {
                 authority: None,
                 start: now,
                 total_request_deadline: now,
+                terminal_outcome: crate::request_pipeline::TerminalOutcomeGuard::default(),
             },
             routing: None,
             request_mode: RequestMode::Normal,
