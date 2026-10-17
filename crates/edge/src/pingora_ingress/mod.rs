@@ -42,7 +42,7 @@ use crate::{
     REQUEST_ID_COUNTER,
     quic_listener::{
         AdmissionPolicyDecision, ForwardingSelectionService, MAX_UPSTREAM_RETRY_ATTEMPTS,
-        RetryCoordinator, TargetResolutionRequest, admission_rejection_response,
+        QUICListener, RetryCoordinator, TargetResolutionRequest, admission_rejection_response,
         validate_http_request_parts,
     },
     request_pipeline::{
@@ -175,6 +175,17 @@ pub(crate) fn pingora_ingress_service(
         listener: listener_label.clone(),
         store: tls_store,
     }));
+    if let Some(verifier) = QUICListener::build_listener_client_cert_verifier(&listener.listen.tls)
+        .map_err(|error| {
+            Error::because(
+                InternalError,
+                "failed to configure Pingora ingress client authentication",
+                error,
+            )
+        })?
+    {
+        tls.set_client_cert_verifier(verifier);
+    }
     tls.enable_h2();
 
     let mut service = http_proxy_service_with_name(

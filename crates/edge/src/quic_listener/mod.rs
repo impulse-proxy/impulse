@@ -46,7 +46,10 @@ use rand::RngCore;
 use rustls::{
     RootCertStore, ServerConfig as RustlsServerConfig,
     pki_types::{CertificateDer, PrivateKeyDer},
-    server::{ClientHello, ResolvesServerCert, ResolvesServerCertUsingSni, WebPkiClientVerifier},
+    server::{
+        ClientHello, ResolvesServerCert, ResolvesServerCertUsingSni, WebPkiClientVerifier,
+        danger::ClientCertVerifier,
+    },
     sign::CertifiedKey,
 };
 use rustls_pki_types::pem::PemObject;

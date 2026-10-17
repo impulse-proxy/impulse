@@ -888,26 +888,12 @@ impl QUICListener {
         enforce_client_auth: bool,
         alpn_protocols: Vec<Vec<u8>>,
     ) -> Result<RustlsServerConfig, ProxyError> {
-        let builder = if enforce_client_auth && loaded_tls.client_auth.enabled {
-            let client_auth_ca = loaded_tls.client_auth_ca.clone().ok_or_else(|| {
-                ProxyError::Tls(
-                    "listen.tls.client_auth.ca_file is required when mTLS is enabled".to_string(),
-                )
-            })?;
-
-            let verifier_builder = WebPkiClientVerifier::builder(client_auth_ca.roots.clone());
-            let verifier = if loaded_tls.client_auth.require_client_cert {
-                verifier_builder.build()
-            } else {
-                verifier_builder.allow_unauthenticated().build()
-            }
-            .map_err(|err| {
-                ProxyError::Tls(format!(
-                    "failed to build downstream client certificate verifier: {}",
-                    err
-                ))
-            })?;
-
+        let verifier = Self::build_client_cert_verifier(
+            &loaded_tls.client_auth,
+            loaded_tls.client_auth_ca.as_ref(),
+            enforce_client_auth,
+        )?;
+        let builder = if let Some(verifier) = verifier {
             RustlsServerConfig::builder().with_client_cert_verifier(verifier)
         } else {
             RustlsServerConfig::builder().with_no_client_auth()
@@ -935,6 +921,41 @@ impl QUICListener {
         let mut tls_config = builder.with_cert_resolver(resolver);
         tls_config.alpn_protocols = alpn_protocols;
         Ok(tls_config)
+    }
+
+    fn build_client_cert_verifier(
+        client_auth: &ClientAuth,
+        client_auth_ca: Option<&LoadedClientAuthCa>,
+        enforce_client_auth: bool,
+    ) -> Result<Option<Arc<dyn ClientCertVerifier>>, ProxyError> {
+        if !enforce_client_auth || !client_auth.enabled {
+            return Ok(None);
+        }
+        let client_auth_ca = client_auth_ca.ok_or_else(|| {
+            ProxyError::Tls(
+                "listen.tls.client_auth.ca_file is required when mTLS is enabled".to_string(),
+            )
+        })?;
+        let verifier_builder = WebPkiClientVerifier::builder(client_auth_ca.roots.clone());
+        let verifier = if client_auth.require_client_cert {
+            verifier_builder.build()
+        } else {
+            verifier_builder.allow_unauthenticated().build()
+        }
+        .map_err(|err| {
+            ProxyError::Tls(format!(
+                "failed to build downstream client certificate verifier: {}",
+                err
+            ))
+        })?;
+        Ok(Some(verifier))
+    }
+
+    pub(crate) fn build_listener_client_cert_verifier(
+        listener_tls: &RuntimeListenerTls,
+    ) -> Result<Option<Arc<dyn ClientCertVerifier>>, ProxyError> {
+        let client_auth_ca = Self::load_client_auth_ca(&listener_tls.client_auth)?;
+        Self::build_client_cert_verifier(&listener_tls.client_auth, client_auth_ca.as_ref(), true)
     }
 
     pub(in crate::quic_listener) fn build_control_api_server_tls_config(
