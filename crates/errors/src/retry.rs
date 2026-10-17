@@ -1,6 +1,6 @@
 use impulse_lb::alternate_backend::AlternateBackendFailureReason;
 
-use crate::{PoolError, ProxyError};
+use crate::ProxyError;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum UpstreamRetryReason {

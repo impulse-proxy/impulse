@@ -14,7 +14,6 @@ mod constants;
 mod hash;
 pub mod metrics;
 mod observability;
-#[allow(dead_code)] // Staged until Pingora ingress listener integration.
 mod pingora_ingress;
 mod quic_listener;
 #[allow(dead_code)] // Introduced before protocol adapters migrate to the shared contracts.
@@ -40,6 +39,7 @@ pub use observability::{
     MetricReasonLabels, OperationalEventContext, RequestOutcomeReason, RetryDecisionReason,
     backend_health_reason,
 };
+pub use pingora_ingress::{PingoraListenerTask, spawn_pingora_ingress_listener};
 pub use quic_listener::{
     ListenerWorkerGroupConfig, ListenerWorkerRuntimeState, configure_async_runtime,
     release_shard_queue_bytes, shard_index_for_peer, spawn_listener_worker_group,

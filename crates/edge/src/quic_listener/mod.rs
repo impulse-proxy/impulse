@@ -100,7 +100,9 @@ use crate::{
 mod admission;
 mod async_runtime;
 mod backend_resolution;
+#[cfg(any(test, debug_assertions))]
 mod bootstrap;
+#[cfg(any(test, debug_assertions))]
 mod bootstrap_tls;
 mod connection;
 mod control_api;

@@ -73,6 +73,22 @@ impl ListenerTlsReloadStore {
         Ok(state.generation)
     }
 
+    pub fn install_listener(
+        &self,
+        listener: String,
+        mut state: ListenerTlsReloadState,
+    ) -> Result<u64, ProxyError> {
+        let mut listeners = self.listeners.write().map_err(|_| {
+            ProxyError::Transport("listener TLS reload store lock poisoned".to_string())
+        })?;
+        if let Some(current) = listeners.get(&listener) {
+            state.generation = current.generation.saturating_add(1);
+        }
+        let generation = state.generation;
+        listeners.insert(listener, state);
+        Ok(generation)
+    }
+
     pub fn replace_listeners(
         &self,
         updates: &[(String, ListenerTlsReloadState)],

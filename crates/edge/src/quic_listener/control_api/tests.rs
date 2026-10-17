@@ -4049,7 +4049,7 @@ fn validate_runtime_reload_compatibility_classifies_listener_bind_conflict_as_pr
 }
 
 #[test]
-fn validate_runtime_reload_compatibility_rejects_listener_removal() {
+fn validate_runtime_reload_compatibility_allows_explicit_listener_replacement() {
     let dir = tempdir().expect("tempdir");
     let (cert, key) = write_test_cert_for_name(dir.path(), "server", "api.example.com");
     let current = test_config(cert.clone(), key.clone());
@@ -4064,18 +4064,16 @@ fn validate_runtime_reload_compatibility_rejects_listener_removal() {
     let current_bundle = runtime_bundle_from_config("current.yaml", &current);
     let next_bundle = runtime_bundle_from_config("next.yaml", &next);
 
-    let err = QUICListener::validate_runtime_reload_compatibility(&current_bundle, &next_bundle)
+    let result = QUICListener::validate_runtime_reload_compatibility(&current_bundle, &next_bundle)
         .map(|rejection| rejection.to_string());
     assert!(
-        err.as_deref()
-            .is_some_and(|e| e.contains("restart required")),
-        "expected rejection, got: {:?}",
-        err
+        result.is_none(),
+        "expected compatible listener replacement, got: {result:?}"
     );
 }
 
 #[test]
-fn validate_runtime_reload_compatibility_rejects_listener_bind_change() {
+fn validate_runtime_reload_compatibility_allows_listener_bind_replacement() {
     let dir = tempdir().expect("tempdir");
     let (cert, key) = write_test_cert_for_name(dir.path(), "server", "api.example.com");
     let current = test_config(cert.clone(), key.clone());
@@ -4086,13 +4084,11 @@ fn validate_runtime_reload_compatibility_rejects_listener_bind_change() {
     let current_bundle = runtime_bundle_from_config("current.yaml", &current);
     let next_bundle = runtime_bundle_from_config("next.yaml", &next);
 
-    let err = QUICListener::validate_runtime_reload_compatibility(&current_bundle, &next_bundle)
+    let result = QUICListener::validate_runtime_reload_compatibility(&current_bundle, &next_bundle)
         .map(|rejection| rejection.to_string());
     assert!(
-        err.as_deref()
-            .is_some_and(|e| e.contains("restart required")),
-        "expected rejection, got: {:?}",
-        err
+        result.is_none(),
+        "expected compatible listener replacement, got: {result:?}"
     );
 }
 

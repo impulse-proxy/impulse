@@ -58,7 +58,6 @@ pub(crate) struct PingoraH1UpstreamSession {
     pool: PingoraPoolLease,
     peer: HttpPeer,
     session: Option<HttpSession>,
-    reused: bool,
     state: PingoraH1ExchangeState,
     connect_request: bool,
 }
@@ -92,7 +91,7 @@ impl PingoraH1UpstreamSession {
 
         peer.options.alpn = pingora_core::upstreams::peer::ALPN::H1;
         peer.group_key = identity.pool_key();
-        let (session, reused) = pool.connector().get_http_session(&peer).await?;
+        let (session, _) = pool.connector().get_http_session(&peer).await?;
         let session = match session {
             PingoraHttpSession::H1(session) => session,
             mut session => {
@@ -108,18 +107,9 @@ impl PingoraH1UpstreamSession {
             pool,
             peer,
             session: Some(session),
-            reused,
             state: PingoraH1ExchangeState::Acquired,
             connect_request: false,
         })
-    }
-
-    pub fn generation(&self) -> u64 {
-        self.pool.generation()
-    }
-
-    pub fn reused(&self) -> bool {
-        self.reused
     }
 
     pub fn session(&self) -> &HttpSession {

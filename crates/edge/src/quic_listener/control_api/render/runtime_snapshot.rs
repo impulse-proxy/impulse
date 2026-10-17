@@ -200,6 +200,11 @@ impl ControlApiRuntimePayload {
 
         Self {
             uptime_ms: service_ctx.started_at.elapsed().as_millis() as u64,
+            protocols: ControlApiProtocolStatusPayload {
+                http1: "stable",
+                http2: "stable",
+                http3: "experimental",
+            },
             workers: ControlApiWorkerPayload {
                 expected: runtime.expected_workers(),
             },

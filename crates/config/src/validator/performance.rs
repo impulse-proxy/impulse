@@ -44,7 +44,7 @@ pub(super) fn validate_global_config(config: &Config) -> bool {
 
     let mut seen_listener_bindings: HashMap<(String, u16), String> = HashMap::new();
     for (label, listen) in effective_listeners {
-        let key = (listen.address.clone(), listen.port);
+        let key = (listen.address.trim().to_ascii_lowercase(), listen.port);
         if let Some(existing) = seen_listener_bindings.insert(key, label.clone()) {
             validation_error!(
                 "listener binding conflict: {} duplicates {} on {}:{}",
@@ -52,6 +52,37 @@ pub(super) fn validate_global_config(config: &Config) -> bool {
                 existing,
                 listen.address,
                 listen.port
+            );
+            return false;
+        }
+    }
+
+    let operational_listeners = [
+        (
+            "observability.metrics",
+            config.observability.metrics.enabled,
+            &config.observability.metrics.address,
+            config.observability.metrics.port,
+        ),
+        (
+            "observability.control_api",
+            config.observability.control_api.enabled,
+            &config.observability.control_api.address,
+            config.observability.control_api.port,
+        ),
+    ];
+    for (label, enabled, address, port) in operational_listeners {
+        if !enabled {
+            continue;
+        }
+        let key = (address.trim().to_ascii_lowercase(), port);
+        if let Some(existing) = seen_listener_bindings.insert(key, label.to_string()) {
+            validation_error!(
+                "operational listener binding conflict: {} duplicates {} on {}:{}",
+                label,
+                existing,
+                address,
+                port
             );
             return false;
         }
