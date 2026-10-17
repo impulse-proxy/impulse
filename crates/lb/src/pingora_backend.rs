@@ -9,6 +9,57 @@ use pingora_load_balancing::{
     Backend as PingoraBackend, BackendView, discovery::Static as StaticDiscovery,
 };
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BackendSelectionResult<P> {
+    backend_id: String,
+    address: SocketAddr,
+    index: usize,
+    generation: u64,
+    connection_policy: P,
+}
+
+impl<P> BackendSelectionResult<P> {
+    pub fn new(
+        backend_id: impl Into<String>,
+        address: SocketAddr,
+        index: usize,
+        generation: u64,
+        connection_policy: P,
+    ) -> Self {
+        Self {
+            backend_id: backend_id.into(),
+            address,
+            index,
+            generation,
+            connection_policy,
+        }
+    }
+
+    pub fn backend_id(&self) -> &str {
+        &self.backend_id
+    }
+
+    pub fn address(&self) -> SocketAddr {
+        self.address
+    }
+
+    pub fn index(&self) -> usize {
+        self.index
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    pub fn connection_policy(&self) -> &P {
+        &self.connection_policy
+    }
+
+    pub fn into_connection_policy(self) -> P {
+        self.connection_policy
+    }
+}
+
 pub struct GenerationBackendView {
     generation: u64,
     upstream_name: String,
