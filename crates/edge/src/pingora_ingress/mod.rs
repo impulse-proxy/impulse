@@ -63,8 +63,9 @@ use crate::{
                 checked_response_body_guardrails,
             },
             outcome::{
-                AdmissionOutcomeClass, BackendOutcomeTarget, ClassifiedBackendFailureInput,
-                RouteOutcomeTarget, observe_admission_outcome,
+                AdmissionOutcomeClass, BackendHealthObservationInput, BackendOutcomeTarget,
+                ClassifiedBackendFailureInput, RouteOutcomeTarget, observe_admission_outcome,
+                observe_backend_response_status_and_log,
                 observe_classified_backend_failure_and_log, observe_proxy_error_outcome,
                 observe_status_outcome,
             },
@@ -906,6 +907,21 @@ impl ProxyHttp for PingoraIngressService {
         upstream_response: &mut ResponseHeader,
         ctx: &mut Self::CTX,
     ) -> Result<()> {
+        if let Some(selected) = ctx.selected_backend.as_ref() {
+            if upstream_response.status.is_server_error() {
+                ctx.runtime
+                    .shared_state
+                    .shared_services()
+                    .metrics
+                    .inc_health_failure(impulse_lb::health::HealthFailureReason::HttpStatus5xx);
+            }
+            let _ = observe_backend_response_status_and_log(BackendHealthObservationInput {
+                backend_addr: &selected.address,
+                backend_index: selected.index,
+                upstream_pool: Some(&selected.pool),
+                status: upstream_response.status,
+            });
+        }
         let method = ctx.method.as_deref().ok_or_else(|| {
             Error::explain(
                 InternalError,

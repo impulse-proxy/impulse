@@ -2077,6 +2077,7 @@ async fn control_api_runtime_snapshot_includes_jwks_cache_visibility() {
         required_scopes: vec!["payments:read".to_string()],
         required_roles: vec!["operator".to_string()],
     };
+    let state = control_api_state_with_runtime_bundle(&startup, &startup);
     crate::quic_listener::admission::prime_jwks_cache_for_test(
         jwks_url,
         false,
@@ -2087,7 +2088,6 @@ async fn control_api_runtime_snapshot_includes_jwks_cache_visibility() {
                 "-----BEGIN PUBLIC KEY-----\nMIIBCgKCAQEAtest\n-----END PUBLIC KEY-----".to_string(),
         }],
     );
-    let state = control_api_state_with_runtime_bundle(&startup, &startup);
     let metrics = state.current_service_state().metrics();
     metrics.record_jwt_validation_failure("issuer_mismatch");
     metrics.record_jwt_algorithm_rejection("RS256");

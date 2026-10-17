@@ -1021,6 +1021,11 @@ impl QUICListener {
         match observation {
             ResponseStartObservation::Status { status } => {
                 if let (Some(addr), Some(idx)) = (&req.backend_addr, req.backend_index) {
+                    if status.is_server_error() {
+                        metrics.inc_health_failure(
+                            impulse_lb::health::HealthFailureReason::HttpStatus5xx,
+                        );
+                    }
                     let _ = crate::runtime::connection::outcome::observe_backend_response_status_and_log(
                         crate::runtime::connection::outcome::BackendHealthObservationInput {
                             backend_addr: addr,
@@ -1129,6 +1134,7 @@ impl QUICListener {
                     );
                 }
                 Self::observe_response_start_transition(req, &observation, shared_ctx);
+                req.mark_terminal_outcome_recorded();
                 Ok(false)
             }
             ResponseStartDecision::StreamingBodyPump {
@@ -1167,6 +1173,7 @@ impl QUICListener {
                     );
                 }
                 Self::observe_response_start_transition(req, &observation, shared_ctx);
+                req.mark_terminal_outcome_recorded();
                 Ok(false)
             }
             ResponseStartDecision::BackendFailure(err) => Err(err),
