@@ -7,6 +7,11 @@ use std::{
 use async_trait::async_trait;
 use bytes::Bytes;
 use http_body_util::{Full, combinators::BoxBody};
+use impulse_bridge::response::{
+    ResponseBodyMode, ResponseBodyPolicy, ResponseNormalizationInput,
+    ResponseNormalizationProtocol, ResponseProtocolConstraints, UpstreamResponseView,
+    normalize_response_trailers, normalize_upstream_response,
+};
 use impulse_config::backend_endpoint::BackendScheme;
 use impulse_lb::upstream_pool::UpstreamPool;
 use pingora_core::{
@@ -29,8 +34,9 @@ use crate::{
     runtime::{
         bundle::{RuntimeBundle, RuntimeBundleHandle},
         connection::guardrails::{
-            REQUEST_BODY_TOO_LARGE_BODY, RequestBodyGuardrailConfig, RequestBodyGuardrailInput,
-            checked_request_body_ingress,
+            REQUEST_BODY_TOO_LARGE_BODY, RESPONSE_BODY_TOO_LARGE_BODY, RequestBodyGuardrailConfig,
+            RequestBodyGuardrailInput, ResponseBodyGuardrailConfig, ResponseBodyGuardrailInput,
+            checked_request_body_ingress, checked_response_body_guardrails,
         },
     },
 };
@@ -46,6 +52,10 @@ pub(crate) struct PingoraRequestContext {
     content_length: Option<usize>,
     body_bytes_received: usize,
     body_limit_exempt: bool,
+    response_body_bytes_received: usize,
+    response_body_suppressed: bool,
+    response_body_limit_exempt: bool,
+    response_content_length: Option<usize>,
     request_id: u64,
     selected_backend: Option<PingoraSelectedBackend>,
 }
@@ -102,6 +112,10 @@ impl ProxyHttp for PingoraIngressService {
             content_length: None,
             body_bytes_received: 0,
             body_limit_exempt: false,
+            response_body_bytes_received: 0,
+            response_body_suppressed: false,
+            response_body_limit_exempt: false,
+            response_content_length: None,
             request_id: REQUEST_ID_COUNTER.fetch_add(1, Ordering::Relaxed),
             selected_backend: None,
         }
@@ -513,6 +527,171 @@ impl ProxyHttp for PingoraIngressService {
             upstream_request.append_header(name.clone(), value.clone())?;
         }
         Ok(())
+    }
+
+    async fn upstream_response_filter(
+        &self,
+        session: &mut Session,
+        upstream_response: &mut ResponseHeader,
+        ctx: &mut Self::CTX,
+    ) -> Result<()> {
+        let method = ctx.method.as_deref().ok_or_else(|| {
+            Error::explain(
+                InternalError,
+                "Pingora ingress request filter did not validate a method",
+            )
+        })?;
+        let tunnel_response = ctx.body_limit_exempt
+            && (upstream_response.status == http::StatusCode::SWITCHING_PROTOCOLS
+                || (method.eq_ignore_ascii_case("CONNECT")
+                    && upstream_response.status.is_success()));
+        let body_mode = if tunnel_response {
+            ResponseBodyMode::TunnelSuccess
+        } else if method.eq_ignore_ascii_case("HEAD") {
+            ResponseBodyMode::HeadRequest
+        } else {
+            ResponseBodyMode::Normal
+        };
+        let content_length = upstream_response
+            .headers
+            .get(http::header::CONTENT_LENGTH)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<usize>().ok());
+        let normalized = normalize_upstream_response(ResponseNormalizationInput {
+            upstream: UpstreamResponseView {
+                status: upstream_response.status,
+                headers: &upstream_response.headers,
+                trailers: None,
+            },
+            body_mode,
+            constraints: pingora_response_constraints(tunnel_response),
+        });
+        let body_suppressed = matches!(normalized.emission.body, ResponseBodyPolicy::Suppress);
+        let max_response_body_bytes = ctx
+            .runtime
+            .runtime_config
+            .policies
+            .transport
+            .max_response_body_bytes;
+        if checked_response_body_guardrails(
+            ResponseBodyGuardrailConfig {
+                idle_timeout: Duration::MAX,
+                total_timeout: Duration::MAX,
+                max_body_bytes: max_response_body_bytes,
+                unknown_length_prebuffer_bytes: max_response_body_bytes,
+                chunk_bytes: usize::MAX,
+            },
+            ResponseBodyGuardrailInput {
+                elapsed: Duration::ZERO,
+                idle_for: Duration::ZERO,
+                bytes_received: 0,
+                prebuffered_bytes: 0,
+                next_chunk_bytes: 0,
+                declared_content_length: content_length,
+                headers_emitted: false,
+                progressive_emission_allowed: !normalized.emission.emit_end_stream_on_headers,
+                body_forwarding_enabled: !body_suppressed,
+                exempt_from_body_size_cap: tunnel_response,
+            },
+        )
+        .is_err()
+        {
+            ctx.terminal_outcome.record();
+            session
+                .respond_error_with_body(
+                    http::StatusCode::SERVICE_UNAVAILABLE.as_u16(),
+                    Bytes::from_static(RESPONSE_BODY_TOO_LARGE_BODY),
+                )
+                .await?;
+            return Error::e_explain(HTTPStatus(503), "upstream response body too large");
+        }
+
+        upstream_response.headers.clear();
+        for header in normalized.head.headers {
+            upstream_response.headers.append(header.name, header.value);
+        }
+        ctx.response_body_bytes_received = 0;
+        ctx.response_body_suppressed = body_suppressed;
+        ctx.response_body_limit_exempt = tunnel_response;
+        ctx.response_content_length = content_length;
+        Ok(())
+    }
+
+    fn response_body_filter(
+        &self,
+        _session: &mut Session,
+        body: &mut Option<Bytes>,
+        _end_of_stream: bool,
+        ctx: &mut Self::CTX,
+    ) -> Result<Option<Duration>> {
+        if ctx.response_body_suppressed {
+            *body = None;
+            return Ok(None);
+        }
+
+        let next = checked_response_body_guardrails(
+            ResponseBodyGuardrailConfig {
+                idle_timeout: Duration::MAX,
+                total_timeout: Duration::MAX,
+                max_body_bytes: ctx
+                    .runtime
+                    .runtime_config
+                    .policies
+                    .transport
+                    .max_response_body_bytes,
+                unknown_length_prebuffer_bytes: usize::MAX,
+                chunk_bytes: usize::MAX,
+            },
+            ResponseBodyGuardrailInput {
+                elapsed: Duration::ZERO,
+                idle_for: Duration::ZERO,
+                bytes_received: ctx.response_body_bytes_received,
+                prebuffered_bytes: 0,
+                next_chunk_bytes: body.as_ref().map_or(0, Bytes::len),
+                declared_content_length: ctx.response_content_length,
+                headers_emitted: true,
+                progressive_emission_allowed: true,
+                body_forwarding_enabled: true,
+                exempt_from_body_size_cap: ctx.response_body_limit_exempt,
+            },
+        );
+        match next {
+            Ok(next) => {
+                ctx.response_body_bytes_received = next.next_state.bytes_received;
+                Ok(None)
+            }
+            Err(_) => {
+                *body = None;
+                ctx.terminal_outcome.record();
+                Error::e_explain(HTTPStatus(503), "upstream response body too large")
+            }
+        }
+    }
+
+    fn upstream_response_trailer_filter(
+        &self,
+        _session: &mut Session,
+        upstream_trailers: &mut http::HeaderMap,
+        ctx: &mut Self::CTX,
+    ) -> Result<()> {
+        let normalized = normalize_response_trailers(
+            upstream_trailers,
+            pingora_response_constraints(ctx.response_body_limit_exempt),
+        );
+        upstream_trailers.clear();
+        for trailer in normalized {
+            upstream_trailers.append(trailer.name, trailer.value);
+        }
+        Ok(())
+    }
+}
+
+fn pingora_response_constraints(preserve_upgrade: bool) -> ResponseProtocolConstraints {
+    ResponseProtocolConstraints {
+        protocol: ResponseNormalizationProtocol::Http1,
+        strip_connection_headers: true,
+        allow_trailers: true,
+        preserve_upgrade,
     }
 }
 
