@@ -14,8 +14,8 @@ use impulse_bridge::response::{
 };
 use impulse_config::backend_endpoint::BackendScheme;
 use impulse_errors::{
-    ProxyError, RetryAttemptTelemetryReason, RetryPolicyDecision, RetryPolicyDenialReason,
-    classify_upstream_proxy_error, is_idempotent_method,
+    BridgeError, PoolError, ProxyError, RetryAttemptTelemetryReason, RetryPolicyDecision,
+    RetryPolicyDenialReason, classify_upstream_proxy_error, is_idempotent_method,
 };
 use impulse_lb::{
     alternate_backend::{
@@ -53,7 +53,12 @@ use crate::{
                 ResponseBodyGuardrailInput, checked_request_body_ingress,
                 checked_response_body_guardrails,
             },
-            outcome::{ClassifiedBackendFailureInput, observe_classified_backend_failure_and_log},
+            outcome::{
+                AdmissionOutcomeClass, BackendOutcomeTarget, ClassifiedBackendFailureInput,
+                RouteOutcomeTarget, observe_admission_outcome,
+                observe_classified_backend_failure_and_log, observe_proxy_error_outcome,
+                observe_status_outcome,
+            },
         },
     },
 };
@@ -63,6 +68,8 @@ pub(crate) struct PingoraRequestContext {
     pub(crate) route: Option<ResolvedRouteTarget>,
     pub(crate) policy: Option<ResolvedRequestPolicy>,
     pub(crate) terminal_outcome: TerminalOutcomeGuard,
+    started_at: Instant,
+    terminal_classification: Option<PingoraTerminalClassification>,
     method: Option<String>,
     path: Option<String>,
     authority: Option<String>,
@@ -78,6 +85,11 @@ pub(crate) struct PingoraRequestContext {
     retry_backend: Option<(String, usize)>,
     request_id: u64,
     selected_backend: Option<PingoraSelectedBackend>,
+}
+
+enum PingoraTerminalClassification {
+    Admission(AdmissionOutcomeClass),
+    Error(ProxyError),
 }
 
 impl Drop for PingoraRequestContext {
@@ -127,6 +139,8 @@ impl ProxyHttp for PingoraIngressService {
             route: None,
             policy: None,
             terminal_outcome: TerminalOutcomeGuard::default(),
+            started_at: Instant::now(),
+            terminal_classification: None,
             method: None,
             path: None,
             authority: None,
@@ -158,7 +172,9 @@ impl ProxyHttp for PingoraIngressService {
         ) {
             Ok(validated) => validated,
             Err((status, body, is_policy)) => {
-                ctx.terminal_outcome.record();
+                ctx.terminal_classification = Some(PingoraTerminalClassification::Error(
+                    ProxyError::Bridge(BridgeError::InvalidHeader),
+                ));
                 shared.metrics.inc_request_validation_reject();
                 if is_policy {
                     shared.metrics.inc_policy_denied();
@@ -176,7 +192,6 @@ impl ProxyHttp for PingoraIngressService {
         ) {
             Ok(route) => route,
             Err(RouteResolutionError::EmptyMethodOrPath) => {
-                ctx.terminal_outcome.record();
                 write_local_response(
                     session,
                     http::StatusCode::BAD_REQUEST,
@@ -188,7 +203,6 @@ impl ProxyHttp for PingoraIngressService {
                 return Ok(true);
             }
             Err(RouteResolutionError::NoRoute) => {
-                ctx.terminal_outcome.record();
                 write_local_response(
                     session,
                     http::StatusCode::BAD_GATEWAY,
@@ -202,7 +216,6 @@ impl ProxyHttp for PingoraIngressService {
         };
         let Some(upstream_policy) = state.upstream_policies.get(route.upstream_name.as_ref())
         else {
-            ctx.terminal_outcome.record();
             write_local_response(
                 session,
                 http::StatusCode::BAD_GATEWAY,
@@ -218,7 +231,6 @@ impl ProxyHttp for PingoraIngressService {
             .and_then(|address| address.as_inet())
             .copied()
         else {
-            ctx.terminal_outcome.record();
             write_local_response(
                 session,
                 http::StatusCode::INTERNAL_SERVER_ERROR,
@@ -252,15 +264,38 @@ impl ProxyHttp for PingoraIngressService {
         shared
             .metrics
             .set_brownout_active(state.resilience.brownout.is_active());
+        let body_limit_exempt = validated.method.eq_ignore_ascii_case("CONNECT")
+            || impulse_bridge::websocket::legacy_websocket_upgrade_requested(
+                &validated.method,
+                &bridge_headers(&request.headers),
+            );
+        ctx.route = Some(route);
+        ctx.method = Some(validated.method);
+        ctx.path = Some(validated.path);
+        ctx.authority = validated.authority;
+        ctx.content_length = validated.content_length;
+        ctx.body_limit_exempt = body_limit_exempt;
 
         if let Some(response) = admission_rejection_response(&pipeline.admission) {
-            ctx.terminal_outcome.record();
             match pipeline.admission {
-                AdmissionPolicyDecision::Unauthorized(_) => shared.metrics.inc_policy_denied(),
+                AdmissionPolicyDecision::Unauthorized(_) => {
+                    ctx.terminal_classification = Some(PingoraTerminalClassification::Admission(
+                        AdmissionOutcomeClass::AuthDenied,
+                    ));
+                    shared.metrics.inc_policy_denied();
+                }
                 AdmissionPolicyDecision::RateLimited(_) => {
+                    ctx.terminal_classification = Some(PingoraTerminalClassification::Admission(
+                        AdmissionOutcomeClass::RateLimited,
+                    ));
                     shared.metrics.inc_request_rate_limited()
                 }
-                AdmissionPolicyDecision::Overloaded(_) | AdmissionPolicyDecision::AdmitReady => {}
+                AdmissionPolicyDecision::Overloaded(_) => {
+                    ctx.terminal_classification = Some(PingoraTerminalClassification::Admission(
+                        AdmissionOutcomeClass::OverloadShed { reason: None },
+                    ));
+                }
+                AdmissionPolicyDecision::AdmitReady => {}
             }
             write_local_response(
                 session,
@@ -273,11 +308,6 @@ impl ProxyHttp for PingoraIngressService {
             return Ok(true);
         }
 
-        let body_limit_exempt = validated.method.eq_ignore_ascii_case("CONNECT")
-            || impulse_bridge::websocket::legacy_websocket_upgrade_requested(
-                &validated.method,
-                &bridge_headers(&request.headers),
-            );
         let max_request_body_bytes = runtime
             .runtime_config
             .policies
@@ -296,13 +326,12 @@ impl ProxyHttp for PingoraIngressService {
                 bytes_received: 0,
                 buffered_bytes: 0,
                 next_chunk_bytes: 0,
-                declared_content_length: validated.content_length,
+                declared_content_length: ctx.content_length,
                 exempt_from_body_size_cap: body_limit_exempt,
             },
         )
         .is_err()
         {
-            ctx.terminal_outcome.record();
             write_local_response(
                 session,
                 http::StatusCode::PAYLOAD_TOO_LARGE,
@@ -314,13 +343,7 @@ impl ProxyHttp for PingoraIngressService {
             return Ok(true);
         }
 
-        ctx.route = Some(route);
         ctx.policy = Some(pipeline.policy);
-        ctx.method = Some(validated.method);
-        ctx.path = Some(validated.path);
-        ctx.authority = validated.authority;
-        ctx.content_length = validated.content_length;
-        ctx.body_limit_exempt = body_limit_exempt;
         ctx.request_body_replayable = session.is_body_empty();
         Ok(false)
     }
@@ -361,7 +384,6 @@ impl ProxyHttp for PingoraIngressService {
                 Ok(())
             }
             Err(_) => {
-                ctx.terminal_outcome.record();
                 session
                     .respond_error_with_body(
                         http::StatusCode::PAYLOAD_TOO_LARGE.as_u16(),
@@ -678,7 +700,10 @@ impl ProxyHttp for PingoraIngressService {
         )
         .is_err()
         {
-            ctx.terminal_outcome.record();
+            ctx.terminal_classification =
+                Some(PingoraTerminalClassification::Error(ProxyError::Pool(
+                    PoolError::BackendOverloaded("response body limit exceeded".into()),
+                )));
             session
                 .respond_error_with_body(
                     http::StatusCode::SERVICE_UNAVAILABLE.as_u16(),
@@ -744,7 +769,10 @@ impl ProxyHttp for PingoraIngressService {
             }
             Err(_) => {
                 *body = None;
-                ctx.terminal_outcome.record();
+                ctx.terminal_classification =
+                    Some(PingoraTerminalClassification::Error(ProxyError::Pool(
+                        PoolError::BackendOverloaded("response body limit exceeded".into()),
+                    )));
                 Error::e_explain(HTTPStatus(503), "upstream response body too large")
             }
         }
@@ -765,6 +793,109 @@ impl ProxyHttp for PingoraIngressService {
             upstream_trailers.append(trailer.name, trailer.value);
         }
         Ok(())
+    }
+
+    async fn logging(&self, session: &mut Session, error: Option<&Error>, ctx: &mut Self::CTX) {
+        if !ctx.terminal_outcome.record() {
+            return;
+        }
+
+        let status = session.response_written().map(|response| response.status);
+        if let Some(selected) = ctx.selected_backend.as_mut() {
+            selected.finish_status = status.map(|status| status.as_u16());
+        }
+        let route = ctx
+            .route
+            .as_ref()
+            .map_or(RouteOutcomeTarget::UNROUTED, |route| RouteOutcomeTarget {
+                route: route.upstream_name.as_ref(),
+            });
+        let backend = ctx
+            .selected_backend
+            .as_ref()
+            .map(|selected| BackendOutcomeTarget {
+                upstream: route.route,
+                backend_addr: Some(selected.address.as_str()),
+                backend_index: Some(selected.index),
+            });
+        let metrics = &ctx.runtime.shared_state.shared_services().metrics;
+        match (&ctx.terminal_classification, status) {
+            (Some(PingoraTerminalClassification::Admission(outcome)), Some(status)) => {
+                let _ = observe_admission_outcome(
+                    metrics,
+                    route,
+                    backend,
+                    ctx.started_at.elapsed(),
+                    status,
+                    *outcome,
+                );
+            }
+            (Some(PingoraTerminalClassification::Error(proxy_error)), status) => {
+                let _ = observe_proxy_error_outcome(
+                    metrics,
+                    route,
+                    backend,
+                    ctx.started_at.elapsed(),
+                    status,
+                    proxy_error,
+                    None,
+                );
+            }
+            (None, Some(status)) => {
+                let _ = observe_status_outcome(
+                    metrics,
+                    route,
+                    backend,
+                    ctx.started_at.elapsed(),
+                    status,
+                );
+            }
+            (None, None) => {
+                let proxy_error = ProxyError::Transport(error.map_or_else(
+                    || "request completed without a response".to_string(),
+                    ToString::to_string,
+                ));
+                let _ = observe_proxy_error_outcome(
+                    metrics,
+                    route,
+                    backend,
+                    ctx.started_at.elapsed(),
+                    None,
+                    &proxy_error,
+                    None,
+                );
+            }
+            (Some(PingoraTerminalClassification::Admission(_)), None) => {
+                let proxy_error = ProxyError::Transport(
+                    "admission response did not reach the downstream".to_string(),
+                );
+                let _ = observe_proxy_error_outcome(
+                    metrics,
+                    route,
+                    backend,
+                    ctx.started_at.elapsed(),
+                    None,
+                    &proxy_error,
+                    None,
+                );
+            }
+        }
+
+        log::info!(
+            "request_id={} method={} path={} status={} backend={} upstream={} latency_ms={} retries={} error={}",
+            ctx.request_id,
+            ctx.method.as_deref().unwrap_or("-"),
+            ctx.path.as_deref().unwrap_or("-"),
+            status.map_or(0, |status| status.as_u16()),
+            ctx.selected_backend
+                .as_ref()
+                .map_or("-", |selected| selected.address.as_str()),
+            route.route,
+            ctx.started_at.elapsed().as_millis(),
+            ctx.retry_count,
+            error.map_or_else(|| "-".to_string(), ToString::to_string),
+        );
+        ctx.selected_backend.take();
     }
 }
 
@@ -831,7 +962,7 @@ fn handle_pingora_proxy_failure(
         alternate_failure,
     );
     let metrics = &ctx.runtime.shared_state.shared_services().metrics;
-    match decision {
+    let retrying = match decision {
         RetryPolicyDecision::Retry { reason }
             if ctx
                 .runtime
@@ -846,17 +977,25 @@ fn handle_pingora_proxy_failure(
             ctx.retry_count = ctx.retry_count.saturating_add(1);
             ctx.retry_backend = retry_backend;
             error.set_retry(true);
+            true
         }
         RetryPolicyDecision::Retry { .. } => {
             metrics.inc_retry_denied(RetryPolicyDenialReason::BudgetDenied);
             error.set_retry(false);
+            false
         }
         RetryPolicyDecision::DoNotRetry { denial } => {
             if let Some(denial) = denial {
                 metrics.inc_retry_denied(denial);
             }
             error.set_retry(false);
+            false
         }
+    };
+    if retrying {
+        ctx.terminal_classification = None;
+    } else {
+        ctx.terminal_classification = Some(PingoraTerminalClassification::Error(proxy_error));
     }
     error
 }
