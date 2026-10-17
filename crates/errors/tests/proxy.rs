@@ -2,7 +2,7 @@ use impulse_errors::{
     PoolError, ProxyError, RetryPolicyDecision, RetryPolicyDenialReason, RetryPolicyFacts,
     UpstreamErrorClassification, UpstreamHealthFailureMapping, UpstreamProxyErrorKind,
     UpstreamRetryReason, UpstreamRetryability, UpstreamTerminalErrorKind, UpstreamTlsReason,
-    classify_retryability, classify_upstream_proxy_error, evaluate_retry_policy, is_retryable,
+    classify_retryability, classify_upstream_proxy_error, evaluate_retry_policy,
 };
 use impulse_lb::alternate_backend::AlternateBackendFailureReason;
 
@@ -206,32 +206,4 @@ fn upstream_proxy_error_classification_covers_protocol_and_transport_cases() {
         protocol.retryability,
         UpstreamRetryability::Terminal(UpstreamTerminalErrorKind::Protocol)
     );
-}
-
-#[test]
-fn retryability_boolean_matches_typed_retryability_contract() {
-    let retryable_errors = [
-        ProxyError::Timeout,
-        ProxyError::Transport("reset".into()),
-        ProxyError::Pool(PoolError::UnknownBackend("api-a".into())),
-    ];
-    for err in retryable_errors {
-        assert!(is_retryable(&err));
-        assert!(matches!(
-            classify_retryability(&err),
-            UpstreamRetryability::Retryable(_)
-        ));
-    }
-
-    let terminal_errors = [
-        ProxyError::Tls("bad cert".into()),
-        ProxyError::Protocol("bad frame".into()),
-    ];
-    for err in terminal_errors {
-        assert!(!is_retryable(&err));
-        assert!(matches!(
-            classify_retryability(&err),
-            UpstreamRetryability::Terminal(_)
-        ));
-    }
 }

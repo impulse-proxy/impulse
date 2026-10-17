@@ -41,7 +41,7 @@ pub use self::{
     transport::{RuntimeBackendConnectionPolicy, RuntimeConnectionLimits, RuntimeTransportPolicy},
     watchdog::RuntimeWatchdogPolicy,
 };
-use super::{Config, ListenerRuntimeConfig, RuntimeConfigError, RuntimeListenerTls};
+use super::{Config, RuntimeConfigError, RuntimeListenerTls};
 fn config_invalid(message: impl Into<String>) -> RuntimeConfigError {
     RuntimeConfigError::ConfigInvalid(message.into())
 }
@@ -219,14 +219,4 @@ pub struct RuntimeListenerPolicySet {
     pub timeouts: RuntimeTimeoutPolicy,
     pub transport: RuntimeTransportPolicy,
     pub tls: RuntimeListenerTls,
-}
-
-impl RuntimeListenerPolicySet {
-    pub(crate) fn from_listener_runtime_config(config: &ListenerRuntimeConfig) -> Self {
-        Self {
-            timeouts: config.policies.timeouts.clone(),
-            transport: config.policies.transport.clone(),
-            tls: config.listen.tls.clone(),
-        }
-    }
 }

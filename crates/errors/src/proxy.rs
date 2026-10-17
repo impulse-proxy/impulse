@@ -58,9 +58,7 @@ fn passive_health_failure_for_classification(
     classification: UpstreamErrorClassification,
 ) -> Option<UpstreamHealthFailureMapping> {
     match classification.category {
-        UpstreamErrorCategory::Tls
-        | UpstreamErrorCategory::Protocol
-        | UpstreamErrorCategory::Internal => None,
+        UpstreamErrorCategory::Tls | UpstreamErrorCategory::Protocol => None,
         UpstreamErrorCategory::Timeout | UpstreamErrorCategory::Transport => {
             Some(classification.health_failure_mapping())
         }

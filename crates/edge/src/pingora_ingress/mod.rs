@@ -522,8 +522,6 @@ impl ProxyHttp for PingoraIngressService {
                 authority: validated.authority.as_deref(),
                 peer_address,
                 headers: Some(&header_lookup),
-                runtime_generation: runtime.generation,
-                terminal_outcome: ctx.terminal_outcome.clone(),
             },
         );
         shared

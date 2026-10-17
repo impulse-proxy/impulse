@@ -101,10 +101,6 @@ impl RuntimeConfig {
             .map(|(name, upstream)| (name.clone(), upstream.as_config_upstream()))
             .collect()
     }
-
-    pub fn policies(&self) -> RuntimePolicySet {
-        self.policies.clone()
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -221,12 +217,6 @@ pub struct ListenerRuntimeConfig {
     pub policies: RuntimeListenerPolicySet,
     pub performance: Performance,
     pub observability: Observability,
-}
-
-impl ListenerRuntimeConfig {
-    pub fn policies(&self) -> RuntimeListenerPolicySet {
-        RuntimeListenerPolicySet::from_listener_runtime_config(self)
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

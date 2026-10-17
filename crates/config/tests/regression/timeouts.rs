@@ -21,7 +21,7 @@ fn runtime_config_normalizes_timeout_and_transport_knobs_into_runtime_policies()
         config.performance.request_buffer_global_cap_bytes = 9_999;
         config.resilience.route_queue.shed_retry_after_seconds = 17;
     });
-    let policies = runtime.policies();
+    let policies = &runtime.policies;
 
     assert_eq!(
         policies.timeouts.backend_request,

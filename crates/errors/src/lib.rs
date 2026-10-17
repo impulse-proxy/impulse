@@ -20,7 +20,7 @@ pub use retry::{
     HedgePrimaryState, HedgeTriggerTelemetryReason, RetryAttemptTelemetryReason,
     RetryPolicyDecision, RetryPolicyDenialReason, RetryPolicyFacts, UpstreamRetryReason,
     UpstreamRetryability, UpstreamTerminalErrorKind, classify_retryability, evaluate_hedge_policy,
-    evaluate_retry_policy, is_idempotent_method, is_retryable,
+    evaluate_retry_policy, is_idempotent_method,
 };
 pub use upstream::{
     UpstreamErrorCategory, UpstreamErrorClassification, UpstreamHealthFailureMapping,

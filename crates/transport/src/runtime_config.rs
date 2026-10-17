@@ -7,16 +7,16 @@ use std::{
 use impulse_config::runtime::{RuntimeBackendTlsPolicy, RuntimeUpstream};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TlsClientConfig {
-    pub verify_certificates: bool,
-    pub strict_sni: bool,
-    pub ca_file_fingerprint_sha256: Option<String>,
-    pub ca_dir_fingerprint_sha256: Option<String>,
-    pub ca_pem_blobs: Vec<Vec<u8>>,
-    pub client_certificate_pem: Option<Vec<u8>>,
-    pub client_key_pem: Option<Vec<u8>>,
-    pub client_certificate_fingerprint_sha256: Option<String>,
-    pub client_key_fingerprint_sha256: Option<String>,
+pub(crate) struct TlsClientConfig {
+    pub(crate) verify_certificates: bool,
+    pub(crate) strict_sni: bool,
+    pub(crate) ca_file_fingerprint_sha256: Option<String>,
+    pub(crate) ca_dir_fingerprint_sha256: Option<String>,
+    pub(crate) ca_pem_blobs: Vec<Vec<u8>>,
+    pub(crate) client_certificate_pem: Option<Vec<u8>>,
+    pub(crate) client_key_pem: Option<Vec<u8>>,
+    pub(crate) client_certificate_fingerprint_sha256: Option<String>,
+    pub(crate) client_key_fingerprint_sha256: Option<String>,
 }
 
 impl Default for TlsClientConfig {
@@ -58,7 +58,7 @@ impl From<&RuntimeBackendTlsPolicy> for TlsClientConfig {
 }
 
 impl TlsClientConfig {
-    pub fn from_runtime_upstream(upstream: &RuntimeUpstream) -> Self {
+    pub(crate) fn from_runtime_upstream(upstream: &RuntimeUpstream) -> Self {
         Self::from(upstream.backend_tls_policy())
     }
 }
@@ -93,13 +93,6 @@ impl SharedDnsResolver {
             .read()
             .ok()
             .and_then(|cache| cache.get(&normalize_dns_cache_host(host)).cloned())
-    }
-
-    pub fn snapshot(&self) -> HashMap<String, Vec<SocketAddr>> {
-        self.cache
-            .read()
-            .map(|cache| cache.clone())
-            .unwrap_or_default()
     }
 }
 

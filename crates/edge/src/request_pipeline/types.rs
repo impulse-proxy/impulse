@@ -3,11 +3,8 @@ use std::{net::SocketAddr, sync::Arc};
 use impulse_config::runtime::RuntimeUpstreamPolicy;
 use impulse_errors::ProxyError;
 
-use super::{outcome::TerminalOutcomeGuard, policy::ResolvedRequestPolicy};
-use crate::{
-    quic_listener::AdmissionPolicyDecision, routing::decision::RouteDecisionReason,
-    runtime::activation::GenerationId,
-};
+use super::policy::ResolvedRequestPolicy;
+use crate::{quic_listener::AdmissionPolicyDecision, routing::decision::RouteDecisionReason};
 
 pub(crate) type RequestHeaderLookup<'a> = dyn Fn(&str) -> Option<String> + 'a;
 
@@ -18,8 +15,6 @@ pub(crate) struct PipelineRequest<'a> {
     pub(crate) authority: Option<&'a str>,
     pub(crate) peer_address: SocketAddr,
     pub(crate) headers: Option<&'a RequestHeaderLookup<'a>>,
-    pub(crate) runtime_generation: GenerationId,
-    pub(crate) terminal_outcome: TerminalOutcomeGuard,
 }
 
 #[derive(Clone, Copy)]

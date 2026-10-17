@@ -509,8 +509,6 @@ impl QUICListener {
                         authority,
                         peer_address,
                         headers: Some(&lb_header_lookup),
-                        runtime_generation: shared_ctx.runtime_generation,
-                        terminal_outcome: intake.state.context.terminal_outcome.clone(),
                     },
                 );
 

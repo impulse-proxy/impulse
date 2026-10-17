@@ -230,13 +230,6 @@ pub fn evaluate_hedge_policy(input: HedgePolicyFacts) -> HedgePolicyDecision {
     }
 }
 
-pub fn is_retryable(err: &ProxyError) -> bool {
-    matches!(
-        classify_retryability(err),
-        UpstreamRetryability::Retryable(_)
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -605,29 +598,6 @@ mod tests {
             ))),
             UpstreamRetryability::Retryable(UpstreamRetryReason::Pool)
         );
-
-        assert!(is_retryable(&ProxyError::Pool(PoolError::UnknownBackend(
-            "missing".to_string()
-        ))));
-    }
-
-    #[test]
-    fn test_is_retryable_bridge_error_returns_false() {
-        assert!(!is_retryable(&ProxyError::Bridge(
-            BridgeError::InvalidMethod
-        )));
-    }
-
-    #[test]
-    fn test_is_retryable_protocol_error_returns_false() {
-        assert!(!is_retryable(&ProxyError::Protocol(
-            "protocol failure".into()
-        )));
-    }
-
-    #[test]
-    fn test_is_retryable_tls_error_returns_false() {
-        assert!(!is_retryable(&ProxyError::Tls("tls failure".into())));
     }
 
     fn hedge_facts() -> HedgePolicyFacts {

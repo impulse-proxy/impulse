@@ -88,7 +88,6 @@ pub enum UpstreamErrorCategory {
     Transport,
     Tls,
     Protocol,
-    Internal,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -146,13 +145,6 @@ impl UpstreamErrorClassification {
         }
     }
 
-    pub const fn internal() -> Self {
-        Self {
-            category: UpstreamErrorCategory::Internal,
-            tls_reason: None,
-        }
-    }
-
     pub(crate) fn health_failure_mapping(self) -> UpstreamHealthFailureMapping {
         match self.category {
             UpstreamErrorCategory::Timeout => UpstreamHealthFailureMapping {
@@ -178,12 +170,10 @@ impl UpstreamErrorClassification {
                     UpstreamTlsReason::ClientCertificateExpired => "client_certificate_expired",
                 },
             },
-            UpstreamErrorCategory::Protocol | UpstreamErrorCategory::Internal => {
-                UpstreamHealthFailureMapping {
-                    failure_reason: HealthFailureReason::Transport,
-                    metrics_reason: "transport",
-                }
-            }
+            UpstreamErrorCategory::Protocol => UpstreamHealthFailureMapping {
+                failure_reason: HealthFailureReason::Transport,
+                metrics_reason: "transport",
+            },
         }
     }
 }
@@ -327,32 +317,6 @@ mod tests {
                     failure_reason: HealthFailureReason::Tls,
                     metrics_reason: "handshake",
                 }
-            );
-        }
-
-        #[test]
-        fn protocol_and_internal_classifications_share_transport_health_mapping_contract() {
-            assert_eq!(
-                UpstreamErrorClassification::protocol().health_failure_mapping(),
-                UpstreamHealthFailureMapping {
-                    failure_reason: HealthFailureReason::Transport,
-                    metrics_reason: "transport",
-                }
-            );
-            assert_eq!(
-                UpstreamErrorClassification::internal().health_failure_mapping(),
-                UpstreamHealthFailureMapping {
-                    failure_reason: HealthFailureReason::Transport,
-                    metrics_reason: "transport",
-                }
-            );
-            assert_eq!(
-                UpstreamErrorClassification::protocol().category,
-                UpstreamErrorCategory::Protocol
-            );
-            assert_eq!(
-                UpstreamErrorClassification::internal().category,
-                UpstreamErrorCategory::Internal
             );
         }
     }

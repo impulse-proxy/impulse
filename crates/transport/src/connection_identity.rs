@@ -11,11 +11,11 @@ use pingora_core::upstreams::peer::Proxy;
 use crate::TlsClientConfig;
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub struct PingoraUpstreamProxyIdentity {
-    pub next_hop: PathBuf,
-    pub host: String,
-    pub port: u16,
-    pub headers: BTreeMap<String, Vec<u8>>,
+pub(crate) struct PingoraUpstreamProxyIdentity {
+    pub(crate) next_hop: PathBuf,
+    pub(crate) host: String,
+    pub(crate) port: u16,
+    pub(crate) headers: BTreeMap<String, Vec<u8>>,
 }
 
 impl From<&Proxy> for PingoraUpstreamProxyIdentity {
@@ -30,22 +30,22 @@ impl From<&Proxy> for PingoraUpstreamProxyIdentity {
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub struct PingoraUpstreamConnectionIdentity {
-    pub address: SocketAddr,
-    pub protocol: RuntimeBackendTransportKind,
-    pub sni: String,
-    pub verify_certificates: bool,
-    pub strict_sni: bool,
-    pub ca_file_fingerprint_sha256: Option<String>,
-    pub ca_dir_fingerprint_sha256: Option<String>,
-    pub client_certificate_fingerprint_sha256: Option<String>,
-    pub client_key_fingerprint_sha256: Option<String>,
-    pub proxy: Option<PingoraUpstreamProxyIdentity>,
-    pub generation: u64,
+pub(crate) struct PingoraUpstreamConnectionIdentity {
+    pub(crate) address: SocketAddr,
+    pub(crate) protocol: RuntimeBackendTransportKind,
+    pub(crate) sni: String,
+    pub(crate) verify_certificates: bool,
+    pub(crate) strict_sni: bool,
+    pub(crate) ca_file_fingerprint_sha256: Option<String>,
+    pub(crate) ca_dir_fingerprint_sha256: Option<String>,
+    pub(crate) client_certificate_fingerprint_sha256: Option<String>,
+    pub(crate) client_key_fingerprint_sha256: Option<String>,
+    pub(crate) proxy: Option<PingoraUpstreamProxyIdentity>,
+    pub(crate) generation: u64,
 }
 
 impl PingoraUpstreamConnectionIdentity {
-    pub fn new(
+    pub(crate) fn new(
         address: SocketAddr,
         protocol: RuntimeBackendTransportKind,
         sni: String,
@@ -70,7 +70,7 @@ impl PingoraUpstreamConnectionIdentity {
         }
     }
 
-    pub fn pool_key(&self) -> u64 {
+    pub(crate) fn pool_key(&self) -> u64 {
         let mut hasher = DefaultHasher::new();
         self.hash(&mut hasher);
         hasher.finish()

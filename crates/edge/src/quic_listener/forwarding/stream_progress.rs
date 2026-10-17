@@ -384,7 +384,6 @@ impl QUICListener {
                 );
 
                 if let Some(req) = streams.get_mut(&stream_id) {
-                    req.clear_upstream_result_rx();
                     req.retry_count = forward_result.policy.retry.count;
                     req.error_kind = match &forward_result.forward {
                         Err(ProxyError::Timeout) => Some("timeout"),

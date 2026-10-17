@@ -453,16 +453,12 @@ impl RequestEnvelope {
         }
     }
 
-    pub fn clear_upstream_result_rx(&mut self) {}
-
     pub(crate) fn response_chunk_rx_mut(&mut self) -> Option<&mut mpsc::Receiver<ResponseChunk>> {
         match &mut self.execution {
             RequestExecutionState::StreamingResponse(state) => Some(&mut state.response_chunk_rx),
             _ => None,
         }
     }
-
-    pub fn clear_response_chunk_rx(&mut self) {}
 
     pub fn has_upstream_result_rx(&self) -> bool {
         matches!(&self.execution, RequestExecutionState::AwaitingUpstream(_))

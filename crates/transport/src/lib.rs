@@ -16,7 +16,7 @@ mod pingora_pool;
 mod runtime_config;
 mod transport_pool;
 
-pub use connection_identity::{PingoraUpstreamConnectionIdentity, PingoraUpstreamProxyIdentity};
+pub(crate) use connection_identity::PingoraUpstreamConnectionIdentity;
 pub use exchange::{
     UpstreamBody, UpstreamBodyFrame, UpstreamCancellation, UpstreamConnectionReuse,
     UpstreamExchangeCompletion, UpstreamExchangeLifecycle, UpstreamExchangeOutcome,
@@ -24,5 +24,6 @@ pub use exchange::{
     UpstreamResponseHead, UpstreamTunnel, UpstreamTunnelIo, UpstreamUpgrade,
 };
 pub use pingora_failure::{classify_pingora_h1_error, classify_pingora_h2_error};
-pub use runtime_config::{SharedDnsResolver, TlsClientConfig};
+pub use runtime_config::SharedDnsResolver;
+pub(crate) use runtime_config::TlsClientConfig;
 pub use transport_pool::{TransportClientRotation, UpstreamTransportPool};
