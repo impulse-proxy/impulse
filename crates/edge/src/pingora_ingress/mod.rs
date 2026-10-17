@@ -1134,3 +1134,6 @@ async fn write_local_response(
         .write_response_body(Bytes::from_static(body), true)
         .await
 }
+
+#[cfg(test)]
+mod tests;

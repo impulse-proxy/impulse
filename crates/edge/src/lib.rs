@@ -5,6 +5,9 @@
 //! mechanics stay behind internal subsystem modules.
 #![warn(unreachable_pub)]
 
+#[cfg(test)]
+extern crate self as impulse_edge;
+
 pub mod body;
 pub mod cid_radix;
 mod constants;
