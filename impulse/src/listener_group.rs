@@ -445,7 +445,7 @@ pub(crate) fn log_listener_startup(
             listener.listen.port,
         );
         info!(
-            "Listener {} protocols downstream_quic=true pingora_http1=true pingora_http2=true alt_svc_upgrade=true",
+            "Listener {} protocols downstream_quic=true pingora_http1=true pingora_http2=true http3_stability=experimental alt_svc_upgrade=true",
             listener.index,
         );
     }

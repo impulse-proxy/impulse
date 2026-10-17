@@ -58,6 +58,7 @@ struct ControlApiReadyPayload {
 #[derive(Serialize)]
 struct ControlApiRuntimePayload {
     uptime_ms: u64,
+    protocols: ControlApiProtocolStatusPayload,
     workers: ControlApiWorkerPayload,
     watchdog: ControlApiRuntimeWatchdogPayload,
     adaptive_admission: ControlApiAdaptiveAdmissionPayload,
@@ -72,6 +73,13 @@ struct ControlApiRuntimePayload {
     extension_model: ControlApiExtensionModelPayload,
     #[serde(skip_serializing_if = "Option::is_none")]
     runtime: Option<ControlApiRuntimeGenerationPayload>,
+}
+
+#[derive(Serialize)]
+struct ControlApiProtocolStatusPayload {
+    http1: &'static str,
+    http2: &'static str,
+    http3: &'static str,
 }
 
 #[derive(Serialize)]
