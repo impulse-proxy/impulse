@@ -96,7 +96,7 @@ mod tests {
 
     #[test]
     fn readonly_lb_pick_wins_when_candidate_is_not_excluded() {
-        let pool = pool_for("round-robin", &["http://a", "http://b", "http://c"]);
+        let pool = pool_for("least-connections", &["http://a", "http://b", "http://c"]);
 
         let decision = choose_alternate_backend(&pool, &[2], None);
         assert_eq!(
@@ -110,7 +110,7 @@ mod tests {
 
     #[test]
     fn healthy_fallback_runs_when_readonly_pick_hits_excluded_backend() {
-        let pool = pool_for("round-robin", &["http://a", "http://b", "http://c"]);
+        let pool = pool_for("least-connections", &["http://a", "http://b", "http://c"]);
 
         let decision = choose_alternate_backend(&pool, &[0], None);
         assert_eq!(
@@ -125,7 +125,7 @@ mod tests {
     #[test]
     fn alternate_selection_respects_multiple_excluded_backends() {
         let pool = pool_for(
-            "round-robin",
+            "least-connections",
             &["http://a", "http://b", "http://c", "http://d"],
         );
 
@@ -140,22 +140,8 @@ mod tests {
     }
 
     #[test]
-    fn healthy_fallback_runs_when_strategy_has_no_readonly_pick() {
-        let pool = pool_for("consistent-hash", &["http://a", "http://b"]);
-
-        let decision = choose_alternate_backend(&pool, &[0], None);
-        assert_eq!(
-            decision,
-            AlternateBackendDecision::Select(AlternateBackendChoice {
-                index: 1,
-                mode: AlternateBackendSelectionMode::HealthyFallback,
-            })
-        );
-    }
-
-    #[test]
     fn healthy_fallback_skips_unhealthy_backends() {
-        let mut pool = pool_for("round-robin", &["http://a", "http://b", "http://c"]);
+        let mut pool = pool_for("least-connections", &["http://a", "http://b", "http://c"]);
 
         let _ = pool.mark_backend_failure_from_active_check(1);
 
@@ -171,7 +157,7 @@ mod tests {
 
     #[test]
     fn alternate_selection_reports_only_excluded_backends_when_no_candidate_remains() {
-        let pool = pool_for("round-robin", &["http://a"]);
+        let pool = pool_for("least-connections", &["http://a"]);
 
         let decision = choose_alternate_backend(&pool, &[0], None);
         assert_eq!(
@@ -184,7 +170,7 @@ mod tests {
 
     #[test]
     fn readonly_strategy_interaction_uses_load_balancer_mode_for_alternates() {
-        let pool = pool_for("round-robin", &["http://a", "http://b", "http://c"]);
+        let pool = pool_for("least-connections", &["http://a", "http://b", "http://c"]);
 
         let first = choose_alternate_backend(&pool, &[], Some("tenant-a"));
         let second = choose_alternate_backend(&pool, &[], Some("tenant-b"));
@@ -207,7 +193,7 @@ mod tests {
 
     #[test]
     fn readonly_lb_pick_respects_lb_key_input_when_returning_typed_selection_mode() {
-        let pool = pool_for("round-robin", &["http://a", "http://b", "http://c"]);
+        let pool = pool_for("least-connections", &["http://a", "http://b", "http://c"]);
 
         let decision = choose_alternate_backend(&pool, &[1, 2], Some("tenant-a"));
 
@@ -221,22 +207,8 @@ mod tests {
     }
 
     #[test]
-    fn non_readonly_strategies_use_healthy_fallback_for_alternates() {
-        let pool = pool_for("consistent-hash", &["http://a", "http://b", "http://c"]);
-
-        let decision = choose_alternate_backend(&pool, &[0, 1], Some("tenant-a"));
-        assert_eq!(
-            decision,
-            AlternateBackendDecision::Select(AlternateBackendChoice {
-                index: 2,
-                mode: AlternateBackendSelectionMode::HealthyFallback,
-            })
-        );
-    }
-
-    #[test]
     fn alternate_selection_reports_no_healthy_backends_when_pool_is_drained() {
-        let mut pool = pool_for("round-robin", &["http://a", "http://b"]);
+        let mut pool = pool_for("least-connections", &["http://a", "http://b"]);
 
         let _ = pool.mark_backend_failure_from_active_check(0);
         let _ = pool.mark_backend_failure_from_active_check(1);
@@ -252,7 +224,7 @@ mod tests {
 
     #[test]
     fn alternate_selection_denials_remain_distinct_between_no_healthy_and_only_excluded() {
-        let mut no_healthy = pool_for("round-robin", &["http://a", "http://b"]);
+        let mut no_healthy = pool_for("least-connections", &["http://a", "http://b"]);
         let _ = no_healthy.mark_backend_failure_from_active_check(0);
         let _ = no_healthy.mark_backend_failure_from_active_check(1);
         assert_eq!(
@@ -262,7 +234,7 @@ mod tests {
             }
         );
 
-        let only_excluded = pool_for("round-robin", &["http://a", "http://b"]);
+        let only_excluded = pool_for("least-connections", &["http://a", "http://b"]);
         assert_eq!(
             choose_alternate_backend(&only_excluded, &[0, 1], None),
             AlternateBackendDecision::DoNotSelect {
@@ -273,7 +245,7 @@ mod tests {
 
     #[test]
     fn no_healthy_backend_denial_survives_policy_disablement() {
-        let mut pool = pool_for("round-robin", &["http://a", "http://b"]);
+        let mut pool = pool_for("least-connections", &["http://a", "http://b"]);
         pool.set_alternate_backend_policy(RuntimeAlternateBackendPolicy {
             readonly_lb_pick: false,
             healthy_fallback: false,
@@ -292,7 +264,7 @@ mod tests {
 
     #[test]
     fn alternate_selection_respects_disabled_readonly_pick_policy() {
-        let mut pool = pool_for("round-robin", &["http://a", "http://b", "http://c"]);
+        let mut pool = pool_for("least-connections", &["http://a", "http://b", "http://c"]);
         pool.set_alternate_backend_policy(RuntimeAlternateBackendPolicy {
             readonly_lb_pick: false,
             healthy_fallback: true,
@@ -310,7 +282,7 @@ mod tests {
 
     #[test]
     fn only_excluded_backend_denial_survives_when_failover_modes_are_disabled() {
-        let mut pool = pool_for("round-robin", &["http://a", "http://b"]);
+        let mut pool = pool_for("least-connections", &["http://a", "http://b"]);
         pool.set_alternate_backend_policy(RuntimeAlternateBackendPolicy {
             readonly_lb_pick: false,
             healthy_fallback: false,

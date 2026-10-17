@@ -9,7 +9,6 @@ mod algorithms;
 pub mod alternate_backend;
 mod backend;
 mod backend_pool;
-pub mod hash;
 pub mod health;
 pub mod load_balancing;
 pub mod pingora_backend;

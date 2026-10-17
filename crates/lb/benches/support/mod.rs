@@ -7,11 +7,7 @@ use impulse_config::{
 use impulse_lb::upstream_pool::UpstreamPool;
 
 pub const BACKEND_COUNTS: [usize; 4] = [1, 10, 100, 1_000];
-pub const STRATEGIES: [(&str, &str); 6] = [
-    ("round_robin", "round-robin"),
-    ("random", "random"),
-    ("consistent_hash", "consistent-hash"),
-    ("sticky_cid", "sticky-cid"),
+pub const STRATEGIES: [(&str, &str); 2] = [
     ("least_connections", "least-connections"),
     ("latency_aware", "latency-aware"),
 ];

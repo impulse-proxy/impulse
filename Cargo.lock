@@ -1574,7 +1574,6 @@ dependencies = [
  "impulse-config",
  "log",
  "pingora-load-balancing",
- "rand",
 ]
 
 [[package]]

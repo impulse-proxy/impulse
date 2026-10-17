@@ -450,11 +450,11 @@ mod tests {
         health::{HealthFailureReason, HealthTransition},
     };
 
-    fn create_backend_state(address: &str, weight: u32) -> BackendState {
+    fn create_backend_state(address: &str) -> BackendState {
         BackendState::new(&Backend {
             id: format!("backend-{address}"),
             address: address.to_string(),
-            weight,
+            weight: 1,
             health_check: Some(HealthCheck {
                 path: "/health".to_string(),
                 interval: 1000,
@@ -468,7 +468,7 @@ mod tests {
 
     #[test]
     fn backend_pool_epoch_changes_only_on_health_membership_transition() {
-        let mut pool = BackendPool::new_from_states(vec![create_backend_state("10.0.0.1:1", 1)]);
+        let mut pool = BackendPool::new_from_states(vec![create_backend_state("10.0.0.1:1")]);
         assert_eq!(pool.membership_epoch(), 0);
 
         pool.mark_failure(0);
@@ -491,9 +491,9 @@ mod tests {
     #[test]
     fn healthy_cache_tracks_membership_changes_without_duplicates() {
         let mut pool = BackendPool::new_from_states(vec![
-            create_backend_state("10.0.0.1:1", 1),
-            create_backend_state("10.0.0.2:1", 1),
-            create_backend_state("10.0.0.3:1", 1),
+            create_backend_state("10.0.0.1:1"),
+            create_backend_state("10.0.0.2:1"),
+            create_backend_state("10.0.0.3:1"),
         ]);
 
         assert_eq!(pool.healthy_indices(), vec![0, 1, 2]);
@@ -516,7 +516,7 @@ mod tests {
 
     #[test]
     fn backend_recovers_after_success_threshold() {
-        let mut pool = BackendPool::new_from_states(vec![create_backend_state("10.0.0.1:1", 1)]);
+        let mut pool = BackendPool::new_from_states(vec![create_backend_state("10.0.0.1:1")]);
         pool.mark_failure(0);
         pool.mark_failure(0);
         pool.mark_failure(0);
@@ -695,7 +695,7 @@ mod tests {
 
     #[test]
     fn request_failure_records_penalty_sample_for_unsampled_backend() {
-        let mut pool = BackendPool::new_from_states(vec![create_backend_state("10.0.0.1:1", 1)]);
+        let mut pool = BackendPool::new_from_states(vec![create_backend_state("10.0.0.1:1")]);
 
         let transition = pool.observe_request_failure(
             0,
@@ -712,7 +712,7 @@ mod tests {
 
     #[test]
     fn request_failure_penalty_overrides_fast_transport_sample() {
-        let mut pool = BackendPool::new_from_states(vec![create_backend_state("10.0.0.1:1", 1)]);
+        let mut pool = BackendPool::new_from_states(vec![create_backend_state("10.0.0.1:1")]);
 
         pool.finish_request(0, Duration::from_millis(20), None);
         pool.observe_request_failure(
@@ -729,7 +729,7 @@ mod tests {
 
     #[test]
     fn request_failure_with_active_health_check_still_records_penalty_sample() {
-        let mut pool = BackendPool::new_from_states(vec![create_backend_state("10.0.0.1:1", 1)]);
+        let mut pool = BackendPool::new_from_states(vec![create_backend_state("10.0.0.1:1")]);
 
         let transition = pool.observe_request_failure(
             0,

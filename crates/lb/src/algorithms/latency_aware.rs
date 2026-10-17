@@ -178,7 +178,6 @@ mod tests {
 
     fn create_backend_state(
         address: &str,
-        weight: u32,
         interval: u64,
         failure_threshold: u32,
         cooldown_ms: u64,
@@ -186,7 +185,7 @@ mod tests {
         BackendState::new(&Backend {
             id: format!("backend-{address}"),
             address: address.to_string(),
-            weight,
+            weight: 1,
             health_check: Some(HealthCheck {
                 path: "/health".to_string(),
                 interval,
@@ -201,8 +200,8 @@ mod tests {
     #[test]
     fn latency_aware_prefers_lower_ewma() {
         let mut pool = BackendPool::new_from_states(vec![
-            create_backend_state("10.0.0.1:1", 1, 1000, 3, 0),
-            create_backend_state("10.0.0.2:1", 1, 1000, 3, 0),
+            create_backend_state("10.0.0.1:1", 1000, 3, 0),
+            create_backend_state("10.0.0.2:1", 1000, 3, 0),
         ]);
 
         pool.finish_request(0, Duration::from_millis(150), Some(200));
@@ -215,8 +214,8 @@ mod tests {
     #[test]
     fn latency_aware_periodically_explores_all_sampled_backends() {
         let mut pool = BackendPool::new_from_states(vec![
-            create_backend_state("10.0.0.1:1", 1, 1000, 3, 0),
-            create_backend_state("10.0.0.2:1", 1, 1000, 3, 0),
+            create_backend_state("10.0.0.1:1", 1000, 3, 0),
+            create_backend_state("10.0.0.2:1", 1000, 3, 0),
         ]);
         pool.finish_request(0, Duration::from_millis(1), Some(200));
         pool.finish_request(1, Duration::from_millis(1_000), Some(200));
@@ -233,8 +232,8 @@ mod tests {
     #[test]
     fn latency_aware_prefers_sampled_backend_over_unsampled_backend() {
         let mut pool = BackendPool::new_from_states(vec![
-            create_backend_state("10.0.0.1:1", 1, 1000, 3, 0),
-            create_backend_state("10.0.0.2:1", 1, 1000, 3, 0),
+            create_backend_state("10.0.0.1:1", 1000, 3, 0),
+            create_backend_state("10.0.0.2:1", 1000, 3, 0),
         ]);
 
         pool.finish_request(0, Duration::from_millis(25), Some(200));
@@ -247,8 +246,8 @@ mod tests {
     #[test]
     fn latency_aware_excludes_readmitted_probing_backend_from_general_selection() {
         let mut pool = BackendPool::new_from_states(vec![
-            create_backend_state("10.0.0.1:1", 1, 0, 1, 10_000),
-            create_backend_state("10.0.0.2:1", 1, 1000, 3, 0),
+            create_backend_state("10.0.0.1:1", 0, 1, 10_000),
+            create_backend_state("10.0.0.2:1", 1000, 3, 0),
         ]);
 
         pool.finish_request(1, Duration::from_millis(20), Some(200));
@@ -276,8 +275,8 @@ mod tests {
     #[test]
     fn latency_aware_fast_5xx_failures_do_not_keep_backend_preferred() {
         let mut pool = BackendPool::new_from_states(vec![
-            create_backend_state("10.0.0.1:1", 1, 1000, 3, 0),
-            create_backend_state("10.0.0.2:1", 1, 1000, 3, 0),
+            create_backend_state("10.0.0.1:1", 1000, 3, 0),
+            create_backend_state("10.0.0.2:1", 1000, 3, 0),
         ]);
         pool.finish_request(0, Duration::from_millis(20), Some(200));
 
@@ -306,8 +305,8 @@ mod tests {
     #[test]
     fn latency_aware_preserves_startup_behavior_when_all_backends_are_unsampled() {
         let pool = BackendPool::new_from_states(vec![
-            create_backend_state("10.0.0.1:1", 1, 1000, 3, 0),
-            create_backend_state("10.0.0.2:1", 1, 1000, 3, 0),
+            create_backend_state("10.0.0.1:1", 1000, 3, 0),
+            create_backend_state("10.0.0.2:1", 1000, 3, 0),
         ]);
 
         let mut lb = LatencyAware::new();
