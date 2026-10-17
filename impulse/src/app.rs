@@ -209,7 +209,9 @@ async fn run(
             Arc::clone(&shared_state),
             Arc::clone(&runtime_bundle),
             worker_index_base,
-        ) {
+        )
+        .await
+        {
             Ok(group) => {
                 listener_groups.push(group);
             }
@@ -225,8 +227,8 @@ async fn run(
 
     let mut worker_failed = false;
     while !shutdown.load(Ordering::Relaxed) {
-        collect_finished_listener_groups(&mut listener_groups, &mut worker_failed);
-        reconcile_listener_groups(&runtime_bundle, &mut listener_groups);
+        collect_finished_listener_groups(&mut listener_groups, &mut worker_failed).await;
+        reconcile_listener_groups(&runtime_bundle, &mut listener_groups).await;
 
         // Reflect a watchdog-requested drain in the runtime lifecycle: once the
         // watchdog asks for a restart, workers begin draining, so move the process

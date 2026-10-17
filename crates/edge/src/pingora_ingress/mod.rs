@@ -12,7 +12,7 @@ use impulse_bridge::response::{
     ResponseNormalizationProtocol, ResponseProtocolConstraints, UpstreamResponseView,
     normalize_response_trailers, normalize_upstream_response,
 };
-use impulse_config::backend_endpoint::BackendScheme;
+use impulse_config::{backend_endpoint::BackendScheme, runtime::ListenerRuntimeConfig};
 use impulse_errors::{
     BridgeError, PoolError, ProxyError, RetryAttemptTelemetryReason, RetryPolicyDecision,
     RetryPolicyDenialReason, classify_upstream_proxy_error, is_idempotent_method,
@@ -29,7 +29,7 @@ use pingora_core::{
     apps::HttpServerOptions,
     listeners::TlsSettings,
     server::configuration::ServerConf,
-    services::listening::Service,
+    services::{Service as PingoraServiceLifecycle, listening::Service},
     upstreams::peer::{ALPN, HttpPeer},
 };
 use pingora_http::{RequestHeader, ResponseHeader};
@@ -148,6 +148,118 @@ impl ResolvesServerCert for RotatingServerCertResolver {
     }
 }
 
+pub struct PingoraListenerTask {
+    address: String,
+    shutdown: tokio::sync::watch::Sender<bool>,
+    task: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl PingoraListenerTask {
+    pub async fn wait_until_ready(&mut self) -> std::result::Result<(), String> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            if self
+                .task
+                .as_ref()
+                .is_some_and(tokio::task::JoinHandle::is_finished)
+            {
+                return match self.collect_finished().await {
+                    Some(Err(error)) => Err(error),
+                    _ => Err(format!(
+                        "Pingora listener {} stopped during startup",
+                        self.address
+                    )),
+                };
+            }
+            if tokio::time::timeout(
+                Duration::from_millis(50),
+                tokio::net::TcpStream::connect(&self.address),
+            )
+            .await
+            .is_ok_and(|result| result.is_ok())
+            {
+                return Ok(());
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(format!(
+                    "Timed out waiting for Pingora listener {}",
+                    self.address
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    pub fn request_shutdown(&self) {
+        let _ = self.shutdown.send(true);
+    }
+
+    pub async fn collect_finished(&mut self) -> Option<std::result::Result<(), String>> {
+        if !self
+            .task
+            .as_ref()
+            .is_some_and(tokio::task::JoinHandle::is_finished)
+        {
+            return None;
+        }
+        let task = self.task.take()?;
+        Some(
+            task.await
+                .map_err(|error| format!("Pingora listener {} failed: {error}", self.address)),
+        )
+    }
+
+    pub fn stopped(&self) -> bool {
+        self.task.is_none()
+    }
+
+    pub async fn join(mut self) -> std::result::Result<(), String> {
+        match self.task.take() {
+            Some(task) => task
+                .await
+                .map_err(|error| format!("Pingora listener {} failed: {error}", self.address)),
+            None => Ok(()),
+        }
+    }
+}
+
+impl Drop for PingoraListenerTask {
+    fn drop(&mut self) {
+        self.request_shutdown();
+        if let Some(task) = self.task.as_ref() {
+            task.abort();
+        }
+    }
+}
+
+pub fn spawn_pingora_ingress_listener(
+    runtime: Arc<RuntimeBundleHandle>,
+    listener: ListenerRuntimeConfig,
+) -> std::result::Result<PingoraListenerTask, String> {
+    let address = format!(
+        "{}:{}",
+        listener.listen.listen.address, listener.listen.listen.port
+    );
+    let mut service = pingora_ingress_service_for_listener(
+        &Arc::new(ServerConf::default()),
+        runtime.as_ref().clone(),
+        listener,
+    )
+    .map_err(|error| format!("Failed to create Pingora listener {address}: {error}"))?;
+    let (shutdown, shutdown_watch) = tokio::sync::watch::channel(false);
+    let task = tokio::spawn(async move {
+        #[cfg(unix)]
+        service.start_service(None, shutdown_watch, 1).await;
+        #[cfg(not(unix))]
+        service.start_service(shutdown_watch, 1).await;
+    });
+    Ok(PingoraListenerTask {
+        address,
+        shutdown,
+        task: Some(task),
+    })
+}
+
 pub(crate) fn pingora_ingress_services(
     configuration: &Arc<ServerConf>,
     runtime: RuntimeBundleHandle,
@@ -160,61 +272,65 @@ pub(crate) fn pingora_ingress_services(
             "Pingora ingress requires a configured listener",
         );
     }
-    let tls_store = Arc::clone(&current.shared_state.shared_services().listener_tls_store);
-
     listeners
         .into_iter()
         .map(|listener| {
-            let listener_label = format!(
-                "{}:{}",
-                listener.listen.listen.address, listener.listen.listen.port
-            );
-            if tls_store.bootstrap_server_config(&listener_label).is_none() {
-                return Error::e_explain(
-                    InternalError,
-                    format!("Pingora ingress TLS state is missing for '{listener_label}'"),
-                );
-            }
-            let identity = &listener.listen.tls.default_identity;
-            let mut tls = TlsSettings::intermediate(&identity.cert_path, &identity.key_path)?;
-            tls.set_cert_resolver(Arc::new(RotatingServerCertResolver {
-                listener: listener_label.clone(),
-                store: Arc::clone(&tls_store),
-            }));
-            if let Some(verifier) =
-                QUICListener::build_listener_client_cert_verifier(&listener.listen.tls).map_err(
-                    |error| {
-                        Error::because(
-                            InternalError,
-                            format!(
-                                "failed to configure Pingora ingress client authentication for '{listener_label}'"
-                            ),
-                            error,
-                        )
-                    },
-                )?
-            {
-                tls.set_client_cert_verifier(verifier);
-            }
-            tls.enable_h2();
-
-            let mut service = http_proxy_service_with_name(
-                configuration,
-                PingoraIngressService {
-                    runtime: runtime.clone(),
-                },
-                &format!("Impulse Pingora Ingress {listener_label}"),
-            );
-            if let Some(proxy) = service.app_logic_mut() {
-                proxy.server_options = Some(HttpServerOptions {
-                    allow_connect_method_proxying: true,
-                    ..HttpServerOptions::default()
-                });
-            }
-            service.add_tls_with_settings(&listener_label, None, tls);
-            Ok(service)
+            pingora_ingress_service_for_listener(configuration, runtime.clone(), listener)
         })
         .collect()
+}
+
+fn pingora_ingress_service_for_listener(
+    configuration: &Arc<ServerConf>,
+    runtime: RuntimeBundleHandle,
+    listener: ListenerRuntimeConfig,
+) -> Result<Service<HttpProxy<PingoraIngressService>>> {
+    let listener_label = format!(
+        "{}:{}",
+        listener.listen.listen.address, listener.listen.listen.port
+    );
+    let current = runtime.current();
+    let tls_store = Arc::clone(&current.shared_state.shared_services().listener_tls_store);
+    if tls_store.bootstrap_server_config(&listener_label).is_none() {
+        return Error::e_explain(
+            InternalError,
+            format!("Pingora ingress TLS state is missing for '{listener_label}'"),
+        );
+    }
+    let identity = &listener.listen.tls.default_identity;
+    let mut tls = TlsSettings::intermediate(&identity.cert_path, &identity.key_path)?;
+    tls.set_cert_resolver(Arc::new(RotatingServerCertResolver {
+        listener: listener_label.clone(),
+        store: tls_store,
+    }));
+    if let Some(verifier) = QUICListener::build_listener_client_cert_verifier(&listener.listen.tls)
+        .map_err(|error| {
+            Error::because(
+                InternalError,
+                format!(
+                    "failed to configure Pingora ingress client authentication for '{listener_label}'"
+                ),
+                error,
+            )
+        })?
+    {
+        tls.set_client_cert_verifier(verifier);
+    }
+    tls.enable_h2();
+
+    let mut service = http_proxy_service_with_name(
+        configuration,
+        PingoraIngressService { runtime },
+        &format!("Impulse Pingora Ingress {listener_label}"),
+    );
+    if let Some(proxy) = service.app_logic_mut() {
+        proxy.server_options = Some(HttpServerOptions {
+            allow_connect_method_proxying: true,
+            ..HttpServerOptions::default()
+        });
+    }
+    service.add_tls_with_settings(&listener_label, None, tls);
+    Ok(service)
 }
 
 #[async_trait]

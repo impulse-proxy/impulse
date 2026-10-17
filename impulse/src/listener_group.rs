@@ -6,13 +6,11 @@ use std::{
 
 use impulse_config::runtime::{ListenerRuntimeConfig, RuntimeConfig};
 use impulse_edge::{
-    ListenerWorkerGroupConfig, ListenerWorkerRuntimeState,
+    ListenerWorkerGroupConfig, ListenerWorkerRuntimeState, PingoraListenerTask,
     runtime::{
-        bundle::RuntimeBundleHandle,
-        listener::{QUICListener, ShutdownSignal},
-        shared_state::SharedRuntimeState,
+        bundle::RuntimeBundleHandle, listener::ShutdownSignal, shared_state::SharedRuntimeState,
     },
-    spawn_listener_worker_group,
+    spawn_listener_worker_group, spawn_pingora_ingress_listener,
 };
 use log::{error, info};
 
@@ -35,15 +33,17 @@ pub(crate) struct ListenerGroupRuntime {
     pub(crate) signature: ListenerGroupSignature,
     pub(crate) shutdown: ShutdownSignal,
     worker_handles: Vec<thread::JoinHandle<Result<(), String>>>,
+    pingora_listener: PingoraListenerTask,
     worker_index_base: usize,
 }
 
 impl ListenerGroupRuntime {
     pub(crate) fn request_shutdown(&self) {
         self.shutdown.store(true, Ordering::Relaxed);
+        self.pingora_listener.request_shutdown();
     }
 
-    pub(crate) fn collect_finished(&mut self, worker_failed: &mut bool) {
+    pub(crate) async fn collect_finished(&mut self, worker_failed: &mut bool) {
         let mut idx = 0usize;
         while idx < self.worker_handles.len() {
             if !self.worker_handles[idx].is_finished() {
@@ -54,15 +54,33 @@ impl ListenerGroupRuntime {
             let handle = self.worker_handles.swap_remove(idx);
             join_worker_handle(handle, worker_failed);
         }
+        if let Some(result) = self.pingora_listener.collect_finished().await {
+            if let Err(err) = result {
+                *worker_failed = true;
+                error!("{}", err);
+            } else if !self.shutdown.load(Ordering::Relaxed) {
+                *worker_failed = true;
+                error!(
+                    "Pingora listener {} exited before listener-group shutdown",
+                    self.signature.label
+                );
+            }
+        }
     }
 
     pub(crate) fn retired(&self) -> bool {
-        self.shutdown.load(Ordering::Relaxed) && self.worker_handles.is_empty()
+        self.shutdown.load(Ordering::Relaxed)
+            && self.worker_handles.is_empty()
+            && self.pingora_listener.stopped()
     }
 
-    pub(crate) fn join_all(mut self, worker_failed: &mut bool) {
+    pub(crate) async fn join_all(mut self, worker_failed: &mut bool) {
         for handle in self.worker_handles.drain(..) {
             join_worker_handle(handle, worker_failed);
+        }
+        if let Err(err) = self.pingora_listener.join().await {
+            *worker_failed = true;
+            error!("{}", err);
         }
     }
 }
@@ -76,7 +94,7 @@ pub(crate) async fn shutdown_listener_groups(
     }
 
     loop {
-        collect_finished_listener_groups(listener_groups, worker_failed);
+        collect_finished_listener_groups(listener_groups, worker_failed).await;
         if listener_groups.is_empty() {
             break;
         }
@@ -84,7 +102,7 @@ pub(crate) async fn shutdown_listener_groups(
     }
 
     for group in listener_groups.drain(..) {
-        group.join_all(worker_failed);
+        group.join_all(worker_failed).await;
     }
 }
 
@@ -109,7 +127,7 @@ pub(crate) fn listener_group_signature(config: &ListenerRuntimeConfig) -> Listen
     }
 }
 
-pub(crate) fn spawn_managed_listener_group(
+pub(crate) async fn spawn_managed_listener_group(
     listener_config: ListenerRuntimeConfig,
     worker_shared: Arc<SharedRuntimeState>,
     runtime_bundle: Arc<RuntimeBundleHandle>,
@@ -118,21 +136,9 @@ pub(crate) fn spawn_managed_listener_group(
     let signature = listener_group_signature(&listener_config);
     let shutdown = ShutdownSignal::new();
 
-    QUICListener::spawn_bootstrap_tls_listener(
-        &listener_config,
-        worker_shared.as_ref(),
-        Some(Arc::clone(&runtime_bundle)),
-        Some(shutdown.clone()),
-    )
-    .map_err(|err| {
-        format!(
-            "Failed to initialize bootstrap TLS listener {} ({}:{}): {}",
-            listener_config.listen.index,
-            listener_config.listen.listen.address,
-            listener_config.listen.listen.port,
-            err
-        )
-    })?;
+    let mut pingora_listener =
+        spawn_pingora_ingress_listener(Arc::clone(&runtime_bundle), listener_config.clone())?;
+    pingora_listener.wait_until_ready().await?;
 
     let worker_handles = spawn_listener_worker_group(
         &ListenerWorkerGroupConfig {
@@ -155,6 +161,7 @@ pub(crate) fn spawn_managed_listener_group(
         signature,
         shutdown,
         worker_handles,
+        pingora_listener,
         worker_index_base,
     })
 }
@@ -188,7 +195,7 @@ pub(crate) fn allocate_worker_index_base(
     base
 }
 
-pub(crate) fn reconcile_listener_groups(
+pub(crate) async fn reconcile_listener_groups(
     runtime_bundle: &Arc<RuntimeBundleHandle>,
     groups: &mut Vec<ListenerGroupRuntime>,
 ) {
@@ -241,7 +248,9 @@ pub(crate) fn reconcile_listener_groups(
             Arc::clone(&runtime.shared_state),
             Arc::clone(runtime_bundle),
             worker_index_base,
-        ) {
+        )
+        .await
+        {
             Ok(group) => {
                 info!("Spawned listener group {}", group.signature.label);
                 groups.push(group);
@@ -253,13 +262,13 @@ pub(crate) fn reconcile_listener_groups(
     }
 }
 
-pub(crate) fn collect_finished_listener_groups(
+pub(crate) async fn collect_finished_listener_groups(
     groups: &mut Vec<ListenerGroupRuntime>,
     worker_failed: &mut bool,
 ) {
     let mut idx = 0usize;
     while idx < groups.len() {
-        groups[idx].collect_finished(worker_failed);
+        groups[idx].collect_finished(worker_failed).await;
         if groups[idx].retired() {
             info!("Retired listener group {}", groups[idx].signature.label);
             groups.swap_remove(idx);
@@ -301,7 +310,7 @@ pub(crate) fn log_listener_startup(
     );
     for listener in &runtime_config.listeners {
         info!(
-            "Listener {} binds udp={}:{} tcp_bootstrap={}:{}",
+            "Listener {} binds udp={}:{} tcp_pingora={}:{}",
             listener.index,
             listener.listen.address,
             listener.listen.port,
@@ -309,7 +318,7 @@ pub(crate) fn log_listener_startup(
             listener.listen.port,
         );
         info!(
-            "Listener {} protocols downstream_quic=true bootstrap_http1=true bootstrap_http2=true alt_svc_upgrade=true",
+            "Listener {} protocols downstream_quic=true pingora_http1=true pingora_http2=true alt_svc_upgrade=true",
             listener.index,
         );
     }
