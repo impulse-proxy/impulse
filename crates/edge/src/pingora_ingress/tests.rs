@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     net::{SocketAddr, TcpStream},
     sync::Arc,
     time::Duration,
@@ -308,6 +308,62 @@ fn pingora_and_http3_share_request_contracts() {
             selected_response_headers: &[],
         },
     );
+}
+
+#[test]
+fn pingora_and_http3_share_consistent_hash_backend_selection() {
+    if !local_listener_bind_available() {
+        return;
+    }
+
+    let mut harness = ProtocolParityHarness::new();
+    let backend_a = harness.start_h1_static_backend(b"backend-a\n");
+    let backend_b = harness.start_h1_static_backend(b"backend-b\n");
+    let mut upstream = make_upstream(
+        "/",
+        vec![
+            make_backend("backend-a", backend_a.to_string()),
+            make_backend("backend-b", backend_b.to_string()),
+        ],
+        None,
+        "consistent-hash",
+    );
+    upstream.load_balancing.key = Some("path".to_string());
+    let config = harness.make_config(HashMap::from([("api".to_string(), upstream)]));
+    let mut pingora_config = config.clone();
+    pingora_config.listen.port = reserve_unused_listener_port();
+    let (_pingora, pingora_addr) =
+        PingoraTestService::start(pingora_config).expect("start Pingora ingress");
+    harness
+        .start_listener(config)
+        .expect("start HTTP/3 ingress");
+
+    let mut selected_backends = HashSet::new();
+    for index in 0..64 {
+        let path = format!("/selection/{index}");
+        let quic = harness
+            .run_quic(ParityRequestSpec::get("localhost", &path))
+            .expect("HTTP/3 selection response");
+        let pingora = run_http2_request_to(
+            pingora_addr,
+            harness.cert_path(),
+            HttpRequestSpec {
+                method: "GET",
+                authority: "localhost",
+                path: &path,
+                headers: &[],
+                body: None,
+                user_agent: "impulse-pingora-lb-parity-test",
+            },
+        )
+        .map(|response| snapshot(response, &[]))
+        .expect("Pingora selection response");
+
+        assert_eq!(pingora, quic.response);
+        selected_backends.insert(quic.response.body);
+    }
+
+    assert_eq!(selected_backends.len(), 2);
 }
 
 #[derive(Debug, PartialEq, Eq)]

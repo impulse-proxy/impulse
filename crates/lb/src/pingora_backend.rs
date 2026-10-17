@@ -636,3 +636,169 @@ where
     });
     Ok(mapped)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const GENERATION: u64 = 17;
+
+    fn backend_view(weights: &[u32]) -> GenerationBackendView {
+        let backends = weights
+            .iter()
+            .enumerate()
+            .map(|(index, weight)| {
+                let port = 8_000 + u16::try_from(index).expect("test backend index");
+                let address = SocketAddr::from(([127, 0, 0, 1], port));
+                let backend = Backend {
+                    id: format!("backend-{index}"),
+                    address: address.to_string(),
+                    weight: *weight,
+                    health_check: None,
+                };
+                map_validated_backend(&backend, index, address, ())
+            })
+            .collect::<Result<BTreeSet<_>, _>>()
+            .expect("map test backends");
+        let view = BackendView::new(StaticDiscovery::new(backends));
+        let waker = Waker::from(Arc::new(NoopWake));
+        let mut context = Context::from_waker(&waker);
+        let mut update = Box::pin(view.update(|_| {}));
+        assert!(matches!(
+            update.as_mut().poll(&mut context),
+            Poll::Ready(Ok(()))
+        ));
+        drop(update);
+
+        GenerationBackendView {
+            generation: GENERATION,
+            upstream_name: "api".to_string(),
+            view,
+        }
+    }
+
+    #[test]
+    fn weighted_round_robin_preserves_configured_distribution() {
+        let selector = GenerationSelector::<()>::new(
+            RuntimeLoadBalancingStrategy::RoundRobin,
+            backend_view(&[1, 3]),
+        );
+        selector
+            .synchronize_readiness(|_| true)
+            .expect("synchronize readiness");
+
+        let mut counts = [0_u64; 2];
+        for _ in 0..400 {
+            let selected = selector.select_excluding("", &[]).expect("selection");
+            counts[selected.index()] += 1;
+        }
+
+        assert_eq!(counts.iter().sum::<u64>(), 400);
+        assert!(counts[1] >= counts[0] * 2);
+        assert!(counts[1] <= counts[0] * 4);
+    }
+
+    #[test]
+    fn weighted_random_preserves_configured_distribution() {
+        let selector = GenerationSelector::<()>::new(
+            RuntimeLoadBalancingStrategy::Random,
+            backend_view(&[1, 3]),
+        );
+        selector
+            .synchronize_readiness(|_| true)
+            .expect("synchronize readiness");
+
+        let mut counts = [0_u64; 2];
+        for _ in 0..10_000 {
+            let selected = selector.select_excluding("", &[]).expect("selection");
+            counts[selected.index()] += 1;
+        }
+
+        assert!(counts[1] * 10 >= counts[0] * 25);
+        assert!(counts[1] * 10 <= counts[0] * 35);
+    }
+
+    #[test]
+    fn selector_readiness_excludes_unhealthy_backends() {
+        let selector = GenerationSelector::<()>::new(
+            RuntimeLoadBalancingStrategy::RoundRobin,
+            backend_view(&[1, 1]),
+        );
+        selector
+            .synchronize_readiness(|index| index == 1)
+            .expect("synchronize readiness");
+
+        for _ in 0..16 {
+            assert_eq!(
+                selector
+                    .select_excluding("", &[])
+                    .expect("selection")
+                    .index(),
+                1
+            );
+        }
+    }
+
+    #[test]
+    fn retry_exclusions_apply_to_every_pingora_strategy() {
+        for strategy in [
+            RuntimeLoadBalancingStrategy::RoundRobin,
+            RuntimeLoadBalancingStrategy::Random,
+            RuntimeLoadBalancingStrategy::ConsistentHash,
+            RuntimeLoadBalancingStrategy::StickyCid,
+        ] {
+            let selector = GenerationSelector::<()>::new(strategy, backend_view(&[1, 1]));
+            selector
+                .synchronize_readiness(|_| true)
+                .expect("synchronize readiness");
+
+            for key in ["request-a", "request-b", "request-c"] {
+                assert_eq!(
+                    selector
+                        .select_excluding(key, &[0])
+                        .expect("alternate selection")
+                        .index(),
+                    1
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn runtime_and_selection_preserve_selector_generation() {
+        let runtime = PingoraLoadBalancingRuntimeState::<()>::new(
+            GENERATION,
+            [(
+                "api".to_string(),
+                RuntimeLoadBalancingStrategy::ConsistentHash,
+                backend_view(&[1, 1]),
+            )],
+        )
+        .expect("selector runtime");
+        let selector = runtime.selector("api").expect("api selector");
+        selector
+            .synchronize_readiness(|_| true)
+            .expect("synchronize readiness");
+
+        assert_eq!(runtime.generation(), GENERATION);
+        assert_eq!(selector.generation(), GENERATION);
+        assert_eq!(
+            selector
+                .select_excluding("request", &[])
+                .expect("selection")
+                .generation(),
+            GENERATION
+        );
+        assert!(
+            PingoraLoadBalancingRuntimeState::<()>::new(
+                GENERATION + 1,
+                [(
+                    "api".to_string(),
+                    RuntimeLoadBalancingStrategy::RoundRobin,
+                    backend_view(&[1]),
+                )],
+            )
+            .is_err()
+        );
+    }
+}
