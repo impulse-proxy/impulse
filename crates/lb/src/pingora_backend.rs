@@ -62,6 +62,58 @@ impl<P> BackendSelectionResult<P> {
     }
 }
 
+pub struct GenerationKetama<T> {
+    generation: u64,
+    upstream_name: String,
+    backend_count: usize,
+    selector: LoadBalancer<pingora_load_balancing::selection::Consistent>,
+    policy: std::marker::PhantomData<T>,
+}
+
+impl<T> GenerationKetama<T>
+where
+    T: Clone + Send + Sync + 'static,
+{
+    pub fn from_backend_view(view: GenerationBackendView) -> Self {
+        let GenerationBackendView {
+            generation,
+            upstream_name,
+            view,
+        } = view;
+        let backend_count = view.get_backend().len();
+
+        Self {
+            generation,
+            upstream_name,
+            backend_count,
+            selector: LoadBalancer::from_backends(view),
+            policy: std::marker::PhantomData,
+        }
+    }
+
+    pub fn select(&self, key: &[u8]) -> Option<BackendSelectionResult<T>> {
+        let selected = self.selector.select(key, self.backend_count)?;
+        let address = *selected.addr.as_inet()?;
+        let identity = selected.ext.get::<PingoraBackendIdentity<T>>()?;
+
+        Some(BackendSelectionResult::new(
+            identity.backend_id(),
+            address,
+            identity.index(),
+            self.generation,
+            identity.tls_identity().clone(),
+        ))
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    pub fn upstream_name(&self) -> &str {
+        &self.upstream_name
+    }
+}
+
 pub struct GenerationWeightedRandom<T> {
     generation: u64,
     upstream_name: String,
