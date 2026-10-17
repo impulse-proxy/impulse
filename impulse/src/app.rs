@@ -228,7 +228,10 @@ async fn run(
     let mut worker_failed = false;
     while !shutdown.load(Ordering::Relaxed) {
         collect_finished_listener_groups(&mut listener_groups, &mut worker_failed).await;
-        reconcile_listener_groups(&runtime_bundle, &mut listener_groups).await;
+        if worker_failed {
+            break;
+        }
+        reconcile_listener_groups(&runtime_bundle, &mut listener_groups, &mut worker_failed).await;
 
         // Reflect a watchdog-requested drain in the runtime lifecycle: once the
         // watchdog asks for a restart, workers begin draining, so move the process

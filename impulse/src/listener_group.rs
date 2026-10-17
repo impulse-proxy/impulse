@@ -242,6 +242,7 @@ pub(crate) fn allocate_worker_index_base(
 pub(crate) async fn reconcile_listener_groups(
     runtime_bundle: &Arc<RuntimeBundleHandle>,
     groups: &mut Vec<ListenerGroupRuntime>,
+    worker_failed: &mut bool,
 ) {
     let runtime = runtime_bundle.current();
     let desired_configs = runtime.runtime_config.listener_runtime_configs();
@@ -271,6 +272,9 @@ pub(crate) async fn reconcile_listener_groups(
         previous.request_shutdown();
         let mut replacement_failed = false;
         previous.join_all(&mut replacement_failed).await;
+        if replacement_failed {
+            *worker_failed = true;
+        }
 
         match spawn_managed_listener_group(
             listener_config.clone(),
@@ -299,6 +303,7 @@ pub(crate) async fn reconcile_listener_groups(
                         groups.push(group);
                     }
                     Err(rollback_err) => {
+                        *worker_failed = true;
                         error!(
                             "Failed to restore listener group {} after activation failure: {}",
                             signature.label, rollback_err
@@ -342,6 +347,8 @@ pub(crate) async fn reconcile_listener_groups(
                         && !group.shutdown.load(Ordering::Relaxed)
                 }) {
                     previous.failed_activation_generation = Some(runtime.generation);
+                } else {
+                    *worker_failed = true;
                 }
             }
         }
