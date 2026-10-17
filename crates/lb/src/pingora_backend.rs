@@ -402,6 +402,41 @@ where
             Self::Existing(view) => view.upstream_name(),
         }
     }
+
+    pub fn uses_pingora(&self) -> bool {
+        !matches!(self, Self::Existing(_))
+    }
+
+    pub fn synchronize_readiness(
+        &self,
+        is_healthy: impl FnMut(usize) -> bool,
+    ) -> Result<(), String> {
+        match self {
+            Self::WeightedRoundRobin(selector) => selector.synchronize_readiness(is_healthy),
+            Self::WeightedRandom(selector) => selector.synchronize_readiness(is_healthy),
+            Self::Ketama(selector) => selector.synchronize_readiness(is_healthy),
+            Self::StickyCid(selector) => selector.synchronize_readiness(is_healthy),
+            Self::Existing(view) => view.synchronize_readiness::<T>(is_healthy),
+        }
+    }
+
+    pub fn select_excluding(
+        &self,
+        key: &str,
+        excluded_backend_indices: &[usize],
+    ) -> Option<BackendSelectionResult<T>> {
+        match self {
+            Self::WeightedRoundRobin(selector) => {
+                selector.select_excluding(excluded_backend_indices)
+            }
+            Self::WeightedRandom(selector) => selector.select_excluding(excluded_backend_indices),
+            Self::Ketama(selector) => {
+                selector.select_excluding(key.as_bytes(), excluded_backend_indices)
+            }
+            Self::StickyCid(selector) => selector.select_excluding(key, excluded_backend_indices),
+            Self::Existing(_) => None,
+        }
+    }
 }
 
 pub type SharedPingoraLoadBalancingRuntimeState<T> = Arc<PingoraLoadBalancingRuntimeState<T>>;
