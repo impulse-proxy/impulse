@@ -1,4 +1,8 @@
-use std::{collections::BTreeSet, net::SocketAddr};
+use std::{
+    collections::{BTreeSet, HashMap},
+    net::SocketAddr,
+    sync::Arc,
+};
 
 use impulse_config::{config::Backend, runtime::RuntimeUpstream};
 use pingora_load_balancing::{
@@ -9,6 +13,65 @@ pub struct GenerationBackendView {
     generation: u64,
     upstream_name: String,
     view: BackendView,
+}
+
+pub type SharedPingoraLoadBalancingRuntimeState = Arc<PingoraLoadBalancingRuntimeState>;
+
+pub struct PingoraLoadBalancingRuntimeState {
+    generation: u64,
+    backend_views: HashMap<String, Arc<GenerationBackendView>>,
+}
+
+impl PingoraLoadBalancingRuntimeState {
+    pub fn new(
+        generation: u64,
+        backend_views: impl IntoIterator<Item = (String, GenerationBackendView)>,
+    ) -> Result<Self, String> {
+        let mut views = HashMap::new();
+        for (upstream_name, view) in backend_views {
+            if view.generation() != generation {
+                return Err(format!(
+                    "upstream '{upstream_name}' belongs to runtime generation {}, expected {generation}",
+                    view.generation()
+                ));
+            }
+            if view.upstream_name() != upstream_name {
+                return Err(format!(
+                    "backend view for upstream '{}' was registered as '{upstream_name}'",
+                    view.upstream_name()
+                ));
+            }
+            if views
+                .insert(upstream_name.clone(), Arc::new(view))
+                .is_some()
+            {
+                return Err(format!(
+                    "duplicate Pingora backend view for upstream '{upstream_name}'"
+                ));
+            }
+        }
+
+        Ok(Self {
+            generation,
+            backend_views: views,
+        })
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    pub fn backend_view(&self, upstream_name: &str) -> Option<&Arc<GenerationBackendView>> {
+        self.backend_views.get(upstream_name)
+    }
+
+    pub fn len(&self) -> usize {
+        self.backend_views.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.backend_views.is_empty()
+    }
 }
 
 impl GenerationBackendView {
