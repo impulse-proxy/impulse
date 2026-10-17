@@ -69,14 +69,17 @@ pub(super) fn prepare_rollback_bundle(
     candidate_generation: GenerationId,
 ) -> Result<RuntimeBundle, Box<RejectedChange>> {
     let carried = CarriedProcessSharedServices::from_active(current.shared_services());
-    let next_shared_state =
-        QUICListener::build_shared_state_with_carried(&target.runtime_config, Some(carried))
-            .map_err(|err| {
-                Box::new(RejectedChange::resource_preparation_failed(
-                    "runtime rollback",
-                    err.to_string(),
-                ))
-            })?;
+    let next_shared_state = QUICListener::build_shared_state_for_generation(
+        &target.runtime_config,
+        Some(carried),
+        candidate_generation,
+    )
+    .map_err(|err| {
+        Box::new(RejectedChange::resource_preparation_failed(
+            "runtime rollback",
+            err.to_string(),
+        ))
+    })?;
 
     Ok(RuntimeBundle {
         generation: candidate_generation,

@@ -1,10 +1,15 @@
 use std::{
     collections::{BTreeSet, HashMap},
+    future::Future,
     net::SocketAddr,
     sync::Arc,
+    task::{Context, Poll, Wake, Waker},
 };
 
-use impulse_config::{config::Backend, runtime::RuntimeUpstream};
+use impulse_config::{
+    config::Backend,
+    runtime::{RuntimeLoadBalancingStrategy, RuntimeUpstream},
+};
 use pingora_load_balancing::{
     Backend as PingoraBackend, BackendView, LoadBalancer,
     discovery::Static as StaticDiscovery,
@@ -346,20 +351,78 @@ pub struct GenerationBackendView {
     view: BackendView,
 }
 
-pub type SharedPingoraLoadBalancingRuntimeState = Arc<PingoraLoadBalancingRuntimeState>;
-
-pub struct PingoraLoadBalancingRuntimeState {
-    generation: u64,
-    backend_views: HashMap<String, Arc<GenerationBackendView>>,
+pub enum GenerationSelector<T> {
+    WeightedRoundRobin(GenerationWeightedRoundRobin<T>),
+    WeightedRandom(GenerationWeightedRandom<T>),
+    Ketama(GenerationKetama<T>),
+    StickyCid(GenerationStickyCid<T>),
+    Existing(GenerationBackendView),
 }
 
-impl PingoraLoadBalancingRuntimeState {
+impl<T> GenerationSelector<T>
+where
+    T: Clone + Send + Sync + 'static,
+{
+    fn new(strategy: RuntimeLoadBalancingStrategy, view: GenerationBackendView) -> Self {
+        match strategy {
+            RuntimeLoadBalancingStrategy::RoundRobin => {
+                Self::WeightedRoundRobin(GenerationWeightedRoundRobin::from_backend_view(view))
+            }
+            RuntimeLoadBalancingStrategy::Random => {
+                Self::WeightedRandom(GenerationWeightedRandom::from_backend_view(view))
+            }
+            RuntimeLoadBalancingStrategy::ConsistentHash => {
+                Self::Ketama(GenerationKetama::from_backend_view(view))
+            }
+            RuntimeLoadBalancingStrategy::StickyCid => {
+                Self::StickyCid(GenerationStickyCid::from_backend_view(view))
+            }
+            RuntimeLoadBalancingStrategy::LeastConnections
+            | RuntimeLoadBalancingStrategy::LatencyAware
+            | RuntimeLoadBalancingStrategy::Other => Self::Existing(view),
+        }
+    }
+
+    pub fn generation(&self) -> u64 {
+        match self {
+            Self::WeightedRoundRobin(selector) => selector.generation(),
+            Self::WeightedRandom(selector) => selector.generation(),
+            Self::Ketama(selector) => selector.generation(),
+            Self::StickyCid(selector) => selector.generation(),
+            Self::Existing(view) => view.generation(),
+        }
+    }
+
+    pub fn upstream_name(&self) -> &str {
+        match self {
+            Self::WeightedRoundRobin(selector) => selector.upstream_name(),
+            Self::WeightedRandom(selector) => selector.upstream_name(),
+            Self::Ketama(selector) => selector.upstream_name(),
+            Self::StickyCid(selector) => selector.upstream_name(),
+            Self::Existing(view) => view.upstream_name(),
+        }
+    }
+}
+
+pub type SharedPingoraLoadBalancingRuntimeState<T> = Arc<PingoraLoadBalancingRuntimeState<T>>;
+
+pub struct PingoraLoadBalancingRuntimeState<T> {
+    generation: u64,
+    selectors: HashMap<String, Arc<GenerationSelector<T>>>,
+}
+
+impl<T> PingoraLoadBalancingRuntimeState<T>
+where
+    T: Clone + Send + Sync + 'static,
+{
     pub fn new(
         generation: u64,
-        backend_views: impl IntoIterator<Item = (String, GenerationBackendView)>,
+        backend_views: impl IntoIterator<
+            Item = (String, RuntimeLoadBalancingStrategy, GenerationBackendView),
+        >,
     ) -> Result<Self, String> {
-        let mut views = HashMap::new();
-        for (upstream_name, view) in backend_views {
+        let mut selectors = HashMap::new();
+        for (upstream_name, strategy, view) in backend_views {
             if view.generation() != generation {
                 return Err(format!(
                     "upstream '{upstream_name}' belongs to runtime generation {}, expected {generation}",
@@ -372,8 +435,9 @@ impl PingoraLoadBalancingRuntimeState {
                     view.upstream_name()
                 ));
             }
-            if views
-                .insert(upstream_name.clone(), Arc::new(view))
+            let selector = GenerationSelector::new(strategy, view);
+            if selectors
+                .insert(upstream_name.clone(), Arc::new(selector))
                 .is_some()
             {
                 return Err(format!(
@@ -384,7 +448,7 @@ impl PingoraLoadBalancingRuntimeState {
 
         Ok(Self {
             generation,
-            backend_views: views,
+            selectors,
         })
     }
 
@@ -392,21 +456,21 @@ impl PingoraLoadBalancingRuntimeState {
         self.generation
     }
 
-    pub fn backend_view(&self, upstream_name: &str) -> Option<&Arc<GenerationBackendView>> {
-        self.backend_views.get(upstream_name)
+    pub fn selector(&self, upstream_name: &str) -> Option<&Arc<GenerationSelector<T>>> {
+        self.selectors.get(upstream_name)
     }
 
     pub fn len(&self) -> usize {
-        self.backend_views.len()
+        self.selectors.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.backend_views.is_empty()
+        self.selectors.is_empty()
     }
 }
 
 impl GenerationBackendView {
-    pub async fn from_runtime_upstream<F>(
+    pub fn from_runtime_upstream<F>(
         generation: u64,
         upstream_name: impl Into<String>,
         upstream: &RuntimeUpstream,
@@ -430,9 +494,23 @@ impl GenerationBackendView {
         }
 
         let view = BackendView::new(StaticDiscovery::new(mapped));
-        view.update(|_| {})
-            .await
-            .map_err(|error| format!("failed to initialize upstream '{upstream_name}': {error}"))?;
+        let waker = Waker::from(Arc::new(NoopWake));
+        let mut context = Context::from_waker(&waker);
+        let mut update = Box::pin(view.update(|_| {}));
+        match update.as_mut().poll(&mut context) {
+            Poll::Ready(Ok(())) => {}
+            Poll::Ready(Err(error)) => {
+                return Err(format!(
+                    "failed to initialize upstream '{upstream_name}': {error}"
+                ));
+            }
+            Poll::Pending => {
+                return Err(format!(
+                    "static backend initialization unexpectedly blocked for upstream '{upstream_name}'"
+                ));
+            }
+        }
+        drop(update);
 
         Ok(Self {
             generation,
@@ -466,6 +544,12 @@ impl GenerationBackendView {
     pub fn into_view(self) -> BackendView {
         self.view
     }
+}
+
+struct NoopWake;
+
+impl Wake for NoopWake {
+    fn wake(self: Arc<Self>) {}
 }
 
 #[derive(Clone)]

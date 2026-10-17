@@ -124,37 +124,38 @@ pub(crate) fn plan_runtime_reload(
     }
 
     let carried = CarriedProcessSharedServices::from_active(current.shared_services());
-    let next_shared_state =
-        match QUICListener::build_shared_state_with_carried(&runtime_config, Some(carried)) {
-            Ok(shared_state) => {
-                validation.push(PlanningPhaseResult {
-                    phase: PlanningPhase::NormalizeRuntime,
-                    status: PlanningPhaseStatus::Accepted,
-                    summary: "runtime generation assembled successfully".to_string(),
-                });
-                Arc::new(shared_state)
-            }
-            Err(err) => {
-                let rejected = RejectedChange::resource_preparation_failed(
-                    "runtime generation",
-                    err.to_string(),
-                );
-                validation.push(PlanningPhaseResult {
-                    phase: PlanningPhase::NormalizeRuntime,
-                    status: PlanningPhaseStatus::Rejected,
-                    summary: rejected.message.clone(),
-                });
-                return rejected_reload_plan(
-                    request,
-                    config_source,
-                    Some(config.version),
-                    current_generation,
-                    candidate_generation,
-                    validation,
-                    vec![rejected],
-                );
-            }
-        };
+    let next_shared_state = match QUICListener::build_shared_state_for_generation(
+        &runtime_config,
+        Some(carried),
+        candidate_generation,
+    ) {
+        Ok(shared_state) => {
+            validation.push(PlanningPhaseResult {
+                phase: PlanningPhase::NormalizeRuntime,
+                status: PlanningPhaseStatus::Accepted,
+                summary: "runtime generation assembled successfully".to_string(),
+            });
+            Arc::new(shared_state)
+        }
+        Err(err) => {
+            let rejected =
+                RejectedChange::resource_preparation_failed("runtime generation", err.to_string());
+            validation.push(PlanningPhaseResult {
+                phase: PlanningPhase::NormalizeRuntime,
+                status: PlanningPhaseStatus::Rejected,
+                summary: rejected.message.clone(),
+            });
+            return rejected_reload_plan(
+                request,
+                config_source,
+                Some(config.version),
+                current_generation,
+                candidate_generation,
+                validation,
+                vec![rejected],
+            );
+        }
+    };
 
     let next_runtime = RuntimeBundle {
         generation: candidate_generation,
