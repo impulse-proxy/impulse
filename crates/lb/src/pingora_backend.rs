@@ -62,6 +62,40 @@ impl<P> BackendSelectionResult<P> {
     }
 }
 
+fn selection_result<T>(
+    backend: PingoraBackend,
+    generation: u64,
+) -> Option<BackendSelectionResult<T>>
+where
+    T: Clone + Send + Sync + 'static,
+{
+    let address = *backend.addr.as_inet()?;
+    let identity = backend.ext.get::<PingoraBackendIdentity<T>>()?;
+
+    Some(BackendSelectionResult::new(
+        identity.backend_id(),
+        address,
+        identity.index(),
+        generation,
+        identity.tls_identity().clone(),
+    ))
+}
+
+fn candidate_is_available<T>(
+    backend: &PingoraBackend,
+    healthy: bool,
+    excluded_backend_indices: &[usize],
+) -> bool
+where
+    T: Clone + Send + Sync + 'static,
+{
+    healthy
+        && backend
+            .ext
+            .get::<PingoraBackendIdentity<T>>()
+            .is_some_and(|identity| !excluded_backend_indices.contains(&identity.index()))
+}
+
 pub struct GenerationStickyCid<T> {
     selector: GenerationKetama<T>,
 }
@@ -77,7 +111,16 @@ where
     }
 
     pub fn select(&self, cid_key: &str) -> Option<BackendSelectionResult<T>> {
-        self.selector.select(cid_key.as_bytes())
+        self.select_excluding(cid_key, &[])
+    }
+
+    pub fn select_excluding(
+        &self,
+        cid_key: &str,
+        excluded_backend_indices: &[usize],
+    ) -> Option<BackendSelectionResult<T>> {
+        self.selector
+            .select_excluding(cid_key.as_bytes(), excluded_backend_indices)
     }
 
     pub fn generation(&self) -> u64 {
@@ -119,17 +162,20 @@ where
     }
 
     pub fn select(&self, key: &[u8]) -> Option<BackendSelectionResult<T>> {
-        let selected = self.selector.select(key, self.backend_count)?;
-        let address = *selected.addr.as_inet()?;
-        let identity = selected.ext.get::<PingoraBackendIdentity<T>>()?;
+        self.select_excluding(key, &[])
+    }
 
-        Some(BackendSelectionResult::new(
-            identity.backend_id(),
-            address,
-            identity.index(),
-            self.generation,
-            identity.tls_identity().clone(),
-        ))
+    pub fn select_excluding(
+        &self,
+        key: &[u8],
+        excluded_backend_indices: &[usize],
+    ) -> Option<BackendSelectionResult<T>> {
+        let selected = self
+            .selector
+            .select_with(key, self.backend_count, |backend, healthy| {
+                candidate_is_available::<T>(backend, healthy, excluded_backend_indices)
+            })?;
+        selection_result(selected, self.generation)
     }
 
     pub fn generation(&self) -> u64 {
@@ -171,17 +217,19 @@ where
     }
 
     pub fn select(&self) -> Option<BackendSelectionResult<T>> {
-        let selected = self.selector.select(b"", self.backend_count)?;
-        let address = *selected.addr.as_inet()?;
-        let identity = selected.ext.get::<PingoraBackendIdentity<T>>()?;
+        self.select_excluding(&[])
+    }
 
-        Some(BackendSelectionResult::new(
-            identity.backend_id(),
-            address,
-            identity.index(),
-            self.generation,
-            identity.tls_identity().clone(),
-        ))
+    pub fn select_excluding(
+        &self,
+        excluded_backend_indices: &[usize],
+    ) -> Option<BackendSelectionResult<T>> {
+        let selected = self
+            .selector
+            .select_with(b"", self.backend_count, |backend, healthy| {
+                candidate_is_available::<T>(backend, healthy, excluded_backend_indices)
+            })?;
+        selection_result(selected, self.generation)
     }
 
     pub fn generation(&self) -> u64 {
@@ -223,17 +271,19 @@ where
     }
 
     pub fn select(&self) -> Option<BackendSelectionResult<T>> {
-        let selected = self.selector.select(b"", self.backend_count)?;
-        let address = *selected.addr.as_inet()?;
-        let identity = selected.ext.get::<PingoraBackendIdentity<T>>()?;
+        self.select_excluding(&[])
+    }
 
-        Some(BackendSelectionResult::new(
-            identity.backend_id(),
-            address,
-            identity.index(),
-            self.generation,
-            identity.tls_identity().clone(),
-        ))
+    pub fn select_excluding(
+        &self,
+        excluded_backend_indices: &[usize],
+    ) -> Option<BackendSelectionResult<T>> {
+        let selected = self
+            .selector
+            .select_with(b"", self.backend_count, |backend, healthy| {
+                candidate_is_available::<T>(backend, healthy, excluded_backend_indices)
+            })?;
+        selection_result(selected, self.generation)
     }
 
     pub fn generation(&self) -> u64 {
