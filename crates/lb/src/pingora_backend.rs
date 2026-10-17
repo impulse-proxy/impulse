@@ -62,6 +62,33 @@ impl<P> BackendSelectionResult<P> {
     }
 }
 
+pub struct GenerationStickyCid<T> {
+    selector: GenerationKetama<T>,
+}
+
+impl<T> GenerationStickyCid<T>
+where
+    T: Clone + Send + Sync + 'static,
+{
+    pub fn from_backend_view(view: GenerationBackendView) -> Self {
+        Self {
+            selector: GenerationKetama::from_backend_view(view),
+        }
+    }
+
+    pub fn select(&self, cid_key: &str) -> Option<BackendSelectionResult<T>> {
+        self.selector.select(cid_key.as_bytes())
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.selector.generation()
+    }
+
+    pub fn upstream_name(&self) -> &str {
+        self.selector.upstream_name()
+    }
+}
+
 pub struct GenerationKetama<T> {
     generation: u64,
     upstream_name: String,
