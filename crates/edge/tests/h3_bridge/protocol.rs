@@ -55,7 +55,7 @@ fn http3_to_http2_preserves_response_trailers() {
 }
 
 #[test]
-fn bootstrap_http1_websocket_upgrade_preserves_switching_protocols_headers() {
+fn pingora_http1_websocket_upgrade_preserves_switching_protocols_headers() {
     if !local_listener_bind_available() {
         return;
     }
@@ -71,7 +71,7 @@ fn bootstrap_http1_websocket_upgrade_preserves_switching_protocols_headers() {
         cert.clone(),
         key,
     );
-    let listener = make_listener_with_bootstrap(config);
+    let (listener, _pingora_listener) = make_listener_with_pingora(&rt, config);
     let listen_addr = listener.socket.local_addr().unwrap();
     let _listener_task = ListenerTaskGuard::spawn(&rt, listener);
 
@@ -106,7 +106,7 @@ fn bootstrap_http1_websocket_upgrade_preserves_switching_protocols_headers() {
 }
 
 #[test]
-fn bootstrap_h2_preserves_response_trailers() {
+fn pingora_h2_preserves_response_trailers() {
     if !local_listener_bind_available() {
         return;
     }
@@ -122,7 +122,7 @@ fn bootstrap_h2_preserves_response_trailers() {
         cert.clone(),
         key,
     );
-    let listener = make_listener_with_bootstrap(config);
+    let (listener, _pingora_listener) = make_listener_with_pingora(&rt, config);
     let listen_addr = listener.socket.local_addr().unwrap();
     let _listener_task = ListenerTaskGuard::spawn(&rt, listener);
 
@@ -180,7 +180,7 @@ fn http3_sni_selects_exact_and_fallback_certificates_on_real_handshake() {
     }];
 
     let _enter = rt.enter();
-    let listener = make_listener_with_bootstrap(config);
+    let (listener, _pingora_listener) = make_listener_with_pingora(&rt, config);
     drop(_enter);
     let listen_addr = listener.socket.local_addr().expect("listener addr");
     let _listener_task = ListenerTaskGuard::spawn(&rt, listener);
@@ -232,7 +232,7 @@ fn http3_sni_selects_exact_and_fallback_certificates_on_real_handshake() {
 
 #[test]
 #[serial_test::serial]
-fn bootstrap_h2_optional_client_auth_allows_requests_without_certificate() {
+fn pingora_h2_optional_client_auth_allows_requests_without_certificate() {
     if !local_listener_bind_available() {
         return;
     }
@@ -257,7 +257,7 @@ fn bootstrap_h2_optional_client_auth_allows_requests_without_certificate() {
     };
 
     let _enter = rt.enter();
-    let listener = make_listener_with_bootstrap(config);
+    let (listener, _pingora_listener) = make_listener_with_pingora(&rt, config);
     drop(_enter);
     let listen_addr = listener.socket.local_addr().expect("listener addr");
     let _listener_task = ListenerTaskGuard::spawn(&rt, listener);
@@ -278,7 +278,7 @@ fn bootstrap_h2_optional_client_auth_allows_requests_without_certificate() {
 
 #[test]
 #[serial_test::serial]
-fn bootstrap_h2_required_client_auth_rejects_missing_certificate_and_accepts_valid_certificate() {
+fn pingora_h2_required_client_auth_rejects_missing_certificate_and_accepts_valid_certificate() {
     if !local_listener_bind_available() {
         return;
     }
@@ -303,7 +303,7 @@ fn bootstrap_h2_required_client_auth_rejects_missing_certificate_and_accepts_val
     };
 
     let _enter = rt.enter();
-    let listener = make_listener_with_bootstrap(config);
+    let (listener, _pingora_listener) = make_listener_with_pingora(&rt, config);
     drop(_enter);
     let listen_addr = listener.socket.local_addr().expect("listener addr");
     let _listener_task = ListenerTaskGuard::spawn(&rt, listener);
@@ -372,7 +372,7 @@ fn quic_tls_metrics_capture_selection_and_failures() {
     config.observability.metrics.path = "/metrics".to_string();
 
     let _enter = rt.enter();
-    let listener = make_listener_with_bootstrap(config);
+    let (listener, _pingora_listener) = make_listener_with_pingora(&rt, config);
     drop(_enter);
     let listen_addr = listener.socket.local_addr().expect("listener addr");
     let _listener_task = ListenerTaskGuard::spawn(&rt, listener);
@@ -424,7 +424,7 @@ fn quic_tls_metrics_capture_selection_and_failures() {
 
 #[test]
 #[serial_test::serial]
-fn bootstrap_tls_metrics_capture_missing_client_certificate_failures() {
+fn pingora_tls_metrics_capture_missing_client_certificate_failures() {
     if !local_listener_bind_available() {
         return;
     }
@@ -454,7 +454,7 @@ fn bootstrap_tls_metrics_capture_missing_client_certificate_failures() {
     config.observability.metrics.path = "/metrics".to_string();
 
     let _enter = rt.enter();
-    let listener = make_listener_with_bootstrap(config);
+    let (listener, _pingora_listener) = make_listener_with_pingora(&rt, config);
     drop(_enter);
     let listen_addr = listener.socket.local_addr().expect("listener addr");
     let _listener_task = ListenerTaskGuard::spawn(&rt, listener);
@@ -524,7 +524,7 @@ fn http3_head_suppresses_response_body() {
 }
 
 #[test]
-fn bootstrap_h2_head_suppresses_response_body() {
+fn pingora_h2_head_suppresses_response_body() {
     if !local_listener_bind_available() {
         return;
     }
@@ -540,7 +540,7 @@ fn bootstrap_h2_head_suppresses_response_body() {
         cert.clone(),
         key,
     );
-    let listener = make_listener_with_bootstrap(config);
+    let (listener, _pingora_listener) = make_listener_with_pingora(&rt, config);
     let listen_addr = listener.socket.local_addr().unwrap();
     let _listener_task = ListenerTaskGuard::spawn(&rt, listener);
 

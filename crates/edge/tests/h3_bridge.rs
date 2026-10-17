@@ -52,9 +52,11 @@ use impulse_config::{
 };
 use impulse_edge::{
     BACKEND_TIMEOUT_SECS, MAX_DATAGRAM_SIZE_BYTES, MAX_STREAMS_PER_CONNECTION,
-    MAX_UDP_PAYLOAD_BYTES, QUIC_IDLE_TIMEOUT_MS, QUIC_INITIAL_MAX_DATA,
+    MAX_UDP_PAYLOAD_BYTES, PingoraListenerTask, QUIC_IDLE_TIMEOUT_MS, QUIC_INITIAL_MAX_DATA,
     QUIC_INITIAL_MAX_STREAMS_BIDI, QUIC_INITIAL_MAX_STREAMS_UNI, QUIC_INITIAL_STREAM_DATA,
-    REQUEST_TIMEOUT_SECS, runtime::listener::QUICListener,
+    REQUEST_TIMEOUT_SECS,
+    runtime::{bundle::RuntimeBundleHandle, listener::QUICListener},
+    spawn_pingora_ingress_listener,
 };
 use support::{net::local_listener_bind_available, request_path as request_support};
 
@@ -253,22 +255,35 @@ fn quic_read_timeout(conn: &quiche::Connection) -> Duration {
 
 type ListenerTaskGuard = request_support::ListenerTaskGuard;
 
-fn make_listener_with_bootstrap(config: Config) -> QUICListener {
+fn make_listener_with_pingora(
+    rt: &tokio::runtime::Runtime,
+    config: Config,
+) -> (QUICListener, PingoraListenerTask) {
     let runtime_config = RuntimeConfig::from_config(&config).expect("runtime config");
     let listener_config = runtime_config
         .listener_runtime_configs()
         .into_iter()
         .next()
         .expect("listener runtime config");
-    let shared_state =
-        Arc::new(QUICListener::build_shared_state(&runtime_config).expect("shared runtime state"));
+    let bundle = QUICListener::build_runtime_bundle(
+        "h3-bridge-test".to_string(),
+        config.log.clone(),
+        &runtime_config,
+    )
+    .expect("runtime bundle");
+    let shared_state = Arc::clone(&bundle.shared_state);
     QUICListener::spawn_control_plane_tasks(&runtime_config, &shared_state, 1)
         .expect("control plane tasks");
-    QUICListener::spawn_bootstrap_tls_listener(&listener_config, &shared_state, None, None)
-        .expect("bootstrap tls listener");
+    let runtime_bundle = Arc::new(RuntimeBundleHandle::new(bundle));
+    let runtime_guard = rt.enter();
+    let pingora_listener = spawn_pingora_ingress_listener(runtime_bundle, listener_config.clone())
+        .expect("Pingora listener");
+    drop(runtime_guard);
     let socket = QUICListener::bind_socket(&listener_config, false).expect("bind socket");
-    QUICListener::new_with_socket_and_shared_state(listener_config, socket, shared_state)
-        .expect("listener with shared state")
+    let listener =
+        QUICListener::new_with_socket_and_shared_state(listener_config, socket, shared_state)
+            .expect("listener with shared state");
+    (listener, pingora_listener)
 }
 
 async fn start_h2_backend() -> SocketAddr {

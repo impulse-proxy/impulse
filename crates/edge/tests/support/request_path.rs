@@ -27,10 +27,12 @@ use impulse_config::{
     validator::validate,
 };
 use impulse_edge::{
-    MAX_DATAGRAM_SIZE_BYTES, MAX_UDP_PAYLOAD_BYTES, Metrics, QUIC_IDLE_TIMEOUT_MS,
-    QUIC_INITIAL_MAX_DATA, QUIC_INITIAL_MAX_STREAMS_BIDI, QUIC_INITIAL_MAX_STREAMS_UNI,
-    QUIC_INITIAL_STREAM_DATA, REQUEST_TIMEOUT_SECS, UDP_READ_TIMEOUT_MS,
-    runtime::listener::QUICListener,
+    MAX_DATAGRAM_SIZE_BYTES, MAX_UDP_PAYLOAD_BYTES, Metrics, PingoraListenerTask,
+    QUIC_IDLE_TIMEOUT_MS, QUIC_INITIAL_MAX_DATA, QUIC_INITIAL_MAX_STREAMS_BIDI,
+    QUIC_INITIAL_MAX_STREAMS_UNI, QUIC_INITIAL_STREAM_DATA, REQUEST_TIMEOUT_SECS,
+    UDP_READ_TIMEOUT_MS,
+    runtime::{bundle::RuntimeBundleHandle, listener::QUICListener},
+    spawn_pingora_ingress_listener,
 };
 use quiche::h3::NameValue;
 use rand::RngCore;
@@ -127,6 +129,7 @@ impl Drop for ListenerTaskGuard {
 pub struct QuicRequestPathHarness {
     backends: Vec<BackendFixture>,
     listener_task: Option<ListenerTaskGuard>,
+    pingora_listener_task: Option<PingoraListenerTask>,
     metrics: Option<Arc<Metrics>>,
     rt: tokio::runtime::Runtime,
     pub tls: TestTlsMaterial,
@@ -138,6 +141,7 @@ impl QuicRequestPathHarness {
         Self {
             backends: Vec::new(),
             listener_task: None,
+            pingora_listener_task: None,
             metrics: None,
             rt: tokio::runtime::Runtime::new().expect("runtime"),
             tls: TestTlsMaterial::localhost(),
@@ -167,7 +171,7 @@ impl QuicRequestPathHarness {
         Ok(listen_addr)
     }
 
-    pub fn start_listener_with_bootstrap(&mut self, config: Config) -> Result<SocketAddr, String> {
+    pub fn start_listener_with_pingora(&mut self, config: Config) -> Result<SocketAddr, String> {
         validate(&config).map_err(|err| format!("config validation failed: {err}"))?;
         let runtime_config =
             RuntimeConfig::from_config(&config).map_err(|err| format!("runtime config: {err}"))?;
@@ -176,14 +180,20 @@ impl QuicRequestPathHarness {
             .into_iter()
             .next()
             .ok_or_else(|| "missing listener runtime config".to_string())?;
-        let shared_state = Arc::new(
-            QUICListener::build_shared_state(&runtime_config)
-                .map_err(|err| format!("shared runtime state: {err}"))?,
-        );
+        let bundle = QUICListener::build_runtime_bundle(
+            "request-path-test".to_string(),
+            config.log.clone(),
+            &runtime_config,
+        )
+        .map_err(|err| format!("runtime bundle: {err}"))?;
+        let shared_state = Arc::clone(&bundle.shared_state);
+        let runtime_bundle = Arc::new(RuntimeBundleHandle::new(bundle));
         QUICListener::spawn_control_plane_tasks(&runtime_config, &shared_state, 1)
             .map_err(|err| format!("control plane tasks: {err}"))?;
-        QUICListener::spawn_bootstrap_tls_listener(&listener_config, &shared_state, None, None)
-            .map_err(|err| format!("bootstrap listener: {err}"))?;
+        let runtime_guard = self.rt.enter();
+        let pingora_listener =
+            spawn_pingora_ingress_listener(runtime_bundle, listener_config.clone())?;
+        drop(runtime_guard);
         let socket = QUICListener::bind_socket(&listener_config, false)
             .map_err(|err| format!("bind socket: {err}"))?;
         let listener =
@@ -195,6 +205,7 @@ impl QuicRequestPathHarness {
             .local_addr()
             .map_err(|err| format!("listen addr: {err}"))?;
         self.listener_task = Some(ListenerTaskGuard::spawn(&self.rt, listener));
+        self.pingora_listener_task = Some(pingora_listener);
         self.listen_addr = Some(listen_addr);
         Ok(listen_addr)
     }

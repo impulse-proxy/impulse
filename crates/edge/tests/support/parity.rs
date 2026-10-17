@@ -80,7 +80,7 @@ impl BootstrapQuicParityHarness {
     }
 
     pub fn start_listener(&mut self, config: Config) -> Result<SocketAddr, String> {
-        self.inner.start_listener_with_bootstrap(config)
+        self.inner.start_listener_with_pingora(config)
     }
 
     pub fn start_h1_backend<F, Fut>(&mut self, handler: F) -> SocketAddr

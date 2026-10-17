@@ -460,65 +460,6 @@ fn quic_listener_syncs_tls_generation_after_reload() {
 }
 
 #[test]
-fn bootstrap_connection_state_prefers_reloaded_runtime_settings() {
-    let dir = tempdir().expect("tempdir");
-    let (cert, key) = write_test_cert_for_name(dir.path(), "server", "api.example.com");
-    let startup = tls_test_config(cert.clone(), key.clone(), Vec::new());
-    let startup_runtime = RuntimeConfig::from_config(&startup).expect("startup runtime");
-    let startup_listener_config = startup_runtime
-        .primary_listener_runtime_config()
-        .expect("startup listener config");
-    let startup_shared =
-        Arc::new(super::QUICListener::build_shared_state(&startup_runtime).expect("shared"));
-    let startup_services = startup_shared.shared_services();
-    let startup_generation = startup_shared.generation_state();
-    let listener_label = super::QUICListener::listener_label(&startup_listener_config);
-    let startup_state = super::BootstrapStartupState {
-        listener_config: startup_listener_config.clone(),
-        listener_tls_store: Arc::clone(&startup_services.listener_tls_store),
-        transport_pool: Arc::clone(&startup_services.transport_pool),
-        backend_endpoints: Arc::clone(&startup_generation.backend_endpoints),
-        upstream_policies: Arc::clone(&startup_generation.upstream_policies),
-        metrics: Arc::clone(&startup_services.metrics),
-        resilience: Arc::clone(&startup_generation.resilience),
-        upstream_pools: startup_generation.upstream_pools.clone(),
-        routing_index: Arc::clone(&startup_generation.routing_index),
-    };
-
-    let mut reloaded = startup.clone();
-    reloaded.performance.backend_timeout_ms = 4321;
-    reloaded.performance.backend_body_idle_timeout_ms = 5321;
-    reloaded.performance.backend_body_total_timeout_ms = 6321;
-    reloaded.performance.backend_total_request_timeout_ms = 7321;
-    reloaded.performance.max_request_body_bytes = 65_537;
-    reloaded.performance.max_response_body_bytes = 98_765;
-    reloaded.performance.unknown_length_response_prebuffer_bytes = 98_765;
-    reloaded.performance.max_active_connections = 37;
-    reloaded.performance.client_body_idle_timeout_ms = 7654;
-
-    let reloaded_runtime = RuntimeConfig::from_config(&reloaded).expect("reloaded runtime");
-    let reloaded_bundle = super::QUICListener::build_runtime_bundle(
-        "reloaded.yaml".to_string(),
-        reloaded.log.clone(),
-        &reloaded_runtime,
-    )
-    .expect("reloaded bundle");
-    let runtime_handle = Arc::new(super::RuntimeBundleHandle::new(reloaded_bundle));
-
-    let state = super::bootstrap::bootstrap_connection_state(
-        &listener_label,
-        Some(&runtime_handle),
-        &startup_state,
-    )
-    .expect("bootstrap state");
-
-    assert_eq!(state.max_request_body_bytes, 65_537);
-    assert_eq!(state.max_response_body_bytes, 98_765);
-    assert_eq!(state.max_connections, 37);
-    assert_eq!(state.connection_timeout, Duration::from_millis(7654));
-}
-
-#[test]
 fn metrics_endpoint_state_prefers_reloaded_runtime_settings() {
     let dir = tempdir().expect("tempdir");
     let (cert, key) = write_test_cert_for_name(dir.path(), "server", "api.example.com");

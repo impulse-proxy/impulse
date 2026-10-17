@@ -1,7 +1,7 @@
 //! Internal listener subsystem façade.
 //!
 //! This module owns startup, worker orchestration, request ingress, and
-//! control-plane wiring for the QUIC and bootstrap listeners. The crate root
+//! control-plane wiring for the QUIC listener. The crate root
 //! re-exports the narrow worker/runtime entrypoints that external callers should
 //! depend on.
 
@@ -20,15 +20,8 @@ use boring::{
 };
 use bytes::Bytes;
 use http::{Request, Response, StatusCode};
-use http_body_util::{BodyExt, combinators::BoxBody};
-use hyper::body::Incoming;
 #[cfg(test)]
 use impulse_bridge::response::should_strip_response_header;
-use impulse_bridge::response::{
-    ResponseBodyMode, ResponseBodyPolicy, ResponseNormalizationInput,
-    ResponseNormalizationProtocol, ResponseProtocolConstraints, normalize_response_trailers,
-    normalize_upstream_response,
-};
 use impulse_config::{
     backend_endpoint::{BackendEndpoint, BackendScheme},
     config::ClientAuth,
@@ -62,8 +55,6 @@ use tokio::{
 use tokio_rustls::TlsAcceptor;
 use tracing::{Instrument, info_span};
 
-#[cfg(test)]
-use crate::runtime::bundle::RuntimeBundleHandle;
 use crate::{
     ChannelBody, Metrics, OverloadShedReason, REQUEST_ID_COUNTER, RouteOutcome,
     cid_radix::CidRadix,
@@ -100,10 +91,6 @@ use crate::{
 mod admission;
 mod async_runtime;
 mod backend_resolution;
-#[cfg(any(test, debug_assertions))]
-mod bootstrap;
-#[cfg(any(test, debug_assertions))]
-mod bootstrap_tls;
 mod connection;
 mod control_api;
 mod control_plane;
@@ -127,8 +114,6 @@ pub use async_runtime::configure_async_runtime;
 pub(in crate::quic_listener) use async_runtime::{
     runtime_handle, spawn_async_task, spawn_supervised_async_task,
 };
-#[cfg(test)]
-use bootstrap::BootstrapStartupState;
 use connection::maybe_log_quic_connection_error;
 #[cfg(test)]
 pub(crate) use connection::purge_connection_routes;
