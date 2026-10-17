@@ -1,8 +1,7 @@
 //! Canonical downstream response normalization surface.
 //!
 //! This module owns header/trailer filtering, bodyless/no-content shaping, and
-//! response emission policy decisions shared across forwarding and bootstrap
-//! compatibility paths.
+//! response emission policy decisions shared across ingress protocols.
 
 use std::collections::HashSet;
 
@@ -18,7 +17,6 @@ pub enum ResponseNormalizationProtocol {
 pub enum ResponseBodyMode {
     Normal,
     HeadRequest,
-    BodylessRequest,
     TunnelSuccess,
 }
 
@@ -29,22 +27,8 @@ pub enum ResponseBodyPolicy {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ContentLengthPolicy {
-    Preserve,
-    Strip,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ContentTypePolicy {
-    Preserve,
-    SynthesizeTextPlain,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ResponseProtocolConstraints {
     pub protocol: ResponseNormalizationProtocol,
-    pub strip_connection_headers: bool,
-    pub allow_trailers: bool,
     pub preserve_upgrade: bool,
 }
 
@@ -52,7 +36,6 @@ pub struct ResponseProtocolConstraints {
 pub struct UpstreamResponseView<'a> {
     pub status: StatusCode,
     pub headers: &'a HeaderMap,
-    pub trailers: Option<&'a HeaderMap>,
 }
 
 #[derive(Debug)]
@@ -69,23 +52,14 @@ pub struct NormalizedHeader {
 }
 
 #[derive(Debug)]
-pub struct NormalizedResponseHead {
-    pub status: StatusCode,
-    pub headers: Vec<NormalizedHeader>,
-}
-
-#[derive(Debug)]
 pub struct ResponseEmissionPolicy {
     pub body: ResponseBodyPolicy,
-    pub content_length: ContentLengthPolicy,
-    pub content_type: ContentTypePolicy,
     pub emit_end_stream_on_headers: bool,
 }
 
 #[derive(Debug)]
 pub struct NormalizedResponse {
-    pub head: NormalizedResponseHead,
-    pub trailers: Vec<NormalizedHeader>,
+    pub headers: Vec<NormalizedHeader>,
     pub emission: ResponseEmissionPolicy,
 }
 
@@ -132,9 +106,8 @@ pub fn should_strip_response_header(
     connection_tokens: &HashSet<String>,
     constraints: ResponseProtocolConstraints,
 ) -> bool {
-    (constraints.strip_connection_headers
-        && !(constraints.preserve_upgrade
-            && (name == http::header::CONNECTION || name == http::header::UPGRADE))
+    (!(constraints.preserve_upgrade
+        && (name == http::header::CONNECTION || name == http::header::UPGRADE))
         && connection_tokens.contains(name.as_str()))
         || is_hop_by_hop_response_header(name, constraints.preserve_upgrade)
         || matches!(constraints.protocol, ResponseNormalizationProtocol::Http3)
@@ -147,10 +120,6 @@ pub fn normalize_response_trailers(
     trailers: &HeaderMap,
     constraints: ResponseProtocolConstraints,
 ) -> Vec<NormalizedHeader> {
-    if !constraints.allow_trailers {
-        return Vec::new();
-    }
-
     let connection_tokens = response_connection_tokens(trailers);
     let mut normalized = Vec::with_capacity(trailers.len());
     for (name, value) in trailers {
@@ -186,10 +155,7 @@ pub fn normalize_upstream_response(input: ResponseNormalizationInput<'_>) -> Nor
         .and_then(|value| value.parse::<usize>().ok());
     let body_forbidden = status_forbids_response_body(input.upstream.status);
     let suppress_body = !matches!(input.body_mode, ResponseBodyMode::TunnelSuccess)
-        && (matches!(
-            input.body_mode,
-            ResponseBodyMode::HeadRequest | ResponseBodyMode::BodylessRequest
-        ) || body_forbidden);
+        && (matches!(input.body_mode, ResponseBodyMode::HeadRequest) || body_forbidden);
 
     let emission = ResponseEmissionPolicy {
         body: if suppress_body {
@@ -197,63 +163,14 @@ pub fn normalize_upstream_response(input: ResponseNormalizationInput<'_>) -> Nor
         } else {
             ResponseBodyPolicy::Forward
         },
-        content_length: if matches!(constraints.protocol, ResponseNormalizationProtocol::Http3) {
-            ContentLengthPolicy::Strip
-        } else {
-            ContentLengthPolicy::Preserve
-        },
-        content_type: ContentTypePolicy::Preserve,
         emit_end_stream_on_headers: suppress_body
             || (!matches!(input.body_mode, ResponseBodyMode::TunnelSuccess)
                 && (body_forbidden || declared_content_length == Some(0))),
     };
 
-    let trailers = input
-        .upstream
-        .trailers
-        .map(|trailers| normalize_response_trailers(trailers, constraints))
-        .unwrap_or_default();
-
     NormalizedResponse {
-        head: NormalizedResponseHead {
-            status: input.upstream.status,
-            headers: normalized_headers,
-        },
-        trailers,
+        headers: normalized_headers,
         emission,
-    }
-}
-
-pub fn apply_response_header_defaults(
-    headers: &mut Vec<NormalizedHeader>,
-    emission: &ResponseEmissionPolicy,
-    body_len: usize,
-) {
-    let has_content_type = headers
-        .iter()
-        .any(|header| header.name == http::header::CONTENT_TYPE);
-    let has_content_length = headers
-        .iter()
-        .any(|header| header.name == http::header::CONTENT_LENGTH);
-
-    if matches!(emission.content_length, ContentLengthPolicy::Strip) {
-        headers.retain(|header| header.name != http::header::CONTENT_LENGTH);
-    } else if !has_content_length && let Ok(value) = HeaderValue::from_str(&body_len.to_string()) {
-        headers.push(NormalizedHeader {
-            name: http::header::CONTENT_LENGTH,
-            value,
-        });
-    }
-
-    if matches!(
-        emission.content_type,
-        ContentTypePolicy::SynthesizeTextPlain
-    ) && !has_content_type
-    {
-        headers.push(NormalizedHeader {
-            name: http::header::CONTENT_TYPE,
-            value: HeaderValue::from_static("text/plain"),
-        });
     }
 }
 
@@ -262,18 +179,15 @@ mod tests {
     use http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 
     use super::{
-        ContentLengthPolicy, ContentTypePolicy, NormalizedHeader, ResponseBodyMode,
-        ResponseBodyPolicy, ResponseEmissionPolicy, ResponseNormalizationInput,
+        NormalizedHeader, ResponseBodyMode, ResponseBodyPolicy, ResponseNormalizationInput,
         ResponseNormalizationProtocol, ResponseProtocolConstraints, UpstreamResponseView,
-        apply_response_header_defaults, normalize_response_trailers, normalize_upstream_response,
-        response_connection_tokens, should_strip_response_header, status_forbids_response_body,
+        normalize_response_trailers, normalize_upstream_response, response_connection_tokens,
+        should_strip_response_header, status_forbids_response_body,
     };
 
     fn http3_constraints() -> ResponseProtocolConstraints {
         ResponseProtocolConstraints {
             protocol: ResponseNormalizationProtocol::Http3,
-            strip_connection_headers: true,
-            allow_trailers: true,
             preserve_upgrade: false,
         }
     }
@@ -281,8 +195,6 @@ mod tests {
     fn http1_constraints() -> ResponseProtocolConstraints {
         ResponseProtocolConstraints {
             protocol: ResponseNormalizationProtocol::Http1,
-            strip_connection_headers: true,
-            allow_trailers: false,
             preserve_upgrade: false,
         }
     }
@@ -419,23 +331,6 @@ mod tests {
     }
 
     #[test]
-    fn trailer_normalization_drops_all_trailers_when_protocol_disallows_them() {
-        let mut trailers = HeaderMap::new();
-        trailers.insert(
-            http::HeaderName::from_static("grpc-status"),
-            HeaderValue::from_static("0"),
-        );
-        trailers.insert(
-            http::HeaderName::from_static("grpc-message"),
-            HeaderValue::from_static("ok"),
-        );
-
-        let normalized = normalize_response_trailers(&trailers, http1_constraints());
-
-        assert!(normalized.is_empty());
-    }
-
-    #[test]
     fn normalizes_http3_head_response_as_bodyless_and_header_terminal() {
         let mut headers = HeaderMap::new();
         headers.insert(http::header::CONTENT_LENGTH, HeaderValue::from_static("12"));
@@ -452,55 +347,25 @@ mod tests {
             upstream: UpstreamResponseView {
                 status: StatusCode::OK,
                 headers: &headers,
-                trailers: None,
             },
             body_mode: ResponseBodyMode::HeadRequest,
             constraints: http3_constraints(),
         });
 
         assert_eq!(normalized.emission.body, ResponseBodyPolicy::Suppress);
-        assert_eq!(
-            normalized.emission.content_length,
-            ContentLengthPolicy::Strip
-        );
-        assert_eq!(
-            normalized.emission.content_type,
-            ContentTypePolicy::Preserve
-        );
         assert!(normalized.emission.emit_end_stream_on_headers);
         assert!(
             normalized
-                .head
                 .headers
                 .iter()
                 .all(|header| header.name != http::header::CONTENT_LENGTH)
         );
         assert!(
             normalized
-                .head
                 .headers
                 .iter()
                 .any(|header| header.name == http::HeaderName::from_static("x-custom"))
         );
-    }
-
-    #[test]
-    fn normalizes_bodyless_request_mode_as_suppressed_and_terminal() {
-        let mut headers = HeaderMap::new();
-        headers.insert(http::header::CONTENT_LENGTH, HeaderValue::from_static("7"));
-
-        let normalized = normalize_upstream_response(ResponseNormalizationInput {
-            upstream: UpstreamResponseView {
-                status: StatusCode::OK,
-                headers: &headers,
-                trailers: None,
-            },
-            body_mode: ResponseBodyMode::BodylessRequest,
-            constraints: http3_constraints(),
-        });
-
-        assert_eq!(normalized.emission.body, ResponseBodyPolicy::Suppress);
-        assert!(normalized.emission.emit_end_stream_on_headers);
     }
 
     #[test]
@@ -515,7 +380,6 @@ mod tests {
             upstream: UpstreamResponseView {
                 status: StatusCode::CONTINUE,
                 headers: &headers,
-                trailers: None,
             },
             body_mode: ResponseBodyMode::Normal,
             constraints: http1_constraints(),
@@ -523,10 +387,7 @@ mod tests {
 
         assert_eq!(normalized.emission.body, ResponseBodyPolicy::Suppress);
         assert!(normalized.emission.emit_end_stream_on_headers);
-        assert_eq!(
-            header_value(&normalized.head.headers, "retry-after"),
-            Some("3")
-        );
+        assert_eq!(header_value(&normalized.headers, "retry-after"), Some("3"));
     }
 
     #[test]
@@ -542,28 +403,21 @@ mod tests {
             upstream: UpstreamResponseView {
                 status: StatusCode::NO_CONTENT,
                 headers: &headers,
-                trailers: None,
             },
             body_mode: ResponseBodyMode::Normal,
             constraints: http1_constraints(),
         });
 
         assert_eq!(normalized.emission.body, ResponseBodyPolicy::Suppress);
-        assert_eq!(
-            normalized.emission.content_length,
-            ContentLengthPolicy::Preserve
-        );
         assert!(normalized.emission.emit_end_stream_on_headers);
         assert!(
             normalized
-                .head
                 .headers
                 .iter()
                 .any(|header| header.name == http::header::CONTENT_LENGTH)
         );
         assert!(
             normalized
-                .head
                 .headers
                 .iter()
                 .any(|header| header.name == http::HeaderName::from_static("etag"))
@@ -584,7 +438,6 @@ mod tests {
             upstream: UpstreamResponseView {
                 status: StatusCode::NOT_MODIFIED,
                 headers: &headers,
-                trailers: None,
             },
             body_mode: ResponseBodyMode::Normal,
             constraints: http1_constraints(),
@@ -593,11 +446,11 @@ mod tests {
         assert_eq!(normalized.emission.body, ResponseBodyPolicy::Suppress);
         assert!(normalized.emission.emit_end_stream_on_headers);
         assert_eq!(
-            header_value(&normalized.head.headers, "etag"),
+            header_value(&normalized.headers, "etag"),
             Some("\"etag-304\"")
         );
         assert_eq!(
-            header_value(&normalized.head.headers, "cache-control"),
+            header_value(&normalized.headers, "cache-control"),
             Some("max-age=60")
         );
     }
@@ -611,7 +464,6 @@ mod tests {
             upstream: UpstreamResponseView {
                 status: StatusCode::OK,
                 headers: &headers,
-                trailers: None,
             },
             body_mode: ResponseBodyMode::TunnelSuccess,
             constraints: http3_constraints(),
@@ -634,7 +486,6 @@ mod tests {
             upstream: UpstreamResponseView {
                 status: StatusCode::SWITCHING_PROTOCOLS,
                 headers: &headers,
-                trailers: None,
             },
             body_mode: ResponseBodyMode::TunnelSuccess,
             constraints: ResponseProtocolConstraints {
@@ -646,119 +497,17 @@ mod tests {
         assert_eq!(normalized.emission.body, ResponseBodyPolicy::Forward);
         assert!(!normalized.emission.emit_end_stream_on_headers);
         assert_eq!(
-            header_value(&normalized.head.headers, "connection"),
+            header_value(&normalized.headers, "connection"),
             Some("upgrade")
         );
         assert_eq!(
-            header_value(&normalized.head.headers, "upgrade"),
+            header_value(&normalized.headers, "upgrade"),
             Some("websocket")
         );
     }
 
     #[test]
-    fn response_defaults_add_text_plain_and_content_length_when_missing() {
-        let mut headers = vec![NormalizedHeader {
-            name: http::HeaderName::from_static("x-custom"),
-            value: HeaderValue::from_static("ok"),
-        }];
-
-        apply_response_header_defaults(
-            &mut headers,
-            &ResponseEmissionPolicy {
-                body: ResponseBodyPolicy::Forward,
-                content_length: ContentLengthPolicy::Preserve,
-                content_type: ContentTypePolicy::SynthesizeTextPlain,
-                emit_end_stream_on_headers: false,
-            },
-            5,
-        );
-
-        assert!(
-            headers
-                .iter()
-                .any(|header| header.name == http::header::CONTENT_TYPE
-                    && header.value == HeaderValue::from_static("text/plain"))
-        );
-        assert!(
-            headers
-                .iter()
-                .any(|header| header.name == http::header::CONTENT_LENGTH
-                    && header.value == HeaderValue::from_static("5"))
-        );
-    }
-
-    #[test]
-    fn response_defaults_do_not_duplicate_existing_content_type_or_content_length() {
-        let mut headers = vec![
-            NormalizedHeader {
-                name: http::header::CONTENT_TYPE,
-                value: HeaderValue::from_static("application/json"),
-            },
-            NormalizedHeader {
-                name: http::header::CONTENT_LENGTH,
-                value: HeaderValue::from_static("9"),
-            },
-        ];
-
-        apply_response_header_defaults(
-            &mut headers,
-            &ResponseEmissionPolicy {
-                body: ResponseBodyPolicy::Forward,
-                content_length: ContentLengthPolicy::Preserve,
-                content_type: ContentTypePolicy::SynthesizeTextPlain,
-                emit_end_stream_on_headers: false,
-            },
-            9,
-        );
-
-        assert_eq!(
-            headers
-                .iter()
-                .filter(|header| header.name == http::header::CONTENT_TYPE)
-                .count(),
-            1
-        );
-        assert_eq!(
-            headers
-                .iter()
-                .filter(|header| header.name == http::header::CONTENT_LENGTH)
-                .count(),
-            1
-        );
-        assert_eq!(
-            header_value(&headers, "content-type"),
-            Some("application/json")
-        );
-        assert_eq!(header_value(&headers, "content-length"), Some("9"));
-    }
-
-    #[test]
-    fn response_defaults_strip_content_length_when_requested() {
-        let mut headers = vec![NormalizedHeader {
-            name: http::header::CONTENT_LENGTH,
-            value: HeaderValue::from_static("9"),
-        }];
-
-        apply_response_header_defaults(
-            &mut headers,
-            &ResponseEmissionPolicy {
-                body: ResponseBodyPolicy::Suppress,
-                content_length: ContentLengthPolicy::Strip,
-                content_type: ContentTypePolicy::Preserve,
-                emit_end_stream_on_headers: true,
-            },
-            0,
-        );
-
-        assert!(
-            headers
-                .iter()
-                .all(|header| header.name != http::header::CONTENT_LENGTH)
-        );
-    }
-
-    #[test]
-    fn quic_and_bootstrap_normalizers_preserve_same_end_to_end_headers() {
+    fn http3_and_http1_normalizers_preserve_end_to_end_headers() {
         let mut headers = HeaderMap::new();
         headers.insert(
             http::header::CONNECTION,
@@ -779,7 +528,6 @@ mod tests {
             upstream: UpstreamResponseView {
                 status: StatusCode::OK,
                 headers: &headers,
-                trailers: None,
             },
             body_mode: ResponseBodyMode::Normal,
             constraints: http3_constraints(),
@@ -788,31 +536,26 @@ mod tests {
             upstream: UpstreamResponseView {
                 status: StatusCode::OK,
                 headers: &headers,
-                trailers: None,
             },
             body_mode: ResponseBodyMode::Normal,
             constraints: http1_constraints(),
         });
 
-        assert_eq!(h3.head.status, http1.head.status);
         assert_eq!(h3.emission.body, ResponseBodyPolicy::Forward);
         assert_eq!(http1.emission.body, ResponseBodyPolicy::Forward);
         assert!(!h3.emission.emit_end_stream_on_headers);
         assert!(!http1.emission.emit_end_stream_on_headers);
         assert_eq!(
-            header_value(&h3.head.headers, "cache-control"),
-            header_value(&http1.head.headers, "cache-control")
+            header_value(&h3.headers, "cache-control"),
+            header_value(&http1.headers, "cache-control")
         );
         assert_eq!(
-            header_value(&h3.head.headers, "etag"),
-            header_value(&http1.head.headers, "etag")
+            header_value(&h3.headers, "etag"),
+            header_value(&http1.headers, "etag")
         );
-        assert_eq!(header_value(&h3.head.headers, "x-hop-token"), None);
-        assert_eq!(header_value(&http1.head.headers, "x-hop-token"), None);
-        assert_eq!(header_value(&h3.head.headers, "content-length"), None);
-        assert_eq!(
-            header_value(&http1.head.headers, "content-length"),
-            Some("9")
-        );
+        assert_eq!(header_value(&h3.headers, "x-hop-token"), None);
+        assert_eq!(header_value(&http1.headers, "x-hop-token"), None);
+        assert_eq!(header_value(&h3.headers, "content-length"), None);
+        assert_eq!(header_value(&http1.headers, "content-length"), Some("9"));
     }
 }

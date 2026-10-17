@@ -933,7 +933,6 @@ impl ProxyHttp for PingoraIngressService {
             upstream: UpstreamResponseView {
                 status: upstream_response.status,
                 headers: &upstream_response.headers,
-                trailers: None,
             },
             body_mode,
             constraints: pingora_response_constraints(tunnel_response),
@@ -989,7 +988,7 @@ impl ProxyHttp for PingoraIngressService {
         for name in existing_headers {
             upstream_response.remove_header(&name);
         }
-        for header in normalized.head.headers {
+        for header in normalized.headers {
             upstream_response.append_header(header.name, header.value)?;
         }
         ctx.response_body_bytes_received = 0;
@@ -1298,8 +1297,6 @@ fn record_pingora_backend_failure(ctx: &PingoraRequestContext, error: &ProxyErro
 fn pingora_response_constraints(preserve_upgrade: bool) -> ResponseProtocolConstraints {
     ResponseProtocolConstraints {
         protocol: ResponseNormalizationProtocol::Http1,
-        strip_connection_headers: true,
-        allow_trailers: true,
         preserve_upgrade,
     }
 }

@@ -301,13 +301,10 @@ impl QUICListener {
             upstream: impulse_bridge::response::UpstreamResponseView {
                 status,
                 headers: &resp_headers,
-                trailers: None,
             },
             body_mode: response_body_mode,
             constraints: ResponseProtocolConstraints {
                 protocol: ResponseNormalizationProtocol::Http3,
-                strip_connection_headers: true,
-                allow_trailers: true,
                 preserve_upgrade: false,
             },
         });
@@ -363,7 +360,6 @@ impl QUICListener {
         }
 
         let mut headers: Vec<(Vec<u8>, Vec<u8>)> = normalized_response
-            .head
             .headers
             .iter()
             .map(|header| {

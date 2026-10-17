@@ -30,8 +30,6 @@ pub(in crate::quic_listener) fn should_strip_h3_response_header(
         connection_tokens,
         ResponseProtocolConstraints {
             protocol: ResponseNormalizationProtocol::Http3,
-            strip_connection_headers: true,
-            allow_trailers: true,
             preserve_upgrade: false,
         },
     )
@@ -44,8 +42,6 @@ pub(in crate::quic_listener) fn collect_h3_trailers(
         trailers,
         ResponseProtocolConstraints {
             protocol: ResponseNormalizationProtocol::Http3,
-            strip_connection_headers: true,
-            allow_trailers: true,
             preserve_upgrade: false,
         },
     )
