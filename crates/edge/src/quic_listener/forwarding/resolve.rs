@@ -1,4 +1,5 @@
-use impulse_config::runtime::RuntimeUpstreamPolicy;
+use impulse_config::runtime::{RuntimeBackendTlsPolicy, RuntimeUpstreamPolicy};
+use impulse_lb::pingora_backend::PingoraLoadBalancingRuntimeState;
 
 use super::{selection::ForwardingSelectionService, *};
 use crate::{
@@ -38,6 +39,8 @@ pub(in crate::quic_listener) struct ResolutionContext<'a> {
     pub(in crate::quic_listener) routing_index: &'a RouteIndex,
     pub(in crate::quic_listener) upstream_pools: &'a HashMap<String, Arc<RwLock<UpstreamPool>>>,
     pub(in crate::quic_listener) upstream_policies: &'a HashMap<String, RuntimeUpstreamPolicy>,
+    pingora_load_balancing: Option<&'a PingoraLoadBalancingRuntimeState<RuntimeBackendTlsPolicy>>,
+    generation: u64,
 }
 
 impl<'a> ResolutionContext<'a> {
@@ -50,7 +53,19 @@ impl<'a> ResolutionContext<'a> {
             routing_index,
             upstream_pools,
             upstream_policies,
+            pingora_load_balancing: None,
+            generation: 0,
         }
+    }
+
+    pub(in crate::quic_listener) fn with_pingora_selection(
+        mut self,
+        pingora_load_balancing: &'a PingoraLoadBalancingRuntimeState<RuntimeBackendTlsPolicy>,
+        generation: u64,
+    ) -> Self {
+        self.pingora_load_balancing = Some(pingora_load_balancing);
+        self.generation = generation;
+        self
     }
 }
 
@@ -79,6 +94,7 @@ pub(crate) struct BackendSelection {
     pub(crate) backend_addr: String,
     pub(crate) backend_index: usize,
     pub(in crate::quic_listener) backend_lb: String,
+    pub(crate) lb_key: String,
 }
 
 pub(in crate::quic_listener) struct TargetResolution {
@@ -96,6 +112,7 @@ pub(super) struct ForwardTargetResolution {
     pub(super) backend_addr: String,
     pub(super) backend_index: usize,
     pub(super) backend_lb: String,
+    pub(super) lb_key: String,
 }
 
 pub(super) struct ForwardTargetResolutionInput<'a> {
@@ -238,6 +255,7 @@ impl QUICListener {
             backend_addr,
             backend_index,
             backend_lb,
+            lb_key,
         } = backend;
 
         Ok(ForwardTargetResolution {
@@ -250,6 +268,7 @@ impl QUICListener {
             backend_addr,
             backend_index,
             backend_lb,
+            lb_key,
         })
     }
 
@@ -323,11 +342,27 @@ impl QUICListener {
         begin_request: bool,
     ) -> Result<TargetResolution, ProxyError> {
         let route = Self::resolve_route_target(request, context)?;
-        let backend = ForwardingSelectionService::select_backend(
-            request,
-            &route.upstream_pool,
-            begin_request,
-        )?;
+        let backend = if let Some(selectors) = context.pingora_load_balancing {
+            let selector = selectors.selector(&route.upstream_name).ok_or_else(|| {
+                ProxyError::Transport(format!(
+                    "Pingora selector not found: {}",
+                    route.upstream_name
+                ))
+            })?;
+            ForwardingSelectionService::select_backend_with_pingora(
+                request,
+                &route.upstream_pool,
+                selector,
+                context.generation,
+                begin_request,
+            )?
+        } else {
+            ForwardingSelectionService::select_backend(
+                request,
+                &route.upstream_pool,
+                begin_request,
+            )?
+        };
 
         Self::log_backend_selection(
             request,

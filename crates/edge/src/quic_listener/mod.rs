@@ -132,7 +132,7 @@ use forwarding::{
 };
 pub(crate) use forwarding::{
     ForwardingSelectionService, MAX_UPSTREAM_RETRY_ATTEMPTS, RetryCoordinator,
-    TargetResolutionRequest,
+    StableBackendSelection, TargetResolutionRequest,
 };
 #[cfg(test)]
 use health_check::classify_active_health_check_response;
@@ -399,6 +399,8 @@ impl QUICListener {
             routing_index: &self.routing_index,
             upstream_pools: &self.upstream_pools,
             upstream_policies: self.upstream_policies.as_ref(),
+            pingora_load_balancing: self.pingora_load_balancing.as_ref(),
+            generation: self.runtime_generation,
         };
         let exec_ctx = ForwardingExecutionCtx {
             transport_pool: Arc::clone(&self.transport_pool),
@@ -482,6 +484,8 @@ impl QUICListener {
             routing_index: &self.routing_index,
             upstream_pools: &self.upstream_pools,
             upstream_policies: self.upstream_policies.as_ref(),
+            pingora_load_balancing: self.pingora_load_balancing.as_ref(),
+            generation: self.runtime_generation,
         };
         let exec_ctx = ForwardingExecutionCtx {
             transport_pool: Arc::clone(&self.transport_pool),

@@ -61,15 +61,9 @@ pub(super) enum LbKeySource {
     DefaultFallback,
 }
 
-pub(crate) struct ResolvedLbKey {
+pub(super) struct ResolvedLbKey {
     pub(super) value: String,
     pub(super) source: LbKeySource,
-}
-
-impl ResolvedLbKey {
-    pub(crate) fn into_value(self) -> String {
-        self.value
-    }
 }
 
 #[cfg(test)]
@@ -108,7 +102,7 @@ fn extract_query_param(path: &str, param: &str) -> Option<String> {
 }
 
 impl QUICListener {
-    pub(crate) fn resolve_lb_key_for_runtime_request(
+    pub(in crate::quic_listener::forwarding) fn resolve_lb_key_for_runtime_request(
         lb_strategy: RuntimeLoadBalancingStrategy,
         lb_key_spec: Option<&RuntimeRequestKeySpec>,
         request: &super::resolve::TargetResolutionRequest<'_>,

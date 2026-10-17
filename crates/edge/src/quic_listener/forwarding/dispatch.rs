@@ -1,10 +1,14 @@
 use std::convert::Infallible;
 
+use impulse_config::runtime::RuntimeBackendTlsPolicy;
 use impulse_errors::{
     HedgeOutcomeTelemetryReason, HedgePolicyDecision, RetryPolicyDecision, is_idempotent_method,
 };
-use impulse_lb::alternate_backend::{
-    AlternateBackendDecision, AlternateBackendFailureReason, choose_alternate_backend,
+use impulse_lb::{
+    alternate_backend::{
+        AlternateBackendDecision, AlternateBackendFailureReason, choose_alternate_backend,
+    },
+    pingora_backend::GenerationSelector,
 };
 use impulse_transport::{
     UpstreamBodyFrame, UpstreamCancellation, UpstreamConnectionReuse, UpstreamExchangeCompletion,
@@ -13,7 +17,10 @@ use impulse_transport::{
 };
 
 use super::{
-    selection::{ForwardingSelectionService, MAX_UPSTREAM_RETRY_ATTEMPTS, RetryCoordinator},
+    selection::{
+        ForwardingSelectionService, MAX_UPSTREAM_RETRY_ATTEMPTS, RetryCoordinator,
+        StableBackendSelection,
+    },
     *,
 };
 use crate::{
@@ -246,8 +253,40 @@ impl QUICListener {
 
     fn resolve_alternate_backend(
         upstream_pool: &Arc<RwLock<UpstreamPool>>,
+        selector: &GenerationSelector<RuntimeBackendTlsPolicy>,
+        generation: u64,
+        lb_key: &str,
         primary_index: usize,
     ) -> ResolvedAlternateBackend {
+        match ForwardingSelectionService::select_stable_backend(
+            selector,
+            upstream_pool,
+            generation,
+            lb_key,
+            &[primary_index],
+            false,
+        ) {
+            Ok(StableBackendSelection::Selected { address, .. }) => {
+                return ResolvedAlternateBackend::Selected { address };
+            }
+            Ok(StableBackendSelection::NoCandidate) => {
+                let reason = match upstream_pool.read() {
+                    Ok(pool) if pool.membership_summary().healthy_backends == 0 => {
+                        AlternateBackendFailureReason::NoHealthyBackends
+                    }
+                    Ok(_) => AlternateBackendFailureReason::OnlyExcludedBackendsHealthy,
+                    Err(_) => AlternateBackendFailureReason::PoolUnavailable,
+                };
+                return ResolvedAlternateBackend::Unavailable { reason };
+            }
+            Ok(StableBackendSelection::UseExistingSelector) => {}
+            Err(_) => {
+                return ResolvedAlternateBackend::Unavailable {
+                    reason: AlternateBackendFailureReason::PoolUnavailable,
+                };
+            }
+        }
+
         let Ok(pool) = upstream_pool.read() else {
             return ResolvedAlternateBackend::Unavailable {
                 reason: AlternateBackendFailureReason::PoolUnavailable,
@@ -386,7 +425,23 @@ impl QUICListener {
         let transport = Arc::clone(&exec_ctx.transport_pool);
         let hedge_delay = resilience.hedging_delay;
         let alternate_backend = req.upstream_pool.as_ref().map(|upstream_pool| {
-            Self::resolve_alternate_backend(upstream_pool, pending_forward.backend_index)
+            shared_ctx
+                .pingora_load_balancing
+                .selector(pending_forward.upstream_name.as_ref())
+                .map_or(
+                    ResolvedAlternateBackend::Unavailable {
+                        reason: AlternateBackendFailureReason::PoolUnavailable,
+                    },
+                    |selector| {
+                        Self::resolve_alternate_backend(
+                            upstream_pool,
+                            selector,
+                            shared_ctx.generation,
+                            pending_forward.lb_key.as_ref(),
+                            pending_forward.backend_index,
+                        )
+                    },
+                )
         });
         let trace_span_for_upstream = req.trace_span.clone();
         let (result_tx, result_rx) = oneshot::channel::<UpstreamResult>();

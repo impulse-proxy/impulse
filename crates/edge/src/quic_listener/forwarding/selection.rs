@@ -1,11 +1,15 @@
 use std::sync::{Arc, RwLock};
 
+use impulse_config::runtime::RuntimeBackendTlsPolicy;
 use impulse_errors::{
     HedgePolicyDecision, HedgePolicyFacts, HedgePrimaryState, PoolError, ProxyError,
     RetryPolicyDecision, RetryPolicyFacts, classify_retryability, evaluate_hedge_policy,
     evaluate_retry_policy,
 };
-use impulse_lb::{alternate_backend::AlternateBackendFailureReason, upstream_pool::UpstreamPool};
+use impulse_lb::{
+    alternate_backend::AlternateBackendFailureReason, pingora_backend::GenerationSelector,
+    upstream_pool::UpstreamPool,
+};
 use log::error;
 
 use super::{
@@ -24,6 +28,12 @@ use crate::resilience::{
 pub(crate) struct ForwardingSelectionService;
 
 pub(crate) const MAX_UPSTREAM_RETRY_ATTEMPTS: u8 = 1;
+
+pub(crate) enum StableBackendSelection {
+    Selected { address: String, index: usize },
+    NoCandidate,
+    UseExistingSelector,
+}
 
 impl ForwardingSelectionService {
     pub(crate) fn select_backend(
@@ -62,7 +72,90 @@ impl ForwardingSelectionService {
             backend_addr,
             backend_index,
             backend_lb,
+            lb_key,
         })
+    }
+
+    pub(crate) fn select_backend_with_pingora(
+        request: &TargetResolutionRequest<'_>,
+        upstream_pool: &Arc<RwLock<UpstreamPool>>,
+        selector: &GenerationSelector<RuntimeBackendTlsPolicy>,
+        generation: u64,
+        begin_request: bool,
+    ) -> Result<BackendSelection, ProxyError> {
+        let (lb_key, backend_lb) = {
+            let pool = upstream_pool
+                .read()
+                .map_err(|_| ProxyError::Transport("upstream pool lock poisoned".into()))?;
+            let ResolvedLbKey {
+                value: lb_key,
+                source: _,
+            } = QUICListener::resolve_lb_key_for_runtime_request(
+                pool.lb_strategy(),
+                pool.lb_key_spec(),
+                request,
+            );
+            (lb_key, pool.lb_strategy().canonical_name().to_string())
+        };
+        match Self::select_stable_backend(
+            selector,
+            upstream_pool,
+            generation,
+            &lb_key,
+            &[],
+            begin_request,
+        )? {
+            StableBackendSelection::Selected { address, index } => Ok(BackendSelection {
+                backend_addr: address,
+                backend_index: index,
+                backend_lb,
+                lb_key,
+            }),
+            StableBackendSelection::NoCandidate => {
+                Err(ProxyError::Transport("no healthy servers".into()))
+            }
+            StableBackendSelection::UseExistingSelector => {
+                Self::select_backend(request, upstream_pool, begin_request)
+            }
+        }
+    }
+
+    pub(crate) fn select_stable_backend(
+        selector: &GenerationSelector<RuntimeBackendTlsPolicy>,
+        pool: &Arc<RwLock<UpstreamPool>>,
+        generation: u64,
+        key: &str,
+        excluded_backend_indices: &[usize],
+        begin_request: bool,
+    ) -> Result<StableBackendSelection, ProxyError> {
+        let pool = pool
+            .read()
+            .map_err(|_| ProxyError::Transport("upstream pool lock poisoned".into()))?;
+        if !selector.uses_pingora() {
+            return Ok(StableBackendSelection::UseExistingSelector);
+        }
+        selector
+            .synchronize_readiness(|index| pool.is_backend_healthy(index))
+            .map_err(ProxyError::Transport)?;
+        let Some(selected) = selector.select_excluding(key, excluded_backend_indices) else {
+            return Ok(StableBackendSelection::NoCandidate);
+        };
+        if selected.generation() != generation {
+            return Err(ProxyError::Transport(format!(
+                "Pingora selector generation {} does not match runtime generation {generation}",
+                selected.generation()
+            )));
+        }
+        let index = selected.index();
+        let Some(address) = pool.backend_address(index).map(str::to_string) else {
+            return Err(ProxyError::Transport(
+                "Pingora selector returned an invalid backend index".into(),
+            ));
+        };
+        if begin_request && !pool.begin_request_if_healthy(index) {
+            return Ok(StableBackendSelection::NoCandidate);
+        }
+        Ok(StableBackendSelection::Selected { address, index })
     }
 
     pub(super) fn allow_backend_request<'a>(

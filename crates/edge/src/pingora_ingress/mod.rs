@@ -15,10 +15,7 @@ use impulse_bridge::response::{
     ResponseNormalizationProtocol, ResponseProtocolConstraints, UpstreamResponseView,
     normalize_response_trailers, normalize_upstream_response,
 };
-use impulse_config::{
-    backend_endpoint::BackendScheme,
-    runtime::{ListenerRuntimeConfig, RuntimeBackendTlsPolicy},
-};
+use impulse_config::{backend_endpoint::BackendScheme, runtime::ListenerRuntimeConfig};
 use impulse_errors::{
     BridgeError, PoolError, ProxyError, RetryAttemptTelemetryReason, RetryPolicyDecision,
     RetryPolicyDenialReason, classify_upstream_proxy_error, is_idempotent_method,
@@ -27,7 +24,6 @@ use impulse_lb::{
     alternate_backend::{
         AlternateBackendDecision, AlternateBackendFailureReason, choose_alternate_backend,
     },
-    pingora_backend::GenerationSelector,
     upstream_pool::UpstreamPool,
 };
 use impulse_transport::{classify_pingora_h1_error, classify_pingora_h2_error};
@@ -50,8 +46,8 @@ use crate::{
     REQUEST_ID_COUNTER,
     quic_listener::{
         AdmissionPolicyDecision, ForwardingSelectionService, MAX_UPSTREAM_RETRY_ATTEMPTS,
-        RetryCoordinator, TargetResolutionRequest, admission_rejection_response,
-        validate_http_request_parts,
+        RetryCoordinator, StableBackendSelection, TargetResolutionRequest,
+        admission_rejection_response, validate_http_request_parts,
     },
     request_pipeline::{
         PipelineRequest, PipelineRoute, ResolvedRequestPolicy, ResolvedRouteTarget,
@@ -123,51 +119,6 @@ struct PingoraSelectedBackend {
     index: usize,
     selected_at: Instant,
     finish_status: Option<u16>,
-}
-
-enum StableBackendSelection {
-    Selected { address: String, index: usize },
-    NoCandidate,
-    UseExistingSelector,
-}
-
-fn select_stable_backend(
-    selector: &GenerationSelector<RuntimeBackendTlsPolicy>,
-    pool: &Arc<RwLock<UpstreamPool>>,
-    generation: u64,
-    key: &str,
-    excluded_backend_indices: &[usize],
-    begin_request: bool,
-) -> Result<StableBackendSelection, ProxyError> {
-    let pool = pool
-        .read()
-        .map_err(|_| ProxyError::Transport("upstream pool lock poisoned".into()))?;
-    if !selector.uses_pingora() {
-        return Ok(StableBackendSelection::UseExistingSelector);
-    }
-    selector
-        .synchronize_readiness(|index| pool.is_backend_healthy(index))
-        .map_err(ProxyError::Transport)?;
-    let selected = selector.select_excluding(key, excluded_backend_indices);
-    let Some(selected) = selected else {
-        return Ok(StableBackendSelection::NoCandidate);
-    };
-    if selected.generation() != generation {
-        return Err(ProxyError::Transport(format!(
-            "Pingora selector generation {} does not match runtime generation {generation}",
-            selected.generation()
-        )));
-    }
-    let index = selected.index();
-    let Some(address) = pool.backend_address(index).map(str::to_string) else {
-        return Err(ProxyError::Transport(
-            "Pingora selector returned an invalid backend index".into(),
-        ));
-    };
-    if begin_request && !pool.begin_request_if_healthy(index) {
-        return Ok(StableBackendSelection::NoCandidate);
-    }
-    Ok(StableBackendSelection::Selected { address, index })
 }
 
 impl Drop for PingoraSelectedBackend {
@@ -778,18 +729,6 @@ impl ProxyHttp for PingoraIngressService {
                 None,
                 Some(&header_lookup),
             );
-            let lb_key = {
-                let pool = pool.read().map_err(|_| {
-                    Error::explain(InternalError, "Pingora ingress upstream pool lock poisoned")
-                })?;
-                QUICListener::resolve_lb_key_for_runtime_request(
-                    pool.lb_strategy(),
-                    pool.lb_key_spec(),
-                    &selection_request,
-                )
-                .into_value()
-            };
-            ctx.lb_key = Some(lb_key.clone());
             let selector = state
                 .pingora_load_balancing
                 .selector(route.upstream_name.as_ref())
@@ -802,36 +741,22 @@ impl ProxyHttp for PingoraIngressService {
                         ),
                     )
                 })?;
-            let selected = match select_stable_backend(
-                selector,
+            let selected = ForwardingSelectionService::select_backend_with_pingora(
+                &selection_request,
                 &pool,
+                selector,
                 ctx.runtime.generation,
-                &lb_key,
-                &[],
                 true,
             )
-            .map_err(|error| Error::because(InternalError, "backend selection failed", error))?
-            {
-                StableBackendSelection::Selected { address, index } => (address, index),
-                StableBackendSelection::NoCandidate => {
-                    return Error::e_explain(InternalError, "no healthy servers");
-                }
-                StableBackendSelection::UseExistingSelector => {
-                    let selected =
-                        ForwardingSelectionService::select_backend(&selection_request, &pool, true)
-                            .map_err(|error| {
-                                Error::because(InternalError, "backend selection failed", error)
-                            })?;
-                    (selected.backend_addr, selected.backend_index)
-                }
-            };
+            .map_err(|error| Error::because(InternalError, "backend selection failed", error))?;
+            ctx.lb_key = Some(selected.lb_key);
             ctx.runtime
                 .shared_state
                 .generation_state()
                 .resilience
                 .retry_budget
                 .mark_primary(route.upstream_name.as_ref());
-            selected
+            (selected.backend_addr, selected.backend_index)
         };
         let selected_backend = PingoraSelectedBackend {
             address: backend_addr.clone(),
@@ -1322,7 +1247,7 @@ fn handle_pingora_proxy_failure(
         .pingora_load_balancing
         .selector(route_name);
     let stable_selection = selector.map(|selector| {
-        select_stable_backend(
+        ForwardingSelectionService::select_stable_backend(
             selector,
             &selected.pool,
             ctx.runtime.generation,
