@@ -375,7 +375,7 @@ impl QUICListener {
             .shared_state
             .shared_services()
             .listener_tls_store
-            .bootstrap_server_config(&primary_listener_label)
+            .certificate_resolver(&primary_listener_label)
             .is_none()
         {
             return Some(TransitionRejection::raw_resource_message(format!(

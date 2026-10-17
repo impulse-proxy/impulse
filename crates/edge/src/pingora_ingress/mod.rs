@@ -154,8 +154,7 @@ impl std::fmt::Debug for RotatingServerCertResolver {
 impl ResolvesServerCert for RotatingServerCertResolver {
     fn resolve(&self, client_hello: ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
         self.store
-            .bootstrap_server_config(&self.listener)?
-            .cert_resolver
+            .certificate_resolver(&self.listener)?
             .resolve(client_hello)
     }
 }

@@ -4,7 +4,7 @@ use std::{
 };
 
 use impulse_errors::ProxyError;
-use rustls::ServerConfig as RustlsServerConfig;
+use rustls::server::ResolvesServerCert;
 
 use crate::runtime::tls::inventory::ListenerTlsInventory;
 
@@ -14,7 +14,7 @@ pub struct ListenerTlsReloadState {
     pub loaded_at_unix_ms: u64,
     pub last_reload_status: String,
     pub inventory: ListenerTlsInventory,
-    pub bootstrap_server_config: Arc<RustlsServerConfig>,
+    pub certificate_resolver: Arc<dyn ResolvesServerCert>,
 }
 
 pub struct ListenerTlsReloadStore {
@@ -35,11 +35,11 @@ impl ListenerTlsReloadStore {
             .and_then(|listeners| listeners.get(listener).map(|state| state.generation))
     }
 
-    pub fn bootstrap_server_config(&self, listener: &str) -> Option<Arc<RustlsServerConfig>> {
+    pub fn certificate_resolver(&self, listener: &str) -> Option<Arc<dyn ResolvesServerCert>> {
         self.listeners.read().ok().and_then(|listeners| {
             listeners
                 .get(listener)
-                .map(|state| Arc::clone(&state.bootstrap_server_config))
+                .map(|state| Arc::clone(&state.certificate_resolver))
         })
     }
 
@@ -54,7 +54,7 @@ impl ListenerTlsReloadStore {
         &self,
         listener: &str,
         inventory: ListenerTlsInventory,
-        bootstrap_server_config: Arc<RustlsServerConfig>,
+        certificate_resolver: Arc<dyn ResolvesServerCert>,
     ) -> Result<u64, ProxyError> {
         let mut listeners = self.listeners.write().map_err(|_| {
             ProxyError::Transport("listener TLS reload store lock poisoned".to_string())
@@ -69,7 +69,7 @@ impl ListenerTlsReloadStore {
         state.loaded_at_unix_ms = crate::watchdog::time::now_millis();
         state.last_reload_status = "cert_reload_applied".to_string();
         state.inventory = inventory;
-        state.bootstrap_server_config = bootstrap_server_config;
+        state.certificate_resolver = certificate_resolver;
         Ok(state.generation)
     }
 
@@ -118,7 +118,7 @@ impl ListenerTlsReloadStore {
             state.loaded_at_unix_ms = update.loaded_at_unix_ms;
             state.last_reload_status = update.last_reload_status.clone();
             state.inventory = update.inventory.clone();
-            state.bootstrap_server_config = Arc::clone(&update.bootstrap_server_config);
+            state.certificate_resolver = Arc::clone(&update.certificate_resolver);
             generations.insert(listener.clone(), state.generation);
         }
         Ok(generations)

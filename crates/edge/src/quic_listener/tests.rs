@@ -274,7 +274,7 @@ fn runtime_listener_tls_uses_first_sni_entry_when_legacy_pair_is_missing() {
 }
 
 #[test]
-fn build_server_tls_acceptor_accepts_sni_certs_without_legacy_pair() {
+fn listener_tls_reload_state_accepts_sni_certs_without_legacy_pair() {
     let dir = tempdir().expect("tempdir");
     let (api_cert, api_key) = write_test_cert_for_name(dir.path(), "api", "api.example.com");
     let config = tls_test_config(
@@ -287,12 +287,9 @@ fn build_server_tls_acceptor_accepts_sni_certs_without_legacy_pair() {
         }],
     );
 
-    let acceptor = super::QUICListener::build_server_tls_acceptor(
-        &tls_test_listener_config(&config),
-        false,
-        vec![b"h2".to_vec()],
-    );
-    assert!(acceptor.is_ok());
+    let reload_state =
+        super::QUICListener::build_listener_tls_reload_state(&tls_test_listener_config(&config));
+    assert!(reload_state.is_ok());
 }
 
 #[test]
@@ -395,7 +392,7 @@ fn listener_tls_reload_store_refreshes_inventory_and_generation() {
         .replace_listener(
             listener_label,
             reloaded_state.inventory,
-            reloaded_state.bootstrap_server_config,
+            reloaded_state.certificate_resolver,
         )
         .expect("replace listener");
     assert_eq!(generation, 1);
@@ -444,7 +441,7 @@ fn quic_listener_syncs_tls_generation_after_reload() {
         .replace_listener(
             &listener_label,
             reloaded_state.inventory,
-            reloaded_state.bootstrap_server_config,
+            reloaded_state.certificate_resolver,
         )
         .expect("replace listener");
 
@@ -797,7 +794,7 @@ fn watchdog_restart_transitions_listener_into_draining_and_counts_worker_drain_o
 }
 
 #[test]
-fn build_server_tls_acceptor_rejects_mismatched_sni_certificate_mapping() {
+fn listener_tls_reload_state_rejects_mismatched_sni_certificate_mapping() {
     let dir = tempdir().expect("tempdir");
     let (api_cert, api_key) = write_test_cert_for_name(dir.path(), "api", "api.example.com");
     let config = tls_test_config(
@@ -810,13 +807,10 @@ fn build_server_tls_acceptor_rejects_mismatched_sni_certificate_mapping() {
         }],
     );
 
-    let err = super::QUICListener::build_server_tls_acceptor(
-        &tls_test_listener_config(&config),
-        false,
-        vec![b"h2".to_vec()],
-    )
-    .err()
-    .expect("mismatched SNI cert mapping should fail");
+    let err =
+        super::QUICListener::build_listener_tls_reload_state(&tls_test_listener_config(&config))
+            .err()
+            .expect("mismatched SNI cert mapping should fail");
     assert!(
         err.to_string()
             .contains("failed to add SNI certificate mapping"),

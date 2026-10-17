@@ -883,22 +883,9 @@ impl QUICListener {
         }
     }
 
-    fn build_server_tls_config_from_loaded(
+    fn build_server_cert_resolver_from_loaded(
         loaded_tls: &LoadedListenerTlsMaterial,
-        enforce_client_auth: bool,
-        alpn_protocols: Vec<Vec<u8>>,
-    ) -> Result<RustlsServerConfig, ProxyError> {
-        let verifier = Self::build_client_cert_verifier(
-            &loaded_tls.client_auth,
-            loaded_tls.client_auth_ca.as_ref(),
-            enforce_client_auth,
-        )?;
-        let builder = if let Some(verifier) = verifier {
-            RustlsServerConfig::builder().with_client_cert_verifier(verifier)
-        } else {
-            RustlsServerConfig::builder().with_no_client_auth()
-        };
-
+    ) -> Result<Arc<dyn ResolvesServerCert>, ProxyError> {
         let mut sni_resolver = ResolvesServerCertUsingSni::new();
         for (server_name, identity) in &loaded_tls.sni_identities {
             Self::validate_loaded_sni_identity(server_name, identity)?;
@@ -914,13 +901,10 @@ impl QUICListener {
                     ))
                 })?;
         }
-        let resolver = Arc::new(FallbackServerCertResolver {
+        Ok(Arc::new(FallbackServerCertResolver {
             sni_resolver,
             fallback: loaded_tls.default_identity.certified_key().clone(),
-        });
-        let mut tls_config = builder.with_cert_resolver(resolver);
-        tls_config.alpn_protocols = alpn_protocols;
-        Ok(tls_config)
+        }))
     }
 
     fn build_client_cert_verifier(
@@ -1068,17 +1052,13 @@ impl QUICListener {
     ) -> Result<ListenerTlsReloadState, ProxyError> {
         let loaded_tls = Self::load_listener_tls_material(config)?;
         let inventory = Self::listener_tls_inventory(&loaded_tls);
-        let bootstrap_server_config = Arc::new(Self::build_server_tls_config_from_loaded(
-            &loaded_tls,
-            true,
-            vec![b"h2".to_vec(), b"http/1.1".to_vec()],
-        )?);
+        let certificate_resolver = Self::build_server_cert_resolver_from_loaded(&loaded_tls)?;
         Ok(ListenerTlsReloadState {
             generation: 0,
             loaded_at_unix_ms: crate::watchdog::time::now_millis(),
             last_reload_status: "loaded".to_string(),
             inventory,
-            bootstrap_server_config,
+            certificate_resolver,
         })
     }
 
@@ -1092,28 +1072,6 @@ impl QUICListener {
             listeners.insert(listener_label, state);
         }
         Ok(ListenerTlsReloadStore::new(listeners))
-    }
-
-    #[cfg(test)]
-    pub(super) fn build_server_tls_acceptor(
-        config: &ListenerRuntimeConfig,
-        enforce_client_auth: bool,
-        alpn_protocols: Vec<Vec<u8>>,
-    ) -> Result<TlsAcceptor, ProxyError> {
-        let loaded_tls = Self::load_listener_tls_material(config)?;
-        debug!(
-            "Building rustls downstream acceptor with default cert='{}' serial={} and {} explicit SNI identities",
-            loaded_tls.default_identity.identity().cert_path,
-            loaded_tls.default_identity.metadata().serial_hex,
-            loaded_tls.sni_identities.len()
-        );
-        Ok(TlsAcceptor::from(Arc::new(
-            Self::build_server_tls_config_from_loaded(
-                &loaded_tls,
-                enforce_client_auth,
-                alpn_protocols,
-            )?,
-        )))
     }
 
     pub(super) fn listener_label(config: &ListenerRuntimeConfig) -> String {

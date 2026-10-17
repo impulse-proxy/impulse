@@ -52,7 +52,6 @@ use tokio::{
     sync::{Semaphore, mpsc, mpsc::error::TrySendError, oneshot},
 };
 #[cfg(test)]
-use tokio_rustls::TlsAcceptor;
 use tracing::{Instrument, info_span};
 
 use crate::{
