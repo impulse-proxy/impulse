@@ -6,7 +6,7 @@ pub(crate) struct RequestValidationResult {
     pub(crate) method: String,
     pub(crate) path: String,
     pub(crate) authority: Option<String>,
-    pub(super) content_length: Option<usize>,
+    pub(crate) content_length: Option<usize>,
     pub(super) websocket_tunnel: bool,
 }
 
