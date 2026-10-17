@@ -297,37 +297,34 @@ impl QUICListener {
         current: &RuntimeBundle,
         next: &RuntimeBundle,
     ) -> Option<TransitionRejection> {
-        for label in current
+        let current_listeners = &current
             .shared_state
             .generation_state()
-            .listener_runtime_configs
-            .keys()
+            .listener_runtime_configs;
+        let next_listeners = &next
+            .shared_state
+            .generation_state()
+            .listener_runtime_configs;
+        if next_listeners.len() < current_listeners.len()
+            && let Some(label) = current_listeners
+                .keys()
+                .find(|label| !next_listeners.contains_key(*label))
         {
-            if !next
-                .shared_state
-                .generation_state()
-                .listener_runtime_configs
-                .contains_key(label)
-            {
-                return Some(TransitionRejection::listener_bind_changed(label));
-            }
+            return Some(TransitionRejection::listener_bind_changed(label));
         }
 
-        let worker_count = next.runtime_config.performance.worker_threads.max(1);
-        for (label, listener_config) in next
-            .shared_state
-            .generation_state()
-            .listener_runtime_configs
-            .iter()
-        {
-            if current
-                .shared_state
-                .generation_state()
-                .listener_runtime_configs
-                .contains_key(label)
-            {
+        for (label, listener_config) in next_listeners.iter() {
+            if let Err(err) = Self::build_listener_tls_reload_state(listener_config) {
+                return Some(TransitionRejection::resource_preflight_failed(
+                    "Pingora listener TLS",
+                    label,
+                    err.to_string(),
+                ));
+            }
+            if current_listeners.contains_key(label) {
                 continue;
             }
+            let worker_count = listener_config.performance.worker_threads.max(1);
             if worker_count > 1 {
                 if let Err(err) = Self::bind_reuseport_sockets(listener_config, worker_count) {
                     return Some(TransitionRejection::resource_preflight_failed(
@@ -348,9 +345,9 @@ impl QUICListener {
                 "{}:{}",
                 listener_config.listen.listen.address, listener_config.listen.listen.port
             );
-            if let Err(err) = Self::probe_tcp_bind(&bind, "bootstrap TLS listener") {
+            if let Err(err) = Self::probe_tcp_bind(&bind, "Pingora listener") {
                 return Some(TransitionRejection::resource_preflight_failed(
-                    "bootstrap TLS listener",
+                    "Pingora listener",
                     label,
                     err,
                 ));

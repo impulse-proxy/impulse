@@ -1063,7 +1063,7 @@ impl QUICListener {
         !label.is_empty() && !label.contains('.')
     }
 
-    pub(super) fn build_listener_tls_reload_state(
+    pub(crate) fn build_listener_tls_reload_state(
         config: &ListenerRuntimeConfig,
     ) -> Result<ListenerTlsReloadState, ProxyError> {
         let loaded_tls = Self::load_listener_tls_material(config)?;

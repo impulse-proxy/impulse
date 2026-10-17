@@ -291,12 +291,22 @@ fn pingora_ingress_service_for_listener(
     );
     let current = runtime.current();
     let tls_store = Arc::clone(&current.shared_state.shared_services().listener_tls_store);
-    if tls_store.bootstrap_server_config(&listener_label).is_none() {
-        return Error::e_explain(
+    let tls_state = QUICListener::build_listener_tls_reload_state(&listener).map_err(|error| {
+        Error::because(
             InternalError,
-            format!("Pingora ingress TLS state is missing for '{listener_label}'"),
-        );
-    }
+            format!("failed to prepare Pingora ingress TLS for '{listener_label}'"),
+            error,
+        )
+    })?;
+    tls_store
+        .install_listener(listener_label.clone(), tls_state)
+        .map_err(|error| {
+            Error::because(
+                InternalError,
+                format!("failed to activate Pingora ingress TLS for '{listener_label}'"),
+                error,
+            )
+        })?;
     let identity = &listener.listen.tls.default_identity;
     let mut tls = TlsSettings::intermediate(&identity.cert_path, &identity.key_path)?;
     tls.set_cert_resolver(Arc::new(RotatingServerCertResolver {

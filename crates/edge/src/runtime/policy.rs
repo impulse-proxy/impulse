@@ -681,9 +681,9 @@ pub static RESOURCE_DOMAINS: &[ResourceDomain] = &[
     // -- listener bind and protocol settings ------------------------------------
     ResourceDomain {
         field_path: "listeners[].listen",
-        description: "UDP listener bind address/port and reuseport sockets",
-        ownership: OperationalOwnership::StartupOwned,
-        reload: ReloadCapability::RestartRequired,
+        description: "UDP and Pingora listener bind address/port",
+        ownership: OperationalOwnership::GenerationOwned,
+        reload: ReloadCapability::LiveReloadable,
     },
     // -- control API settings ---------------------------------------------------
     ResourceDomain {

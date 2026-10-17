@@ -27,6 +27,9 @@ pub(crate) struct ListenerGroupSignature {
     reuseport: bool,
     udp_recv_buffer_bytes: usize,
     udp_send_buffer_bytes: usize,
+    client_auth_enabled: bool,
+    require_client_cert: bool,
+    client_auth_ca_file: Option<String>,
 }
 
 pub(crate) struct ListenerGroupRuntime {
@@ -124,6 +127,9 @@ pub(crate) fn listener_group_signature(config: &ListenerRuntimeConfig) -> Listen
         reuseport: config.performance.reuseport,
         udp_recv_buffer_bytes: config.performance.udp_recv_buffer_bytes,
         udp_send_buffer_bytes: config.performance.udp_send_buffer_bytes,
+        client_auth_enabled: config.listen.tls.client_auth.enabled,
+        require_client_cert: config.listen.tls.client_auth.require_client_cert,
+        client_auth_ca_file: config.listen.tls.client_auth.ca_file.clone(),
     }
 }
 
