@@ -50,14 +50,14 @@ use tokio_rustls::{
 
 use super::{base_quic_test_config, static_full_response};
 
-pub struct TestTlsMaterial {
+pub(crate) struct TestTlsMaterial {
     _dir: TempDir,
     pub cert_path: String,
     pub key_path: String,
 }
 
 impl TestTlsMaterial {
-    pub fn localhost() -> Self {
+    pub(crate) fn localhost() -> Self {
         let dir = tempdir().expect("tempdir");
         let mut params = CertificateParams::new(vec!["localhost".into()]);
         params
@@ -83,7 +83,7 @@ impl TestTlsMaterial {
     }
 }
 
-pub struct BackendFixture {
+pub(crate) struct BackendFixture {
     pub addr: SocketAddr,
     stop: Arc<AtomicBool>,
     accept_task: tokio::task::JoinHandle<()>,
@@ -96,13 +96,13 @@ impl Drop for BackendFixture {
     }
 }
 
-pub struct ListenerTaskGuard {
+pub(crate) struct ListenerTaskGuard {
     stop: Arc<AtomicBool>,
     handle: tokio::task::JoinHandle<()>,
 }
 
 impl ListenerTaskGuard {
-    pub fn spawn(rt: &tokio::runtime::Runtime, mut listener: QUICListener) -> Self {
+    pub(crate) fn spawn(rt: &tokio::runtime::Runtime, mut listener: QUICListener) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
         let stop_flag = Arc::clone(&stop);
         let runtime_handle = rt.handle().clone();
@@ -123,7 +123,7 @@ impl Drop for ListenerTaskGuard {
     }
 }
 
-pub struct QuicRequestPathHarness {
+pub(crate) struct QuicRequestPathHarness {
     backends: Vec<BackendFixture>,
     listener_task: Option<ListenerTaskGuard>,
     metrics: Option<Arc<Metrics>>,
@@ -133,7 +133,7 @@ pub struct QuicRequestPathHarness {
 }
 
 impl QuicRequestPathHarness {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             backends: Vec::new(),
             listener_task: None,
@@ -144,7 +144,7 @@ impl QuicRequestPathHarness {
         }
     }
 
-    pub fn make_config(&self, upstreams: HashMap<String, Upstream>) -> Config {
+    pub(crate) fn make_config(&self, upstreams: HashMap<String, Upstream>) -> Config {
         base_quic_test_config(
             reserve_unused_listener_port(),
             &self.tls.cert_path,
@@ -153,7 +153,7 @@ impl QuicRequestPathHarness {
         )
     }
 
-    pub fn start_listener(&mut self, config: Config) -> Result<SocketAddr, String> {
+    pub(crate) fn start_listener(&mut self, config: Config) -> Result<SocketAddr, String> {
         validate(&config).map_err(|err| format!("config validation failed: {err}"))?;
         let listener = QUICListener::new(config).map_err(|err| format!("listener: {err}"))?;
         self.metrics = Some(Arc::clone(&listener.metrics));
@@ -166,7 +166,7 @@ impl QuicRequestPathHarness {
         Ok(listen_addr)
     }
 
-    pub fn start_h1_backend<F, Fut>(&mut self, handler: F) -> SocketAddr
+    pub(crate) fn start_h1_backend<F, Fut>(&mut self, handler: F) -> SocketAddr
     where
         F: Fn(Request<Incoming>) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<Response<Full<Bytes>>, Infallible>> + Send + 'static,
@@ -177,27 +177,27 @@ impl QuicRequestPathHarness {
         addr
     }
 
-    pub fn start_h1_static_backend(&mut self, body: &'static [u8]) -> SocketAddr {
+    pub(crate) fn start_h1_static_backend(&mut self, body: &'static [u8]) -> SocketAddr {
         self.start_h1_backend(
             move |_req| async move { Ok::<_, Infallible>(static_full_response(body)) },
         )
     }
 
-    pub fn start_h1_websocket_upgrade_backend(&mut self) -> SocketAddr {
+    pub(crate) fn start_h1_websocket_upgrade_backend(&mut self) -> SocketAddr {
         let fixture = self.rt.block_on(start_h1_websocket_upgrade_backend());
         let addr = fixture.addr;
         self.backends.push(fixture);
         addr
     }
 
-    pub fn start_h1_chunked_backend(&mut self, chunks: Vec<&'static [u8]>) -> SocketAddr {
+    pub(crate) fn start_h1_chunked_backend(&mut self, chunks: Vec<&'static [u8]>) -> SocketAddr {
         let fixture = self.rt.block_on(start_h1_chunked_backend(chunks));
         let addr = fixture.addr;
         self.backends.push(fixture);
         addr
     }
 
-    pub fn start_h1_delayed_chunked_backend(
+    pub(crate) fn start_h1_delayed_chunked_backend(
         &mut self,
         chunks: Vec<(Vec<u8>, Duration)>,
     ) -> SocketAddr {
@@ -207,7 +207,7 @@ impl QuicRequestPathHarness {
         addr
     }
 
-    pub fn start_h1_raw_response_backend(&mut self, response_bytes: Vec<u8>) -> SocketAddr {
+    pub(crate) fn start_h1_raw_response_backend(&mut self, response_bytes: Vec<u8>) -> SocketAddr {
         let fixture = self
             .rt
             .block_on(start_h1_raw_response_backend(response_bytes));
@@ -216,7 +216,7 @@ impl QuicRequestPathHarness {
         addr
     }
 
-    pub fn start_h2_backend<F, Fut>(&mut self, handler: F) -> SocketAddr
+    pub(crate) fn start_h2_backend<F, Fut>(&mut self, handler: F) -> SocketAddr
     where
         F: Fn(Request<Incoming>) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<Response<Full<Bytes>>, Infallible>> + Send + 'static,
@@ -231,7 +231,7 @@ impl QuicRequestPathHarness {
         addr
     }
 
-    pub fn start_h2_backend_with_client_auth<F, Fut>(
+    pub(crate) fn start_h2_backend_with_client_auth<F, Fut>(
         &mut self,
         cert_path: &str,
         key_path: &str,
@@ -253,13 +253,13 @@ impl QuicRequestPathHarness {
         addr
     }
 
-    pub fn start_h2_static_backend(&mut self, body: &'static [u8]) -> SocketAddr {
+    pub(crate) fn start_h2_static_backend(&mut self, body: &'static [u8]) -> SocketAddr {
         self.start_h2_backend(
             move |_req| async move { Ok::<_, Infallible>(static_full_response(body)) },
         )
     }
 
-    pub fn start_h2_streaming_backend(&mut self, chunks: Vec<&'static [u8]>) -> SocketAddr {
+    pub(crate) fn start_h2_streaming_backend(&mut self, chunks: Vec<&'static [u8]>) -> SocketAddr {
         let fixture = self.rt.block_on(start_h2_streaming_backend(
             &self.tls.cert_path,
             &self.tls.key_path,
@@ -271,7 +271,7 @@ impl QuicRequestPathHarness {
         addr
     }
 
-    pub fn start_h2_trailer_backend(
+    pub(crate) fn start_h2_trailer_backend(
         &mut self,
         chunks: Vec<&'static [u8]>,
         trailers: http::HeaderMap,
@@ -287,14 +287,14 @@ impl QuicRequestPathHarness {
         addr
     }
 
-    pub fn run_request(&self, request: H3RequestSpec<'_>) -> Result<H3Response, String> {
+    pub(crate) fn run_request(&self, request: H3RequestSpec<'_>) -> Result<H3Response, String> {
         let listen_addr = self
             .listen_addr
             .ok_or_else(|| "listener not started".to_string())?;
         run_h3_request(listen_addr, request)
     }
 
-    pub fn metrics_text(&self) -> Option<String> {
+    pub(crate) fn metrics_text(&self) -> Option<String> {
         self.metrics
             .as_ref()
             .map(|metrics| metrics.render_prometheus())
@@ -307,7 +307,7 @@ impl Default for QuicRequestPathHarness {
     }
 }
 
-pub fn make_quic_test_config(
+pub(crate) fn make_quic_test_config(
     cert_path: &str,
     key_path: &str,
     upstreams: HashMap<String, Upstream>,
@@ -315,7 +315,7 @@ pub fn make_quic_test_config(
     make_quic_test_config_with_upstream_tls(cert_path, key_path, upstreams, UpstreamTls::default())
 }
 
-pub fn make_quic_test_config_with_upstream_tls(
+pub(crate) fn make_quic_test_config_with_upstream_tls(
     cert_path: &str,
     key_path: &str,
     upstreams: HashMap<String, Upstream>,
@@ -331,7 +331,7 @@ pub fn make_quic_test_config_with_upstream_tls(
     config
 }
 
-pub fn make_upstream(
+pub(crate) fn make_upstream(
     path_prefix: &str,
     backends: Vec<Backend>,
     tls: Option<UpstreamTls>,
@@ -355,7 +355,7 @@ pub fn make_upstream(
     }
 }
 
-pub fn make_backend(id: &str, address: impl Into<String>) -> Backend {
+pub(crate) fn make_backend(id: &str, address: impl Into<String>) -> Backend {
     Backend {
         id: id.to_string(),
         address: normalize_backend_address(address.into()),
@@ -364,7 +364,7 @@ pub fn make_backend(id: &str, address: impl Into<String>) -> Backend {
     }
 }
 
-pub fn normalize_backend_address(address: String) -> String {
+pub(crate) fn normalize_backend_address(address: String) -> String {
     if address.contains("://") {
         address
     } else {
@@ -372,7 +372,7 @@ pub fn normalize_backend_address(address: String) -> String {
     }
 }
 
-pub struct H3RequestSpec<'a> {
+pub(crate) struct H3RequestSpec<'a> {
     pub method: &'a str,
     pub authority: &'a str,
     pub path: &'a str,
@@ -382,7 +382,7 @@ pub struct H3RequestSpec<'a> {
 }
 
 impl<'a> H3RequestSpec<'a> {
-    pub fn get(authority: &'a str, path: &'a str) -> Self {
+    pub(crate) fn get(authority: &'a str, path: &'a str) -> Self {
         Self {
             method: "GET",
             authority,
@@ -394,7 +394,7 @@ impl<'a> H3RequestSpec<'a> {
     }
 }
 
-pub struct H3Response {
+pub(crate) struct H3Response {
     pub status: u16,
     pub headers: Vec<(String, String)>,
     pub trailers: Vec<(String, String)>,
@@ -402,11 +402,11 @@ pub struct H3Response {
 }
 
 impl H3Response {
-    pub fn body_text(&self) -> String {
+    pub(crate) fn body_text(&self) -> String {
         String::from_utf8_lossy(&self.body).into_owned()
     }
 
-    pub fn header(&self, name: &str) -> Option<&str> {
+    pub(crate) fn header(&self, name: &str) -> Option<&str> {
         self.headers.iter().find_map(|(header_name, value)| {
             header_name
                 .eq_ignore_ascii_case(name)
@@ -414,14 +414,14 @@ impl H3Response {
         })
     }
 
-    pub fn assert_status(&self, expected: u16) {
+    pub(crate) fn assert_status(&self, expected: u16) {
         assert_eq!(
             self.status, expected,
             "unexpected H3 response status for request-path integration response"
         );
     }
 
-    pub fn assert_body_bytes(&self, expected: &[u8]) {
+    pub(crate) fn assert_body_bytes(&self, expected: &[u8]) {
         assert_eq!(
             self.body.as_slice(),
             expected,
@@ -429,7 +429,7 @@ impl H3Response {
         );
     }
 
-    pub fn assert_body_text(&self, expected: &str) {
+    pub(crate) fn assert_body_text(&self, expected: &str) {
         assert_eq!(
             self.body_text(),
             expected,
@@ -439,7 +439,7 @@ impl H3Response {
 }
 
 #[derive(Clone, Copy)]
-pub struct HttpRequestSpec<'a> {
+pub(crate) struct HttpRequestSpec<'a> {
     pub method: &'a str,
     pub authority: &'a str,
     pub path: &'a str,
@@ -449,7 +449,7 @@ pub struct HttpRequestSpec<'a> {
 }
 
 impl<'a> HttpRequestSpec<'a> {
-    pub fn get(authority: &'a str, path: &'a str) -> Self {
+    pub(crate) fn get(authority: &'a str, path: &'a str) -> Self {
         Self {
             method: "GET",
             authority,
@@ -461,7 +461,7 @@ impl<'a> HttpRequestSpec<'a> {
     }
 }
 
-pub struct HttpResponse {
+pub(crate) struct HttpResponse {
     pub status: u16,
     pub headers: Vec<(String, String)>,
     pub trailers: Vec<(String, String)>,
@@ -469,11 +469,11 @@ pub struct HttpResponse {
 }
 
 impl HttpResponse {
-    pub fn body_text(&self) -> String {
+    pub(crate) fn body_text(&self) -> String {
         String::from_utf8_lossy(&self.body).into_owned()
     }
 
-    pub fn header(&self, name: &str) -> Option<&str> {
+    pub(crate) fn header(&self, name: &str) -> Option<&str> {
         self.headers.iter().find_map(|(header_name, value)| {
             header_name
                 .eq_ignore_ascii_case(name)
@@ -482,11 +482,14 @@ impl HttpResponse {
     }
 }
 
-pub fn run_request_to(addr: SocketAddr, request: H3RequestSpec<'_>) -> Result<H3Response, String> {
+pub(crate) fn run_request_to(
+    addr: SocketAddr,
+    request: H3RequestSpec<'_>,
+) -> Result<H3Response, String> {
     run_h3_request(addr, request)
 }
 
-pub fn run_h3_get_to(
+pub(crate) fn run_h3_get_to(
     addr: SocketAddr,
     authority: &str,
     path: &str,
@@ -505,7 +508,7 @@ pub fn run_h3_get_to(
     )
 }
 
-pub fn run_http2_request_to(
+pub(crate) fn run_http2_request_to(
     addr: SocketAddr,
     cert_path: &str,
     request: HttpRequestSpec<'_>,
@@ -667,7 +670,7 @@ fn read_test_root_store(cert_path: &str) -> Result<RootCertStore, String> {
     Ok(roots)
 }
 
-pub fn run_two_chunk_post_to(
+pub(crate) fn run_two_chunk_post_to(
     addr: SocketAddr,
     authority: &str,
     path: &str,
@@ -686,7 +689,7 @@ pub fn run_two_chunk_post_to(
     )
 }
 
-pub fn run_two_chunk_post_to_with_response_timeout(
+pub(crate) fn run_two_chunk_post_to_with_response_timeout(
     addr: SocketAddr,
     authority: &str,
     path: &str,
@@ -707,7 +710,11 @@ pub fn run_two_chunk_post_to_with_response_timeout(
     )
 }
 
-pub fn cancel_h3_post_to(addr: SocketAddr, authority: &str, path: &str) -> Result<(), String> {
+pub(crate) fn cancel_h3_post_to(
+    addr: SocketAddr,
+    authority: &str,
+    path: &str,
+) -> Result<(), String> {
     run_two_chunk_post(
         addr,
         authority,
@@ -968,7 +975,7 @@ fn run_two_chunk_post(
     }
 }
 
-pub async fn start_h1_backend<F, Fut>(handler: F) -> BackendFixture
+pub(crate) async fn start_h1_backend<F, Fut>(handler: F) -> BackendFixture
 where
     F: Fn(Request<Incoming>) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = Result<Response<Full<Bytes>>, Infallible>> + Send + 'static,
@@ -978,7 +985,7 @@ where
         .expect("bind h1 test backend listener")
 }
 
-pub async fn start_h1_backend_on<F, Fut>(
+pub(crate) async fn start_h1_backend_on<F, Fut>(
     bind_addr: SocketAddr,
     handler: F,
 ) -> Result<BackendFixture, String>
@@ -1019,7 +1026,7 @@ where
     })
 }
 
-pub async fn start_h1_websocket_upgrade_backend() -> BackendFixture {
+pub(crate) async fn start_h1_websocket_upgrade_backend() -> BackendFixture {
     let listener = bind_tcp_listener();
     let addr = listener.local_addr().expect("h1 websocket local addr");
     let stop = Arc::new(AtomicBool::new(false));
@@ -1090,7 +1097,11 @@ pub async fn start_h1_websocket_upgrade_backend() -> BackendFixture {
     }
 }
 
-pub async fn start_h2_backend<F, Fut>(cert_path: &str, key_path: &str, handler: F) -> BackendFixture
+pub(crate) async fn start_h2_backend<F, Fut>(
+    cert_path: &str,
+    key_path: &str,
+    handler: F,
+) -> BackendFixture
 where
     F: Fn(Request<Incoming>) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = Result<Response<Full<Bytes>>, Infallible>> + Send + 'static,
@@ -1140,7 +1151,7 @@ where
     }
 }
 
-pub async fn start_h2_backend_with_client_auth<F, Fut>(
+pub(crate) async fn start_h2_backend_with_client_auth<F, Fut>(
     cert_path: &str,
     key_path: &str,
     client_ca_path: &str,
@@ -1200,7 +1211,7 @@ where
     }
 }
 
-pub async fn start_h2_streaming_backend(
+pub(crate) async fn start_h2_streaming_backend(
     cert_path: &str,
     key_path: &str,
     chunks: Vec<&'static [u8]>,
@@ -1257,7 +1268,7 @@ pub async fn start_h2_streaming_backend(
     }
 }
 
-pub async fn start_h1_chunked_backend(chunks: Vec<&'static [u8]>) -> BackendFixture {
+pub(crate) async fn start_h1_chunked_backend(chunks: Vec<&'static [u8]>) -> BackendFixture {
     let listener = bind_tcp_listener();
     let addr = listener.local_addr().expect("h1 chunked local addr");
     let stop = Arc::new(AtomicBool::new(false));
@@ -1322,7 +1333,9 @@ pub async fn start_h1_chunked_backend(chunks: Vec<&'static [u8]>) -> BackendFixt
     }
 }
 
-pub async fn start_h1_delayed_chunked_backend(chunks: Vec<(Vec<u8>, Duration)>) -> BackendFixture {
+pub(crate) async fn start_h1_delayed_chunked_backend(
+    chunks: Vec<(Vec<u8>, Duration)>,
+) -> BackendFixture {
     let listener = bind_tcp_listener();
     let addr = listener
         .local_addr()
@@ -1392,7 +1405,7 @@ pub async fn start_h1_delayed_chunked_backend(chunks: Vec<(Vec<u8>, Duration)>) 
     }
 }
 
-pub async fn start_h1_raw_response_backend(response_bytes: Vec<u8>) -> BackendFixture {
+pub(crate) async fn start_h1_raw_response_backend(response_bytes: Vec<u8>) -> BackendFixture {
     let listener = bind_tcp_listener();
     let addr = listener.local_addr().expect("h1 raw local addr");
     let stop = Arc::new(AtomicBool::new(false));
@@ -1434,14 +1447,14 @@ pub async fn start_h1_raw_response_backend(response_bytes: Vec<u8>) -> BackendFi
     }
 }
 
-pub fn reserve_unused_udp_port() -> u16 {
+pub(crate) fn reserve_unused_udp_port() -> u16 {
     let socket = UdpSocket::bind("127.0.0.1:0").expect("reserve udp port");
     let port = socket.local_addr().expect("udp local addr").port();
     drop(socket);
     port
 }
 
-pub fn reserve_unused_listener_port() -> u16 {
+pub(crate) fn reserve_unused_listener_port() -> u16 {
     for _ in 0..32 {
         let tcp = StdTcpListener::bind("127.0.0.1:0").expect("reserve listener tcp port");
         let port = tcp.local_addr().expect("tcp local addr").port();
@@ -1456,11 +1469,11 @@ pub fn reserve_unused_listener_port() -> u16 {
     reserve_unused_udp_port()
 }
 
-pub fn bind_tcp_listener() -> TcpListener {
+pub(crate) fn bind_tcp_listener() -> TcpListener {
     bind_tcp_listener_at(SocketAddr::from(([127, 0, 0, 1], 0))).expect("bind test backend listener")
 }
 
-pub fn bind_tcp_listener_at(bind_addr: SocketAddr) -> Result<TcpListener, String> {
+pub(crate) fn bind_tcp_listener_at(bind_addr: SocketAddr) -> Result<TcpListener, String> {
     let listener = StdTcpListener::bind(bind_addr)
         .map_err(|err| format!("bind test backend listener {bind_addr}: {err}"))?;
     listener
@@ -1470,7 +1483,7 @@ pub fn bind_tcp_listener_at(bind_addr: SocketAddr) -> Result<TcpListener, String
         .map_err(|err| format!("register test backend listener {bind_addr}: {err}"))
 }
 
-pub fn quic_read_timeout(conn: &quiche::Connection) -> Duration {
+pub(crate) fn quic_read_timeout(conn: &quiche::Connection) -> Duration {
     conn.timeout()
         .filter(|timeout| !timeout.is_zero())
         .unwrap_or(Duration::from_millis(UDP_READ_TIMEOUT_MS))
@@ -1659,14 +1672,14 @@ fn run_h3_request(addr: SocketAddr, request: H3RequestSpec<'_>) -> Result<H3Resp
     }
 }
 
-pub fn read_test_chain(cert_path: &str) -> Vec<CertificateDer<'static>> {
+pub(crate) fn read_test_chain(cert_path: &str) -> Vec<CertificateDer<'static>> {
     CertificateDer::pem_file_iter(cert_path)
         .expect("open cert file")
         .collect::<Result<Vec<_>, _>>()
         .expect("parse certs")
 }
 
-pub fn read_test_key(key_path: &str) -> PrivateKeyDer<'static> {
+pub(crate) fn read_test_key(key_path: &str) -> PrivateKeyDer<'static> {
     PrivateKeyDer::from_pem_file(key_path).expect("parse private key")
 }
 

@@ -20,8 +20,15 @@ use boring::{
 };
 use bytes::Bytes;
 use http::{Request, Response, StatusCode};
+use http_body_util::{BodyExt, combinators::BoxBody};
+use hyper::body::Incoming;
 #[cfg(test)]
 use impulse_bridge::response::should_strip_response_header;
+use impulse_bridge::response::{
+    ResponseBodyMode, ResponseBodyPolicy, ResponseNormalizationInput,
+    ResponseNormalizationProtocol, ResponseProtocolConstraints, normalize_response_trailers,
+    normalize_upstream_response,
+};
 use impulse_config::{
     backend_endpoint::{BackendEndpoint, BackendScheme},
     config::ClientAuth,
@@ -51,9 +58,10 @@ use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     sync::{Semaphore, mpsc, mpsc::error::TrySendError, oneshot},
 };
-#[cfg(test)]
 use tracing::{Instrument, info_span};
 
+#[cfg(test)]
+use crate::runtime::bundle::RuntimeBundleHandle;
 use crate::{
     ChannelBody, Metrics, OverloadShedReason, REQUEST_ID_COUNTER, RouteOutcome,
     cid_radix::CidRadix,
@@ -386,7 +394,6 @@ impl QUICListener {
         }
 
         let shared_ctx = ForwardingSharedCtx {
-            runtime_generation: self.runtime_generation,
             metrics: Arc::clone(&self.metrics),
             resilience: &self.resilience,
             routing_index: &self.routing_index,
@@ -470,7 +477,6 @@ impl QUICListener {
         let mut send_buf = [0u8; MAX_DATAGRAM_SIZE_BYTES];
         let mut to_remove = Vec::new();
         let shared_ctx = ForwardingSharedCtx {
-            runtime_generation: self.runtime_generation,
             metrics: Arc::clone(&self.metrics),
             resilience: &self.resilience,
             routing_index: &self.routing_index,

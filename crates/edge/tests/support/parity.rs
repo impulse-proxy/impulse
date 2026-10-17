@@ -10,7 +10,7 @@ use impulse_config::config::{Backend, Config, Upstream, UpstreamTls};
 use super::request_path::{H3RequestSpec, H3Response, QuicRequestPathHarness};
 
 #[derive(Clone, Copy)]
-pub struct ParityRequestSpec<'a> {
+pub(crate) struct ParityRequestSpec<'a> {
     pub method: &'a str,
     pub authority: &'a str,
     pub path: &'a str,
@@ -21,7 +21,7 @@ pub struct ParityRequestSpec<'a> {
 }
 
 impl<'a> ParityRequestSpec<'a> {
-    pub fn get(authority: &'a str, path: &'a str) -> Self {
+    pub(crate) fn get(authority: &'a str, path: &'a str) -> Self {
         Self {
             method: "GET",
             authority,
@@ -35,7 +35,7 @@ impl<'a> ParityRequestSpec<'a> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ParityResponseSnapshot {
+pub(crate) struct ParityResponseSnapshot {
     pub status: u16,
     pub body: Vec<u8>,
     pub selected_headers: Vec<(String, String)>,
@@ -43,30 +43,30 @@ pub struct ParityResponseSnapshot {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ParityObservation {
+pub(crate) struct ParityObservation {
     pub response: ParityResponseSnapshot,
 }
 
-pub struct ProtocolParityHarness {
+pub(crate) struct ProtocolParityHarness {
     inner: QuicRequestPathHarness,
 }
 
 impl ProtocolParityHarness {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             inner: QuicRequestPathHarness::new(),
         }
     }
 
-    pub fn make_config(&self, upstreams: HashMap<String, Upstream>) -> Config {
+    pub(crate) fn make_config(&self, upstreams: HashMap<String, Upstream>) -> Config {
         self.inner.make_config(upstreams)
     }
 
-    pub fn start_listener(&mut self, config: Config) -> Result<SocketAddr, String> {
+    pub(crate) fn start_listener(&mut self, config: Config) -> Result<SocketAddr, String> {
         self.inner.start_listener(config)
     }
 
-    pub fn start_h1_backend<F, Fut>(&mut self, handler: F) -> SocketAddr
+    pub(crate) fn start_h1_backend<F, Fut>(&mut self, handler: F) -> SocketAddr
     where
         F: Fn(Request<Incoming>) -> Fut + Send + Sync + 'static,
         Fut: std::future::Future<Output = Result<Response<Full<Bytes>>, Infallible>>
@@ -76,11 +76,14 @@ impl ProtocolParityHarness {
         self.inner.start_h1_backend(handler)
     }
 
-    pub fn start_h1_static_backend(&mut self, body: &'static [u8]) -> SocketAddr {
+    pub(crate) fn start_h1_static_backend(&mut self, body: &'static [u8]) -> SocketAddr {
         self.inner.start_h1_static_backend(body)
     }
 
-    pub fn run_quic(&self, request: ParityRequestSpec<'_>) -> Result<ParityObservation, String> {
+    pub(crate) fn run_quic(
+        &self,
+        request: ParityRequestSpec<'_>,
+    ) -> Result<ParityObservation, String> {
         let response = self.inner.run_request(H3RequestSpec {
             method: request.method,
             authority: request.authority,
@@ -94,11 +97,11 @@ impl ProtocolParityHarness {
         })
     }
 
-    pub fn cert_path(&self) -> &str {
+    pub(crate) fn cert_path(&self) -> &str {
         &self.inner.tls.cert_path
     }
 
-    pub fn metrics_text(&self) -> Option<String> {
+    pub(crate) fn metrics_text(&self) -> Option<String> {
         self.inner.metrics_text()
     }
 }
@@ -152,7 +155,7 @@ fn sorted_headers(mut headers: Vec<(String, String)>) -> Vec<(String, String)> {
     headers
 }
 
-pub fn make_upstream(
+pub(crate) fn make_upstream(
     path_prefix: &str,
     backends: Vec<Backend>,
     tls: Option<UpstreamTls>,
@@ -161,6 +164,6 @@ pub fn make_upstream(
     super::request_path::make_upstream(path_prefix, backends, tls, lb_type)
 }
 
-pub fn make_backend(id: &str, address: impl Into<String>) -> Backend {
+pub(crate) fn make_backend(id: &str, address: impl Into<String>) -> Backend {
     super::request_path::make_backend(id, address)
 }

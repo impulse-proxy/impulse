@@ -89,7 +89,7 @@ mod test_support {
     }
 
     pub(crate) fn test_upstream_pool_with_interval(interval: u64) -> Arc<RwLock<UpstreamPool>> {
-        let runtime = test_runtime_config(interval, "http://127.0.0.1:8080");
+        let runtime = test_runtime_config(interval, "127.0.0.1:8080");
 
         Arc::new(RwLock::new(
             UpstreamPool::from_runtime_upstream(runtime.upstreams.get("api").expect("upstream"))

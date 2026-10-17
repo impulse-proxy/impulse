@@ -67,6 +67,9 @@ pub(crate) fn build_h1_request(
             add_te_trailers: !preserve_upgrade,
         },
     )?;
+    if matches!(body_mode, crate::request::RequestBodyMode::Streaming) {
+        builder = builder.header(http::header::TRANSFER_ENCODING, "chunked");
+    }
 
     builder.body(body).map_err(BridgeError::Build)
 }

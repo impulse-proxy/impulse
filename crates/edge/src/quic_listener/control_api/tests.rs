@@ -2058,7 +2058,7 @@ async fn control_api_runtime_snapshot_endpoint_allows_viewer() {
 async fn control_api_runtime_snapshot_includes_jwks_cache_visibility() {
     let dir = tempdir().expect("tempdir");
     let (cert, key) = write_test_cert_for_name(dir.path(), "server", "api.example.com");
-    let jwks_url = "https://issuer.example.com/.well-known/jwks.json";
+    let jwks_url = "https://control-api-cache.example.com/.well-known/jwks.json";
     let jwks_source_id = crate::quic_listener::admission::jwks_source_identity_for_test(jwks_url);
     let mut startup = test_config(cert, key);
     startup.upstream.get_mut("api").expect("api upstream").auth = RouteAuth {

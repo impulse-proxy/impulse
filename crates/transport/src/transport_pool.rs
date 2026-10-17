@@ -70,24 +70,7 @@ impl UpstreamTransportPool {
     }
 
     pub fn pingora_peer(&self, backend: &str, generation: u64) -> Result<HttpPeer, ProxyError> {
-        let Some(mut config) = self.pingora_backends.get(backend).cloned() else {
-            return Err(if self.backend_entry(backend).is_some() {
-                ProxyError::Transport(format!(
-                    "Pingora backend '{backend}' has no resolved endpoint"
-                ))
-            } else {
-                ProxyError::Pool(PoolError::UnknownBackend(backend.to_string()))
-            });
-        };
-        if let Some(mut address) = self
-            .dns_resolver
-            .cached_addrs(&config.host)
-            .and_then(|addresses| addresses.into_iter().next())
-        {
-            address.set_port(config.port);
-            config.peer._address = address.into();
-            config.identity.address = address;
-        }
+        let mut config = self.resolved_pingora_backend(backend)?;
         config.identity.generation = generation;
         config.peer.group_key = config.identity.pool_key();
         Ok(config.peer)
@@ -104,26 +87,13 @@ impl UpstreamTransportPool {
             cancellation,
             completion,
         } = request;
-        let Some(mut config) = self.pingora_backends.get(backend).cloned() else {
-            let error = if self.backend_entry(backend).is_some() {
-                ProxyError::Transport(format!(
-                    "Pingora backend '{backend}' has no resolved endpoint"
-                ))
-            } else {
-                ProxyError::Pool(PoolError::UnknownBackend(backend.to_string()))
-            };
-            finish_pingora_dispatch_failure(completion, &error);
-            return Err(error);
+        let config = match self.resolved_pingora_backend(backend) {
+            Ok(config) => config,
+            Err(error) => {
+                finish_pingora_dispatch_failure(completion, &error);
+                return Err(error);
+            }
         };
-        if let Some(mut address) = self
-            .dns_resolver
-            .cached_addrs(&config.host)
-            .and_then(|addresses| addresses.into_iter().next())
-        {
-            address.set_port(config.port);
-            config.peer._address = address.into();
-            config.identity.address = address;
-        }
         let permit = self
             .acquire_exchange_permit(backend)
             .map_err(ProxyError::Pool);
@@ -182,6 +152,32 @@ impl UpstreamTransportPool {
             }
             None => unreachable!("Pingora backend disappeared after lookup"),
         }
+    }
+
+    fn resolved_pingora_backend(&self, backend: &str) -> Result<PingoraBackend, ProxyError> {
+        let Some(mut config) = self.pingora_backends.get(backend).cloned() else {
+            return Err(if self.backend_entry(backend).is_some() {
+                ProxyError::Transport(format!(
+                    "Pingora backend '{backend}' has no resolved endpoint"
+                ))
+            } else {
+                ProxyError::Pool(PoolError::UnknownBackend(backend.to_string()))
+            });
+        };
+        if let Some(mut address) = self
+            .dns_resolver
+            .cached_addrs(&config.host)
+            .and_then(|addresses| addresses.into_iter().next())
+        {
+            address.set_port(config.port);
+            config.peer._address = address.into();
+            config.identity.address = address;
+        } else if config.host.parse::<std::net::IpAddr>().is_err() {
+            return Err(ProxyError::Transport(format!(
+                "Pingora backend '{backend}' has no resolved endpoint"
+            )));
+        }
+        Ok(config)
     }
 
     pub async fn send_health_check(

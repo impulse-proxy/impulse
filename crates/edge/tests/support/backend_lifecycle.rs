@@ -37,29 +37,29 @@ use super::{
 };
 
 #[derive(Clone)]
-pub struct ToggleBackendFixture {
+pub(crate) struct ToggleBackendFixture {
     failing: Arc<AtomicBool>,
 }
 
 impl ToggleBackendFixture {
-    pub fn set_failing(&self, failing: bool) {
+    pub(crate) fn set_failing(&self, failing: bool) {
         self.failing.store(failing, Ordering::Relaxed);
     }
 
-    pub fn is_failing(&self) -> bool {
+    pub(crate) fn is_failing(&self) -> bool {
         self.failing.load(Ordering::Relaxed)
     }
 }
 
 #[derive(Debug, Clone)]
-pub struct HostnameBackendRoute {
+pub(crate) struct HostnameBackendRoute {
     pub backend_addr: String,
     pub authority_host: String,
     pub authority_port: u16,
 }
 
 impl HostnameBackendRoute {
-    pub fn new(authority_host: impl Into<String>, authority_port: u16) -> Self {
+    pub(crate) fn new(authority_host: impl Into<String>, authority_port: u16) -> Self {
         let authority_host = authority_host.into();
         Self {
             backend_addr: format!("http://{authority_host}:{authority_port}"),
@@ -68,7 +68,7 @@ impl HostnameBackendRoute {
         }
     }
 
-    pub fn upstream(&self) -> Upstream {
+    pub(crate) fn upstream(&self) -> Upstream {
         Upstream {
             load_balancing: LoadBalancing {
                 lb_type: "round-robin".to_string(),
@@ -93,7 +93,7 @@ impl HostnameBackendRoute {
 }
 
 #[derive(Debug, Clone)]
-pub enum ForcedBackendRefresh {
+pub(crate) enum ForcedBackendRefresh {
     Updated {
         result: BackendRefreshResult,
         client_rotation: TransportClientRotation,
@@ -106,22 +106,22 @@ pub enum ForcedBackendRefresh {
     },
 }
 
-pub struct BackendLifecycleHarness {
+pub(crate) struct BackendLifecycleHarness {
     runtime: RuntimeSwapHarness,
 }
 
 impl BackendLifecycleHarness {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             runtime: RuntimeSwapHarness::new(),
         }
     }
 
-    pub fn make_config(&self, upstreams: HashMap<String, Upstream>) -> Config {
+    pub(crate) fn make_config(&self, upstreams: HashMap<String, Upstream>) -> Config {
         self.runtime.make_config(upstreams)
     }
 
-    pub fn hostname_backend_route(
+    pub(crate) fn hostname_backend_route(
         &self,
         authority_host: impl Into<String>,
         authority_port: u16,
@@ -129,15 +129,15 @@ impl BackendLifecycleHarness {
         HostnameBackendRoute::new(authority_host, authority_port)
     }
 
-    pub fn start_listener(&mut self, config: Config) -> Result<SocketAddr, String> {
+    pub(crate) fn start_listener(&mut self, config: Config) -> Result<SocketAddr, String> {
         self.runtime.start_listener(config)
     }
 
-    pub fn start_h1_static_backend(&mut self, body: &'static [u8]) -> SocketAddr {
+    pub(crate) fn start_h1_static_backend(&mut self, body: &'static [u8]) -> SocketAddr {
         self.runtime.start_h1_static_backend(body)
     }
 
-    pub fn try_start_h1_static_backend_at(
+    pub(crate) fn try_start_h1_static_backend_at(
         &mut self,
         bind_addr: SocketAddr,
         body: &'static [u8],
@@ -147,7 +147,7 @@ impl BackendLifecycleHarness {
         })
     }
 
-    pub fn start_h1_backend<F, Fut>(&mut self, handler: F) -> SocketAddr
+    pub(crate) fn start_h1_backend<F, Fut>(&mut self, handler: F) -> SocketAddr
     where
         F: Fn(Request<Incoming>) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<Response<Full<Bytes>>, Infallible>> + Send + 'static,
@@ -155,7 +155,7 @@ impl BackendLifecycleHarness {
         self.runtime.start_h1_backend(handler)
     }
 
-    pub fn try_start_h1_backend_at<F, Fut>(
+    pub(crate) fn try_start_h1_backend_at<F, Fut>(
         &mut self,
         bind_addr: SocketAddr,
         handler: F,
@@ -167,7 +167,7 @@ impl BackendLifecycleHarness {
         self.runtime.try_start_h1_backend_at(bind_addr, handler)
     }
 
-    pub fn start_h1_fail_then_recover_backend(
+    pub(crate) fn start_h1_fail_then_recover_backend(
         &mut self,
         success_body: &'static [u8],
         failure_status: StatusCode,
@@ -192,34 +192,34 @@ impl BackendLifecycleHarness {
         (addr, ToggleBackendFixture { failing })
     }
 
-    pub fn run_request(&self, request: H3RequestSpec<'_>) -> Result<H3Response, String> {
+    pub(crate) fn run_request(&self, request: H3RequestSpec<'_>) -> Result<H3Response, String> {
         self.runtime.run_request(request)
     }
 
-    pub fn runtime_snapshot(&self) -> Result<serde_json::Value, String> {
+    pub(crate) fn runtime_snapshot(&self) -> Result<serde_json::Value, String> {
         self.runtime.runtime_snapshot()
     }
 
-    pub fn ready_snapshot_expect(
+    pub(crate) fn ready_snapshot_expect(
         &self,
         expected_status: StatusCode,
     ) -> Result<serde_json::Value, String> {
         self.runtime.ready_snapshot_expect(expected_status)
     }
 
-    pub fn metrics_text(&self) -> Result<String, String> {
+    pub(crate) fn metrics_text(&self) -> Result<String, String> {
         self.runtime.metrics_text()
     }
 
-    pub fn metrics_status_at(&self, path: &str) -> Result<StatusCode, String> {
+    pub(crate) fn metrics_status_at(&self, path: &str) -> Result<StatusCode, String> {
         self.runtime.metrics_status_at(path)
     }
 
-    pub fn runtime_bundle_handle(&self) -> Result<Arc<RuntimeBundleHandle>, String> {
+    pub(crate) fn runtime_bundle_handle(&self) -> Result<Arc<RuntimeBundleHandle>, String> {
         self.runtime.runtime_bundle_handle()
     }
 
-    pub fn backend_inventory(&self) -> Result<BackendLifecycleInventorySnapshot, String> {
+    pub(crate) fn backend_inventory(&self) -> Result<BackendLifecycleInventorySnapshot, String> {
         let handle = self.runtime_bundle_handle()?;
         let current = handle.current_view();
         Ok(current
@@ -228,7 +228,7 @@ impl BackendLifecycleHarness {
             .snapshot_inventory(&current.state().upstream_pools))
     }
 
-    pub fn backend_snapshot(
+    pub(crate) fn backend_snapshot(
         &self,
         backend_addr: &str,
     ) -> Result<Option<BackendLifecycleSnapshot>, String> {
@@ -240,7 +240,7 @@ impl BackendLifecycleHarness {
             .snapshot_backend(backend_addr))
     }
 
-    pub fn upstream_membership_summary(
+    pub(crate) fn upstream_membership_summary(
         &self,
         upstream_name: &str,
     ) -> Result<UpstreamPoolMembershipSummary, String> {
@@ -257,7 +257,7 @@ impl BackendLifecycleHarness {
         Ok(guard.membership_summary())
     }
 
-    pub fn upstream_backend_runtime_state(
+    pub(crate) fn upstream_backend_runtime_state(
         &self,
         upstream_name: &str,
         backend_addr: &str,
@@ -269,7 +269,7 @@ impl BackendLifecycleHarness {
         Ok(backend_index.and_then(|index| guard.backend_runtime_state(index)))
     }
 
-    pub fn mark_backend_passive_failure(
+    pub(crate) fn mark_backend_passive_failure(
         &self,
         upstream_name: &str,
         backend_addr: &str,
@@ -285,7 +285,7 @@ impl BackendLifecycleHarness {
         Ok(guard.mark_backend_request_failure(index, reason))
     }
 
-    pub fn mark_backend_active_recovery(
+    pub(crate) fn mark_backend_active_recovery(
         &self,
         upstream_name: &str,
         backend_addr: &str,
@@ -300,7 +300,7 @@ impl BackendLifecycleHarness {
         Ok(guard.mark_backend_healthy(index))
     }
 
-    pub fn cache_hostname_resolution(
+    pub(crate) fn cache_hostname_resolution(
         &self,
         authority_host: &str,
         resolved_addrs: &[SocketAddr],
@@ -320,7 +320,7 @@ impl BackendLifecycleHarness {
         Ok(())
     }
 
-    pub fn cached_hostname_resolution(
+    pub(crate) fn cached_hostname_resolution(
         &self,
         authority_host: &str,
     ) -> Result<Option<Vec<SocketAddr>>, String> {
@@ -332,7 +332,7 @@ impl BackendLifecycleHarness {
             .cached_addrs(authority_host))
     }
 
-    pub fn force_hostname_refresh(
+    pub(crate) fn force_hostname_refresh(
         &self,
         backend_addr: &str,
         resolved_addrs: Vec<SocketAddr>,
@@ -441,14 +441,14 @@ impl Default for BackendLifecycleHarness {
     }
 }
 
-pub fn alternate_loopback_backend_addrs(port: u16) -> (SocketAddr, SocketAddr) {
+pub(crate) fn alternate_loopback_backend_addrs(port: u16) -> (SocketAddr, SocketAddr) {
     (
         SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)), port),
         SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 3)), port),
     )
 }
 
-pub fn hostname_backend_uri(authority_host: &str, authority_port: u16) -> Uri {
+pub(crate) fn hostname_backend_uri(authority_host: &str, authority_port: u16) -> Uri {
     format!("http://{authority_host}:{authority_port}")
         .parse()
         .expect("hostname backend uri")

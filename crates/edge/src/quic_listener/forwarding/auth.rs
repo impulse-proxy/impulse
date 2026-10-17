@@ -627,16 +627,6 @@ pub(super) fn start_external_auth_task(
     })
 }
 
-pub(in crate::quic_listener) async fn evaluate_pending_forward_external_auth(
-    pending_forward: Arc<PendingForward>,
-    external_auth: RuntimeExternalAuth,
-) -> ExternalAuthStateTransition {
-    let task_config = ExternalAuthTaskConfig::from_external_auth(&external_auth);
-    let result =
-        run_external_auth_with_timeout(pending_forward, external_auth, task_config.timeout).await;
-    resolve_external_auth_state_transition(result, task_config.disposition)
-}
-
 impl QUICListener {
     pub(super) fn complete_auth_result(
         stream_id: u64,

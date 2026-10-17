@@ -300,13 +300,6 @@ pub(super) fn validate_request_headers(
     )
 }
 
-pub(in crate::quic_listener) fn validate_http_request(
-    req: &http::Request<Incoming>,
-    resilience: &RuntimeResilience,
-) -> Result<RequestValidationResult, (http::StatusCode, &'static [u8], bool)> {
-    validate_http_request_parts(req.method(), req.uri(), req.headers(), resilience)
-}
-
 pub(crate) fn validate_http_request_parts(
     method: &http::Method,
     uri: &http::Uri,

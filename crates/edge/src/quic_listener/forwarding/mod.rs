@@ -10,16 +10,12 @@ mod response;
 mod selection;
 mod stream_progress;
 
+pub(in crate::quic_listener) use self::outcome::{
+    backend_failure_reason_for_proxy_error, rejection_reason_for_status, terminalize_stream,
+};
 use self::prepare::RequestFinalizationConfig;
 #[cfg(test)]
 pub(in crate::quic_listener) use self::resolve::TargetResolutionRequest as TestTargetResolutionRequest;
-pub(in crate::quic_listener) use self::{
-    auth::evaluate_pending_forward_external_auth,
-    outcome::{
-        backend_failure_reason_for_proxy_error, rejection_reason_for_status, terminalize_stream,
-    },
-    resolve::{ResolutionContext, ResolutionObservation},
-};
 pub(crate) use self::{
     resolve::TargetResolutionRequest,
     selection::{ForwardingSelectionService, MAX_UPSTREAM_RETRY_ATTEMPTS, RetryCoordinator},
@@ -28,7 +24,6 @@ use super::*;
 
 // Shared forwarding dependencies passed through extracted submodules.
 pub(in crate::quic_listener) struct ForwardingSharedCtx<'a> {
-    pub(in crate::quic_listener) runtime_generation: crate::runtime::activation::GenerationId,
     pub(in crate::quic_listener) metrics: Arc<Metrics>,
     pub(in crate::quic_listener) resilience: &'a RuntimeResilience,
     pub(in crate::quic_listener) routing_index: &'a RouteIndex,

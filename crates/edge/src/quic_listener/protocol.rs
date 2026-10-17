@@ -59,6 +59,7 @@ pub(in crate::quic_listener) fn is_connect_method(method: &str) -> bool {
     method.eq_ignore_ascii_case("CONNECT")
 }
 
+#[cfg(test)]
 pub(in crate::quic_listener) fn is_head_method(method: &str) -> bool {
     method.eq_ignore_ascii_case("HEAD")
 }
@@ -93,38 +94,4 @@ pub(in crate::quic_listener) fn is_connect_tunnel_response(
 
 pub(in crate::quic_listener) fn can_poll_upstream_result(req: &RequestEnvelope) -> bool {
     req.can_poll_upstream_result()
-}
-
-fn header_has_token(value: &http::HeaderValue, token: &str) -> bool {
-    value
-        .to_str()
-        .ok()
-        .map(|raw| {
-            raw.split(',')
-                .any(|part| part.trim().eq_ignore_ascii_case(token))
-        })
-        .unwrap_or(false)
-}
-
-pub(in crate::quic_listener) fn is_websocket_upgrade_request(
-    req: &Request<Incoming>,
-    use_h2: bool,
-) -> bool {
-    if use_h2 || req.method() != http::Method::GET {
-        return false;
-    }
-    let Some(upgrade_header) = req.headers().get(http::header::UPGRADE) else {
-        return false;
-    };
-    if !upgrade_header
-        .to_str()
-        .map(|v| v.eq_ignore_ascii_case("websocket"))
-        .unwrap_or(false)
-    {
-        return false;
-    }
-    req.headers()
-        .get(http::header::CONNECTION)
-        .map(|v| header_has_token(v, "upgrade"))
-        .unwrap_or(false)
 }

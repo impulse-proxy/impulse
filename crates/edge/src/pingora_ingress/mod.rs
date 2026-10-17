@@ -302,6 +302,7 @@ pub fn spawn_pingora_ingress_listener(
     })
 }
 
+#[cfg(test)]
 pub(crate) fn pingora_ingress_services(
     configuration: &Arc<ServerConf>,
     runtime: RuntimeBundleHandle,

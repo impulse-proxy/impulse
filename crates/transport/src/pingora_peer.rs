@@ -1,4 +1,4 @@
-use std::net::{SocketAddr, ToSocketAddrs};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use impulse_config::{
     backend_endpoint::BackendScheme,
@@ -12,21 +12,13 @@ pub(crate) fn build_pingora_http_peer(
     endpoint: &RuntimeBackendEndpoint,
     connection_policy: &RuntimeBackendConnectionPolicy,
 ) -> Result<(HttpPeer, SocketAddr), String> {
-    let address = (endpoint.authority_host.as_str(), endpoint.authority_port)
-        .to_socket_addrs()
-        .map_err(|error| {
-            format!(
-                "failed to resolve backend '{}': {error}",
-                endpoint.canonical.authority()
-            )
-        })?
-        .next()
-        .ok_or_else(|| {
-            format!(
-                "backend '{}' resolved without an address",
-                endpoint.canonical.authority()
-            )
-        })?;
+    let address = SocketAddr::new(
+        endpoint
+            .authority_host
+            .parse()
+            .unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED)),
+        endpoint.authority_port,
+    );
     let tls = endpoint.canonical.scheme() == BackendScheme::Https;
     let mut peer = HttpPeer::new(
         address,

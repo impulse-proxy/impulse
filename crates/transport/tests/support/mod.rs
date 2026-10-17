@@ -1,4 +1,5 @@
 //! Local support helpers for transport facade contract tests.
+#![allow(dead_code)] // Each integration-test target uses a different subset of these helpers.
 
 use std::collections::HashMap;
 

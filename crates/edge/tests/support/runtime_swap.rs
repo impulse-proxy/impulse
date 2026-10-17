@@ -47,7 +47,7 @@ use super::{
     static_full_response,
 };
 
-pub struct RuntimeSwapHarness {
+pub(crate) struct RuntimeSwapHarness {
     backends: Vec<BackendFixture>,
     listener_task: Option<ListenerTaskGuard>,
     rt: tokio::runtime::Runtime,
@@ -74,7 +74,7 @@ pub struct RuntimeSwapHarness {
 const CONTROL_API_TOKEN: &str = "runtime-swap-token";
 
 impl RuntimeSwapHarness {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let config_dir = tempdir().expect("runtime swap tempdir");
         let tls = TestTlsMaterial::localhost();
         let control_api_initial_cert_pem =
@@ -113,11 +113,11 @@ impl RuntimeSwapHarness {
         }
     }
 
-    pub fn config_path(&self) -> &Path {
+    pub(crate) fn config_path(&self) -> &Path {
         &self.config_path
     }
 
-    pub fn make_config(&self, upstreams: HashMap<String, Upstream>) -> Config {
+    pub(crate) fn make_config(&self, upstreams: HashMap<String, Upstream>) -> Config {
         let mut config = base_quic_test_config(
             self.listen_port,
             &self.tls.cert_path,
@@ -161,7 +161,7 @@ impl RuntimeSwapHarness {
         config
     }
 
-    pub fn start_h1_backend<F, Fut>(&mut self, handler: F) -> SocketAddr
+    pub(crate) fn start_h1_backend<F, Fut>(&mut self, handler: F) -> SocketAddr
     where
         F: Fn(Request<Incoming>) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<Response<Full<Bytes>>, Infallible>> + Send + 'static,
@@ -172,7 +172,7 @@ impl RuntimeSwapHarness {
         addr
     }
 
-    pub fn try_start_h1_backend_at<F, Fut>(
+    pub(crate) fn try_start_h1_backend_at<F, Fut>(
         &mut self,
         bind_addr: SocketAddr,
         handler: F,
@@ -187,13 +187,13 @@ impl RuntimeSwapHarness {
         Ok(addr)
     }
 
-    pub fn start_h1_static_backend(&mut self, body: &'static [u8]) -> SocketAddr {
+    pub(crate) fn start_h1_static_backend(&mut self, body: &'static [u8]) -> SocketAddr {
         self.start_h1_backend(
             move |_req| async move { Ok::<_, Infallible>(static_full_response(body)) },
         )
     }
 
-    pub fn start_h2_backend_with_client_auth<F, Fut>(
+    pub(crate) fn start_h2_backend_with_client_auth<F, Fut>(
         &mut self,
         cert_path: &str,
         key_path: &str,
@@ -215,7 +215,7 @@ impl RuntimeSwapHarness {
         addr
     }
 
-    pub fn start_listener(&mut self, config: Config) -> Result<SocketAddr, String> {
+    pub(crate) fn start_listener(&mut self, config: Config) -> Result<SocketAddr, String> {
         validate(&config).map_err(|err| format!("config validation failed: {err}"))?;
         self.write_config_file(&config)?;
 
@@ -274,7 +274,7 @@ impl RuntimeSwapHarness {
         Ok(listen_addr)
     }
 
-    pub fn rewrite_config<F>(&mut self, edit: F) -> Result<(), String>
+    pub(crate) fn rewrite_config<F>(&mut self, edit: F) -> Result<(), String>
     where
         F: FnOnce(&mut Config),
     {
@@ -289,7 +289,7 @@ impl RuntimeSwapHarness {
         Ok(())
     }
 
-    pub fn runtime_snapshot(&self) -> Result<JsonValue, String> {
+    pub(crate) fn runtime_snapshot(&self) -> Result<JsonValue, String> {
         let path = self
             .current_config
             .as_ref()
@@ -308,7 +308,7 @@ impl RuntimeSwapHarness {
         ))
     }
 
-    pub fn runtime_history(&self) -> Result<JsonValue, String> {
+    pub(crate) fn runtime_history(&self) -> Result<JsonValue, String> {
         let base = self
             .current_config
             .as_ref()
@@ -328,7 +328,7 @@ impl RuntimeSwapHarness {
         ))
     }
 
-    pub fn runtime_history_generation(&self, generation: u64) -> Result<JsonValue, String> {
+    pub(crate) fn runtime_history_generation(&self, generation: u64) -> Result<JsonValue, String> {
         let base = self
             .current_config
             .as_ref()
@@ -348,7 +348,10 @@ impl RuntimeSwapHarness {
         ))
     }
 
-    pub fn ready_snapshot_expect(&self, expected_status: StatusCode) -> Result<JsonValue, String> {
+    pub(crate) fn ready_snapshot_expect(
+        &self,
+        expected_status: StatusCode,
+    ) -> Result<JsonValue, String> {
         let path = self
             .current_config
             .as_ref()
@@ -367,15 +370,15 @@ impl RuntimeSwapHarness {
         ))
     }
 
-    pub fn trigger_runtime_reload(&self) -> Result<JsonValue, String> {
+    pub(crate) fn trigger_runtime_reload(&self) -> Result<JsonValue, String> {
         self.trigger_runtime_reload_expect(StatusCode::ACCEPTED)
     }
 
-    pub fn trigger_runtime_activate(&self) -> Result<JsonValue, String> {
+    pub(crate) fn trigger_runtime_activate(&self) -> Result<JsonValue, String> {
         self.trigger_runtime_activate_expect(StatusCode::ACCEPTED)
     }
 
-    pub fn trigger_runtime_activate_expect(
+    pub(crate) fn trigger_runtime_activate_expect(
         &self,
         expected_status: StatusCode,
     ) -> Result<JsonValue, String> {
@@ -400,7 +403,10 @@ impl RuntimeSwapHarness {
         ))
     }
 
-    pub fn trigger_runtime_rollback(&self, target_generation: u64) -> Result<JsonValue, String> {
+    pub(crate) fn trigger_runtime_rollback(
+        &self,
+        target_generation: u64,
+    ) -> Result<JsonValue, String> {
         let base = self
             .current_config
             .as_ref()
@@ -425,7 +431,7 @@ impl RuntimeSwapHarness {
         ))
     }
 
-    pub fn trigger_runtime_reload_expect(
+    pub(crate) fn trigger_runtime_reload_expect(
         &self,
         expected_status: StatusCode,
     ) -> Result<JsonValue, String> {
@@ -450,11 +456,11 @@ impl RuntimeSwapHarness {
         ))
     }
 
-    pub fn trigger_runtime_reload_certs(&self) -> Result<JsonValue, String> {
+    pub(crate) fn trigger_runtime_reload_certs(&self) -> Result<JsonValue, String> {
         self.trigger_runtime_reload_certs_expect(StatusCode::ACCEPTED)
     }
 
-    pub fn trigger_runtime_reload_certs_expect(
+    pub(crate) fn trigger_runtime_reload_certs_expect(
         &self,
         expected_status: StatusCode,
     ) -> Result<JsonValue, String> {
@@ -476,7 +482,7 @@ impl RuntimeSwapHarness {
         ))
     }
 
-    pub fn metrics_text(&self) -> Result<String, String> {
+    pub(crate) fn metrics_text(&self) -> Result<String, String> {
         let path = self
             .current_config
             .as_ref()
@@ -488,7 +494,7 @@ impl RuntimeSwapHarness {
         self.metrics_text_at(&path)
     }
 
-    pub fn metrics_text_at(&self, path: &str) -> Result<String, String> {
+    pub(crate) fn metrics_text_at(&self, path: &str) -> Result<String, String> {
         self.rt.block_on(self.poll_metrics_text(
             path.to_string(),
             StatusCode::OK,
@@ -496,28 +502,28 @@ impl RuntimeSwapHarness {
         ))
     }
 
-    pub fn metrics_status_at(&self, path: &str) -> Result<StatusCode, String> {
+    pub(crate) fn metrics_status_at(&self, path: &str) -> Result<StatusCode, String> {
         self.rt
             .block_on(self.poll_metrics_status(path.to_string(), Duration::from_secs(5)))
     }
 
-    pub fn run_request(&self, request: H3RequestSpec<'_>) -> Result<H3Response, String> {
+    pub(crate) fn run_request(&self, request: H3RequestSpec<'_>) -> Result<H3Response, String> {
         let listen_addr = self
             .listen_addr
             .ok_or_else(|| "listener not started".to_string())?;
         run_request_to(listen_addr, request)
     }
 
-    pub fn listen_addr(&self) -> Result<SocketAddr, String> {
+    pub(crate) fn listen_addr(&self) -> Result<SocketAddr, String> {
         self.listen_addr
             .ok_or_else(|| "listener not started".to_string())
     }
 
-    pub fn listener_tls_paths(&self) -> (&str, &str) {
+    pub(crate) fn listener_tls_paths(&self) -> (&str, &str) {
         (&self.tls.cert_path, &self.tls.key_path)
     }
 
-    pub fn current_generation(&self) -> Result<u64, String> {
+    pub(crate) fn current_generation(&self) -> Result<u64, String> {
         Ok(self
             .runtime_bundle
             .as_ref()
@@ -525,14 +531,14 @@ impl RuntimeSwapHarness {
             .current_generation())
     }
 
-    pub fn runtime_bundle_handle(&self) -> Result<Arc<RuntimeBundleHandle>, String> {
+    pub(crate) fn runtime_bundle_handle(&self) -> Result<Arc<RuntimeBundleHandle>, String> {
         self.runtime_bundle
             .as_ref()
             .cloned()
             .ok_or_else(|| "runtime bundle unavailable".to_string())
     }
 
-    pub fn lifecycle_phase(&self) -> Result<RuntimeLifecyclePhase, String> {
+    pub(crate) fn lifecycle_phase(&self) -> Result<RuntimeLifecyclePhase, String> {
         Ok(self
             .runtime_bundle
             .as_ref()
@@ -541,7 +547,7 @@ impl RuntimeSwapHarness {
             .phase())
     }
 
-    pub fn begin_lifecycle_drain(&self) -> Result<LifecycleTransitionResult, String> {
+    pub(crate) fn begin_lifecycle_drain(&self) -> Result<LifecycleTransitionResult, String> {
         Ok(self
             .runtime_bundle
             .as_ref()
@@ -550,7 +556,7 @@ impl RuntimeSwapHarness {
             .begin_drain())
     }
 
-    pub fn request_watchdog_restart(&self, reason: &str) -> Result<bool, String> {
+    pub(crate) fn request_watchdog_restart(&self, reason: &str) -> Result<bool, String> {
         Ok(self
             .runtime_bundle
             .as_ref()
@@ -561,7 +567,7 @@ impl RuntimeSwapHarness {
             .request_restart(reason))
     }
 
-    pub fn fresh_quic_connection_establishes_within(
+    pub(crate) fn fresh_quic_connection_establishes_within(
         &self,
         timeout: Duration,
     ) -> Result<bool, String> {
