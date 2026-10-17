@@ -1,7 +1,7 @@
 use std::{
     convert::Infallible,
     sync::{Arc, RwLock, atomic::Ordering},
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use async_trait::async_trait;
@@ -10,8 +10,8 @@ use http_body_util::{Full, combinators::BoxBody};
 use impulse_config::backend_endpoint::BackendScheme;
 use impulse_lb::upstream_pool::UpstreamPool;
 use pingora_core::{
-    Error, InternalError, Result, server::configuration::ServerConf, services::listening::Service,
-    upstreams::peer::HttpPeer,
+    Error, HTTPStatus, InternalError, Result, server::configuration::ServerConf,
+    services::listening::Service, upstreams::peer::HttpPeer,
 };
 use pingora_http::{RequestHeader, ResponseHeader};
 use pingora_proxy::{HttpProxy, ProxyHttp, Session, http_proxy_service_with_name};
@@ -26,7 +26,13 @@ use crate::{
         PipelineRequest, PipelineRoute, ResolvedRequestPolicy, ResolvedRouteTarget,
         RouteResolutionError, TerminalOutcomeGuard, evaluate_pipeline, resolve_route,
     },
-    runtime::bundle::{RuntimeBundle, RuntimeBundleHandle},
+    runtime::{
+        bundle::{RuntimeBundle, RuntimeBundleHandle},
+        connection::guardrails::{
+            REQUEST_BODY_TOO_LARGE_BODY, RequestBodyGuardrailConfig, RequestBodyGuardrailInput,
+            checked_request_body_ingress,
+        },
+    },
 };
 
 pub(crate) struct PingoraRequestContext {
@@ -38,8 +44,16 @@ pub(crate) struct PingoraRequestContext {
     path: Option<String>,
     authority: Option<String>,
     content_length: Option<usize>,
+    body_bytes_received: usize,
+    body_limit_exempt: bool,
     request_id: u64,
     selected_backend: Option<PingoraSelectedBackend>,
+}
+
+impl Drop for PingoraRequestContext {
+    fn drop(&mut self) {
+        self.terminal_outcome.record();
+    }
 }
 
 struct PingoraSelectedBackend {
@@ -86,6 +100,8 @@ impl ProxyHttp for PingoraIngressService {
             path: None,
             authority: None,
             content_length: None,
+            body_bytes_received: 0,
+            body_limit_exempt: false,
             request_id: REQUEST_ID_COUNTER.fetch_add(1, Ordering::Relaxed),
             selected_backend: None,
         }
@@ -219,13 +235,103 @@ impl ProxyHttp for PingoraIngressService {
             return Ok(true);
         }
 
+        let body_limit_exempt = validated.method.eq_ignore_ascii_case("CONNECT")
+            || impulse_bridge::websocket::legacy_websocket_upgrade_requested(
+                &validated.method,
+                &bridge_headers(&request.headers),
+            );
+        let max_request_body_bytes = runtime
+            .runtime_config
+            .policies
+            .transport
+            .max_request_body_bytes;
+        if checked_request_body_ingress(
+            RequestBodyGuardrailConfig {
+                idle_timeout: Duration::ZERO,
+                total_timeout: Duration::ZERO,
+                max_body_bytes: max_request_body_bytes,
+                max_buffered_bytes: usize::MAX,
+            },
+            RequestBodyGuardrailInput {
+                elapsed: Duration::ZERO,
+                idle_for: Duration::ZERO,
+                bytes_received: 0,
+                buffered_bytes: 0,
+                next_chunk_bytes: 0,
+                declared_content_length: validated.content_length,
+                exempt_from_body_size_cap: body_limit_exempt,
+            },
+        )
+        .is_err()
+        {
+            ctx.terminal_outcome.record();
+            write_local_response(
+                session,
+                http::StatusCode::PAYLOAD_TOO_LARGE,
+                REQUEST_BODY_TOO_LARGE_BODY,
+                None,
+                None,
+            )
+            .await?;
+            return Ok(true);
+        }
+
         ctx.route = Some(route);
         ctx.policy = Some(pipeline.policy);
         ctx.method = Some(validated.method);
         ctx.path = Some(validated.path);
         ctx.authority = validated.authority;
         ctx.content_length = validated.content_length;
+        ctx.body_limit_exempt = body_limit_exempt;
         Ok(false)
+    }
+
+    async fn request_body_filter(
+        &self,
+        session: &mut Session,
+        body: &mut Option<Bytes>,
+        _end_of_stream: bool,
+        ctx: &mut Self::CTX,
+    ) -> Result<()> {
+        let max_request_body_bytes = ctx
+            .runtime
+            .runtime_config
+            .policies
+            .transport
+            .max_request_body_bytes;
+        let next = checked_request_body_ingress(
+            RequestBodyGuardrailConfig {
+                idle_timeout: Duration::ZERO,
+                total_timeout: Duration::ZERO,
+                max_body_bytes: max_request_body_bytes,
+                max_buffered_bytes: usize::MAX,
+            },
+            RequestBodyGuardrailInput {
+                elapsed: Duration::ZERO,
+                idle_for: Duration::ZERO,
+                bytes_received: ctx.body_bytes_received,
+                buffered_bytes: 0,
+                next_chunk_bytes: body.as_ref().map_or(0, Bytes::len),
+                declared_content_length: ctx.content_length,
+                exempt_from_body_size_cap: ctx.body_limit_exempt,
+            },
+        );
+        match next {
+            Ok(next) => {
+                ctx.body_bytes_received = next.bytes_received;
+                Ok(())
+            }
+            Err(_) => {
+                ctx.terminal_outcome.record();
+                session
+                    .respond_error_with_body(
+                        http::StatusCode::PAYLOAD_TOO_LARGE.as_u16(),
+                        Bytes::from_static(REQUEST_BODY_TOO_LARGE_BODY),
+                    )
+                    .await?;
+                Error::e_explain(HTTPStatus(413), "request body too large")
+            }
+        }
     }
 
     async fn upstream_peer(
