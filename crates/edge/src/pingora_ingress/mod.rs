@@ -33,6 +33,10 @@ use pingora_core::{
 };
 use pingora_http::{RequestHeader, ResponseHeader};
 use pingora_proxy::{HttpProxy, ProxyHttp, Session, http_proxy_service_with_name};
+use rustls::{
+    server::{ClientHello, ResolvesServerCert},
+    sign::CertifiedKey,
+};
 
 use crate::{
     REQUEST_ID_COUNTER,
@@ -61,6 +65,7 @@ use crate::{
                 observe_status_outcome,
             },
         },
+        tls::store::ListenerTlsReloadStore,
     },
 };
 
@@ -119,22 +124,57 @@ pub(crate) struct PingoraIngressService {
     runtime: RuntimeBundleHandle,
 }
 
+struct RotatingServerCertResolver {
+    listener: String,
+    store: Arc<ListenerTlsReloadStore>,
+}
+
+impl std::fmt::Debug for RotatingServerCertResolver {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RotatingServerCertResolver")
+            .field("listener", &self.listener)
+            .finish_non_exhaustive()
+    }
+}
+
+impl ResolvesServerCert for RotatingServerCertResolver {
+    fn resolve(&self, client_hello: ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
+        self.store
+            .bootstrap_server_config(&self.listener)?
+            .cert_resolver
+            .resolve(client_hello)
+    }
+}
+
 pub(crate) fn pingora_ingress_service(
     configuration: &Arc<ServerConf>,
     runtime: RuntimeBundleHandle,
 ) -> Result<Service<HttpProxy<PingoraIngressService>>> {
-    let Some(listener) = runtime
-        .current()
-        .runtime_config
-        .primary_listener_runtime_config()
-    else {
+    let current = runtime.current();
+    let Some(listener) = current.runtime_config.primary_listener_runtime_config() else {
         return Error::e_explain(
             InternalError,
             "Pingora ingress requires a configured listener",
         );
     };
+    let listener_label = format!(
+        "{}:{}",
+        listener.listen.listen.address, listener.listen.listen.port
+    );
+    let tls_store = Arc::clone(&current.shared_state.shared_services().listener_tls_store);
+    if tls_store.bootstrap_server_config(&listener_label).is_none() {
+        return Error::e_explain(
+            InternalError,
+            format!("Pingora ingress TLS state is missing for '{listener_label}'"),
+        );
+    }
     let identity = &listener.listen.tls.default_identity;
     let mut tls = TlsSettings::intermediate(&identity.cert_path, &identity.key_path)?;
+    tls.set_cert_resolver(Arc::new(RotatingServerCertResolver {
+        listener: listener_label.clone(),
+        store: tls_store,
+    }));
     tls.enable_h2();
 
     let mut service = http_proxy_service_with_name(
@@ -142,14 +182,7 @@ pub(crate) fn pingora_ingress_service(
         PingoraIngressService { runtime },
         "Impulse Pingora Ingress",
     );
-    service.add_tls_with_settings(
-        &format!(
-            "{}:{}",
-            listener.listen.listen.address, listener.listen.listen.port
-        ),
-        None,
-        tls,
-    );
+    service.add_tls_with_settings(&listener_label, None, tls);
     Ok(service)
 }
 
