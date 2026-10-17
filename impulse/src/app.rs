@@ -201,7 +201,12 @@ async fn run(
     });
 
     let mut listener_groups = Vec::new();
+    let mut worker_failed = false;
     for listener_config in runtime_config.listener_runtime_configs() {
+        if shutdown.load(Ordering::Relaxed) {
+            break;
+        }
+
         let worker_count = listener_config.performance.worker_threads.max(1);
         let worker_index_base = allocate_worker_index_base(&listener_groups, worker_count);
         match spawn_managed_listener_group(
@@ -217,16 +222,21 @@ async fn run(
             }
             Err(err) => {
                 error!("{}", err);
-                std::process::exit(1);
+                worker_failed = true;
+                break;
             }
         }
     }
 
-    log_listener_startup(&runtime_config, &listener_groups);
-    apply_privilege_drop(privilege_state, &runtime_config);
+    if !shutdown.load(Ordering::Relaxed) && !worker_failed {
+        log_listener_startup(&runtime_config, &listener_groups);
+        if let Err(err) = apply_privilege_drop(privilege_state, &runtime_config) {
+            error!("{}", err);
+            worker_failed = true;
+        }
+    }
 
-    let mut worker_failed = false;
-    while !shutdown.load(Ordering::Relaxed) {
+    while !shutdown.load(Ordering::Relaxed) && !worker_failed {
         collect_finished_listener_groups(&mut listener_groups, &mut worker_failed).await;
         if worker_failed {
             break;
@@ -312,26 +322,23 @@ fn fatal_startup_error(message: &str, logger_ready: bool, exit_code: i32) -> ! {
 fn apply_privilege_drop(
     privilege_state: impulse_edge::runtime::privilege_drop::ProcessPrivilegeState,
     runtime_config: &RuntimeConfig,
-) {
+) -> Result<(), String> {
     match apply_process_privilege_drop(privilege_state, runtime_config) {
         Ok(Some(target)) => {
             info!(
                 "Dropped process privileges to user='{}' group='{}'",
                 target.user, target.group
             );
+            Ok(())
         }
-        Ok(None) => {}
+        Ok(None) => Ok(()),
         Err(err) => {
             let user = runtime_config.security.privileges.user.trim();
             let group = runtime_config.security.privileges.group.trim();
-            fatal_startup_error(
-                &format!(
-                    "Failed to drop process privileges to user='{}' group='{}': {}",
-                    user, group, err
-                ),
-                true,
-                1,
-            );
+            Err(format!(
+                "Failed to drop process privileges to user='{}' group='{}': {}",
+                user, group, err
+            ))
         }
     }
 }
