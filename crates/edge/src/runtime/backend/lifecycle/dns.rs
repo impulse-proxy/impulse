@@ -488,11 +488,11 @@ mod tests {
 
         #[test]
         fn hostname_refresh_updates_resolved_addrs_and_generation() {
-            let backend_addr = "http://backend.internal:8080";
+            let backend_addr = "http://localhost:8080";
             let store = Arc::new(RuntimeBackendResolutionStore::new([
                 RuntimeBackendResolution::hostname(
                     backend_addr.to_string(),
-                    "backend.internal".to_string(),
+                    "localhost".to_string(),
                     8080,
                 ),
             ]));
@@ -528,19 +528,19 @@ mod tests {
             assert_eq!(snapshot.resolution.resolved_addrs, new_addrs);
             assert_eq!(snapshot.resolution.refresh_generation, 1);
             assert_eq!(
-                resolver.cached_addrs("backend.internal"),
+                resolver.cached_addrs("localhost"),
                 Some(vec!["10.0.0.10:0".parse::<SocketAddr>().expect("addr")])
             );
         }
 
         #[test]
         fn unchanged_refresh_does_not_rotate_clients_unnecessarily() {
-            let backend_addr = "http://backend.internal:8080";
+            let backend_addr = "http://localhost:8080";
             let initial_addrs = vec!["10.0.0.10:8080".parse::<SocketAddr>().expect("addr")];
             let store = Arc::new(RuntimeBackendResolutionStore::new([
                 RuntimeBackendResolution::hostname(
                     backend_addr.to_string(),
-                    "backend.internal".to_string(),
+                    "localhost".to_string(),
                     8080,
                 ),
             ]));
@@ -575,13 +575,13 @@ mod tests {
 
         #[test]
         fn successive_refreshes_increment_generation_across_outcomes() {
-            let backend_addr = "http://backend.internal:8080";
+            let backend_addr = "http://localhost:8080";
             let initial_addrs = vec!["10.0.0.10:8080".parse::<SocketAddr>().expect("addr")];
             let updated_addrs = vec!["10.0.0.11:8080".parse::<SocketAddr>().expect("addr")];
             let store = Arc::new(RuntimeBackendResolutionStore::new([
                 RuntimeBackendResolution::hostname(
                     backend_addr.to_string(),
-                    "backend.internal".to_string(),
+                    "localhost".to_string(),
                     8080,
                 ),
             ]));
@@ -633,12 +633,12 @@ mod tests {
 
         #[test]
         fn empty_dns_answer_retains_prior_addresses() {
-            let backend_addr = "http://backend.internal:8080";
+            let backend_addr = "http://localhost:8080";
             let retained_addrs = vec!["10.0.0.10:8080".parse::<SocketAddr>().expect("addr")];
             let store = Arc::new(RuntimeBackendResolutionStore::new([
                 RuntimeBackendResolution::hostname(
                     backend_addr.to_string(),
-                    "backend.internal".to_string(),
+                    "localhost".to_string(),
                     8080,
                 ),
             ]));
@@ -668,12 +668,12 @@ mod tests {
 
         #[test]
         fn failed_refresh_preserves_existing_resolution_and_generation() {
-            let backend_addr = "http://backend.internal:8080";
+            let backend_addr = "http://localhost:8080";
             let retained_addrs = vec!["10.0.0.10:8080".parse::<SocketAddr>().expect("addr")];
             let store = Arc::new(RuntimeBackendResolutionStore::new([
                 RuntimeBackendResolution::hostname(
                     backend_addr.to_string(),
-                    "backend.internal".to_string(),
+                    "localhost".to_string(),
                     8080,
                 ),
             ]));

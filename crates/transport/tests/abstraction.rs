@@ -12,11 +12,11 @@ use impulse_config::{
         ClientAuth, Config, Listen, LoadBalancing, Log, Observability, Performance, Resilience,
         RouteMatch, Security, Tls, Upstream, UpstreamTls,
     },
-    runtime::{RuntimeBackendTransportKind, RuntimeConfig},
+    runtime::RuntimeConfig,
 };
 use impulse_transport::{SharedDnsResolver, UpstreamTransportPool};
 
-use crate::support::{TransportTestProtocol, build_pool};
+use crate::support::build_pool;
 
 fn transport_test_config(http_backend: &str, https_backend: &str) -> Config {
     let mut config = Config {
@@ -104,31 +104,25 @@ fn runtime_upstream_interpretation_selects_protocol_without_caller_branching() {
 fn transport_facade_exposes_stable_rotation_contract_across_protocols() {
     let pool = build_pool(
         [
-            (
-                "h1-backend".to_string(),
-                TransportTestProtocol::Http1.runtime_kind(),
-            ),
-            (
-                "h2-backend".to_string(),
-                TransportTestProtocol::H2.runtime_kind(),
-            ),
+            "http://127.0.0.1:8080".to_string(),
+            "https://127.0.0.1:8443".to_string(),
         ],
         4,
         SharedDnsResolver::new(),
     );
 
     let h1_rotation = pool
-        .rotate_backend_client("h1-backend")
+        .rotate_backend_client("http://127.0.0.1:8080")
         .expect("h1 rotation");
     assert!(h1_rotation.rotated());
 
     let h2_rotation = pool
-        .rotate_backend_client("h2-backend")
+        .rotate_backend_client("https://127.0.0.1:8443")
         .expect("h2 rotation");
     assert!(h2_rotation.rotated());
 
     let h2_second_rotation = pool
-        .rotate_backend_client("h2-backend")
+        .rotate_backend_client("https://127.0.0.1:8443")
         .expect("second h2 rotation");
     assert!(h2_second_rotation.rotated());
 
@@ -141,15 +135,11 @@ fn transport_facade_exposes_stable_rotation_contract_across_protocols() {
 #[test]
 fn transport_facade_preserves_dns_refresh_rotation_contract() {
     let resolver = SharedDnsResolver::new();
-    let backend = "https://api.example.com:443".to_string();
-    let pool = build_pool(
-        [(backend.clone(), RuntimeBackendTransportKind::H2)],
-        4,
-        resolver.clone(),
-    );
+    let backend = "https://localhost:443".to_string();
+    let pool = build_pool([backend.clone()], 4, resolver.clone());
 
     resolver.set_host_addrs(
-        "api.example.com",
+        "localhost",
         [std::net::SocketAddr::from(([127, 0, 0, 10], 443))],
     );
     let first_rotation = pool
@@ -158,7 +148,7 @@ fn transport_facade_preserves_dns_refresh_rotation_contract() {
     assert!(first_rotation.rotated());
 
     resolver.set_host_addrs(
-        "api.example.com",
+        "localhost",
         [std::net::SocketAddr::from(([127, 0, 0, 11], 443))],
     );
     let second_rotation = pool
@@ -167,7 +157,7 @@ fn transport_facade_preserves_dns_refresh_rotation_contract() {
     assert!(second_rotation.rotated());
 
     assert_eq!(
-        resolver.cached_addrs("api.example.com"),
+        resolver.cached_addrs("localhost"),
         Some(vec![std::net::SocketAddr::from(([127, 0, 0, 11], 443))])
     );
 }

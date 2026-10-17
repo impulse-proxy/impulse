@@ -36,8 +36,7 @@ use tokio::{
 };
 
 use crate::support::{
-    TransportTestProtocol, backend_address, build_single_backend_pool, loopback_bind_restricted,
-    start_h1_upgrade_server,
+    backend_address, build_single_backend_pool, loopback_bind_restricted, start_h1_upgrade_server,
 };
 
 enum TestBody {
@@ -95,8 +94,7 @@ fn exchange_request(
         UpstreamExchangeRequest {
             head: UpstreamRequestHead {
                 method,
-                uri: Uri::try_from(format!("http://{backend}{path}"))
-                    .expect("exchange request URI"),
+                uri: Uri::try_from(format!("{backend}{path}")).expect("exchange request URI"),
                 version: Version::HTTP_11,
                 headers,
             },
@@ -231,12 +229,7 @@ async fn exchange_streams_data_and_trailers_in_both_directions() {
         Err(error) if loopback_bind_restricted(&error) => return,
         Err(error) => panic!("start streaming exchange server: {error}"),
     };
-    let pool = build_single_backend_pool(
-        backend.clone(),
-        TransportTestProtocol::Http1.runtime_kind(),
-        1,
-        SharedDnsResolver::new(),
-    );
+    let pool = build_single_backend_pool(backend.clone(), 1, SharedDnsResolver::new());
     let mut request_trailers = HeaderMap::new();
     request_trailers.insert("x-request-end", HeaderValue::from_static("done"));
     let mut request_headers = HeaderMap::new();
@@ -299,12 +292,7 @@ async fn cancellation_closes_the_exchange_and_releases_its_inflight_permit() {
         Err(error) if loopback_bind_restricted(&error) => return,
         Err(error) => panic!("start pending exchange server: {error}"),
     };
-    let pool = build_single_backend_pool(
-        backend.clone(),
-        TransportTestProtocol::Http1.runtime_kind(),
-        1,
-        SharedDnsResolver::new(),
-    );
+    let pool = build_single_backend_pool(backend.clone(), 1, SharedDnsResolver::new());
     let (request, cancellation, completion) =
         exchange_request(&backend, "/hold", Method::GET, HeaderMap::new(), []);
     let response = pool
@@ -349,12 +337,7 @@ async fn tunnel_completion_releases_its_inflight_permit() {
         Err(error) if loopback_bind_restricted(&error) => return,
         Err(error) => panic!("start tunnel exchange server: {error}"),
     };
-    let pool = build_single_backend_pool(
-        backend.clone(),
-        TransportTestProtocol::Http1.runtime_kind(),
-        1,
-        SharedDnsResolver::new(),
-    );
+    let pool = build_single_backend_pool(backend.clone(), 1, SharedDnsResolver::new());
     let mut headers = HeaderMap::new();
     headers.insert("connection", HeaderValue::from_static("upgrade"));
     headers.insert("upgrade", HeaderValue::from_static("websocket"));

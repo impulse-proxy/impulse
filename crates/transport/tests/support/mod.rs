@@ -1,29 +1,20 @@
 //! Local support helpers for transport facade contract tests.
 
-use std::{collections::HashMap, time::Duration};
+use std::collections::HashMap;
 
 use bytes::Bytes;
 use http_body_util::Full;
 use hyper::{Request, Response, StatusCode, body::Incoming, service::service_fn};
 use hyper_util::rt::TokioIo;
-use impulse_config::runtime::{RuntimeBackendConnectionPolicy, RuntimeBackendTransportKind};
+use impulse_config::{
+    config::{
+        Backend, ClientAuth, Config, Listen, LoadBalancing, Log, Observability, Performance,
+        Resilience, RouteMatch, Security, Tls, Upstream, UpstreamTls,
+    },
+    runtime::RuntimeConfig,
+};
 use impulse_transport::{SharedDnsResolver, UpstreamTransportPool};
 use tokio::{io::AsyncReadExt, net::TcpListener};
-
-#[derive(Clone, Copy)]
-pub(crate) enum TransportTestProtocol {
-    Http1,
-    H2,
-}
-
-impl TransportTestProtocol {
-    pub(crate) fn runtime_kind(self) -> RuntimeBackendTransportKind {
-        match self {
-            Self::Http1 => RuntimeBackendTransportKind::Http1,
-            Self::H2 => RuntimeBackendTransportKind::H2,
-        }
-    }
-}
 
 pub(crate) fn loopback_bind_restricted(err: &std::io::Error) -> bool {
     err.kind() == std::io::ErrorKind::PermissionDenied
@@ -31,20 +22,65 @@ pub(crate) fn loopback_bind_restricted(err: &std::io::Error) -> bool {
 }
 
 pub(crate) fn build_pool(
-    backends: impl IntoIterator<Item = (String, RuntimeBackendTransportKind)>,
+    backends: impl IntoIterator<Item = String>,
     max_inflight: usize,
     resolver: SharedDnsResolver,
 ) -> UpstreamTransportPool {
-    UpstreamTransportPool::new_from_runtime_backends(
-        backends,
-        HashMap::new(),
-        RuntimeBackendConnectionPolicy {
-            max_inflight,
-            max_idle_per_backend: 64,
-            pool_idle_timeout: Duration::from_secs(30),
-            connect_timeout: Duration::from_secs(2),
-            execution_timeout: Duration::from_secs(5),
+    let mut config = Config {
+        version: 1,
+        listen: Listen {
+            protocol: "http3".to_string(),
+            port: 443,
+            address: "0.0.0.0".to_string(),
+            tls: Tls {
+                cert: "/tmp/tls/default.pem".to_string(),
+                key: "/tmp/tls/default.key".to_string(),
+                certificates: Vec::new(),
+                client_auth: ClientAuth::default(),
+            },
         },
+        listeners: Vec::new(),
+        upstream: HashMap::new(),
+        load_balancing: None,
+        upstream_tls: UpstreamTls::default(),
+        secrets: Default::default(),
+        log: Log::default(),
+        performance: Performance {
+            worker_threads: 1,
+            per_backend_inflight_limit: max_inflight,
+            ..Performance::default()
+        },
+        observability: Observability::default(),
+        resilience: Resilience::default(),
+        security: Security::default(),
+    };
+    for (index, backend) in backends.into_iter().enumerate() {
+        config.upstream.insert(
+            format!("backend-{index}"),
+            Upstream {
+                load_balancing: LoadBalancing::default(),
+                auth: Default::default(),
+                host_policy: Default::default(),
+                forwarded_headers: Default::default(),
+                tls: None,
+                route: RouteMatch {
+                    host: Some(format!("backend-{index}.example.com")),
+                    path_prefix: Some("/".to_string()),
+                    method: None,
+                },
+                backends: vec![Backend {
+                    id: format!("backend-{index}"),
+                    address: backend,
+                    weight: 100,
+                    health_check: None,
+                }],
+            },
+        );
+    }
+    let runtime = RuntimeConfig::from_config(&config).expect("runtime config");
+    UpstreamTransportPool::from_runtime_upstreams(
+        runtime.upstreams.values(),
+        &runtime.policies.transport.backend_connections,
         resolver,
     )
     .expect("transport pool")
@@ -52,15 +88,14 @@ pub(crate) fn build_pool(
 
 pub(crate) fn build_single_backend_pool(
     backend: String,
-    transport_kind: RuntimeBackendTransportKind,
     max_inflight: usize,
     resolver: SharedDnsResolver,
 ) -> UpstreamTransportPool {
-    build_pool([(backend, transport_kind)], max_inflight, resolver)
+    build_pool([backend], max_inflight, resolver)
 }
 
 pub(crate) fn backend_address(port: u16) -> String {
-    format!("127.0.0.1:{port}")
+    format!("http://127.0.0.1:{port}")
 }
 
 pub(crate) async fn start_h1_upgrade_server() -> std::io::Result<String> {
