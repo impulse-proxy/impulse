@@ -19,8 +19,8 @@ impulse-utils = { path = "../utils" }
 bytes.workspace = true
 http.workspace = true
 http-body-util.workspace = true
-hyper.workspace = true
-hyper-util.workspace = true
+hyper = { workspace = true, features = ["client", "http1", "http2", "server"] }
+hyper-util = { workspace = true, features = ["client-legacy", "http1", "http2", "tokio"] }
 hyper-rustls.workspace = true
 tokio.workspace = true
 redis.workspace = true
@@ -61,7 +61,5 @@ tempfile = "3"
 bytes.workspace = true
 http.workspace = true
 http-body-util.workspace = true
-hyper.workspace = true
-hyper-util.workspace = true
 tokio.workspace = true
 serde_yaml.workspace = true

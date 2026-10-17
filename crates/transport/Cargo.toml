@@ -16,4 +16,5 @@ impulse-config = { path = "../config" }
 
 [dev-dependencies]
 http-body-util.workspace = true
-hyper-util.workspace = true
+hyper = { workspace = true, features = ["http1", "server"] }
+hyper-util = { workspace = true, features = ["tokio"] }
