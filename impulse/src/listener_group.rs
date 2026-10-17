@@ -19,6 +19,7 @@ use crate::runtime_guard;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ListenerGroupSignature {
     pub(crate) label: String,
+    listener_index: usize,
     pub(crate) worker_count: usize,
     shard_count: usize,
     shard_queue_capacity: usize,
@@ -35,9 +36,11 @@ pub(crate) struct ListenerGroupSignature {
 pub(crate) struct ListenerGroupRuntime {
     pub(crate) signature: ListenerGroupSignature,
     pub(crate) shutdown: ShutdownSignal,
+    listener_config: ListenerRuntimeConfig,
     worker_handles: Vec<thread::JoinHandle<Result<(), String>>>,
     pingora_listener: PingoraListenerTask,
     worker_index_base: usize,
+    failed_activation_generation: Option<u64>,
 }
 
 impl ListenerGroupRuntime {
@@ -119,6 +122,7 @@ pub(crate) fn listener_label(config: &ListenerRuntimeConfig) -> String {
 pub(crate) fn listener_group_signature(config: &ListenerRuntimeConfig) -> ListenerGroupSignature {
     ListenerGroupSignature {
         label: listener_label(config),
+        listener_index: config.listen.index,
         worker_count: config.performance.worker_threads.max(1),
         shard_count: config.performance.packet_shards_per_worker.max(1),
         shard_queue_capacity: config.performance.packet_shard_queue_capacity.max(1),
@@ -156,7 +160,7 @@ pub(crate) async fn spawn_managed_listener_group(
             worker_index_base,
         },
         ListenerWorkerRuntimeState {
-            listener_config,
+            listener_config: listener_config.clone(),
             shared_state: worker_shared,
             runtime_bundle,
             shutdown: shutdown.clone(),
@@ -166,9 +170,11 @@ pub(crate) async fn spawn_managed_listener_group(
     Ok(ListenerGroupRuntime {
         signature,
         shutdown,
+        listener_config,
         worker_handles,
         pingora_listener,
         worker_index_base,
+        failed_activation_generation: None,
     })
 }
 
@@ -212,45 +218,81 @@ pub(crate) async fn reconcile_listener_groups(
         .map(|config| (listener_label(config), listener_group_signature(config)))
         .collect::<HashMap<_, _>>();
 
-    for group in groups.iter_mut() {
-        match desired_signatures.get(&group.signature.label) {
-            Some(signature) if signature == &group.signature => {}
-            Some(signature) => {
-                if !group.shutdown.load(Ordering::Relaxed) {
-                    info!(
-                        "Retiring listener group {} for topology reload",
-                        signature.label
-                    );
-                    group.request_shutdown();
-                }
-            }
-            None => {
-                if !group.shutdown.load(Ordering::Relaxed) {
-                    info!(
-                        "Retiring listener group {} because it is no longer configured",
-                        group.signature.label
-                    );
-                    group.request_shutdown();
+    for listener_config in &desired_configs {
+        let signature = listener_group_signature(listener_config);
+        let Some(group_index) = groups.iter().position(|group| {
+            group.signature.label == signature.label
+                && !group.shutdown.load(Ordering::Relaxed)
+                && group.signature != signature
+                && group.failed_activation_generation != Some(runtime.generation)
+        }) else {
+            continue;
+        };
+
+        let previous = groups.swap_remove(group_index);
+        let previous_config = previous.listener_config.clone();
+        let worker_index_base = previous.worker_index_base;
+        info!(
+            "Replacing listener group {} for activated runtime generation {}",
+            signature.label, runtime.generation
+        );
+        previous.request_shutdown();
+        let mut replacement_failed = false;
+        previous.join_all(&mut replacement_failed).await;
+
+        match spawn_managed_listener_group(
+            listener_config.clone(),
+            Arc::clone(&runtime.shared_state),
+            Arc::clone(runtime_bundle),
+            worker_index_base,
+        )
+        .await
+        {
+            Ok(group) => groups.push(group),
+            Err(err) => {
+                error!(
+                    "Failed to activate replacement listener group {}: {}; restoring the active listener",
+                    signature.label, err
+                );
+                match spawn_managed_listener_group(
+                    previous_config,
+                    Arc::clone(&runtime.shared_state),
+                    Arc::clone(runtime_bundle),
+                    worker_index_base,
+                )
+                .await
+                {
+                    Ok(mut group) => {
+                        group.failed_activation_generation = Some(runtime.generation);
+                        groups.push(group);
+                    }
+                    Err(rollback_err) => {
+                        error!(
+                            "Failed to restore listener group {} after activation failure: {}",
+                            signature.label, rollback_err
+                        );
+                    }
                 }
             }
         }
     }
 
-    for listener_config in desired_configs {
-        let signature = listener_group_signature(&listener_config);
+    for listener_config in &desired_configs {
+        let signature = listener_group_signature(listener_config);
         let active_match = groups.iter().any(|group| {
             group.signature.label == signature.label && !group.shutdown.load(Ordering::Relaxed)
         });
-        let pending_retire = groups
-            .iter()
-            .any(|group| group.signature.label == signature.label);
-        if active_match || pending_retire {
+        let failed_replacement = groups.iter().any(|group| {
+            group.signature.listener_index == signature.listener_index
+                && group.failed_activation_generation == Some(runtime.generation)
+        });
+        if active_match || failed_replacement {
             continue;
         }
 
         let worker_index_base = allocate_worker_index_base(groups, signature.worker_count);
         match spawn_managed_listener_group(
-            listener_config,
+            listener_config.clone(),
             Arc::clone(&runtime.shared_state),
             Arc::clone(runtime_bundle),
             worker_index_base,
@@ -263,7 +305,47 @@ pub(crate) async fn reconcile_listener_groups(
             }
             Err(err) => {
                 error!("{}", err);
+                if let Some(previous) = groups.iter_mut().find(|group| {
+                    group.signature.listener_index == signature.listener_index
+                        && !group.shutdown.load(Ordering::Relaxed)
+                }) {
+                    previous.failed_activation_generation = Some(runtime.generation);
+                }
             }
+        }
+    }
+
+    let ready_listener_indices = groups
+        .iter()
+        .filter(|group| {
+            desired_signatures.contains_key(&group.signature.label)
+                && !group.shutdown.load(Ordering::Relaxed)
+        })
+        .map(|group| group.signature.listener_index)
+        .collect::<Vec<_>>();
+    for group in groups.iter() {
+        if desired_signatures.contains_key(&group.signature.label)
+            || group.shutdown.load(Ordering::Relaxed)
+        {
+            continue;
+        }
+        let replaced = ready_listener_indices.contains(&group.signature.listener_index);
+        let removed = !desired_configs
+            .iter()
+            .any(|config| config.listen.index == group.signature.listener_index);
+        if replaced || removed {
+            if removed {
+                info!(
+                    "Retiring listener group {} because it is no longer configured",
+                    group.signature.label
+                );
+            } else {
+                info!(
+                    "Retiring listener group {} after activated listener replacement",
+                    group.signature.label
+                );
+            }
+            group.request_shutdown();
         }
     }
 }
