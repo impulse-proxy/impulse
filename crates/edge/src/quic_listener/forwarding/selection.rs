@@ -21,10 +21,12 @@ use crate::resilience::{
 /// Selects an eligible backend and builds retry/hedge policy inputs without
 /// coupling those decisions to an upstream wire protocol.
 #[derive(Clone, Copy, Debug, Default)]
-pub(super) struct ForwardingSelectionService;
+pub(crate) struct ForwardingSelectionService;
+
+pub(crate) const MAX_UPSTREAM_RETRY_ATTEMPTS: u8 = 1;
 
 impl ForwardingSelectionService {
-    pub(super) fn select_backend(
+    pub(crate) fn select_backend(
         request: &TargetResolutionRequest<'_>,
         upstream_pool: &Arc<RwLock<UpstreamPool>>,
         begin_request: bool,
@@ -93,7 +95,7 @@ impl ForwardingSelectionService {
 
 /// Retry and hedge facts derived before dispatch begins.
 #[derive(Clone, Copy)]
-pub(super) struct RetryHedgePolicyInputs {
+pub(crate) struct RetryCoordinator {
     method_idempotent: bool,
     bodyless_mode: bool,
     hedge_method_allowed: bool,
@@ -101,8 +103,8 @@ pub(super) struct RetryHedgePolicyInputs {
     hedge_tunnel_request: bool,
 }
 
-impl RetryHedgePolicyInputs {
-    pub(super) const fn new(
+impl RetryCoordinator {
+    pub(crate) const fn new(
         method_idempotent: bool,
         bodyless_mode: bool,
         hedge_method_allowed: bool,
@@ -148,7 +150,7 @@ impl RetryHedgePolicyInputs {
         })
     }
 
-    pub(super) fn retry_after_error(
+    pub(crate) fn retry_after_error(
         self,
         primary_err: &ProxyError,
         retry_count: u8,

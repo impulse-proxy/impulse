@@ -7,7 +7,7 @@ use crate::{
 };
 
 #[derive(Clone, Copy)]
-pub(in crate::quic_listener) struct TargetResolutionRequest<'a> {
+pub(crate) struct TargetResolutionRequest<'a> {
     pub(in crate::quic_listener) method: &'a str,
     pub(in crate::quic_listener) path: &'a str,
     pub(in crate::quic_listener) authority: Option<&'a str>,
@@ -16,7 +16,7 @@ pub(in crate::quic_listener) struct TargetResolutionRequest<'a> {
 }
 
 impl<'a> TargetResolutionRequest<'a> {
-    pub(in crate::quic_listener) fn new(
+    pub(crate) fn new(
         method: &'a str,
         path: &'a str,
         authority: Option<&'a str>,
@@ -75,9 +75,9 @@ pub(in crate::quic_listener) struct RouteResolution {
     pub(in crate::quic_listener) route_reason: RouteDecisionReason,
 }
 
-pub(in crate::quic_listener) struct BackendSelection {
-    pub(in crate::quic_listener) backend_addr: String,
-    pub(in crate::quic_listener) backend_index: usize,
+pub(crate) struct BackendSelection {
+    pub(crate) backend_addr: String,
+    pub(crate) backend_index: usize,
     pub(in crate::quic_listener) backend_lb: String,
 }
 

@@ -1519,6 +1519,7 @@ dependencies = [
 name = "impulse-edge"
 version = "0.6.0"
 dependencies = [
+ "async-trait",
  "base64",
  "boring",
  "bytes",

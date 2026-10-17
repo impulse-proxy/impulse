@@ -80,6 +80,30 @@ impl UpstreamTransportPool {
         self.pingora_pool.drain();
     }
 
+    pub fn pingora_peer(&self, backend: &str, generation: u64) -> Result<HttpPeer, ProxyError> {
+        let Some(mut config) = self.pingora_backends.get(backend).cloned() else {
+            return Err(if self.backend_entry(backend).is_some() {
+                ProxyError::Transport(format!(
+                    "Pingora backend '{backend}' has no resolved endpoint"
+                ))
+            } else {
+                ProxyError::Pool(PoolError::UnknownBackend(backend.to_string()))
+            });
+        };
+        if let Some(mut address) = self
+            .dns_resolver
+            .cached_addrs(&config.host)
+            .and_then(|addresses| addresses.into_iter().next())
+        {
+            address.set_port(config.port);
+            config.peer._address = address.into();
+            config.identity.address = address;
+        }
+        config.identity.generation = generation;
+        config.peer.group_key = config.identity.pool_key();
+        Ok(config.peer)
+    }
+
     pub async fn send_exchange(
         &self,
         backend: &str,
