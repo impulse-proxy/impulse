@@ -112,14 +112,6 @@ impl PingoraH2UpstreamSession {
         })
     }
 
-    pub fn generation(&self) -> u64 {
-        self.pool.generation()
-    }
-
-    pub fn reused(&self) -> bool {
-        self.reused
-    }
-
     pub fn session(&self) -> &Http2Session {
         self.session
             .as_ref()

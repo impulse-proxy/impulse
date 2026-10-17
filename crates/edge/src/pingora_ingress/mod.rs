@@ -30,7 +30,7 @@ use impulse_transport::{classify_pingora_h1_error, classify_pingora_h2_error};
 use pingora_core::{
     Error, HTTPStatus, InternalError, Result,
     apps::HttpServerOptions,
-    listeners::TlsSettings,
+    listeners::tls::TlsSettings,
     server::configuration::ServerConf,
     services::{Service as PingoraServiceLifecycle, listening::Service},
     upstreams::peer::{ALPN, HttpPeer},
@@ -46,7 +46,7 @@ use crate::{
     REQUEST_ID_COUNTER,
     quic_listener::{
         AdmissionPolicyDecision, ForwardingSelectionService, MAX_UPSTREAM_RETRY_ATTEMPTS,
-        QUICListener, RetryCoordinator, TargetResolutionRequest, admission_rejection_response,
+        RetryCoordinator, TargetResolutionRequest, admission_rejection_response,
         validate_http_request_parts,
     },
     request_pipeline::{
@@ -69,6 +69,7 @@ use crate::{
                 observe_status_outcome,
             },
         },
+        listener::QUICListener,
         tls::store::ListenerTlsReloadStore,
     },
 };
@@ -384,10 +385,9 @@ fn pingora_ingress_service_for_listener(
         &format!("Impulse Pingora Ingress {listener_label}"),
     );
     if let Some(proxy) = service.app_logic_mut() {
-        proxy.server_options = Some(HttpServerOptions {
-            allow_connect_method_proxying: true,
-            ..HttpServerOptions::default()
-        });
+        let mut options = HttpServerOptions::default();
+        options.allow_connect_method_proxying = true;
+        proxy.server_options = Some(options);
     }
     service.add_tls_with_settings(&listener_label, None, tls);
     Ok((service, drain))
@@ -535,7 +535,7 @@ impl ProxyHttp for PingoraIngressService {
                 &validated.method,
                 &bridge_headers(&request.headers),
             );
-        ctx.route = Some(route);
+        ctx.route = Some(route.clone());
         ctx.method = Some(validated.method);
         ctx.path = Some(validated.path);
         ctx.authority = validated.authority;
@@ -982,9 +982,16 @@ impl ProxyHttp for PingoraIngressService {
             return Error::e_explain(HTTPStatus(503), "upstream response body too large");
         }
 
-        upstream_response.headers.clear();
+        let existing_headers = upstream_response
+            .headers
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        for name in existing_headers {
+            upstream_response.remove_header(&name);
+        }
         for header in normalized.head.headers {
-            upstream_response.headers.append(header.name, header.value);
+            upstream_response.append_header(header.name, header.value)?;
         }
         ctx.response_body_bytes_received = 0;
         ctx.response_body_suppressed = body_suppressed;
@@ -1320,9 +1327,11 @@ async fn write_local_response(
     if let Some(seconds) = retry_after_seconds {
         response.insert_header(http::header::RETRY_AFTER, seconds.to_string())?;
     }
-    session.write_response_header(Box::new(response)).await?;
     session
-        .write_response_body(Bytes::from_static(body), true)
+        .write_response_header(Box::new(response), false)
+        .await?;
+    session
+        .write_response_body(Some(Bytes::from_static(body)), true)
         .await
 }
 
