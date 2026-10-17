@@ -6,7 +6,8 @@ use std::{
 
 use impulse_config::{config::Backend, runtime::RuntimeUpstream};
 use pingora_load_balancing::{
-    Backend as PingoraBackend, BackendView, discovery::Static as StaticDiscovery,
+    Backend as PingoraBackend, BackendView, LoadBalancer, discovery::Static as StaticDiscovery,
+    selection::RoundRobin as PingoraRoundRobin,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -57,6 +58,58 @@ impl<P> BackendSelectionResult<P> {
 
     pub fn into_connection_policy(self) -> P {
         self.connection_policy
+    }
+}
+
+pub struct GenerationWeightedRoundRobin<T> {
+    generation: u64,
+    upstream_name: String,
+    backend_count: usize,
+    selector: LoadBalancer<PingoraRoundRobin>,
+    policy: std::marker::PhantomData<T>,
+}
+
+impl<T> GenerationWeightedRoundRobin<T>
+where
+    T: Clone + Send + Sync + 'static,
+{
+    pub fn from_backend_view(view: GenerationBackendView) -> Self {
+        let GenerationBackendView {
+            generation,
+            upstream_name,
+            view,
+        } = view;
+        let backend_count = view.get_backend().len();
+
+        Self {
+            generation,
+            upstream_name,
+            backend_count,
+            selector: LoadBalancer::from_backends(view),
+            policy: std::marker::PhantomData,
+        }
+    }
+
+    pub fn select(&self) -> Option<BackendSelectionResult<T>> {
+        let selected = self.selector.select(b"", self.backend_count)?;
+        let address = *selected.addr.as_inet()?;
+        let identity = selected.ext.get::<PingoraBackendIdentity<T>>()?;
+
+        Some(BackendSelectionResult::new(
+            identity.backend_id(),
+            address,
+            identity.index(),
+            self.generation,
+            identity.tls_identity().clone(),
+        ))
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    pub fn upstream_name(&self) -> &str {
+        &self.upstream_name
     }
 }
 
@@ -133,13 +186,14 @@ impl GenerationBackendView {
         mut map_backend: F,
     ) -> Result<Self, String>
     where
-        F: FnMut(&Backend) -> Result<PingoraBackend, String>,
+        F: FnMut(usize, &Backend) -> Result<PingoraBackend, String>,
     {
         let upstream_name = upstream_name.into();
         let mapped = upstream
             .backends
             .iter()
-            .map(|backend| map_backend(&backend.backend))
+            .enumerate()
+            .map(|(index, backend)| map_backend(index, &backend.backend))
             .collect::<Result<BTreeSet<_>, _>>()?;
 
         if mapped.len() != upstream.backends.len() {
@@ -181,6 +235,7 @@ impl GenerationBackendView {
 pub struct PingoraBackendIdentity<T> {
     backend_id: String,
     configured_address: String,
+    index: usize,
     tls_identity: T,
 }
 
@@ -193,6 +248,10 @@ impl<T> PingoraBackendIdentity<T> {
         &self.configured_address
     }
 
+    pub fn index(&self) -> usize {
+        self.index
+    }
+
     pub fn tls_identity(&self) -> &T {
         &self.tls_identity
     }
@@ -200,6 +259,7 @@ impl<T> PingoraBackendIdentity<T> {
 
 pub fn map_validated_backend<T>(
     backend: &Backend,
+    index: usize,
     address: SocketAddr,
     tls_identity: T,
 ) -> Result<PingoraBackend, String>
@@ -215,6 +275,7 @@ where
     mapped.ext.insert(PingoraBackendIdentity {
         backend_id: backend.id.clone(),
         configured_address: backend.address.clone(),
+        index,
         tls_identity,
     });
     Ok(mapped)
