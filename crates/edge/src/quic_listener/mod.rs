@@ -133,7 +133,10 @@ pub(crate) use connection::{ConnectionRoutes, sweep_closed_connections};
 use forwarding::{
     ForwardingExecutionCtx, ForwardingSharedCtx, H3RequestHandlingConfig, StreamProgressConfig,
 };
-pub(crate) use forwarding::{ForwardingSelectionService, TargetResolutionRequest};
+pub(crate) use forwarding::{
+    ForwardingSelectionService, MAX_UPSTREAM_RETRY_ATTEMPTS, RetryCoordinator,
+    TargetResolutionRequest,
+};
 #[cfg(test)]
 use health_check::classify_active_health_check_response;
 pub(in crate::quic_listener) use protocol::{

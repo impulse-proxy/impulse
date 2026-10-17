@@ -20,7 +20,10 @@ pub(in crate::quic_listener) use self::{
     },
     resolve::{BootstrapTargetResolutionInput, ResolutionContext, ResolutionObservation},
 };
-pub(crate) use self::{resolve::TargetResolutionRequest, selection::ForwardingSelectionService};
+pub(crate) use self::{
+    resolve::TargetResolutionRequest,
+    selection::{ForwardingSelectionService, MAX_UPSTREAM_RETRY_ATTEMPTS, RetryCoordinator},
+};
 use super::*;
 
 // Shared forwarding dependencies passed through extracted submodules.

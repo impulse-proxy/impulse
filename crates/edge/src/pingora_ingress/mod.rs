@@ -15,8 +15,7 @@ use impulse_bridge::response::{
 use impulse_config::backend_endpoint::BackendScheme;
 use impulse_errors::{
     ProxyError, RetryAttemptTelemetryReason, RetryPolicyDecision, RetryPolicyDenialReason,
-    RetryPolicyFacts, classify_retryability, classify_upstream_proxy_error, evaluate_retry_policy,
-    is_idempotent_method,
+    classify_upstream_proxy_error, is_idempotent_method,
 };
 use impulse_lb::{
     alternate_backend::{
@@ -37,8 +36,9 @@ use pingora_proxy::{HttpProxy, ProxyHttp, Session, http_proxy_service_with_name}
 use crate::{
     REQUEST_ID_COUNTER,
     quic_listener::{
-        AdmissionPolicyDecision, ForwardingSelectionService, TargetResolutionRequest,
-        admission_rejection_response, validate_http_request_parts,
+        AdmissionPolicyDecision, ForwardingSelectionService, MAX_UPSTREAM_RETRY_ATTEMPTS,
+        RetryCoordinator, TargetResolutionRequest, admission_rejection_response,
+        validate_http_request_parts,
     },
     request_pipeline::{
         PipelineRequest, PipelineRoute, ResolvedRequestPolicy, ResolvedRouteTarget,
@@ -57,8 +57,6 @@ use crate::{
         },
     },
 };
-
-const MAX_PINGORA_RETRY_ATTEMPTS: u8 = 1;
 
 pub(crate) struct PingoraRequestContext {
     pub(crate) runtime: Arc<RuntimeBundle>,
@@ -817,16 +815,21 @@ fn handle_pingora_proxy_failure(
         .as_ref()
         .map(|route| route.upstream_name.as_ref())
         .unwrap_or("unrouted");
-    let decision = evaluate_retry_policy(RetryPolicyFacts {
-        retryability: classify_retryability(&proxy_error),
-        method_idempotent: ctx.method.as_deref().is_some_and(is_idempotent_method),
-        request_body_replayable: ctx.request_body_replayable && retry_safe,
-        attempt_count: ctx.retry_count,
-        max_attempts: MAX_PINGORA_RETRY_ATTEMPTS,
-        budget_available: true,
-        alternate_backend_available: retry_backend.is_some(),
-        alternate_backend_failure: alternate_failure,
-    });
+    let retry = RetryCoordinator::new(
+        ctx.method.as_deref().is_some_and(is_idempotent_method),
+        ctx.request_body_replayable && retry_safe,
+        false,
+        false,
+        ctx.body_limit_exempt,
+    );
+    let decision = retry.retry_after_error(
+        &proxy_error,
+        ctx.retry_count,
+        MAX_UPSTREAM_RETRY_ATTEMPTS,
+        true,
+        retry_backend.is_some(),
+        alternate_failure,
+    );
     let metrics = &ctx.runtime.shared_state.shared_services().metrics;
     match decision {
         RetryPolicyDecision::Retry { reason }

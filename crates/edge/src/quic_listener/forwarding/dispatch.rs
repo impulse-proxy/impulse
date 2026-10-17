@@ -13,7 +13,7 @@ use impulse_transport::{
 };
 
 use super::{
-    selection::{ForwardingSelectionService, RetryHedgePolicyInputs},
+    selection::{ForwardingSelectionService, MAX_UPSTREAM_RETRY_ATTEMPTS, RetryCoordinator},
     *,
 };
 use crate::{
@@ -21,7 +21,6 @@ use crate::{
     runtime::connection::{request::PendingForward, response::ForwardingPolicyTelemetry},
 };
 
-const MAX_UPSTREAM_RETRY_ATTEMPTS: u8 = 1;
 pub(in crate::quic_listener) type UpstreamRequest = Request<BoxBody<Bytes, Infallible>>;
 
 #[derive(Clone, Debug)]
@@ -62,7 +61,7 @@ struct WebsocketTunnelForwardInput {
 struct RetryExecutionCtx<'a> {
     request_id: u64,
     route_name: &'a str,
-    policy: RetryHedgePolicyInputs,
+    policy: RetryCoordinator,
     policy_telemetry: &'a mut ForwardingPolicyTelemetry,
     retry_budget: &'a crate::resilience::retry_budget::RetryBudget,
     alternate_backend: Option<&'a ResolvedAlternateBackend>,
@@ -399,7 +398,7 @@ impl QUICListener {
         let hedge_configured =
             resilience.hedging_route_enabled_for(pending_forward.upstream_name.as_ref());
         let hedge_tunnel_request = req.tunnel_mode != TunnelMode::None;
-        let policy = RetryHedgePolicyInputs::new(
+        let policy = RetryCoordinator::new(
             method_idempotent,
             bodyless_mode,
             hedge_method_allowed,
