@@ -148,60 +148,73 @@ impl ResolvesServerCert for RotatingServerCertResolver {
     }
 }
 
-pub(crate) fn pingora_ingress_service(
+pub(crate) fn pingora_ingress_services(
     configuration: &Arc<ServerConf>,
     runtime: RuntimeBundleHandle,
-) -> Result<Service<HttpProxy<PingoraIngressService>>> {
+) -> Result<Vec<Service<HttpProxy<PingoraIngressService>>>> {
     let current = runtime.current();
-    let Some(listener) = current.runtime_config.primary_listener_runtime_config() else {
+    let listeners = current.runtime_config.listener_runtime_configs();
+    if listeners.is_empty() {
         return Error::e_explain(
             InternalError,
             "Pingora ingress requires a configured listener",
         );
-    };
-    let listener_label = format!(
-        "{}:{}",
-        listener.listen.listen.address, listener.listen.listen.port
-    );
+    }
     let tls_store = Arc::clone(&current.shared_state.shared_services().listener_tls_store);
-    if tls_store.bootstrap_server_config(&listener_label).is_none() {
-        return Error::e_explain(
-            InternalError,
-            format!("Pingora ingress TLS state is missing for '{listener_label}'"),
-        );
-    }
-    let identity = &listener.listen.tls.default_identity;
-    let mut tls = TlsSettings::intermediate(&identity.cert_path, &identity.key_path)?;
-    tls.set_cert_resolver(Arc::new(RotatingServerCertResolver {
-        listener: listener_label.clone(),
-        store: tls_store,
-    }));
-    if let Some(verifier) = QUICListener::build_listener_client_cert_verifier(&listener.listen.tls)
-        .map_err(|error| {
-            Error::because(
-                InternalError,
-                "failed to configure Pingora ingress client authentication",
-                error,
-            )
-        })?
-    {
-        tls.set_client_cert_verifier(verifier);
-    }
-    tls.enable_h2();
 
-    let mut service = http_proxy_service_with_name(
-        configuration,
-        PingoraIngressService { runtime },
-        "Impulse Pingora Ingress",
-    );
-    if let Some(proxy) = service.app_logic_mut() {
-        proxy.server_options = Some(HttpServerOptions {
-            allow_connect_method_proxying: true,
-            ..HttpServerOptions::default()
-        });
-    }
-    service.add_tls_with_settings(&listener_label, None, tls);
-    Ok(service)
+    listeners
+        .into_iter()
+        .map(|listener| {
+            let listener_label = format!(
+                "{}:{}",
+                listener.listen.listen.address, listener.listen.listen.port
+            );
+            if tls_store.bootstrap_server_config(&listener_label).is_none() {
+                return Error::e_explain(
+                    InternalError,
+                    format!("Pingora ingress TLS state is missing for '{listener_label}'"),
+                );
+            }
+            let identity = &listener.listen.tls.default_identity;
+            let mut tls = TlsSettings::intermediate(&identity.cert_path, &identity.key_path)?;
+            tls.set_cert_resolver(Arc::new(RotatingServerCertResolver {
+                listener: listener_label.clone(),
+                store: Arc::clone(&tls_store),
+            }));
+            if let Some(verifier) =
+                QUICListener::build_listener_client_cert_verifier(&listener.listen.tls).map_err(
+                    |error| {
+                        Error::because(
+                            InternalError,
+                            format!(
+                                "failed to configure Pingora ingress client authentication for '{listener_label}'"
+                            ),
+                            error,
+                        )
+                    },
+                )?
+            {
+                tls.set_client_cert_verifier(verifier);
+            }
+            tls.enable_h2();
+
+            let mut service = http_proxy_service_with_name(
+                configuration,
+                PingoraIngressService {
+                    runtime: runtime.clone(),
+                },
+                &format!("Impulse Pingora Ingress {listener_label}"),
+            );
+            if let Some(proxy) = service.app_logic_mut() {
+                proxy.server_options = Some(HttpServerOptions {
+                    allow_connect_method_proxying: true,
+                    ..HttpServerOptions::default()
+                });
+            }
+            service.add_tls_with_settings(&listener_label, None, tls);
+            Ok(service)
+        })
+        .collect()
 }
 
 #[async_trait]

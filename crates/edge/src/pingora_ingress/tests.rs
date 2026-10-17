@@ -13,7 +13,7 @@ use impulse_config::{
 };
 use pingora_core::{server::configuration::ServerConf, services::Service as PingoraService};
 
-use super::pingora_ingress_service;
+use super::pingora_ingress_services;
 use crate::runtime::{bundle::RuntimeBundleHandle, listener::QUICListener};
 
 #[path = "../../tests/support/mod.rs"]
@@ -45,11 +45,14 @@ impl PingoraTestService {
             &runtime_config,
         )
         .map_err(|error| format!("runtime bundle: {error}"))?;
-        let mut service = pingora_ingress_service(
+        let mut services = pingora_ingress_services(
             &Arc::new(ServerConf::default()),
             RuntimeBundleHandle::new(bundle),
         )
         .map_err(|error| format!("Pingora ingress service: {error}"))?;
+        let mut service = services
+            .pop()
+            .ok_or_else(|| "Pingora ingress did not create a service".to_string())?;
         let addr = SocketAddr::from(([127, 0, 0, 1], config.listen.port));
         let (shutdown, shutdown_watch) = tokio::sync::watch::channel(false);
         let runtime = tokio::runtime::Runtime::new().map_err(|error| error.to_string())?;
