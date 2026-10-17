@@ -62,6 +62,23 @@ impl<P> BackendSelectionResult<P> {
     }
 }
 
+pub fn synchronize_backend_readiness<T>(
+    view: &BackendView,
+    mut is_healthy: impl FnMut(usize) -> bool,
+) -> Result<(), String>
+where
+    T: Clone + Send + Sync + 'static,
+{
+    for backend in view.get_backend().iter() {
+        let identity = backend
+            .ext
+            .get::<PingoraBackendIdentity<T>>()
+            .ok_or_else(|| format!("Pingora backend '{}' has no Impulse identity", backend.addr))?;
+        view.set_enable(backend, is_healthy(identity.index()));
+    }
+    Ok(())
+}
+
 fn selection_result<T>(
     backend: PingoraBackend,
     generation: u64,
@@ -123,6 +140,13 @@ where
             .select_excluding(cid_key.as_bytes(), excluded_backend_indices)
     }
 
+    pub fn synchronize_readiness(
+        &self,
+        is_healthy: impl FnMut(usize) -> bool,
+    ) -> Result<(), String> {
+        self.selector.synchronize_readiness(is_healthy)
+    }
+
     pub fn generation(&self) -> u64 {
         self.selector.generation()
     }
@@ -176,6 +200,13 @@ where
                 candidate_is_available::<T>(backend, healthy, excluded_backend_indices)
             })?;
         selection_result(selected, self.generation)
+    }
+
+    pub fn synchronize_readiness(
+        &self,
+        is_healthy: impl FnMut(usize) -> bool,
+    ) -> Result<(), String> {
+        synchronize_backend_readiness::<T>(self.selector.backends(), is_healthy)
     }
 
     pub fn generation(&self) -> u64 {
@@ -232,6 +263,13 @@ where
         selection_result(selected, self.generation)
     }
 
+    pub fn synchronize_readiness(
+        &self,
+        is_healthy: impl FnMut(usize) -> bool,
+    ) -> Result<(), String> {
+        synchronize_backend_readiness::<T>(self.selector.backends(), is_healthy)
+    }
+
     pub fn generation(&self) -> u64 {
         self.generation
     }
@@ -284,6 +322,13 @@ where
                 candidate_is_available::<T>(backend, healthy, excluded_backend_indices)
             })?;
         selection_result(selected, self.generation)
+    }
+
+    pub fn synchronize_readiness(
+        &self,
+        is_healthy: impl FnMut(usize) -> bool,
+    ) -> Result<(), String> {
+        synchronize_backend_readiness::<T>(self.selector.backends(), is_healthy)
     }
 
     pub fn generation(&self) -> u64 {
@@ -406,6 +451,16 @@ impl GenerationBackendView {
 
     pub fn view(&self) -> &BackendView {
         &self.view
+    }
+
+    pub fn synchronize_readiness<T>(
+        &self,
+        is_healthy: impl FnMut(usize) -> bool,
+    ) -> Result<(), String>
+    where
+        T: Clone + Send + Sync + 'static,
+    {
+        synchronize_backend_readiness::<T>(&self.view, is_healthy)
     }
 
     pub fn into_view(self) -> BackendView {
