@@ -7,13 +7,13 @@ use std::{
 
 use http_body_util::BodyExt;
 use impulse_config::{
-    config::{ApiKeyAuth, RouteAuth},
-    runtime::RuntimeConfig,
+    config::{ApiKeyAuth, Config, RouteAuth},
+    runtime::{ListenerRuntimeConfig, RuntimeConfig},
     validator::validate,
 };
 use pingora_core::{server::configuration::ServerConf, services::Service as PingoraService};
 
-use super::pingora_ingress_services;
+use super::{PingoraListenerTask, pingora_ingress_services, spawn_pingora_ingress_listener};
 use crate::runtime::{bundle::RuntimeBundleHandle, listener::QUICListener};
 
 #[path = "../../tests/support/mod.rs"]
@@ -87,6 +87,126 @@ impl Drop for PingoraTestService {
         let _ = self.shutdown.send(true);
         self.task.abort();
     }
+}
+
+fn pingora_listener_runtime(config: Config) -> (Arc<RuntimeBundleHandle>, ListenerRuntimeConfig) {
+    validate(&config).expect("validate Pingora listener config");
+    let runtime_config = RuntimeConfig::from_config(&config).expect("build runtime config");
+    let listener = runtime_config
+        .primary_listener_runtime_config()
+        .expect("primary listener config");
+    let bundle = QUICListener::build_runtime_bundle(
+        "pingora-listener-lifecycle-test".to_string(),
+        config.log,
+        &runtime_config,
+    )
+    .expect("build runtime bundle");
+    (Arc::new(RuntimeBundleHandle::new(bundle)), listener)
+}
+
+async fn stop_pingora_listener(task: &mut PingoraListenerTask) {
+    task.request_shutdown();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Some(result) = task.collect_finished().await {
+                result.expect("Pingora listener shutdown");
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("Pingora listener shutdown timeout");
+    assert!(task.stopped());
+}
+
+#[test]
+fn pingora_listener_activation_replacement_rollback_drain_and_shutdown() {
+    if !local_listener_bind_available() {
+        return;
+    }
+
+    let harness = BootstrapQuicParityHarness::new();
+    let mut config = harness.make_config(HashMap::from([(
+        "api".to_string(),
+        make_upstream(
+            "/",
+            vec![make_backend("backend-a", "127.0.0.1:9".to_string())],
+            None,
+            "round-robin",
+        ),
+    )]));
+    config.listen.port = reserve_unused_listener_port();
+    let active_addr = SocketAddr::from(([127, 0, 0, 1], config.listen.port));
+    let (runtime, active_config) = pingora_listener_runtime(config);
+    let mut replacement_config = active_config.clone();
+    replacement_config.listen.listen.port = reserve_unused_listener_port();
+    let replacement_addr =
+        SocketAddr::from(([127, 0, 0, 1], replacement_config.listen.listen.port));
+
+    tokio::runtime::Runtime::new()
+        .expect("test runtime")
+        .block_on(async {
+            let mut active =
+                spawn_pingora_ingress_listener(Arc::clone(&runtime), active_config.clone())
+                    .expect("activate Pingora listener");
+            active
+                .wait_until_ready()
+                .await
+                .expect("active listener ready");
+
+            let mut replacement =
+                spawn_pingora_ingress_listener(Arc::clone(&runtime), replacement_config.clone())
+                    .expect("activate replacement listener");
+            replacement
+                .wait_until_ready()
+                .await
+                .expect("replacement listener ready");
+            assert!(TcpStream::connect_timeout(&active_addr, Duration::from_millis(100)).is_ok());
+            assert!(
+                TcpStream::connect_timeout(&replacement_addr, Duration::from_millis(100)).is_ok()
+            );
+
+            assert_eq!(
+                active
+                    .drain(Duration::from_secs(5))
+                    .await
+                    .expect("drain replaced listener"),
+                0
+            );
+            assert!(
+                TcpStream::connect_timeout(&replacement_addr, Duration::from_millis(100)).is_ok()
+            );
+
+            let mut invalid_candidate = active_config.clone();
+            invalid_candidate.listen.tls.default_identity.cert_path =
+                "/missing/pingora-listener-cert.pem".to_string();
+            assert!(
+                spawn_pingora_ingress_listener(Arc::clone(&runtime), invalid_candidate).is_err()
+            );
+            assert!(
+                TcpStream::connect_timeout(&replacement_addr, Duration::from_millis(100)).is_ok(),
+                "failed activation must leave the replacement listener active"
+            );
+
+            let mut rollback = spawn_pingora_ingress_listener(Arc::clone(&runtime), active_config)
+                .expect("restore rollback listener");
+            rollback
+                .wait_until_ready()
+                .await
+                .expect("rollback listener ready");
+            assert_eq!(
+                replacement
+                    .drain(Duration::from_secs(5))
+                    .await
+                    .expect("drain replacement listener"),
+                0
+            );
+            assert!(TcpStream::connect_timeout(&active_addr, Duration::from_millis(100)).is_ok());
+
+            stop_pingora_listener(&mut rollback).await;
+            std::net::TcpListener::bind(active_addr).expect("shutdown releases listener bind");
+        });
 }
 
 #[test]
