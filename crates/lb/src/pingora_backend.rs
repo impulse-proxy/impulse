@@ -6,8 +6,9 @@ use std::{
 
 use impulse_config::{config::Backend, runtime::RuntimeUpstream};
 use pingora_load_balancing::{
-    Backend as PingoraBackend, BackendView, LoadBalancer, discovery::Static as StaticDiscovery,
-    selection::RoundRobin as PingoraRoundRobin,
+    Backend as PingoraBackend, BackendView, LoadBalancer,
+    discovery::Static as StaticDiscovery,
+    selection::{Random as PingoraRandom, RoundRobin as PingoraRoundRobin},
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -58,6 +59,58 @@ impl<P> BackendSelectionResult<P> {
 
     pub fn into_connection_policy(self) -> P {
         self.connection_policy
+    }
+}
+
+pub struct GenerationWeightedRandom<T> {
+    generation: u64,
+    upstream_name: String,
+    backend_count: usize,
+    selector: LoadBalancer<PingoraRandom>,
+    policy: std::marker::PhantomData<T>,
+}
+
+impl<T> GenerationWeightedRandom<T>
+where
+    T: Clone + Send + Sync + 'static,
+{
+    pub fn from_backend_view(view: GenerationBackendView) -> Self {
+        let GenerationBackendView {
+            generation,
+            upstream_name,
+            view,
+        } = view;
+        let backend_count = view.get_backend().len();
+
+        Self {
+            generation,
+            upstream_name,
+            backend_count,
+            selector: LoadBalancer::from_backends(view),
+            policy: std::marker::PhantomData,
+        }
+    }
+
+    pub fn select(&self) -> Option<BackendSelectionResult<T>> {
+        let selected = self.selector.select(b"", self.backend_count)?;
+        let address = *selected.addr.as_inet()?;
+        let identity = selected.ext.get::<PingoraBackendIdentity<T>>()?;
+
+        Some(BackendSelectionResult::new(
+            identity.backend_id(),
+            address,
+            identity.index(),
+            self.generation,
+            identity.tls_identity().clone(),
+        ))
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    pub fn upstream_name(&self) -> &str {
+        &self.upstream_name
     }
 }
 
