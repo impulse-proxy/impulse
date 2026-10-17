@@ -1,7 +1,67 @@
-use std::net::SocketAddr;
+use std::{collections::BTreeSet, net::SocketAddr};
 
-use impulse_config::config::Backend;
-use pingora_load_balancing::Backend as PingoraBackend;
+use impulse_config::{config::Backend, runtime::RuntimeUpstream};
+use pingora_load_balancing::{
+    Backend as PingoraBackend, BackendView, discovery::Static as StaticDiscovery,
+};
+
+pub struct GenerationBackendView {
+    generation: u64,
+    upstream_name: String,
+    view: BackendView,
+}
+
+impl GenerationBackendView {
+    pub async fn from_runtime_upstream<F>(
+        generation: u64,
+        upstream_name: impl Into<String>,
+        upstream: &RuntimeUpstream,
+        mut map_backend: F,
+    ) -> Result<Self, String>
+    where
+        F: FnMut(&Backend) -> Result<PingoraBackend, String>,
+    {
+        let upstream_name = upstream_name.into();
+        let mapped = upstream
+            .backends
+            .iter()
+            .map(|backend| map_backend(&backend.backend))
+            .collect::<Result<BTreeSet<_>, _>>()?;
+
+        if mapped.len() != upstream.backends.len() {
+            return Err(format!(
+                "upstream '{upstream_name}' contains backends that collapse to the same Pingora identity"
+            ));
+        }
+
+        let view = BackendView::new(StaticDiscovery::new(mapped));
+        view.update(|_| {})
+            .await
+            .map_err(|error| format!("failed to initialize upstream '{upstream_name}': {error}"))?;
+
+        Ok(Self {
+            generation,
+            upstream_name,
+            view,
+        })
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    pub fn upstream_name(&self) -> &str {
+        &self.upstream_name
+    }
+
+    pub fn view(&self) -> &BackendView {
+        &self.view
+    }
+
+    pub fn into_view(self) -> BackendView {
+        self.view
+    }
+}
 
 #[derive(Clone)]
 pub struct PingoraBackendIdentity<T> {
