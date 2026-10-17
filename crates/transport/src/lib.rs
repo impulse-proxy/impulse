@@ -23,5 +23,6 @@ pub use exchange::{
     UpstreamExchangeRequest, UpstreamExchangeResponse, UpstreamInflightPermit, UpstreamRequestHead,
     UpstreamResponseHead, UpstreamTunnel, UpstreamTunnelIo, UpstreamUpgrade,
 };
+pub use pingora_failure::{classify_pingora_h1_error, classify_pingora_h2_error};
 pub use runtime_config::{SharedDnsResolver, TlsClientConfig};
 pub use transport_pool::{TransportClientRotation, UpstreamTransportPool};

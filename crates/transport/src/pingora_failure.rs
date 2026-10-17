@@ -1,7 +1,7 @@
 use impulse_errors::ProxyError;
 use pingora_core::{Error, ErrorType, RetryType};
 
-pub(crate) fn classify_pingora_h1_error(error: &Error) -> ProxyError {
+pub fn classify_pingora_h1_error(error: &Error) -> ProxyError {
     let detail = error.to_string();
     match &error.etype {
         ErrorType::ConnectTimedout
@@ -22,7 +22,7 @@ pub(crate) fn classify_pingora_h1_error(error: &Error) -> ProxyError {
     }
 }
 
-pub(crate) fn classify_pingora_h2_error(error: &Error, reused: bool) -> ProxyError {
+pub fn classify_pingora_h2_error(error: &Error, reused: bool) -> ProxyError {
     let detail = error.to_string();
     match &error.etype {
         ErrorType::ConnectTimedout
