@@ -26,6 +26,7 @@ use impulse_lb::{
 use impulse_transport::{classify_pingora_h1_error, classify_pingora_h2_error};
 use pingora_core::{
     Error, HTTPStatus, InternalError, Result,
+    listeners::TlsSettings,
     server::configuration::ServerConf,
     services::listening::Service,
     upstreams::peer::{ALPN, HttpPeer},
@@ -121,12 +122,35 @@ pub(crate) struct PingoraIngressService {
 pub(crate) fn pingora_ingress_service(
     configuration: &Arc<ServerConf>,
     runtime: RuntimeBundleHandle,
-) -> Service<HttpProxy<PingoraIngressService>> {
-    http_proxy_service_with_name(
+) -> Result<Service<HttpProxy<PingoraIngressService>>> {
+    let Some(listener) = runtime
+        .current()
+        .runtime_config
+        .primary_listener_runtime_config()
+    else {
+        return Error::e_explain(
+            InternalError,
+            "Pingora ingress requires a configured listener",
+        );
+    };
+    let identity = &listener.listen.tls.default_identity;
+    let mut tls = TlsSettings::intermediate(&identity.cert_path, &identity.key_path)?;
+    tls.enable_h2();
+
+    let mut service = http_proxy_service_with_name(
         configuration,
         PingoraIngressService { runtime },
         "Impulse Pingora Ingress",
-    )
+    );
+    service.add_tls_with_settings(
+        &format!(
+            "{}:{}",
+            listener.listen.listen.address, listener.listen.listen.port
+        ),
+        None,
+        tls,
+    );
+    Ok(service)
 }
 
 #[async_trait]
