@@ -17,22 +17,19 @@ use http_body_util::{BodyExt, Full, combinators::BoxBody};
 use hyper::{
     Request, Response,
     body::{Body, Frame, Incoming},
-    client::conn::{http1, http2},
+    client::conn::http2,
     service::service_fn,
 };
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use impulse_config::{
     config::{Backend, Config, LoadBalancing, RouteMatch, Upstream, UpstreamTls},
-    runtime::RuntimeConfig,
     validator::validate,
 };
 use impulse_edge::{
-    MAX_DATAGRAM_SIZE_BYTES, MAX_UDP_PAYLOAD_BYTES, Metrics, PingoraListenerTask,
-    QUIC_IDLE_TIMEOUT_MS, QUIC_INITIAL_MAX_DATA, QUIC_INITIAL_MAX_STREAMS_BIDI,
-    QUIC_INITIAL_MAX_STREAMS_UNI, QUIC_INITIAL_STREAM_DATA, REQUEST_TIMEOUT_SECS,
-    UDP_READ_TIMEOUT_MS,
-    runtime::{bundle::RuntimeBundleHandle, listener::QUICListener},
-    spawn_pingora_ingress_listener,
+    MAX_DATAGRAM_SIZE_BYTES, MAX_UDP_PAYLOAD_BYTES, Metrics, QUIC_IDLE_TIMEOUT_MS,
+    QUIC_INITIAL_MAX_DATA, QUIC_INITIAL_MAX_STREAMS_BIDI, QUIC_INITIAL_MAX_STREAMS_UNI,
+    QUIC_INITIAL_STREAM_DATA, REQUEST_TIMEOUT_SECS, UDP_READ_TIMEOUT_MS,
+    runtime::listener::QUICListener,
 };
 use quiche::h3::NameValue;
 use rand::RngCore;
@@ -129,7 +126,6 @@ impl Drop for ListenerTaskGuard {
 pub struct QuicRequestPathHarness {
     backends: Vec<BackendFixture>,
     listener_task: Option<ListenerTaskGuard>,
-    pingora_listener_task: Option<PingoraListenerTask>,
     metrics: Option<Arc<Metrics>>,
     rt: tokio::runtime::Runtime,
     pub tls: TestTlsMaterial,
@@ -141,7 +137,6 @@ impl QuicRequestPathHarness {
         Self {
             backends: Vec::new(),
             listener_task: None,
-            pingora_listener_task: None,
             metrics: None,
             rt: tokio::runtime::Runtime::new().expect("runtime"),
             tls: TestTlsMaterial::localhost(),
@@ -167,45 +162,6 @@ impl QuicRequestPathHarness {
             .local_addr()
             .map_err(|err| format!("listen addr: {err}"))?;
         self.listener_task = Some(ListenerTaskGuard::spawn(&self.rt, listener));
-        self.listen_addr = Some(listen_addr);
-        Ok(listen_addr)
-    }
-
-    pub fn start_listener_with_pingora(&mut self, config: Config) -> Result<SocketAddr, String> {
-        validate(&config).map_err(|err| format!("config validation failed: {err}"))?;
-        let runtime_config =
-            RuntimeConfig::from_config(&config).map_err(|err| format!("runtime config: {err}"))?;
-        let listener_config = runtime_config
-            .listener_runtime_configs()
-            .into_iter()
-            .next()
-            .ok_or_else(|| "missing listener runtime config".to_string())?;
-        let bundle = QUICListener::build_runtime_bundle(
-            "request-path-test".to_string(),
-            config.log.clone(),
-            &runtime_config,
-        )
-        .map_err(|err| format!("runtime bundle: {err}"))?;
-        let shared_state = Arc::clone(&bundle.shared_state);
-        let runtime_bundle = Arc::new(RuntimeBundleHandle::new(bundle));
-        QUICListener::spawn_control_plane_tasks(&runtime_config, &shared_state, 1)
-            .map_err(|err| format!("control plane tasks: {err}"))?;
-        let runtime_guard = self.rt.enter();
-        let pingora_listener =
-            spawn_pingora_ingress_listener(runtime_bundle, listener_config.clone())?;
-        drop(runtime_guard);
-        let socket = QUICListener::bind_socket(&listener_config, false)
-            .map_err(|err| format!("bind socket: {err}"))?;
-        let listener =
-            QUICListener::new_with_socket_and_shared_state(listener_config, socket, shared_state)
-                .map_err(|err| format!("listener with shared state: {err}"))?;
-        self.metrics = Some(Arc::clone(&listener.metrics));
-        let listen_addr = listener
-            .socket
-            .local_addr()
-            .map_err(|err| format!("listen addr: {err}"))?;
-        self.listener_task = Some(ListenerTaskGuard::spawn(&self.rt, listener));
-        self.pingora_listener_task = Some(pingora_listener);
         self.listen_addr = Some(listen_addr);
         Ok(listen_addr)
     }
@@ -342,20 +298,6 @@ impl QuicRequestPathHarness {
         self.metrics
             .as_ref()
             .map(|metrics| metrics.render_prometheus())
-    }
-
-    pub fn run_bootstrap_h2_request(
-        &self,
-        request: BootstrapRequestSpec<'_>,
-    ) -> Result<BootstrapResponse, String> {
-        let listen_addr = self
-            .listen_addr
-            .ok_or_else(|| "listener not started".to_string())?;
-        self.rt.block_on(run_bootstrap_h2_request(
-            listen_addr,
-            &self.tls.cert_path,
-            request,
-        ))
     }
 }
 
@@ -497,7 +439,7 @@ impl H3Response {
 }
 
 #[derive(Clone, Copy)]
-pub struct BootstrapRequestSpec<'a> {
+pub struct HttpRequestSpec<'a> {
     pub method: &'a str,
     pub authority: &'a str,
     pub path: &'a str,
@@ -506,7 +448,7 @@ pub struct BootstrapRequestSpec<'a> {
     pub user_agent: &'a str,
 }
 
-impl<'a> BootstrapRequestSpec<'a> {
+impl<'a> HttpRequestSpec<'a> {
     pub fn get(authority: &'a str, path: &'a str) -> Self {
         Self {
             method: "GET",
@@ -519,14 +461,14 @@ impl<'a> BootstrapRequestSpec<'a> {
     }
 }
 
-pub struct BootstrapResponse {
+pub struct HttpResponse {
     pub status: u16,
     pub headers: Vec<(String, String)>,
     pub trailers: Vec<(String, String)>,
     pub body: Vec<u8>,
 }
 
-impl BootstrapResponse {
+impl HttpResponse {
     pub fn body_text(&self) -> String {
         String::from_utf8_lossy(&self.body).into_owned()
     }
@@ -563,127 +505,22 @@ pub fn run_h3_get_to(
     )
 }
 
-pub fn run_bootstrap_request_to(
+pub fn run_http2_request_to(
     addr: SocketAddr,
     cert_path: &str,
-    request: BootstrapRequestSpec<'_>,
-) -> Result<BootstrapResponse, String> {
+    request: HttpRequestSpec<'_>,
+) -> Result<HttpResponse, String> {
     tokio::runtime::Runtime::new()
         .expect("runtime")
-        .block_on(run_bootstrap_h2_request(addr, cert_path, request))
+        .block_on(run_http2_request(addr, cert_path, request))
 }
 
-pub fn run_bootstrap_authority_host_request_to(
+async fn run_http2_request(
     addr: SocketAddr,
     cert_path: &str,
-    method: &str,
-    authority: &str,
-    host: &str,
-    path: &str,
-) -> Result<BootstrapResponse, String> {
-    tokio::runtime::Runtime::new()
-        .expect("runtime")
-        .block_on(async move {
-            let (mut sender, _conn_task) = connect_bootstrap_h2(addr, cert_path).await?;
-            sender
-                .ready()
-                .await
-                .map_err(|err| format!("sender ready: {err}"))?;
-            let request = Request::builder()
-                .method(method)
-                .uri(format!("https://{authority}{path}"))
-                .header("host", host)
-                .body(
-                    Full::new(Bytes::new())
-                        .map_err(|never| match never {})
-                        .boxed(),
-                )
-                .map_err(|err| format!("request build: {err}"))?;
-            let response = sender
-                .send_request(request)
-                .await
-                .map_err(|err| format!("send request: {err}"))?;
-            read_bootstrap_h2_response(response).await
-        })
-}
-
-pub fn run_bootstrap_h1_websocket_handshake_to(
-    addr: SocketAddr,
-    cert_path: &str,
-    authority: &str,
-    path: &str,
-) -> Result<BootstrapResponse, String> {
-    tokio::runtime::Runtime::new()
-        .expect("runtime")
-        .block_on(run_bootstrap_h1_websocket_handshake(
-            addr, cert_path, authority, path,
-        ))
-}
-
-pub fn run_two_chunk_bootstrap_post_to(
-    addr: SocketAddr,
-    cert_path: &str,
-    authority: &str,
-    path: &str,
-    chunk1: Vec<u8>,
-    chunk2: Vec<u8>,
-    delay_between_chunks: Duration,
-) -> Result<BootstrapResponse, String> {
-    tokio::runtime::Runtime::new()
-        .expect("runtime")
-        .block_on(run_two_chunk_bootstrap_h2_post_to(
-            addr,
-            cert_path,
-            authority,
-            path,
-            chunk1,
-            chunk2,
-            delay_between_chunks,
-        ))
-}
-
-pub fn cancel_bootstrap_post_to(
-    addr: SocketAddr,
-    cert_path: &str,
-    authority: &str,
-    path: &str,
-) -> Result<(), String> {
-    tokio::runtime::Runtime::new()
-        .expect("runtime")
-        .block_on(async move {
-            let (mut sender, conn_task) = connect_bootstrap_h2(addr, cert_path).await?;
-            sender
-                .ready()
-                .await
-                .map_err(|err| format!("sender ready: {err}"))?;
-            let request = Request::builder()
-                .method("POST")
-                .uri(path)
-                .header("host", authority)
-                .header("content-length", "2")
-                .body(
-                    TwoChunkDelayedBody::new(
-                        Bytes::from_static(b"a"),
-                        Bytes::from_static(b"b"),
-                        Duration::from_secs(30),
-                    )
-                    .boxed(),
-                )
-                .map_err(|err| format!("request build: {err}"))?;
-            let request_task = tokio::spawn(async move { sender.send_request(request).await });
-            tokio::time::sleep(Duration::from_millis(50)).await;
-            request_task.abort();
-            conn_task.abort();
-            Ok(())
-        })
-}
-
-async fn run_bootstrap_h2_request(
-    addr: SocketAddr,
-    cert_path: &str,
-    request: BootstrapRequestSpec<'_>,
-) -> Result<BootstrapResponse, String> {
-    let (mut sender, _conn_task) = connect_bootstrap_h2(addr, cert_path).await?;
+    request: HttpRequestSpec<'_>,
+) -> Result<HttpResponse, String> {
+    let (mut sender, _conn_task) = connect_http2(addr, cert_path).await?;
     sender
         .ready()
         .await
@@ -721,141 +558,10 @@ async fn run_bootstrap_h2_request(
         .send_request(req)
         .await
         .map_err(|err| format!("send request: {err}"))?;
-    read_bootstrap_h2_response(response).await
+    read_http2_response(response).await
 }
 
-async fn run_bootstrap_h1_websocket_handshake(
-    addr: SocketAddr,
-    cert_path: &str,
-    authority: &str,
-    path: &str,
-) -> Result<BootstrapResponse, String> {
-    let roots = read_test_root_store(cert_path)?;
-    let tls_config = ClientConfig::builder()
-        .with_root_certificates(roots)
-        .with_no_client_auth();
-    let connector = TlsConnector::from(Arc::new(tls_config));
-
-    let server_name = ServerName::try_from(authority)
-        .map_err(|err| format!("server name: {err}"))?
-        .to_owned();
-    let deadline = Instant::now() + Duration::from_secs(5);
-
-    loop {
-        match TcpStream::connect(addr).await {
-            Ok(stream) => {
-                let tls_stream = connector
-                    .connect(server_name.clone(), stream)
-                    .await
-                    .map_err(|err| format!("tls connect: {err}"))?;
-                let (mut sender, conn) = http1::handshake(TokioIo::new(tls_stream))
-                    .await
-                    .map_err(|err| format!("h1 handshake: {err}"))?;
-                tokio::spawn(async move {
-                    let _ = conn.with_upgrades().await;
-                });
-                sender
-                    .ready()
-                    .await
-                    .map_err(|err| format!("sender ready: {err}"))?;
-
-                let request = Request::builder()
-                    .method("GET")
-                    .uri(
-                        http::Uri::builder()
-                            .path_and_query(path)
-                            .build()
-                            .map_err(|err| format!("uri build: {err}"))?,
-                    )
-                    .header("host", authority)
-                    .header(http::header::CONNECTION, "Upgrade")
-                    .header(http::header::UPGRADE, "websocket")
-                    .header("sec-websocket-key", "dGVzdC1rZXktMTIzNDU2Nzg5MA==")
-                    .header("sec-websocket-version", "13")
-                    .body(http_body_util::Empty::<Bytes>::new())
-                    .map_err(|err| format!("request build: {err}"))?;
-
-                let response = sender
-                    .send_request(request)
-                    .await
-                    .map_err(|err| format!("send request: {err}"))?;
-
-                return Ok(BootstrapResponse {
-                    status: response.status().as_u16(),
-                    headers: response
-                        .headers()
-                        .iter()
-                        .map(|(name, value)| {
-                            (
-                                name.as_str().to_string(),
-                                value.to_str().unwrap_or_default().to_string(),
-                            )
-                        })
-                        .collect(),
-                    trailers: Vec::new(),
-                    body: response
-                        .into_body()
-                        .collect()
-                        .await
-                        .map_err(|err| format!("collect response body: {err}"))?
-                        .to_bytes()
-                        .to_vec(),
-                });
-            }
-            Err(err) if Instant::now() < deadline => {
-                let _ = err;
-                tokio::time::sleep(Duration::from_millis(25)).await;
-            }
-            Err(err) => return Err(format!("tcp connect: {err}")),
-        }
-    }
-}
-
-async fn run_two_chunk_bootstrap_h2_post_to(
-    addr: SocketAddr,
-    cert_path: &str,
-    authority: &str,
-    path: &str,
-    chunk1: Vec<u8>,
-    chunk2: Vec<u8>,
-    delay_between_chunks: Duration,
-) -> Result<BootstrapResponse, String> {
-    let (mut sender, _conn_task) = connect_bootstrap_h2(addr, cert_path).await?;
-    sender
-        .ready()
-        .await
-        .map_err(|err| format!("sender ready: {err}"))?;
-
-    let req = Request::builder()
-        .method("POST")
-        .uri(
-            http::Uri::builder()
-                .path_and_query(path)
-                .build()
-                .map_err(|err| format!("uri build: {err}"))?,
-        )
-        .header("host", authority)
-        .header("user-agent", "impulse-request-path-test")
-        .header("content-length", (chunk1.len() + chunk2.len()).to_string())
-        .body(
-            TwoChunkDelayedBody::new(
-                Bytes::from(chunk1),
-                Bytes::from(chunk2),
-                delay_between_chunks,
-            )
-            .boxed(),
-        )
-        .map_err(|err| format!("request build: {err}"))?;
-    let response = sender
-        .send_request(req)
-        .await
-        .map_err(|err| format!("send request: {err}"))?;
-    read_bootstrap_h2_response(response).await
-}
-
-async fn read_bootstrap_h2_response(
-    mut response: Response<Incoming>,
-) -> Result<BootstrapResponse, String> {
+async fn read_http2_response(mut response: Response<Incoming>) -> Result<HttpResponse, String> {
     let status = response.status().as_u16();
     let headers = response
         .headers()
@@ -890,7 +596,7 @@ async fn read_bootstrap_h2_response(
         }
     }
 
-    Ok(BootstrapResponse {
+    Ok(HttpResponse {
         status,
         headers,
         trailers,
@@ -898,7 +604,7 @@ async fn read_bootstrap_h2_response(
     })
 }
 
-async fn connect_bootstrap_h2(
+async fn connect_http2(
     addr: SocketAddr,
     cert_path: &str,
 ) -> Result<
@@ -942,64 +648,6 @@ async fn connect_bootstrap_h2(
             }
             Err(err) => return Err(format!("tcp connect: {err}")),
         }
-    }
-}
-
-struct TwoChunkDelayedBody {
-    first: Option<Bytes>,
-    second: Option<Bytes>,
-    delay_before_second: Duration,
-    second_delay: Option<std::pin::Pin<Box<tokio::time::Sleep>>>,
-}
-
-impl TwoChunkDelayedBody {
-    fn new(first: Bytes, second: Bytes, delay_before_second: Duration) -> Self {
-        Self {
-            first: Some(first),
-            second: Some(second),
-            delay_before_second,
-            second_delay: None,
-        }
-    }
-}
-
-impl Body for TwoChunkDelayedBody {
-    type Data = Bytes;
-    type Error = Infallible;
-
-    fn poll_frame(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
-        if let Some(first) = self.first.take() {
-            return std::task::Poll::Ready(Some(Ok(Frame::data(first))));
-        }
-
-        if self.second.is_none() {
-            return std::task::Poll::Ready(None);
-        }
-
-        if self.delay_before_second.is_zero() {
-            return std::task::Poll::Ready(self.second.take().map(|chunk| Ok(Frame::data(chunk))));
-        }
-
-        if self.second_delay.is_none() {
-            self.second_delay = Some(Box::pin(tokio::time::sleep(self.delay_before_second)));
-        }
-
-        if let Some(delay) = self.second_delay.as_mut() {
-            match delay.as_mut().poll(cx) {
-                std::task::Poll::Ready(()) => {
-                    self.second_delay = None;
-                    return std::task::Poll::Ready(
-                        self.second.take().map(|chunk| Ok(Frame::data(chunk))),
-                    );
-                }
-                std::task::Poll::Pending => return std::task::Poll::Pending,
-            }
-        }
-
-        std::task::Poll::Ready(None)
     }
 }
 

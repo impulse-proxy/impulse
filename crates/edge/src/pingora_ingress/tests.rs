@@ -22,10 +22,10 @@ mod support;
 use support::{
     net::local_listener_bind_available,
     parity::{
-        BootstrapQuicParityHarness, ParityRequestSpec, ParityResponseSnapshot, make_backend,
+        ParityRequestSpec, ParityResponseSnapshot, ProtocolParityHarness, make_backend,
         make_upstream,
     },
-    request_path::{BootstrapRequestSpec, reserve_unused_listener_port, run_bootstrap_request_to},
+    request_path::{HttpRequestSpec, reserve_unused_listener_port, run_http2_request_to},
 };
 
 struct PingoraTestService {
@@ -136,7 +136,7 @@ fn pingora_listener_activation_replacement_rollback_drain_and_shutdown() {
         return;
     }
 
-    let harness = BootstrapQuicParityHarness::new();
+    let harness = ProtocolParityHarness::new();
     let mut config = harness.make_config(HashMap::from([(
         "api".to_string(),
         make_upstream(
@@ -220,12 +220,12 @@ fn pingora_listener_activation_replacement_rollback_drain_and_shutdown() {
 }
 
 #[test]
-fn pingora_bootstrap_and_http3_share_request_contracts() {
+fn pingora_and_http3_share_request_contracts() {
     if !local_listener_bind_available() {
         return;
     }
 
-    let mut harness = BootstrapQuicParityHarness::new();
+    let mut harness = ProtocolParityHarness::new();
     let backend_addr = harness.start_h1_backend(|request| async move {
         let body = request
             .into_body()
@@ -267,9 +267,9 @@ fn pingora_bootstrap_and_http3_share_request_contracts() {
         PingoraTestService::start(pingora_config).expect("start Pingora ingress");
     harness
         .start_listener(config)
-        .expect("start bootstrap and HTTP/3 ingress");
+        .expect("start HTTP/3 ingress");
 
-    assert_three_way_parity(
+    assert_protocol_parity(
         &harness,
         pingora_addr,
         ParityRequestSpec {
@@ -280,10 +280,9 @@ fn pingora_bootstrap_and_http3_share_request_contracts() {
             body: None,
             user_agent: "impulse-pingora-parity-test",
             selected_response_headers: &["www-authenticate"],
-            capture_metrics_delta: false,
         },
     );
-    assert_three_way_parity(
+    assert_protocol_parity(
         &harness,
         pingora_addr,
         ParityRequestSpec {
@@ -294,10 +293,9 @@ fn pingora_bootstrap_and_http3_share_request_contracts() {
             body: Some(b"streamed request body"),
             user_agent: "impulse-pingora-parity-test",
             selected_response_headers: &["x-parity"],
-            capture_metrics_delta: false,
         },
     );
-    assert_three_way_parity(
+    assert_protocol_parity(
         &harness,
         pingora_addr,
         ParityRequestSpec {
@@ -308,7 +306,6 @@ fn pingora_bootstrap_and_http3_share_request_contracts() {
             body: None,
             user_agent: "impulse-pingora-parity-test",
             selected_response_headers: &[],
-            capture_metrics_delta: false,
         },
     );
 }
@@ -342,7 +339,7 @@ fn pingora_and_http3_match_final_hybrid_runtime_behavior() {
         return;
     }
 
-    let mut harness = BootstrapQuicParityHarness::new();
+    let mut harness = ProtocolParityHarness::new();
     let generic_backend = harness.start_h1_static_backend(b"generic route\n");
     let admin_backend = harness.start_h1_static_backend(b"admin route\n");
     let limited_backend = harness.start_h1_static_backend(b"limited route\n");
@@ -431,7 +428,6 @@ fn pingora_and_http3_match_final_hybrid_runtime_behavior() {
             body: None,
             user_agent: "impulse-hybrid-runtime-test",
             selected_response_headers: &["www-authenticate"],
-            capture_metrics_delta: false,
         },
         ParityRequestSpec {
             method: "GET",
@@ -441,7 +437,6 @@ fn pingora_and_http3_match_final_hybrid_runtime_behavior() {
             body: None,
             user_agent: "impulse-hybrid-runtime-test",
             selected_response_headers: &[],
-            capture_metrics_delta: false,
         },
         ParityRequestSpec::get("localhost", "/limited"),
         ParityRequestSpec {
@@ -453,10 +448,10 @@ fn pingora_and_http3_match_final_hybrid_runtime_behavior() {
 
     for request in requests {
         let quic = harness.run_quic(request).expect("HTTP/3 matrix response");
-        let pingora_response = run_bootstrap_request_to(
+        let pingora_response = run_http2_request_to(
             pingora_addr,
             harness.cert_path(),
-            BootstrapRequestSpec {
+            HttpRequestSpec {
                 method: request.method,
                 authority: request.authority,
                 path: request.path,
@@ -495,18 +490,16 @@ fn metric_delta(before: &str, after: &str, prefix: &str) -> u64 {
     counter(after, prefix).saturating_sub(counter(before, prefix))
 }
 
-fn assert_three_way_parity(
-    harness: &BootstrapQuicParityHarness,
+fn assert_protocol_parity(
+    harness: &ProtocolParityHarness,
     pingora_addr: SocketAddr,
     request: ParityRequestSpec<'_>,
 ) {
-    let existing = harness
-        .run_parity_pair(request)
-        .expect("bootstrap and HTTP/3 parity responses");
-    let pingora = run_bootstrap_request_to(
+    let quic = harness.run_quic(request).expect("HTTP/3 parity response");
+    let pingora = run_http2_request_to(
         pingora_addr,
         harness.cert_path(),
-        BootstrapRequestSpec {
+        HttpRequestSpec {
             method: request.method,
             authority: request.authority,
             path: request.path,
@@ -518,12 +511,11 @@ fn assert_three_way_parity(
     .map(|response| snapshot(response, request.selected_response_headers))
     .expect("Pingora parity response");
 
-    assert_eq!(existing.bootstrap.response, existing.quic.response);
-    assert_eq!(pingora, existing.bootstrap.response);
+    assert_eq!(pingora, quic.response);
 }
 
 fn snapshot(
-    response: support::request_path::BootstrapResponse,
+    response: support::request_path::HttpResponse,
     selected_response_headers: &[&str],
 ) -> ParityResponseSnapshot {
     let mut selected_headers = response

@@ -75,14 +75,10 @@ fn pingora_http1_websocket_upgrade_preserves_switching_protocols_headers() {
     let listen_addr = listener.socket.local_addr().unwrap();
     let _listener_task = ListenerTaskGuard::spawn(&rt, listener);
 
-    let bootstrap_addr = SocketAddr::new(listen_addr.ip(), listen_port);
+    let pingora_addr = SocketAddr::new(listen_addr.ip(), listen_port);
     let (status, headers) = rt
-        .block_on(run_bootstrap_h1_websocket_handshake(
-            bootstrap_addr,
-            &cert,
-            "/ws",
-        ))
-        .expect("bootstrap websocket handshake failed");
+        .block_on(run_http1_websocket_handshake(pingora_addr, &cert, "/ws"))
+        .expect("Pingora websocket handshake failed");
 
     assert_eq!(status, StatusCode::SWITCHING_PROTOCOLS);
     assert_eq!(
@@ -126,14 +122,10 @@ fn pingora_h2_preserves_response_trailers() {
     let listen_addr = listener.socket.local_addr().unwrap();
     let _listener_task = ListenerTaskGuard::spawn(&rt, listener);
 
-    let bootstrap_addr = SocketAddr::new(listen_addr.ip(), listen_port);
+    let pingora_addr = SocketAddr::new(listen_addr.ip(), listen_port);
     let (status, body, trailers) = rt
-        .block_on(run_bootstrap_h2_client_collect_trailers(
-            bootstrap_addr,
-            &cert,
-            "/",
-        ))
-        .expect("bootstrap trailer request failed");
+        .block_on(run_http2_client_collect_trailers(pingora_addr, &cert, "/"))
+        .expect("Pingora trailer request failed");
 
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body, b"hello\n");
@@ -261,11 +253,11 @@ fn pingora_h2_optional_client_auth_allows_requests_without_certificate() {
     drop(_enter);
     let listen_addr = listener.socket.local_addr().expect("listener addr");
     let _listener_task = ListenerTaskGuard::spawn(&rt, listener);
-    let bootstrap_addr = SocketAddr::new(listen_addr.ip(), listen_port);
+    let pingora_addr = SocketAddr::new(listen_addr.ip(), listen_port);
 
     let response = rt
-        .block_on(run_bootstrap_h2_client_request(
-            bootstrap_addr,
+        .block_on(run_http2_client_request(
+            pingora_addr,
             &cert,
             "GET",
             "/",
@@ -307,11 +299,11 @@ fn pingora_h2_required_client_auth_rejects_missing_certificate_and_accepts_valid
     drop(_enter);
     let listen_addr = listener.socket.local_addr().expect("listener addr");
     let _listener_task = ListenerTaskGuard::spawn(&rt, listener);
-    let bootstrap_addr = SocketAddr::new(listen_addr.ip(), listen_port);
+    let pingora_addr = SocketAddr::new(listen_addr.ip(), listen_port);
 
     let missing_cert_err = rt
-        .block_on(run_bootstrap_h2_client_request_with_client_auth(
-            bootstrap_addr,
+        .block_on(run_http2_client_request_with_client_auth(
+            pingora_addr,
             &cert,
             "GET",
             "/",
@@ -327,15 +319,15 @@ fn pingora_h2_required_client_auth_rejects_missing_certificate_and_accepts_valid
     );
 
     let response = rt
-        .block_on(run_bootstrap_h2_client_request_with_client_auth(
-            bootstrap_addr,
+        .block_on(run_http2_client_request_with_client_auth(
+            pingora_addr,
             &cert,
             "GET",
             "/",
             &[],
             Some((&client_cert, &client_key)),
         ))
-        .expect("client-authenticated bootstrap request failed");
+        .expect("client-authenticated Pingora request failed");
     assert_eq!(response.0, StatusCode::OK);
     assert_eq!(String::from_utf8_lossy(&response.1), "backend ok\n");
 }
@@ -458,11 +450,11 @@ fn pingora_tls_metrics_capture_missing_client_certificate_failures() {
     drop(_enter);
     let listen_addr = listener.socket.local_addr().expect("listener addr");
     let _listener_task = ListenerTaskGuard::spawn(&rt, listener);
-    let bootstrap_addr = SocketAddr::new(listen_addr.ip(), listen_port);
+    let pingora_addr = SocketAddr::new(listen_addr.ip(), listen_port);
 
     let err = rt
-        .block_on(run_bootstrap_h2_client_request_with_client_auth(
-            bootstrap_addr,
+        .block_on(run_http2_client_request_with_client_auth(
+            pingora_addr,
             &cert,
             "GET",
             "/",
@@ -545,19 +537,19 @@ fn pingora_h2_head_suppresses_response_body() {
     let _listener_task = ListenerTaskGuard::spawn(&rt, listener);
 
     let (status, body, _trailers) = rt
-        .block_on(run_bootstrap_h2_client_request(
+        .block_on(run_http2_client_request(
             SocketAddr::new(listen_addr.ip(), listen_port),
             &cert,
             "HEAD",
             "/stream",
             &[],
         ))
-        .expect("bootstrap HEAD request failed");
+        .expect("Pingora HEAD request failed");
 
     assert_eq!(status, StatusCode::OK);
     assert!(
         body.is_empty(),
-        "bootstrap HEAD response must not include a body"
+        "Pingora HEAD response must not include a body"
     );
 }
 

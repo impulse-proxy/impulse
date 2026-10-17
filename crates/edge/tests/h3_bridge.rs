@@ -62,7 +62,7 @@ use support::{net::local_listener_bind_available, request_path as request_suppor
 
 type TrailerPairs = Vec<(String, String)>;
 type H3TrailerResponse = (String, Vec<u8>, TrailerPairs);
-type BootstrapResponse = (StatusCode, Vec<u8>, TrailerPairs);
+type HttpResponse = (StatusCode, Vec<u8>, TrailerPairs);
 
 fn write_test_certs(dir: &TempDir) -> (String, String) {
     write_named_test_cert(dir, "cert", &["localhost"], &[IpAddr::from([127, 0, 0, 1])])
@@ -1081,7 +1081,7 @@ struct H3TlsObservation {
     alpn: Vec<u8>,
 }
 
-async fn connect_bootstrap_h2(
+async fn connect_http2(
     addr: SocketAddr,
     cert_path: &str,
 ) -> Result<
@@ -1128,7 +1128,7 @@ async fn connect_bootstrap_h2(
     }
 }
 
-async fn connect_bootstrap_h2_with_client_auth(
+async fn connect_http2_with_client_auth(
     addr: SocketAddr,
     cert_path: &str,
     client_identity: Option<(&str, &str)>,
@@ -1352,12 +1352,12 @@ fn run_h3_client_with_tls(
     }
 }
 
-async fn run_bootstrap_h2_client_collect_trailers(
+async fn run_http2_client_collect_trailers(
     addr: SocketAddr,
     cert_path: &str,
     path: &str,
-) -> Result<BootstrapResponse, String> {
-    let (mut sender, _conn_task) = connect_bootstrap_h2(addr, cert_path).await?;
+) -> Result<HttpResponse, String> {
+    let (mut sender, _conn_task) = connect_http2(addr, cert_path).await?;
     sender
         .ready()
         .await
@@ -1406,7 +1406,7 @@ async fn run_bootstrap_h2_client_collect_trailers(
     Ok((status, body, trailers))
 }
 
-async fn run_bootstrap_h1_websocket_handshake(
+async fn run_http1_websocket_handshake(
     addr: SocketAddr,
     cert_path: &str,
     path: &str,
@@ -1471,14 +1471,14 @@ async fn run_bootstrap_h1_websocket_handshake(
     }
 }
 
-async fn run_bootstrap_h2_client_request(
+async fn run_http2_client_request(
     addr: SocketAddr,
     cert_path: &str,
     method: &str,
     path: &str,
     extra_headers: &[(&str, &str)],
-) -> Result<BootstrapResponse, String> {
-    let (mut sender, _conn_task) = connect_bootstrap_h2(addr, cert_path).await?;
+) -> Result<HttpResponse, String> {
+    let (mut sender, _conn_task) = connect_http2(addr, cert_path).await?;
     sender
         .ready()
         .await
@@ -1531,16 +1531,16 @@ async fn run_bootstrap_h2_client_request(
     Ok((status, body, trailers))
 }
 
-async fn run_bootstrap_h2_client_request_with_client_auth(
+async fn run_http2_client_request_with_client_auth(
     addr: SocketAddr,
     cert_path: &str,
     method: &str,
     path: &str,
     extra_headers: &[(&str, &str)],
     client_identity: Option<(&str, &str)>,
-) -> Result<BootstrapResponse, String> {
+) -> Result<HttpResponse, String> {
     let (mut sender, _conn_task) =
-        connect_bootstrap_h2_with_client_auth(addr, cert_path, client_identity).await?;
+        connect_http2_with_client_auth(addr, cert_path, client_identity).await?;
     sender
         .ready()
         .await
