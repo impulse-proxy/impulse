@@ -274,14 +274,14 @@ pub(super) struct PreparedListenerStartup {
     pub(super) socket: UdpSocket,
 }
 
-pub(super) struct ControlPlaneBootstrap<'a> {
+pub(super) struct ControlPlaneStartup<'a> {
     pub(super) runtime_config: &'a RuntimeConfig,
     pub(super) shared_state: &'a SharedRuntimeState,
     pub(super) runtime_bundle: Option<Arc<RuntimeBundleHandle>>,
     pub(super) worker_count: usize,
 }
 
-impl<'a> ControlPlaneBootstrap<'a> {
+impl<'a> ControlPlaneStartup<'a> {
     pub(super) fn runtime_view(&self) -> ControlPlaneRuntimeView {
         self.runtime_bundle
             .as_ref()

@@ -18,7 +18,7 @@ pub(in crate::quic_listener) use self::{
     outcome::{
         backend_failure_reason_for_proxy_error, rejection_reason_for_status, terminalize_stream,
     },
-    resolve::{BootstrapTargetResolutionInput, ResolutionContext, ResolutionObservation},
+    resolve::{ResolutionContext, ResolutionObservation},
 };
 pub(crate) use self::{
     resolve::TargetResolutionRequest,

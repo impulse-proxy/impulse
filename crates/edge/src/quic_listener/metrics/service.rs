@@ -12,11 +12,11 @@ pub(super) struct MetricsEndpointBinding {
 
 impl QUICListener {
     pub(in crate::quic_listener) fn spawn_metrics_endpoint(
-        bootstrap: &ControlPlaneBootstrap<'_>,
+        startup: &ControlPlaneStartup<'_>,
     ) -> Result<(), ProxyError> {
-        let service_ctx = bootstrap.metrics_service_ctx();
+        let service_ctx = startup.metrics_service_ctx();
         let startup_state = service_ctx.current_state();
-        if bootstrap.runtime_bundle.is_none() && !startup_state.endpoint.enabled {
+        if startup.runtime_bundle.is_none() && !startup_state.endpoint.enabled {
             return Ok(());
         }
         let required = startup_state.endpoint.required;

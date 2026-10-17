@@ -134,7 +134,6 @@ pub(in crate::quic_listener) use protocol::{
 #[cfg(test)]
 pub(in crate::quic_listener) use protocol::{
     connection_header_tokens, is_bodyless_request_mode, is_connect_tunnel_response,
-    should_strip_bootstrap_request_header, should_strip_bootstrap_response_header,
     should_strip_h3_response_header,
 };
 pub use runtime_state::ListenerWorkerRuntimeState;

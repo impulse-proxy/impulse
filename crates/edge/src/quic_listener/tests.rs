@@ -26,7 +26,6 @@ use super::{
     ConnectionRoutes, TokenBucket, can_poll_upstream_result, classify_active_health_check_response,
     collect_h3_trailers, connection_header_tokens, is_bodyless_request_mode,
     is_connect_tunnel_response, purge_connection_routes, resolve_primary_from_radix_prefix,
-    should_strip_bootstrap_request_header, should_strip_bootstrap_response_header,
     should_strip_h3_response_header, sweep_closed_connections,
 };
 use crate::{
@@ -1217,7 +1216,7 @@ fn active_health_check_classification_matches_shared_policy() {
 }
 
 #[test]
-fn bootstrap_connection_header_tokens_are_parsed_case_insensitively() {
+fn connection_header_tokens_are_parsed_case_insensitively() {
     let mut headers = HeaderMap::new();
     headers.insert(
         http::header::CONNECTION,
@@ -1232,32 +1231,6 @@ fn bootstrap_connection_header_tokens_are_parsed_case_insensitively() {
     assert!(tokens.contains("keep-alive"));
     assert!(tokens.contains("x-secret"));
     assert!(tokens.contains("x-another"));
-}
-
-#[test]
-fn bootstrap_header_filter_strips_connection_nominated_headers() {
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        http::header::CONNECTION,
-        HeaderValue::from_static("keep-alive, x-secret"),
-    );
-    let tokens = connection_header_tokens(&headers);
-
-    let header = http::HeaderName::from_static("x-secret");
-    assert!(should_strip_bootstrap_request_header(&header, &tokens));
-}
-
-#[test]
-fn bootstrap_header_filter_keeps_non_nominated_custom_headers() {
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        http::header::CONNECTION,
-        HeaderValue::from_static("keep-alive"),
-    );
-    let tokens = connection_header_tokens(&headers);
-
-    let header = http::HeaderName::from_static("x-custom-keep");
-    assert!(!should_strip_bootstrap_request_header(&header, &tokens));
 }
 
 #[test]
@@ -1332,64 +1305,6 @@ fn h3_response_filter_strips_connection_nominated_headers() {
     let tokens = connection_header_tokens(&headers);
     let nominated = http::HeaderName::from_static("x-internal-hop");
     assert!(should_strip_h3_response_header(&nominated, &tokens));
-}
-
-#[test]
-fn bootstrap_response_filter_strips_standard_hop_by_hop_headers() {
-    let tokens = HashSet::new();
-    assert!(should_strip_bootstrap_response_header(
-        &http::header::CONNECTION,
-        &tokens
-    ));
-    assert!(should_strip_bootstrap_response_header(
-        &http::header::TE,
-        &tokens
-    ));
-    assert!(should_strip_bootstrap_response_header(
-        &http::header::TRAILER,
-        &tokens
-    ));
-    assert!(should_strip_bootstrap_response_header(
-        &http::header::TRANSFER_ENCODING,
-        &tokens
-    ));
-    assert!(should_strip_bootstrap_response_header(
-        &http::header::UPGRADE,
-        &tokens
-    ));
-    assert!(should_strip_bootstrap_response_header(
-        &http::header::PROXY_AUTHENTICATE,
-        &tokens
-    ));
-    assert!(should_strip_bootstrap_response_header(
-        &http::header::PROXY_AUTHORIZATION,
-        &tokens
-    ));
-    let alt_svc = http::HeaderName::from_static("alt-svc");
-    assert!(should_strip_bootstrap_response_header(&alt_svc, &tokens));
-    let keep_alive = http::HeaderName::from_static("keep-alive");
-    assert!(should_strip_bootstrap_response_header(&keep_alive, &tokens));
-}
-
-#[test]
-fn bootstrap_response_filter_strips_connection_nominated_headers() {
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        http::header::CONNECTION,
-        HeaderValue::from_static("x-hop-token, x-alt"),
-    );
-    let tokens = connection_header_tokens(&headers);
-    let nominated = http::HeaderName::from_static("x-hop-token");
-    assert!(should_strip_bootstrap_response_header(&nominated, &tokens));
-}
-
-#[test]
-fn bootstrap_response_filter_keeps_end_to_end_headers() {
-    let tokens = HashSet::new();
-    assert!(!should_strip_bootstrap_response_header(
-        &http::header::CACHE_CONTROL,
-        &tokens
-    ));
 }
 
 #[test]

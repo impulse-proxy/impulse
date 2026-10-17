@@ -21,39 +21,6 @@ pub(in crate::quic_listener) fn connection_header_tokens(
 }
 
 #[cfg(test)]
-pub(in crate::quic_listener) fn should_strip_bootstrap_request_header(
-    name: &http::header::HeaderName,
-    connection_tokens: &HashSet<String>,
-) -> bool {
-    if connection_tokens.contains(name.as_str()) {
-        return true;
-    }
-
-    if name == http::header::CONTENT_LENGTH {
-        return true;
-    }
-
-    if name == http::header::CONNECTION
-        || name == http::header::PROXY_AUTHENTICATE
-        || name == http::header::PROXY_AUTHORIZATION
-        || name == http::header::TE
-        || name == http::header::TRAILER
-        || name == http::header::TRANSFER_ENCODING
-        || name == http::header::UPGRADE
-        || name.as_str().eq_ignore_ascii_case("keep-alive")
-        || name.as_str().eq_ignore_ascii_case("proxy-connection")
-        || name.as_str().eq_ignore_ascii_case("forwarded")
-        || name.as_str().eq_ignore_ascii_case("x-forwarded-for")
-        || name.as_str().eq_ignore_ascii_case("x-forwarded-proto")
-        || name.as_str().eq_ignore_ascii_case("x-forwarded-host")
-    {
-        return true;
-    }
-
-    false
-}
-
-#[cfg(test)]
 pub(in crate::quic_listener) fn should_strip_h3_response_header(
     name: &http::header::HeaderName,
     connection_tokens: &HashSet<String>,
@@ -90,23 +57,6 @@ pub(in crate::quic_listener) fn collect_h3_trailers(
         )
     })
     .collect()
-}
-
-#[cfg(test)]
-pub(in crate::quic_listener) fn should_strip_bootstrap_response_header(
-    name: &http::header::HeaderName,
-    connection_tokens: &HashSet<String>,
-) -> bool {
-    should_strip_response_header(
-        name,
-        connection_tokens,
-        ResponseProtocolConstraints {
-            protocol: ResponseNormalizationProtocol::Http1,
-            strip_connection_headers: true,
-            allow_trailers: false,
-            preserve_upgrade: false,
-        },
-    )
 }
 
 pub(in crate::quic_listener) fn is_connect_method(method: &str) -> bool {

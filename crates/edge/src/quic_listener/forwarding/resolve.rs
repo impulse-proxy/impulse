@@ -104,20 +104,6 @@ pub(super) struct ForwardTargetResolutionInput<'a> {
     pub(super) observation: ResolutionObservation<'a>,
 }
 
-pub(in crate::quic_listener) struct BootstrapTargetResolution {
-    pub(in crate::quic_listener) upstream_name: String,
-    pub(in crate::quic_listener) upstream_pool: Arc<RwLock<UpstreamPool>>,
-    pub(in crate::quic_listener) upstream_policy: RuntimeUpstreamPolicy,
-    pub(in crate::quic_listener) backend_addr: String,
-    pub(in crate::quic_listener) backend_index: usize,
-}
-
-pub(in crate::quic_listener) struct BootstrapTargetResolutionInput<'a> {
-    pub(in crate::quic_listener) request: TargetResolutionRequest<'a>,
-    pub(in crate::quic_listener) context: ResolutionContext<'a>,
-    pub(in crate::quic_listener) observation: ResolutionObservation<'a>,
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum RouteResolutionFailureKind {
     NoRoute,
@@ -193,7 +179,7 @@ impl QUICListener {
         Self::log_route_resolution_failure(request, err);
     }
 
-    pub(in crate::quic_listener) fn bootstrap_route_resolution_error_response(
+    pub(in crate::quic_listener) fn route_resolution_error_response(
         err: &ProxyError,
     ) -> (http::StatusCode, &'static [u8]) {
         match Self::classify_route_resolution_failure(err) {
@@ -264,37 +250,6 @@ impl QUICListener {
             backend_addr,
             backend_index,
             backend_lb,
-        })
-    }
-
-    pub(in crate::quic_listener) fn resolve_bootstrap_target(
-        input: BootstrapTargetResolutionInput<'_>,
-    ) -> Result<BootstrapTargetResolution, ProxyError> {
-        let BootstrapTargetResolutionInput {
-            request,
-            context,
-            observation,
-        } = input;
-        let TargetResolution { route, backend } =
-            match Self::resolve_backend_internal(&request, &context, true) {
-                Ok(resolved) => resolved,
-                Err(err) => {
-                    Self::observe_route_resolution_failure(
-                        &request,
-                        &err,
-                        observation.metrics,
-                        observation.elapsed,
-                    );
-                    return Err(err);
-                }
-            };
-
-        Ok(BootstrapTargetResolution {
-            upstream_name: route.upstream_name,
-            upstream_pool: route.upstream_pool,
-            upstream_policy: route.upstream_policy,
-            backend_addr: backend.backend_addr,
-            backend_index: backend.backend_index,
         })
     }
 
@@ -549,7 +504,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_route_target_returns_stable_unrouted_error_and_bootstrap_mapping() {
+    fn resolve_route_target_returns_stable_unrouted_error_mapping() {
         let runtime = runtime_config(HashMap::from([(
             "api".to_string(),
             upstream(
@@ -587,7 +542,7 @@ mod tests {
         assert_eq!(first.to_string(), second.to_string());
         assert_eq!(first.to_string(), "transport error: no route for /missing");
 
-        let (status, body) = QUICListener::bootstrap_route_resolution_error_response(&first);
+        let (status, body) = QUICListener::route_resolution_error_response(&first);
         assert_eq!(status, http::StatusCode::BAD_GATEWAY);
         assert_eq!(body, b"no route\n");
     }
@@ -646,14 +601,14 @@ mod tests {
     }
 
     #[test]
-    fn bootstrap_route_resolution_error_response_maps_missing_pool_and_empty_request_stably() {
+    fn route_resolution_error_response_maps_missing_pool_and_empty_request_stably() {
         let missing_pool = ProxyError::Transport("pool not found: payments".to_string());
-        let (status, body) = QUICListener::bootstrap_route_resolution_error_response(&missing_pool);
+        let (status, body) = QUICListener::route_resolution_error_response(&missing_pool);
         assert_eq!(status, http::StatusCode::BAD_GATEWAY);
         assert_eq!(body, b"no pool\n");
 
         let other = ProxyError::Transport("empty method or path".to_string());
-        let (status, body) = QUICListener::bootstrap_route_resolution_error_response(&other);
+        let (status, body) = QUICListener::route_resolution_error_response(&other);
         assert_eq!(status, http::StatusCode::BAD_GATEWAY);
         assert_eq!(body, b"route/backend resolution failed\n");
     }

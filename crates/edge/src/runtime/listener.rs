@@ -26,8 +26,7 @@ use crate::{
     watchdog::coordinator::WatchdogCoordinator,
 };
 
-/// Shared cancellation signal used by both the QUIC worker and bootstrap
-/// listener for a listener group.
+/// Shared cancellation signal for the QUIC workers in a listener group.
 #[derive(Clone, Debug)]
 pub struct ShutdownSignal(Arc<AtomicBool>);
 

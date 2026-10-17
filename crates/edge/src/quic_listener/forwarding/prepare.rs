@@ -738,7 +738,7 @@ impl QUICListener {
                 let (status, body): (http::StatusCode, &[u8]) = match &err {
                     ProxyError::Bridge(_) => (http::StatusCode::BAD_REQUEST, b"invalid request\n"),
                     ProxyError::Transport(_) | ProxyError::Pool(_) => {
-                        Self::bootstrap_route_resolution_error_response(&err)
+                        Self::route_resolution_error_response(&err)
                     }
                     _ => (
                         http::StatusCode::INTERNAL_SERVER_ERROR,

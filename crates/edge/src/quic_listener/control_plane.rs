@@ -6,7 +6,7 @@ use log::error;
 
 use super::{
     QUICListener, runtime_handle,
-    runtime_state::{ControlPlaneBootstrap, WatchdogServiceCtx},
+    runtime_state::{ControlPlaneStartup, WatchdogServiceCtx},
     spawn_supervised_async_task,
 };
 use crate::{
@@ -25,7 +25,7 @@ impl QUICListener {
         shared_state: &SharedRuntimeState,
         worker_count: usize,
     ) -> Result<(), ProxyError> {
-        Self::spawn_control_plane_bootstrap(ControlPlaneBootstrap {
+        Self::spawn_control_plane(ControlPlaneStartup {
             runtime_config: config,
             shared_state,
             runtime_bundle: None,
@@ -39,7 +39,7 @@ impl QUICListener {
         runtime_bundle: Arc<RuntimeBundleHandle>,
         worker_count: usize,
     ) -> Result<(), ProxyError> {
-        Self::spawn_control_plane_bootstrap(ControlPlaneBootstrap {
+        Self::spawn_control_plane(ControlPlaneStartup {
             runtime_config: config,
             shared_state,
             runtime_bundle: Some(runtime_bundle),
@@ -47,20 +47,18 @@ impl QUICListener {
         })
     }
 
-    fn spawn_control_plane_bootstrap(
-        bootstrap: ControlPlaneBootstrap<'_>,
-    ) -> Result<(), ProxyError> {
-        bootstrap.with_runtime_view(|runtime| {
-            Self::configure_expected_workers(runtime.watchdog().as_ref(), bootstrap.worker_count);
+    fn spawn_control_plane(startup: ControlPlaneStartup<'_>) -> Result<(), ProxyError> {
+        startup.with_runtime_view(|runtime| {
+            Self::configure_expected_workers(runtime.watchdog().as_ref(), startup.worker_count);
         });
-        Self::spawn_generation_background_tasks(&bootstrap);
-        Self::spawn_metrics_endpoint(&bootstrap)?;
-        Self::spawn_control_api_endpoint(&bootstrap)?;
+        Self::spawn_generation_background_tasks(&startup);
+        Self::spawn_metrics_endpoint(&startup)?;
+        Self::spawn_control_api_endpoint(&startup)?;
         Ok(())
     }
 
-    pub(super) fn spawn_generation_background_tasks(bootstrap: &ControlPlaneBootstrap<'_>) {
-        bootstrap.with_runtime_view(|runtime| {
+    pub(super) fn spawn_generation_background_tasks(startup: &ControlPlaneStartup<'_>) {
+        startup.with_runtime_view(|runtime| {
             Self::configure_expected_workers(
                 runtime.watchdog().as_ref(),
                 runtime.expected_workers(),
@@ -94,7 +92,7 @@ impl QUICListener {
         config: &RuntimeConfig,
         shared_state: &SharedRuntimeState,
     ) {
-        Self::spawn_generation_background_tasks(&ControlPlaneBootstrap {
+        Self::spawn_generation_background_tasks(&ControlPlaneStartup {
             runtime_config: config,
             shared_state,
             runtime_bundle: None,
