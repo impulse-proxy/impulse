@@ -357,7 +357,7 @@ impl QUICListener {
                     route.upstream_name
                 ))
             })?;
-            ForwardingSelectionService::select_backend_with_pingora(
+            ForwardingSelectionService::select_backend_with_selector(
                 request,
                 &route.upstream_pool,
                 selector,

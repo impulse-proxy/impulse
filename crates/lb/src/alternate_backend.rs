@@ -23,7 +23,6 @@ pub enum AlternateBackendFailureReason {
     NoHealthyBackends,
     OnlyExcludedBackendsHealthy,
     PoolUnavailable,
-    BackendAddressMissing,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

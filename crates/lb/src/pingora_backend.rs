@@ -356,7 +356,9 @@ pub enum GenerationSelector<T> {
     WeightedRandom(GenerationWeightedRandom<T>),
     Ketama(GenerationKetama<T>),
     StickyCid(GenerationStickyCid<T>),
-    Existing(GenerationBackendView),
+    CustomLeastConnections(GenerationBackendView),
+    CustomLatencyAware(GenerationBackendView),
+    Unsupported(GenerationBackendView),
 }
 
 impl<T> GenerationSelector<T>
@@ -377,9 +379,9 @@ where
             RuntimeLoadBalancingStrategy::StickyCid => {
                 Self::StickyCid(GenerationStickyCid::from_backend_view(view))
             }
-            RuntimeLoadBalancingStrategy::LeastConnections
-            | RuntimeLoadBalancingStrategy::LatencyAware
-            | RuntimeLoadBalancingStrategy::Other => Self::Existing(view),
+            RuntimeLoadBalancingStrategy::LeastConnections => Self::CustomLeastConnections(view),
+            RuntimeLoadBalancingStrategy::LatencyAware => Self::CustomLatencyAware(view),
+            RuntimeLoadBalancingStrategy::Other => Self::Unsupported(view),
         }
     }
 
@@ -389,7 +391,9 @@ where
             Self::WeightedRandom(selector) => selector.generation(),
             Self::Ketama(selector) => selector.generation(),
             Self::StickyCid(selector) => selector.generation(),
-            Self::Existing(view) => view.generation(),
+            Self::CustomLeastConnections(view)
+            | Self::CustomLatencyAware(view)
+            | Self::Unsupported(view) => view.generation(),
         }
     }
 
@@ -399,12 +403,17 @@ where
             Self::WeightedRandom(selector) => selector.upstream_name(),
             Self::Ketama(selector) => selector.upstream_name(),
             Self::StickyCid(selector) => selector.upstream_name(),
-            Self::Existing(view) => view.upstream_name(),
+            Self::CustomLeastConnections(view)
+            | Self::CustomLatencyAware(view)
+            | Self::Unsupported(view) => view.upstream_name(),
         }
     }
 
-    pub fn uses_pingora(&self) -> bool {
-        !matches!(self, Self::Existing(_))
+    pub fn uses_custom_dynamic_selector(&self) -> bool {
+        matches!(
+            self,
+            Self::CustomLeastConnections(_) | Self::CustomLatencyAware(_)
+        )
     }
 
     pub fn synchronize_readiness(
@@ -416,7 +425,9 @@ where
             Self::WeightedRandom(selector) => selector.synchronize_readiness(is_healthy),
             Self::Ketama(selector) => selector.synchronize_readiness(is_healthy),
             Self::StickyCid(selector) => selector.synchronize_readiness(is_healthy),
-            Self::Existing(view) => view.synchronize_readiness::<T>(is_healthy),
+            Self::CustomLeastConnections(view)
+            | Self::CustomLatencyAware(view)
+            | Self::Unsupported(view) => view.synchronize_readiness::<T>(is_healthy),
         }
     }
 
@@ -434,7 +445,9 @@ where
                 selector.select_excluding(key.as_bytes(), excluded_backend_indices)
             }
             Self::StickyCid(selector) => selector.select_excluding(key, excluded_backend_indices),
-            Self::Existing(_) => None,
+            Self::CustomLeastConnections(_)
+            | Self::CustomLatencyAware(_)
+            | Self::Unsupported(_) => None,
         }
     }
 }

@@ -5,10 +5,7 @@ use impulse_errors::{
     HedgeOutcomeTelemetryReason, HedgePolicyDecision, RetryPolicyDecision, is_idempotent_method,
 };
 use impulse_lb::{
-    alternate_backend::{
-        AlternateBackendDecision, AlternateBackendFailureReason, choose_alternate_backend,
-    },
-    pingora_backend::GenerationSelector,
+    alternate_backend::AlternateBackendFailureReason, pingora_backend::GenerationSelector,
 };
 use impulse_transport::{
     UpstreamBodyFrame, UpstreamCancellation, UpstreamConnectionReuse, UpstreamExchangeCompletion,
@@ -269,7 +266,7 @@ impl QUICListener {
             metrics,
         ) {
             Ok(StableBackendSelection::Selected { address, .. }) => {
-                return ResolvedAlternateBackend::Selected { address };
+                ResolvedAlternateBackend::Selected { address }
             }
             Ok(StableBackendSelection::NoCandidate) => {
                 let reason = match upstream_pool.read() {
@@ -279,36 +276,11 @@ impl QUICListener {
                     Ok(_) => AlternateBackendFailureReason::OnlyExcludedBackendsHealthy,
                     Err(_) => AlternateBackendFailureReason::PoolUnavailable,
                 };
-                return ResolvedAlternateBackend::Unavailable { reason };
+                ResolvedAlternateBackend::Unavailable { reason }
             }
-            Ok(StableBackendSelection::UseExistingSelector) => {}
-            Err(_) => {
-                return ResolvedAlternateBackend::Unavailable {
-                    reason: AlternateBackendFailureReason::PoolUnavailable,
-                };
-            }
-        }
-
-        let Ok(pool) = upstream_pool.read() else {
-            return ResolvedAlternateBackend::Unavailable {
+            Err(_) => ResolvedAlternateBackend::Unavailable {
                 reason: AlternateBackendFailureReason::PoolUnavailable,
-            };
-        };
-        match choose_alternate_backend(&pool, &[primary_index], None) {
-            AlternateBackendDecision::Select(choice) => {
-                if let Some(address) = pool.backend_address(choice.index) {
-                    ResolvedAlternateBackend::Selected {
-                        address: address.to_string(),
-                    }
-                } else {
-                    ResolvedAlternateBackend::Unavailable {
-                        reason: AlternateBackendFailureReason::BackendAddressMissing,
-                    }
-                }
-            }
-            AlternateBackendDecision::DoNotSelect { denial } => {
-                ResolvedAlternateBackend::Unavailable { reason: denial }
-            }
+            },
         }
     }
 

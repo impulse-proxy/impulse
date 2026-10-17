@@ -7,7 +7,10 @@ use impulse_errors::{
     evaluate_retry_policy,
 };
 use impulse_lb::{
-    alternate_backend::AlternateBackendFailureReason, pingora_backend::GenerationSelector,
+    alternate_backend::{
+        AlternateBackendDecision, AlternateBackendFailureReason, choose_alternate_backend,
+    },
+    pingora_backend::GenerationSelector,
     upstream_pool::UpstreamPool,
 };
 use log::error;
@@ -35,7 +38,6 @@ pub(crate) const MAX_UPSTREAM_RETRY_ATTEMPTS: u8 = 1;
 pub(crate) enum StableBackendSelection {
     Selected { address: String, index: usize },
     NoCandidate,
-    UseExistingSelector,
 }
 
 impl ForwardingSelectionService {
@@ -79,7 +81,7 @@ impl ForwardingSelectionService {
         })
     }
 
-    pub(crate) fn select_backend_with_pingora(
+    pub(crate) fn select_backend_with_selector(
         request: &TargetResolutionRequest<'_>,
         upstream_pool: &Arc<RwLock<UpstreamPool>>,
         selector: &GenerationSelector<RuntimeBackendTlsPolicy>,
@@ -120,9 +122,6 @@ impl ForwardingSelectionService {
             StableBackendSelection::NoCandidate => {
                 Err(ProxyError::Transport("no healthy servers".into()))
             }
-            StableBackendSelection::UseExistingSelector => {
-                Self::select_backend(request, upstream_pool, begin_request)
-            }
         }
     }
 
@@ -135,8 +134,20 @@ impl ForwardingSelectionService {
         begin_request: bool,
         metrics: &Metrics,
     ) -> Result<StableBackendSelection, ProxyError> {
-        if !selector.uses_pingora() {
-            return Ok(StableBackendSelection::UseExistingSelector);
+        if selector.generation() != generation {
+            metrics.inc_pingora_lb_selector_failure();
+            return Err(ProxyError::Transport(format!(
+                "selector generation {} does not match runtime generation {generation}",
+                selector.generation()
+            )));
+        }
+        if selector.uses_custom_dynamic_selector() {
+            return Self::select_custom_dynamic_backend(
+                pool,
+                key,
+                excluded_backend_indices,
+                begin_request,
+            );
         }
         let pool = pool.read().map_err(|_| {
             metrics.inc_pingora_lb_selector_failure();
@@ -171,6 +182,44 @@ impl ForwardingSelectionService {
             return Ok(StableBackendSelection::NoCandidate);
         }
         metrics.inc_pingora_lb_selection();
+        Ok(StableBackendSelection::Selected { address, index })
+    }
+
+    fn select_custom_dynamic_backend(
+        pool: &Arc<RwLock<UpstreamPool>>,
+        key: &str,
+        excluded_backend_indices: &[usize],
+        begin_request: bool,
+    ) -> Result<StableBackendSelection, ProxyError> {
+        let mut pool = pool
+            .write()
+            .map_err(|_| ProxyError::Transport("upstream pool lock poisoned".into()))?;
+        let selected = if excluded_backend_indices.is_empty() {
+            if begin_request {
+                pool.pick(key)
+            } else {
+                pool.pick_without_begin(key)
+            }
+        } else {
+            match choose_alternate_backend(&pool, excluded_backend_indices, Some(key)) {
+                AlternateBackendDecision::Select(choice) => {
+                    if begin_request && !pool.begin_request_if_healthy(choice.index) {
+                        None
+                    } else {
+                        Some(choice.index)
+                    }
+                }
+                AlternateBackendDecision::DoNotSelect { .. } => None,
+            }
+        };
+        let Some(index) = selected else {
+            return Ok(StableBackendSelection::NoCandidate);
+        };
+        let Some(address) = pool.backend_address(index).map(str::to_string) else {
+            return Err(ProxyError::Transport(
+                "custom selector returned an invalid backend index".into(),
+            ));
+        };
         Ok(StableBackendSelection::Selected { address, index })
     }
 

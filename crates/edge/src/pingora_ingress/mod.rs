@@ -20,12 +20,7 @@ use impulse_errors::{
     BridgeError, PoolError, ProxyError, RetryAttemptTelemetryReason, RetryPolicyDecision,
     RetryPolicyDenialReason, classify_upstream_proxy_error, is_idempotent_method,
 };
-use impulse_lb::{
-    alternate_backend::{
-        AlternateBackendDecision, AlternateBackendFailureReason, choose_alternate_backend,
-    },
-    upstream_pool::UpstreamPool,
-};
+use impulse_lb::{alternate_backend::AlternateBackendFailureReason, upstream_pool::UpstreamPool};
 use impulse_transport::{classify_pingora_h1_error, classify_pingora_h2_error};
 use pingora_core::{
     Error, HTTPStatus, InternalError, Result,
@@ -746,7 +741,7 @@ impl ProxyHttp for PingoraIngressService {
                         ),
                     )
                 })?;
-            let selected = ForwardingSelectionService::select_backend_with_pingora(
+            let selected = ForwardingSelectionService::select_backend_with_selector(
                 &selection_request,
                 &pool,
                 selector,
@@ -1280,21 +1275,6 @@ fn handle_pingora_proxy_failure(
                 None,
                 Some(AlternateBackendFailureReason::OnlyExcludedBackendsHealthy),
             ),
-            Err(_) => (None, Some(AlternateBackendFailureReason::PoolUnavailable)),
-        },
-        Some(Ok(StableBackendSelection::UseExistingSelector)) => match selected.pool.read() {
-            Ok(pool) => match choose_alternate_backend(&pool, &[selected.index], None) {
-                AlternateBackendDecision::Select(choice) => {
-                    match pool.backend_address(choice.index) {
-                        Some(address) => (Some((address.to_string(), choice.index)), None),
-                        None => (
-                            None,
-                            Some(AlternateBackendFailureReason::BackendAddressMissing),
-                        ),
-                    }
-                }
-                AlternateBackendDecision::DoNotSelect { denial } => (None, Some(denial)),
-            },
             Err(_) => (None, Some(AlternateBackendFailureReason::PoolUnavailable)),
         },
         Some(Err(_)) | None => (None, Some(AlternateBackendFailureReason::PoolUnavailable)),
