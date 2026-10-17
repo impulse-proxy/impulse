@@ -257,6 +257,7 @@ impl QUICListener {
         generation: u64,
         lb_key: &str,
         primary_index: usize,
+        metrics: &Metrics,
     ) -> ResolvedAlternateBackend {
         match ForwardingSelectionService::select_stable_backend(
             selector,
@@ -265,6 +266,7 @@ impl QUICListener {
             lb_key,
             &[primary_index],
             false,
+            metrics,
         ) {
             Ok(StableBackendSelection::Selected { address, .. }) => {
                 return ResolvedAlternateBackend::Selected { address };
@@ -425,23 +427,23 @@ impl QUICListener {
         let transport = Arc::clone(&exec_ctx.transport_pool);
         let hedge_delay = resilience.hedging_delay;
         let alternate_backend = req.upstream_pool.as_ref().map(|upstream_pool| {
-            shared_ctx
+            let Some(selector) = shared_ctx
                 .pingora_load_balancing
                 .selector(pending_forward.upstream_name.as_ref())
-                .map_or(
-                    ResolvedAlternateBackend::Unavailable {
-                        reason: AlternateBackendFailureReason::PoolUnavailable,
-                    },
-                    |selector| {
-                        Self::resolve_alternate_backend(
-                            upstream_pool,
-                            selector,
-                            shared_ctx.generation,
-                            pending_forward.lb_key.as_ref(),
-                            pending_forward.backend_index,
-                        )
-                    },
-                )
+            else {
+                shared_ctx.metrics.inc_pingora_lb_selector_failure();
+                return ResolvedAlternateBackend::Unavailable {
+                    reason: AlternateBackendFailureReason::PoolUnavailable,
+                };
+            };
+            Self::resolve_alternate_backend(
+                upstream_pool,
+                selector,
+                shared_ctx.generation,
+                pending_forward.lb_key.as_ref(),
+                pending_forward.backend_index,
+                shared_ctx.metrics.as_ref(),
+            )
         });
         let trace_span_for_upstream = req.trace_span.clone();
         let (result_tx, result_rx) = oneshot::channel::<UpstreamResult>();

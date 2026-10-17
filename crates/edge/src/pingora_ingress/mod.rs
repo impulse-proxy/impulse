@@ -733,6 +733,11 @@ impl ProxyHttp for PingoraIngressService {
                 .pingora_load_balancing
                 .selector(route.upstream_name.as_ref())
                 .ok_or_else(|| {
+                    ctx.runtime
+                        .shared_state
+                        .shared_services()
+                        .metrics
+                        .inc_pingora_lb_selector_failure();
                     Error::explain(
                         InternalError,
                         format!(
@@ -747,6 +752,7 @@ impl ProxyHttp for PingoraIngressService {
                 selector,
                 ctx.runtime.generation,
                 true,
+                ctx.runtime.shared_state.shared_services().metrics.as_ref(),
             )
             .map_err(|error| Error::because(InternalError, "backend selection failed", error))?;
             ctx.lb_key = Some(selected.lb_key);
@@ -1246,16 +1252,22 @@ fn handle_pingora_proxy_failure(
         .generation_state()
         .pingora_load_balancing
         .selector(route_name);
-    let stable_selection = selector.map(|selector| {
-        ForwardingSelectionService::select_stable_backend(
+    let metrics = ctx.runtime.shared_state.shared_services().metrics.as_ref();
+    let stable_selection = match selector {
+        Some(selector) => Some(ForwardingSelectionService::select_stable_backend(
             selector,
             &selected.pool,
             ctx.runtime.generation,
             ctx.lb_key.as_deref().unwrap_or_default(),
             &[selected.index],
             false,
-        )
-    });
+            metrics,
+        )),
+        None => {
+            metrics.inc_pingora_lb_selector_failure();
+            None
+        }
+    };
     let (retry_backend, alternate_failure) = match stable_selection {
         Some(Ok(StableBackendSelection::Selected { address, index })) => {
             (Some((address, index)), None)

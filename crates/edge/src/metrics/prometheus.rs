@@ -740,6 +740,42 @@ impl Metrics {
         ));
 
         out.push_str(
+            "# HELP impulse_pingora_lb_selector_generation Current Pingora selector runtime generation.\n",
+        );
+        out.push_str("# TYPE impulse_pingora_lb_selector_generation gauge\n");
+        out.push_str(&format!(
+            "impulse_pingora_lb_selector_generation {}\n",
+            self.pingora_lb_selector_generation.load(Ordering::Relaxed)
+        ));
+
+        out.push_str(
+            "# HELP impulse_pingora_lb_selector_rebuilds_total Total Pingora selector instances rebuilt.\n",
+        );
+        out.push_str("# TYPE impulse_pingora_lb_selector_rebuilds_total counter\n");
+        out.push_str(&format!(
+            "impulse_pingora_lb_selector_rebuilds_total {}\n",
+            self.pingora_lb_selector_rebuilds.load(Ordering::Relaxed)
+        ));
+
+        out.push_str(
+            "# HELP impulse_pingora_lb_selector_failures_total Total Pingora selector rebuild and selection failures.\n",
+        );
+        out.push_str("# TYPE impulse_pingora_lb_selector_failures_total counter\n");
+        out.push_str(&format!(
+            "impulse_pingora_lb_selector_failures_total {}\n",
+            self.pingora_lb_selector_failures.load(Ordering::Relaxed)
+        ));
+
+        out.push_str(
+            "# HELP impulse_pingora_lb_selections_total Total backends selected by Pingora load balancing.\n",
+        );
+        out.push_str("# TYPE impulse_pingora_lb_selections_total counter\n");
+        out.push_str(&format!(
+            "impulse_pingora_lb_selections_total {}\n",
+            self.pingora_lb_selections.load(Ordering::Relaxed)
+        ));
+
+        out.push_str(
             "# HELP impulse_connection_cap_rejects Total new-connection attempts rejected by max_active_connections cap.\n",
         );
         out.push_str("# TYPE impulse_connection_cap_rejects counter\n");

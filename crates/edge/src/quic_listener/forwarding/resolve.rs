@@ -41,6 +41,7 @@ pub(in crate::quic_listener) struct ResolutionContext<'a> {
     pub(in crate::quic_listener) upstream_policies: &'a HashMap<String, RuntimeUpstreamPolicy>,
     pingora_load_balancing: Option<&'a PingoraLoadBalancingRuntimeState<RuntimeBackendTlsPolicy>>,
     generation: u64,
+    metrics: Option<&'a Metrics>,
 }
 
 impl<'a> ResolutionContext<'a> {
@@ -55,6 +56,7 @@ impl<'a> ResolutionContext<'a> {
             upstream_policies,
             pingora_load_balancing: None,
             generation: 0,
+            metrics: None,
         }
     }
 
@@ -62,9 +64,11 @@ impl<'a> ResolutionContext<'a> {
         mut self,
         pingora_load_balancing: &'a PingoraLoadBalancingRuntimeState<RuntimeBackendTlsPolicy>,
         generation: u64,
+        metrics: &'a Metrics,
     ) -> Self {
         self.pingora_load_balancing = Some(pingora_load_balancing);
         self.generation = generation;
+        self.metrics = Some(metrics);
         self
     }
 }
@@ -343,7 +347,11 @@ impl QUICListener {
     ) -> Result<TargetResolution, ProxyError> {
         let route = Self::resolve_route_target(request, context)?;
         let backend = if let Some(selectors) = context.pingora_load_balancing {
+            let metrics = context
+                .metrics
+                .expect("Pingora selection metrics must accompany selector state");
             let selector = selectors.selector(&route.upstream_name).ok_or_else(|| {
+                metrics.inc_pingora_lb_selector_failure();
                 ProxyError::Transport(format!(
                     "Pingora selector not found: {}",
                     route.upstream_name
@@ -355,6 +363,7 @@ impl QUICListener {
                 selector,
                 context.generation,
                 begin_request,
+                metrics,
             )?
         } else {
             ForwardingSelectionService::select_backend(

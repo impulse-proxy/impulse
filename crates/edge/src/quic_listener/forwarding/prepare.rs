@@ -465,7 +465,11 @@ impl QUICListener {
             shared_ctx.upstream_pools,
             shared_ctx.upstream_policies,
         )
-        .with_pingora_selection(shared_ctx.pingora_load_balancing, shared_ctx.generation);
+        .with_pingora_selection(
+            shared_ctx.pingora_load_balancing,
+            shared_ctx.generation,
+            metrics,
+        );
         let intake = Self::build_request_intake(IntakeRequestDescriptor {
             quic_trace_id,
             request_start,

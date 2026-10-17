@@ -323,6 +323,7 @@ impl QUICListener {
                 },
             )
             .map_err(|error| {
+                metrics.inc_pingora_lb_selector_failure();
                 ProxyError::Transport(format!(
                     "failed to create Pingora selector for upstream '{name}': {error}"
                 ))
@@ -332,12 +333,14 @@ impl QUICListener {
         let pingora_load_balancing = Arc::new(
             PingoraLoadBalancingRuntimeState::new(generation, pingora_selectors).map_err(
                 |error| {
+                    metrics.inc_pingora_lb_selector_failure();
                     ProxyError::Transport(format!(
                         "failed to create Pingora load-balancing runtime: {error}"
                     ))
                 },
             )?,
         );
+        metrics.record_pingora_lb_selector_rebuild(generation, pingora_load_balancing.len());
 
         let mut effective_admission = config.policies.admission.clone();
         let default_route_cap_limit = per_upstream_limit.saturating_mul(2).max(1);
