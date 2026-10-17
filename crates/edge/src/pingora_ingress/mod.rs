@@ -26,6 +26,7 @@ use impulse_lb::{
 use impulse_transport::{classify_pingora_h1_error, classify_pingora_h2_error};
 use pingora_core::{
     Error, HTTPStatus, InternalError, Result,
+    apps::HttpServerOptions,
     listeners::TlsSettings,
     server::configuration::ServerConf,
     services::listening::Service,
@@ -193,6 +194,12 @@ pub(crate) fn pingora_ingress_service(
         PingoraIngressService { runtime },
         "Impulse Pingora Ingress",
     );
+    if let Some(proxy) = service.app_logic_mut() {
+        proxy.server_options = Some(HttpServerOptions {
+            allow_connect_method_proxying: true,
+            ..HttpServerOptions::default()
+        });
+    }
     service.add_tls_with_settings(&listener_label, None, tls);
     Ok(service)
 }
@@ -550,7 +557,7 @@ impl ProxyHttp for PingoraIngressService {
             selected_at: Instant::now(),
             finish_status: None,
         };
-        let peer = ctx
+        let mut peer = ctx
             .runtime
             .shared_state
             .shared_services()
@@ -559,6 +566,9 @@ impl ProxyHttp for PingoraIngressService {
             .map_err(|error| {
                 Error::because(InternalError, "backend peer creation failed", error)
             })?;
+        if ctx.body_limit_exempt {
+            peer.options.alpn = ALPN::H1;
+        }
         ctx.selected_backend = Some(selected_backend);
         Ok(Box::new(peer))
     }
