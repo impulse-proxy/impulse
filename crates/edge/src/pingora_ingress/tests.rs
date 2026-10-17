@@ -7,7 +7,7 @@ use std::{
 
 use http_body_util::BodyExt;
 use impulse_config::{
-    config::{ApiKeyAuth, Config, RouteAuth},
+    config::{ApiKeyAuth, Config, RouteAuth, ScopedRateLimit, ScopedRateLimitScope},
     runtime::{ListenerRuntimeConfig, RuntimeConfig},
     validator::validate,
 };
@@ -31,6 +31,7 @@ use support::{
 struct PingoraTestService {
     shutdown: tokio::sync::watch::Sender<bool>,
     task: tokio::task::JoinHandle<()>,
+    runtime_bundle: RuntimeBundleHandle,
     _runtime: tokio::runtime::Runtime,
 }
 
@@ -45,11 +46,10 @@ impl PingoraTestService {
             &runtime_config,
         )
         .map_err(|error| format!("runtime bundle: {error}"))?;
-        let mut services = pingora_ingress_services(
-            &Arc::new(ServerConf::default()),
-            RuntimeBundleHandle::new(bundle),
-        )
-        .map_err(|error| format!("Pingora ingress service: {error}"))?;
+        let runtime_bundle = RuntimeBundleHandle::new(bundle);
+        let mut services =
+            pingora_ingress_services(&Arc::new(ServerConf::default()), runtime_bundle.clone())
+                .map_err(|error| format!("Pingora ingress service: {error}"))?;
         let mut service = services
             .pop()
             .ok_or_else(|| "Pingora ingress did not create a service".to_string())?;
@@ -69,6 +69,7 @@ impl PingoraTestService {
                     Self {
                         shutdown,
                         task,
+                        runtime_bundle,
                         _runtime: runtime,
                     },
                     addr,
@@ -79,6 +80,15 @@ impl PingoraTestService {
 
         task.abort();
         Err(format!("Pingora ingress did not listen on {addr}"))
+    }
+
+    fn metrics_text(&self) -> String {
+        self.runtime_bundle
+            .current()
+            .shared_state
+            .shared_services()
+            .metrics
+            .render_prometheus()
     }
 }
 
@@ -301,6 +311,188 @@ fn pingora_bootstrap_and_http3_share_request_contracts() {
             capture_metrics_delta: false,
         },
     );
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct HybridRuntimeMetrics {
+    requests_success: u64,
+    requests_failure: u64,
+    requests_rate_limited: u64,
+    health_failure_5xx: u64,
+}
+
+impl HybridRuntimeMetrics {
+    fn delta(before: &str, after: &str) -> Self {
+        Self {
+            requests_success: metric_delta(before, after, "impulse_requests_success "),
+            requests_failure: metric_delta(before, after, "impulse_requests_failure "),
+            requests_rate_limited: metric_delta(before, after, "impulse_request_rate_limited "),
+            health_failure_5xx: metric_delta(
+                before,
+                after,
+                "impulse_health_failures_total{reason=\"5xx\"} ",
+            ),
+        }
+    }
+}
+
+#[test]
+fn pingora_and_http3_match_final_hybrid_runtime_behavior() {
+    if !local_listener_bind_available() {
+        return;
+    }
+
+    let mut harness = BootstrapQuicParityHarness::new();
+    let generic_backend = harness.start_h1_static_backend(b"generic route\n");
+    let admin_backend = harness.start_h1_static_backend(b"admin route\n");
+    let limited_backend = harness.start_h1_static_backend(b"limited route\n");
+    let unhealthy_backend = harness.start_h1_backend(|_request| async move {
+        Ok::<_, std::convert::Infallible>(
+            hyper::Response::builder()
+                .status(http::StatusCode::SERVICE_UNAVAILABLE)
+                .body(http_body_util::Full::new(bytes::Bytes::from_static(
+                    b"backend unhealthy\n",
+                )))
+                .expect("unhealthy backend response"),
+        )
+    });
+
+    let mut admin = make_upstream(
+        "/api/admin",
+        vec![make_backend("admin", admin_backend.to_string())],
+        None,
+        "round-robin",
+    );
+    admin.auth = RouteAuth {
+        api_key: Some(ApiKeyAuth {
+            header_name: "x-api-key".to_string(),
+            keys: vec!["admin-key".to_string()],
+        }),
+        ..RouteAuth::default()
+    };
+    let mut config = harness.make_config(HashMap::from([
+        (
+            "generic".to_string(),
+            make_upstream(
+                "/api",
+                vec![make_backend("generic", generic_backend.to_string())],
+                None,
+                "round-robin",
+            ),
+        ),
+        ("admin".to_string(), admin),
+        (
+            "limited".to_string(),
+            make_upstream(
+                "/limited",
+                vec![make_backend("limited", limited_backend.to_string())],
+                None,
+                "round-robin",
+            ),
+        ),
+        (
+            "unhealthy".to_string(),
+            make_upstream(
+                "/unhealthy",
+                vec![make_backend("unhealthy", unhealthy_backend.to_string())],
+                None,
+                "round-robin",
+            ),
+        ),
+    ]));
+    config.resilience.scoped_rate_limits = vec![ScopedRateLimit {
+        name: "hybrid-route-limit".to_string(),
+        scope: ScopedRateLimitScope::Route,
+        requests_per_sec: 1,
+        burst: 1,
+        key: None,
+        route_allowlist: vec!["limited".to_string()],
+        idle_ttl_secs: 300,
+    }];
+
+    let mut pingora_config = config.clone();
+    pingora_config.listen.port = reserve_unused_listener_port();
+    let (pingora, pingora_addr) =
+        PingoraTestService::start(pingora_config).expect("start Pingora ingress");
+    harness
+        .start_listener(config)
+        .expect("start HTTP/3 ingress");
+
+    let quic_metrics_before = harness
+        .metrics_text()
+        .expect("HTTP/3 metrics before matrix");
+    let pingora_metrics_before = pingora.metrics_text();
+    let requests = [
+        ParityRequestSpec {
+            method: "GET",
+            authority: "localhost",
+            path: "/api/admin",
+            headers: &[],
+            body: None,
+            user_agent: "impulse-hybrid-runtime-test",
+            selected_response_headers: &["www-authenticate"],
+            capture_metrics_delta: false,
+        },
+        ParityRequestSpec {
+            method: "GET",
+            authority: "localhost",
+            path: "/api/admin",
+            headers: &[("x-api-key", "admin-key")],
+            body: None,
+            user_agent: "impulse-hybrid-runtime-test",
+            selected_response_headers: &[],
+            capture_metrics_delta: false,
+        },
+        ParityRequestSpec::get("localhost", "/limited"),
+        ParityRequestSpec {
+            selected_response_headers: &["retry-after"],
+            ..ParityRequestSpec::get("localhost", "/limited")
+        },
+        ParityRequestSpec::get("localhost", "/unhealthy"),
+    ];
+
+    for request in requests {
+        let quic = harness.run_quic(request).expect("HTTP/3 matrix response");
+        let pingora_response = run_bootstrap_request_to(
+            pingora_addr,
+            harness.cert_path(),
+            BootstrapRequestSpec {
+                method: request.method,
+                authority: request.authority,
+                path: request.path,
+                headers: request.headers,
+                body: request.body,
+                user_agent: request.user_agent,
+            },
+        )
+        .map(|response| snapshot(response, request.selected_response_headers))
+        .expect("Pingora matrix response");
+        assert_eq!(pingora_response, quic.response);
+    }
+
+    let quic_metrics = HybridRuntimeMetrics::delta(
+        &quic_metrics_before,
+        &harness.metrics_text().expect("HTTP/3 metrics after matrix"),
+    );
+    let pingora_metrics =
+        HybridRuntimeMetrics::delta(&pingora_metrics_before, &pingora.metrics_text());
+    assert_eq!(pingora_metrics, quic_metrics);
+    assert_eq!(quic_metrics.requests_success, 2);
+    assert_eq!(quic_metrics.requests_failure, 3);
+    assert_eq!(quic_metrics.requests_rate_limited, 1);
+    assert_eq!(quic_metrics.health_failure_5xx, 1);
+}
+
+fn metric_delta(before: &str, after: &str, prefix: &str) -> u64 {
+    fn counter(metrics: &str, prefix: &str) -> u64 {
+        metrics
+            .lines()
+            .find_map(|line| line.strip_prefix(prefix))
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or_else(|| panic!("missing metrics counter `{prefix}`"))
+    }
+
+    counter(after, prefix).saturating_sub(counter(before, prefix))
 }
 
 fn assert_three_way_parity(
