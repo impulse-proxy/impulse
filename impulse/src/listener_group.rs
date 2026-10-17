@@ -2,6 +2,7 @@ use std::{
     collections::HashMap,
     sync::{Arc, atomic::Ordering},
     thread,
+    time::{Duration, Instant},
 };
 
 use impulse_config::runtime::{ListenerRuntimeConfig, RuntimeConfig};
@@ -41,12 +42,16 @@ pub(crate) struct ListenerGroupRuntime {
     pingora_listener: PingoraListenerTask,
     worker_index_base: usize,
     failed_activation_generation: Option<u64>,
+    drain_timeout: Duration,
+    drain_deadline: Option<Instant>,
 }
 
 impl ListenerGroupRuntime {
-    pub(crate) fn request_shutdown(&self) {
+    pub(crate) fn request_shutdown(&mut self) {
         self.shutdown.store(true, Ordering::Relaxed);
         self.pingora_listener.request_shutdown();
+        self.drain_deadline
+            .get_or_insert_with(|| Instant::now() + self.drain_timeout);
     }
 
     pub(crate) async fn collect_finished(&mut self, worker_failed: &mut bool) {
@@ -72,6 +77,18 @@ impl ListenerGroupRuntime {
                 );
             }
         }
+        if self
+            .drain_deadline
+            .is_some_and(|deadline| Instant::now() >= deadline)
+            && !self.pingora_listener.stopped()
+        {
+            let active = self.pingora_listener.force_drain();
+            log::warn!(
+                "Pingora listener {} exceeded its drain deadline with {} active request(s)",
+                self.signature.label,
+                active
+            );
+        }
     }
 
     pub(crate) fn retired(&self) -> bool {
@@ -84,9 +101,21 @@ impl ListenerGroupRuntime {
         for handle in self.worker_handles.drain(..) {
             join_worker_handle(handle, worker_failed);
         }
-        if let Err(err) = self.pingora_listener.join().await {
-            *worker_failed = true;
-            error!("{}", err);
+        let remaining = self
+            .drain_deadline
+            .map(|deadline| deadline.saturating_duration_since(Instant::now()))
+            .unwrap_or(self.drain_timeout);
+        match self.pingora_listener.drain(remaining).await {
+            Ok(0) => {}
+            Ok(active) => log::warn!(
+                "Pingora listener {} reached its drain deadline with {} active request(s)",
+                self.signature.label,
+                active
+            ),
+            Err(err) => {
+                *worker_failed = true;
+                error!("{}", err);
+            }
         }
     }
 }
@@ -95,7 +124,7 @@ pub(crate) async fn shutdown_listener_groups(
     listener_groups: &mut Vec<ListenerGroupRuntime>,
     worker_failed: &mut bool,
 ) {
-    for group in listener_groups.iter() {
+    for group in listener_groups.iter_mut() {
         group.request_shutdown();
     }
 
@@ -145,6 +174,7 @@ pub(crate) async fn spawn_managed_listener_group(
 ) -> Result<ListenerGroupRuntime, String> {
     let signature = listener_group_signature(&listener_config);
     let shutdown = ShutdownSignal::new();
+    let drain_timeout = listener_config.policies.timeouts.shutdown_drain;
 
     let mut pingora_listener =
         spawn_pingora_ingress_listener(Arc::clone(&runtime_bundle), listener_config.clone())?;
@@ -175,6 +205,8 @@ pub(crate) async fn spawn_managed_listener_group(
         pingora_listener,
         worker_index_base,
         failed_activation_generation: None,
+        drain_timeout,
+        drain_deadline: None,
     })
 }
 
@@ -229,7 +261,7 @@ pub(crate) async fn reconcile_listener_groups(
             continue;
         };
 
-        let previous = groups.swap_remove(group_index);
+        let mut previous = groups.swap_remove(group_index);
         let previous_config = previous.listener_config.clone();
         let worker_index_base = previous.worker_index_base;
         info!(
@@ -323,7 +355,7 @@ pub(crate) async fn reconcile_listener_groups(
         })
         .map(|group| group.signature.listener_index)
         .collect::<Vec<_>>();
-    for group in groups.iter() {
+    for group in groups.iter_mut() {
         if desired_signatures.contains_key(&group.signature.label)
             || group.shutdown.load(Ordering::Relaxed)
         {

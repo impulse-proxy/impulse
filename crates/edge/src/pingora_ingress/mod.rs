@@ -1,6 +1,9 @@
 use std::{
     convert::Infallible,
-    sync::{Arc, RwLock, atomic::Ordering},
+    sync::{
+        Arc, RwLock,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -92,6 +95,7 @@ pub(crate) struct PingoraRequestContext {
     retry_backend: Option<(String, usize)>,
     request_id: u64,
     selected_backend: Option<PingoraSelectedBackend>,
+    drain: Arc<PingoraDrainState>,
 }
 
 enum PingoraTerminalClassification {
@@ -102,6 +106,7 @@ enum PingoraTerminalClassification {
 impl Drop for PingoraRequestContext {
     fn drop(&mut self) {
         self.terminal_outcome.record();
+        self.drain.active_requests.fetch_sub(1, Ordering::AcqRel);
     }
 }
 
@@ -123,6 +128,12 @@ impl Drop for PingoraSelectedBackend {
 
 pub(crate) struct PingoraIngressService {
     runtime: RuntimeBundleHandle,
+    drain: Arc<PingoraDrainState>,
+}
+
+#[derive(Default)]
+struct PingoraDrainState {
+    active_requests: AtomicUsize,
 }
 
 struct RotatingServerCertResolver {
@@ -152,6 +163,8 @@ pub struct PingoraListenerTask {
     address: String,
     shutdown: tokio::sync::watch::Sender<bool>,
     task: Option<tokio::task::JoinHandle<()>>,
+    drain: Arc<PingoraDrainState>,
+    forced_drained: bool,
 }
 
 impl PingoraListenerTask {
@@ -194,6 +207,10 @@ impl PingoraListenerTask {
         let _ = self.shutdown.send(true);
     }
 
+    pub fn active_requests(&self) -> usize {
+        self.drain.active_requests.load(Ordering::Acquire)
+    }
+
     pub async fn collect_finished(&mut self) -> Option<std::result::Result<(), String>> {
         if !self
             .task
@@ -210,15 +227,38 @@ impl PingoraListenerTask {
     }
 
     pub fn stopped(&self) -> bool {
-        self.task.is_none()
+        self.forced_drained || (self.task.is_none() && self.active_requests() == 0)
     }
 
-    pub async fn join(mut self) -> std::result::Result<(), String> {
-        match self.task.take() {
-            Some(task) => task
-                .await
-                .map_err(|error| format!("Pingora listener {} failed: {error}", self.address)),
-            None => Ok(()),
+    pub fn force_drain(&mut self) -> usize {
+        self.forced_drained = true;
+        self.active_requests()
+    }
+
+    pub async fn drain(mut self, timeout: Duration) -> std::result::Result<usize, String> {
+        self.request_shutdown();
+        let deadline = tokio::time::Instant::now() + timeout;
+        if let Some(mut task) = self.task.take() {
+            match tokio::time::timeout_at(deadline, &mut task).await {
+                Ok(result) => result.map_err(|error| {
+                    format!("Pingora listener {} failed: {error}", self.address)
+                })?,
+                Err(_) => {
+                    task.abort();
+                    let _ = task.await;
+                    return Ok(self.active_requests());
+                }
+            }
+        }
+        loop {
+            let active = self.active_requests();
+            if active == 0 {
+                return Ok(0);
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Ok(active);
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
     }
 }
@@ -240,7 +280,7 @@ pub fn spawn_pingora_ingress_listener(
         "{}:{}",
         listener.listen.listen.address, listener.listen.listen.port
     );
-    let mut service = pingora_ingress_service_for_listener(
+    let (mut service, drain) = pingora_ingress_service_for_listener(
         &Arc::new(ServerConf::default()),
         runtime.as_ref().clone(),
         listener,
@@ -257,6 +297,8 @@ pub fn spawn_pingora_ingress_listener(
         address,
         shutdown,
         task: Some(task),
+        drain,
+        forced_drained: false,
     })
 }
 
@@ -276,6 +318,7 @@ pub(crate) fn pingora_ingress_services(
         .into_iter()
         .map(|listener| {
             pingora_ingress_service_for_listener(configuration, runtime.clone(), listener)
+                .map(|(service, _)| service)
         })
         .collect()
 }
@@ -284,7 +327,10 @@ fn pingora_ingress_service_for_listener(
     configuration: &Arc<ServerConf>,
     runtime: RuntimeBundleHandle,
     listener: ListenerRuntimeConfig,
-) -> Result<Service<HttpProxy<PingoraIngressService>>> {
+) -> Result<(
+    Service<HttpProxy<PingoraIngressService>>,
+    Arc<PingoraDrainState>,
+)> {
     let listener_label = format!(
         "{}:{}",
         listener.listen.listen.address, listener.listen.listen.port
@@ -328,9 +374,13 @@ fn pingora_ingress_service_for_listener(
     }
     tls.enable_h2();
 
+    let drain = Arc::new(PingoraDrainState::default());
     let mut service = http_proxy_service_with_name(
         configuration,
-        PingoraIngressService { runtime },
+        PingoraIngressService {
+            runtime,
+            drain: Arc::clone(&drain),
+        },
         &format!("Impulse Pingora Ingress {listener_label}"),
     );
     if let Some(proxy) = service.app_logic_mut() {
@@ -340,7 +390,7 @@ fn pingora_ingress_service_for_listener(
         });
     }
     service.add_tls_with_settings(&listener_label, None, tls);
-    Ok(service)
+    Ok((service, drain))
 }
 
 #[async_trait]
@@ -348,6 +398,7 @@ impl ProxyHttp for PingoraIngressService {
     type CTX = PingoraRequestContext;
 
     fn new_ctx(&self) -> Self::CTX {
+        self.drain.active_requests.fetch_add(1, Ordering::AcqRel);
         PingoraRequestContext {
             runtime: self.runtime.current(),
             route: None,
@@ -370,6 +421,7 @@ impl ProxyHttp for PingoraIngressService {
             retry_backend: None,
             request_id: REQUEST_ID_COUNTER.fetch_add(1, Ordering::Relaxed),
             selected_backend: None,
+            drain: Arc::clone(&self.drain),
         }
     }
 
