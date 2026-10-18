@@ -4,12 +4,8 @@ use std::{
 };
 
 use impulse_lb::{HealthTransition, upstream_pool::UpstreamPool};
-use impulse_transport::{SharedDnsResolver, UpstreamTransportPool};
 
-use super::{
-    dns::{BackendDnsRefreshApplication, apply_backend_dns_refresh},
-    health::apply_backend_health_observation,
-};
+use super::health::apply_backend_health_observation;
 use crate::runtime::backend::{
     event,
     resolution::{RuntimeBackendAddressKind, RuntimeBackendResolution},
@@ -87,10 +83,6 @@ impl BackendLifecycleCoordinator {
 
     pub fn backend(&self, backend_addr: &str) -> Option<RuntimeBackendLifecycleState> {
         self.resolution_store.backend(backend_addr)
-    }
-
-    pub fn hostname_backends(&self) -> Vec<RuntimeBackendLifecycleState> {
-        self.resolution_store.hostname_backends()
     }
 
     pub fn snapshot_backend(&self, backend_addr: &str) -> Option<BackendLifecycleSnapshot> {
@@ -186,22 +178,6 @@ impl BackendLifecycleCoordinator {
         BackendLifecycleInventorySnapshot { backends }
     }
 
-    pub(crate) fn apply_refresh(
-        &self,
-        backend: &RuntimeBackendLifecycleState,
-        resolved_addrs: Result<Vec<std::net::SocketAddr>, String>,
-        backend_dns_resolver: &SharedDnsResolver,
-        transport_pool: &UpstreamTransportPool,
-    ) -> BackendDnsRefreshApplication {
-        apply_backend_dns_refresh(
-            backend,
-            resolved_addrs,
-            self.resolution_store.as_ref(),
-            backend_dns_resolver,
-            transport_pool,
-        )
-    }
-
     pub(crate) fn apply_health_observation(
         &self,
         upstream_pool: Option<&Arc<RwLock<UpstreamPool>>>,
@@ -215,7 +191,7 @@ impl BackendLifecycleCoordinator {
 #[cfg(test)]
 mod tests {
     mod snapshot_inventory {
-        use std::{collections::HashMap, net::SocketAddr, sync::Arc, time::SystemTime};
+        use std::{collections::HashMap, sync::Arc};
 
         use impulse_lb::HealthTransition;
 
@@ -269,46 +245,6 @@ mod tests {
             let all = coordinator.snapshot_all();
             assert_eq!(all.len(), 1);
             assert!(all.contains_key("https://backend.internal:8443"));
-        }
-
-        #[test]
-        fn backend_snapshot_exposes_resolved_addresses_and_refresh_generation() {
-            let backend_addr = "https://backend.internal:8443";
-            let resolved_addrs = vec![
-                "10.0.0.10:8443".parse::<SocketAddr>().expect("addr"),
-                "10.0.0.11:8443".parse::<SocketAddr>().expect("addr"),
-            ];
-            let store = Arc::new(RuntimeBackendResolutionStore::new([
-                RuntimeBackendResolution::hostname(
-                    backend_addr.to_string(),
-                    "backend.internal".to_string(),
-                    8443,
-                ),
-            ]));
-            store
-                .apply_resolution_refresh(
-                    backend_addr,
-                    resolved_addrs.clone(),
-                    SystemTime::UNIX_EPOCH,
-                )
-                .expect("seed refresh");
-            let coordinator = BackendLifecycleCoordinator::new(store);
-
-            let snapshot = coordinator
-                .snapshot_backend(backend_addr)
-                .expect("backend snapshot");
-
-            assert_eq!(snapshot.identity.backend_addr, backend_addr);
-            assert_eq!(snapshot.resolution.authority_host, "backend.internal");
-            assert_eq!(snapshot.resolution.authority_port, 8443);
-            assert_eq!(snapshot.resolution.resolved_addrs, resolved_addrs);
-            assert_eq!(snapshot.resolution.refresh_generation, 1);
-            assert_eq!(
-                snapshot.resolution.last_refresh_success_at,
-                Some(SystemTime::UNIX_EPOCH)
-            );
-            assert!(matches!(snapshot.health, BackendHealthState::Unknown));
-            assert_eq!(snapshot.membership, BackendMembershipState::Active);
         }
 
         #[test]
@@ -379,7 +315,6 @@ mod tests {
         fn inventory_exposes_canonical_health_membership_and_resolution_views() {
             let placed_backend = "127.0.0.1:8080";
             let removed_backend = "127.0.0.1:9090";
-            let resolved_addrs = vec!["10.0.0.10:8080".parse::<SocketAddr>().expect("addr")];
             let store = Arc::new(RuntimeBackendResolutionStore::new([
                 RuntimeBackendResolution::hostname(
                     placed_backend.to_string(),
@@ -392,13 +327,6 @@ mod tests {
                     9090,
                 ),
             ]));
-            store
-                .apply_resolution_refresh(
-                    placed_backend,
-                    resolved_addrs.clone(),
-                    SystemTime::UNIX_EPOCH,
-                )
-                .expect("seed refresh");
             let coordinator = BackendLifecycleCoordinator::new(Arc::clone(&store));
             let pool = test_active_health_upstream_pool();
             let failure = evaluate_active_health_check(
@@ -430,12 +358,9 @@ mod tests {
                 active.health,
                 BackendHealthState::Unhealthy { reason: None }
             ));
-            assert_eq!(active.resolution.resolved_addrs, resolved_addrs);
-            assert_eq!(active.resolution.refresh_generation, 1);
-            assert_eq!(
-                active.resolution.last_refresh_success_at,
-                Some(SystemTime::UNIX_EPOCH)
-            );
+            assert!(active.resolution.resolved_addrs.is_empty());
+            assert_eq!(active.resolution.refresh_generation, 0);
+            assert_eq!(active.resolution.last_refresh_success_at, None);
             assert_eq!(active.placements.len(), 1);
             assert!(!active.placements[0].healthy);
 

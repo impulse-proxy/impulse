@@ -66,10 +66,9 @@ impl QUICListener {
             Self::register_jwt_jwks_metrics(&runtime.metrics());
             QuotaRuntime::register_metrics(&runtime.metrics());
             let task_registry = runtime.generation_tasks();
-            Self::spawn_backend_dns_refresh(
+            Self::spawn_pingora_discovery_refresh(
                 runtime.runtime_config(),
                 runtime.transport_pool(),
-                runtime.backend_lifecycle(),
                 runtime.backend_dns_resolver(),
                 runtime.pingora_load_balancing(),
                 runtime.metrics(),
