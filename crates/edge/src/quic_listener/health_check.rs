@@ -13,6 +13,7 @@ use crate::runtime::{
 impl QUICListener {
     pub(super) fn spawn_health_checks(
         upstream_pools: HashMap<String, Arc<RwLock<UpstreamPool>>>,
+        transport_pool: Arc<UpstreamTransportPool>,
         backend_health_checks: Arc<
             HashMap<String, impulse_config::runtime::RuntimeBackendHealthCheck>,
         >,
@@ -37,6 +38,7 @@ impl QUICListener {
         }
 
         let mut grouped_jobs: HashMap<u64, Vec<HealthCheckJob>> = HashMap::new();
+        let mut scheduled_identities = std::collections::HashSet::new();
         #[allow(clippy::for_kv_map)]
         for (_upstream_name, upstream_pool) in upstream_pools.iter() {
             let pool = match upstream_pool.read() {
@@ -50,6 +52,18 @@ impl QUICListener {
                 let Some(health) = backend_health_checks.get(&address) else {
                     continue;
                 };
+                let Some(health_identity) =
+                    transport_pool.pingora_backend_health_identity(&address)
+                else {
+                    error!(
+                        "disabling health check for backend '{}' due to missing Pingora connection identity",
+                        address
+                    );
+                    continue;
+                };
+                if !scheduled_identities.insert(health_identity) {
+                    continue;
+                }
                 let base_interval_ms: u64 = health
                     .interval
                     .as_millis()
