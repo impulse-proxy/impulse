@@ -1,7 +1,10 @@
 use std::{
     collections::{BTreeSet, HashMap},
     net::SocketAddr,
-    sync::{Arc, RwLock},
+    sync::{
+        Arc, RwLock,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 use async_trait::async_trait;
@@ -14,6 +17,23 @@ pub struct ImpulseServiceDiscovery {
     upstream_name: String,
     backend_addresses: Arc<Vec<String>>,
     backends: Arc<RwLock<Vec<BTreeSet<PingoraBackend>>>>,
+    membership_generation: Arc<AtomicU64>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DiscoveryPublication {
+    membership_changed: bool,
+    membership_generation: u64,
+}
+
+impl DiscoveryPublication {
+    pub fn membership_changed(self) -> bool {
+        self.membership_changed
+    }
+
+    pub fn membership_generation(self) -> u64 {
+        self.membership_generation
+    }
 }
 
 impl ImpulseServiceDiscovery {
@@ -52,6 +72,7 @@ impl ImpulseServiceDiscovery {
                     .collect(),
             ),
             backends: Arc::new(RwLock::new(backends)),
+            membership_generation: Arc::new(AtomicU64::new(1)),
         })
     }
 
@@ -66,7 +87,7 @@ impl ImpulseServiceDiscovery {
         generation: u64,
         backend_index: usize,
         resolved_addrs: Result<Vec<SocketAddr>, String>,
-    ) -> Result<(), String> {
+    ) -> Result<DiscoveryPublication, String> {
         if generation != self.generation {
             return Err(format!(
                 "upstream '{}' rejected DNS result from runtime generation {generation}; active generation is {}",
@@ -86,7 +107,7 @@ impl ImpulseServiceDiscovery {
         &self,
         backend_index: usize,
         resolved_addrs: impl IntoIterator<Item = SocketAddr>,
-    ) -> Result<(), String> {
+    ) -> Result<DiscoveryPublication, String> {
         let mut backends = self
             .backends
             .write()
@@ -151,8 +172,19 @@ impl ImpulseServiceDiscovery {
             ));
         }
 
-        backends[backend_index] = resolved;
-        Ok(())
+        let membership_changed = backends[backend_index] != resolved;
+        if membership_changed {
+            backends[backend_index] = resolved;
+        }
+        let membership_generation = if membership_changed {
+            self.membership_generation.fetch_add(1, Ordering::Relaxed) + 1
+        } else {
+            self.membership_generation.load(Ordering::Relaxed)
+        };
+        Ok(DiscoveryPublication {
+            membership_changed,
+            membership_generation,
+        })
     }
 }
 

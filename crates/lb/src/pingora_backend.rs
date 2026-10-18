@@ -6,6 +6,7 @@ use std::{
     net::SocketAddr,
     sync::Arc,
     task::{Context, Poll, Wake, Waker},
+    time::{Duration, Instant},
 };
 
 use impulse_config::{
@@ -509,6 +510,32 @@ where
 
 pub type SharedPingoraLoadBalancingRuntimeState<T> = Arc<PingoraLoadBalancingRuntimeState<T>>;
 
+#[derive(Clone, Debug)]
+pub struct PingoraDiscoveryUpdate {
+    upstream_name: String,
+    membership_generation: u64,
+    membership_changed: bool,
+    rebuild_duration: Duration,
+}
+
+impl PingoraDiscoveryUpdate {
+    pub fn upstream_name(&self) -> &str {
+        &self.upstream_name
+    }
+
+    pub fn membership_generation(&self) -> u64 {
+        self.membership_generation
+    }
+
+    pub fn membership_changed(&self) -> bool {
+        self.membership_changed
+    }
+
+    pub fn rebuild_duration(&self) -> Duration {
+        self.rebuild_duration
+    }
+}
+
 pub struct PingoraLoadBalancingRuntimeState<T> {
     generation: u64,
     selectors: HashMap<String, Arc<GenerationSelector<T>>>,
@@ -582,7 +609,7 @@ where
         &self,
         configured_address: &str,
         resolved_addrs: Result<Vec<SocketAddr>, String>,
-    ) -> Result<(), String> {
+    ) -> Result<PingoraDiscoveryUpdate, String> {
         let (upstream_name, discovery, backend_index) = self
             .discoveries
             .iter()
@@ -596,12 +623,21 @@ where
                     "no Pingora discovery backend matches configured address '{configured_address}'"
                 )
             })?;
-        discovery.publish_dns_result(self.generation, backend_index, resolved_addrs)?;
+        let publication =
+            discovery.publish_dns_result(self.generation, backend_index, resolved_addrs)?;
+        let started = Instant::now();
         self.selectors
             .get(upstream_name)
             .expect("discovery and selector maps share upstream keys")
             .rebuild()
-            .await
+            .await?;
+        let rebuild_duration = started.elapsed();
+        Ok(PingoraDiscoveryUpdate {
+            upstream_name: upstream_name.clone(),
+            membership_generation: publication.membership_generation(),
+            membership_changed: publication.membership_changed(),
+            rebuild_duration,
+        })
     }
 }
 

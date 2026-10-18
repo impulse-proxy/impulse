@@ -776,6 +776,49 @@ impl Metrics {
         ));
 
         out.push_str(
+            "# HELP impulse_pingora_discovery_refresh_total Pingora discovery refresh outcomes.\n",
+        );
+        out.push_str("# TYPE impulse_pingora_discovery_refresh_total counter\n");
+        for outcome in PingoraDiscoveryRefreshOutcome::ALL {
+            out.push_str(&format!(
+                "impulse_pingora_discovery_refresh_total{{outcome=\"{}\"}} {}\n",
+                outcome.label(),
+                self.pingora_discovery_refresh_outcomes[outcome.index()].load(Ordering::Relaxed)
+            ));
+        }
+
+        out.push_str(
+            "# HELP impulse_pingora_discovery_membership_generation Current Pingora discovery membership generation by upstream.\n",
+        );
+        out.push_str("# TYPE impulse_pingora_discovery_membership_generation gauge\n");
+        out.push_str(
+            "# HELP impulse_pingora_discovery_rebuild_duration_seconds Duration of the latest Pingora selector rebuild by upstream.\n",
+        );
+        out.push_str("# TYPE impulse_pingora_discovery_rebuild_duration_seconds gauge\n");
+        let mut discovery_states = self
+            .pingora_discovery_state
+            .read()
+            .map(|states| {
+                states
+                    .iter()
+                    .map(|(upstream, state)| (upstream.clone(), state.clone()))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        discovery_states.sort_by(|(left, _), (right, _)| left.cmp(right));
+        for (upstream, state) in discovery_states {
+            let upstream = escape_prometheus_label(&upstream);
+            out.push_str(&format!(
+                "impulse_pingora_discovery_membership_generation{{upstream=\"{upstream}\"}} {}\n",
+                state.membership_generation
+            ));
+            out.push_str(&format!(
+                "impulse_pingora_discovery_rebuild_duration_seconds{{upstream=\"{upstream}\"}} {}\n",
+                state.rebuild_duration_ns as f64 / 1_000_000_000.0
+            ));
+        }
+
+        out.push_str(
             "# HELP impulse_connection_cap_rejects Total new-connection attempts rejected by max_active_connections cap.\n",
         );
         out.push_str("# TYPE impulse_connection_cap_rejects counter\n");

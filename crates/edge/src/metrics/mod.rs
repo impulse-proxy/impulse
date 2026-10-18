@@ -27,6 +27,43 @@ mod support;
 mod tests;
 mod types;
 
+#[derive(Clone, Copy)]
+pub(crate) enum PingoraDiscoveryRefreshOutcome {
+    Updated,
+    Unchanged,
+    RetainedFailure,
+    PublishFailed,
+}
+
+impl PingoraDiscoveryRefreshOutcome {
+    const ALL: [Self; 4] = [
+        Self::Updated,
+        Self::Unchanged,
+        Self::RetainedFailure,
+        Self::PublishFailed,
+    ];
+    const COUNT: usize = Self::ALL.len();
+
+    const fn index(self) -> usize {
+        self as usize
+    }
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Updated => "updated",
+            Self::Unchanged => "unchanged",
+            Self::RetainedFailure => "retained_failure",
+            Self::PublishFailed => "publish_failed",
+        }
+    }
+}
+
+#[derive(Clone, Default)]
+struct PingoraDiscoveryState {
+    membership_generation: u64,
+    rebuild_duration_ns: u64,
+}
+
 #[allow(unused_imports)]
 pub(crate) use self::types::RequestLatencyStats;
 pub use self::types::{OverloadShedReason, RouteOutcome};
@@ -126,6 +163,8 @@ pub struct Metrics {
     pub pingora_lb_selector_rebuilds: AtomicU64,
     pub pingora_lb_selector_failures: AtomicU64,
     pub pingora_lb_selections: AtomicU64,
+    pingora_discovery_refresh_outcomes: [AtomicU64; PingoraDiscoveryRefreshOutcome::COUNT],
+    pingora_discovery_state: RwLock<HashMap<String, PingoraDiscoveryState>>,
     runtime_activation_outcomes: [AtomicU64; RuntimeOperationOutcomeReason::COUNT],
     runtime_rollback_outcomes: [AtomicU64; RuntimeOperationOutcomeReason::COUNT],
     pub retries_total: AtomicU64,

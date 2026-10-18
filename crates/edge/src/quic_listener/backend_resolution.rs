@@ -5,9 +5,12 @@ use impulse_lb::pingora_backend::SharedPingoraLoadBalancingRuntimeState;
 use log::{debug, error};
 
 use super::*;
-use crate::runtime::backend::lifecycle::{
-    BackendDnsRefreshApplication, BackendLifecycleCoordinator, RuntimeBackendLifecycleState,
-    log_backend_dns_refresh, observe_backend_dns_refresh,
+use crate::{
+    metrics::PingoraDiscoveryRefreshOutcome,
+    runtime::backend::lifecycle::{
+        BackendDnsRefreshApplication, BackendLifecycleCoordinator, RuntimeBackendLifecycleState,
+        log_backend_dns_refresh, observe_backend_dns_refresh,
+    },
 };
 
 impl QUICListener {
@@ -64,6 +67,7 @@ impl QUICListener {
                             &backend_lifecycle,
                             &backend_dns_resolver,
                             &pingora_load_balancing,
+                            task_metrics.as_ref(),
                         )
                         .await;
                         observe_backend_dns_refresh(task_metrics.as_ref(), &outcome);
@@ -82,6 +86,7 @@ async fn refresh_backend_hostname(
     backend_lifecycle: &BackendLifecycleCoordinator,
     backend_dns_resolver: &SharedDnsResolver,
     pingora_load_balancing: &SharedPingoraLoadBalancingRuntimeState<RuntimeBackendTlsPolicy>,
+    metrics: &Metrics,
 ) -> BackendDnsRefreshApplication {
     let resolved_addrs =
         match tokio::net::lookup_host((backend.resolution.authority_host.as_str(), 0)).await {
@@ -107,17 +112,35 @@ async fn refresh_backend_hostname(
         }
         BackendDnsRefreshApplication::LookupFailed { error, .. } => Err(error.clone()),
     };
-    let update_succeeded = discovery_result.is_ok();
+    let resolution_succeeded = discovery_result.is_ok();
     let publication = pingora_load_balancing
         .publish_dns_result(&backend.identity.backend_addr, discovery_result)
         .await;
-    if update_succeeded {
-        if let Err(error) = publication {
+    match publication {
+        Ok(update) => {
+            let refresh_outcome = if update.membership_changed() {
+                metrics.record_pingora_lb_selector_rebuild(pingora_load_balancing.generation(), 1);
+                PingoraDiscoveryRefreshOutcome::Updated
+            } else {
+                PingoraDiscoveryRefreshOutcome::Unchanged
+            };
+            metrics.record_pingora_discovery_refresh(refresh_outcome, Some(&update));
+        }
+        Err(error) if resolution_succeeded => {
+            metrics.inc_pingora_lb_selector_failure();
+            metrics.record_pingora_discovery_refresh(
+                PingoraDiscoveryRefreshOutcome::PublishFailed,
+                None,
+            );
             error!(
                 "failed to publish Pingora DNS membership for backend '{}': {}",
                 backend.identity.backend_addr, error
             );
         }
+        Err(_) => metrics.record_pingora_discovery_refresh(
+            PingoraDiscoveryRefreshOutcome::RetainedFailure,
+            None,
+        ),
     }
     outcome
 }
