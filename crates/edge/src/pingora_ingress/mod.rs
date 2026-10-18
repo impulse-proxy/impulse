@@ -1137,7 +1137,7 @@ impl ProxyHttp for PingoraIngressService {
             )
         })?;
         let compression = evaluate_response_compression(ResponseCompressionInput {
-            policy,
+            policy: &policy.response_compression,
             request_method: method,
             request_headers: &session.req_header().headers,
             response_status: upstream_response.status,

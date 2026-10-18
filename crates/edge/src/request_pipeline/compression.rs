@@ -1,6 +1,5 @@
 use http::{HeaderMap, HeaderValue, StatusCode, header};
-
-use super::ResolvedRequestPolicy;
+use impulse_config::runtime::RuntimeResponseCompressionPolicy;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ResponseCompressionAction {
@@ -29,7 +28,7 @@ pub(crate) struct ResponseCompressionEvaluation {
 }
 
 pub(crate) struct ResponseCompressionInput<'a> {
-    pub(crate) policy: &'a ResolvedRequestPolicy,
+    pub(crate) policy: &'a RuntimeResponseCompressionPolicy,
     pub(crate) request_method: &'a str,
     pub(crate) request_headers: &'a HeaderMap,
     pub(crate) response_status: StatusCode,
@@ -43,7 +42,7 @@ pub(crate) fn evaluate_response_compression(
         action: ResponseCompressionAction::Bypass(reason),
         vary_accept_encoding: false,
     };
-    let policy = &input.policy.response_compression;
+    let policy = input.policy;
     if !policy.enabled {
         return bypass(ResponseCompressionBypassReason::Disabled);
     }

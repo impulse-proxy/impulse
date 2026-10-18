@@ -716,6 +716,7 @@ impl QUICListener {
                         .map(Arc::<str>::from),
                     host_policy: resolved_policy.host_policy,
                     forwarded_header_policy: resolved_policy.forwarded_header_policy,
+                    response_compression: resolved_policy.response_compression,
                     auth_header_mutations: Vec::new(),
                 });
                 let dispatch_ready = Self::build_dispatch_ready_candidate(
