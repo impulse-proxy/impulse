@@ -38,7 +38,7 @@ use impulse_config::{
     },
 };
 use impulse_errors::{PoolError, ProxyError};
-use impulse_lb::{health::HealthFailureReason, upstream_pool::UpstreamPool};
+use impulse_lb::upstream_pool::UpstreamPool;
 use impulse_transport::{SharedDnsResolver, UpstreamTransportPool};
 use log::{debug, error, info, warn};
 use quiche::{Config, h3::NameValue};

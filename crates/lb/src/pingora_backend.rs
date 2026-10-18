@@ -21,7 +21,6 @@ pub use pingora_load_balancing::{
 };
 use pingora_load_balancing::{
     BackendView, LoadBalancer,
-    discovery::ServiceDiscovery,
     selection::{Random as PingoraRandom, RoundRobin as PingoraRoundRobin},
 };
 
@@ -866,6 +865,8 @@ where
 
 #[cfg(test)]
 mod tests {
+    use pingora_load_balancing::discovery::ServiceDiscovery;
+
     use super::*;
     use crate::test_support::runtime_upstream_from_addresses;
 

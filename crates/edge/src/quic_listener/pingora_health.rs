@@ -6,7 +6,7 @@ use std::{
 
 use async_trait::async_trait;
 use impulse_config::{
-    BackendEndpoint,
+    backend_endpoint::BackendEndpoint,
     runtime::{RuntimeBackendHealthCheck, RuntimeBackendTlsPolicy},
 };
 use impulse_lb::{

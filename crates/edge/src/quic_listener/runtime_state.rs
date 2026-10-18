@@ -39,7 +39,6 @@ pub(super) struct ControlPlaneRuntimeView {
     upstream_pools: HashMap<String, Arc<RwLock<UpstreamPool>>>,
     pingora_load_balancing: SharedPingoraLoadBalancingRuntimeState<RuntimeBackendTlsPolicy>,
     listener_runtime_configs: Arc<HashMap<String, ListenerRuntimeConfig>>,
-    backend_endpoints: Arc<HashMap<String, impulse_config::backend_endpoint::BackendEndpoint>>,
     backend_health_checks: Arc<HashMap<String, impulse_config::runtime::RuntimeBackendHealthCheck>>,
     generation_tasks: Arc<RuntimeTaskRegistry>,
     listener_tls_store: Arc<ListenerTlsReloadStore>,
@@ -66,7 +65,6 @@ impl ControlPlaneRuntimeView {
             upstream_pools: generation.upstream_pools.clone(),
             pingora_load_balancing: Arc::clone(&generation.pingora_load_balancing),
             listener_runtime_configs: Arc::clone(&generation.listener_runtime_configs),
-            backend_endpoints: Arc::clone(&generation.backend_endpoints),
             backend_health_checks: Arc::clone(&generation.backend_health_checks),
             generation_tasks: Arc::clone(&generation.generation_tasks),
             listener_tls_store: Arc::clone(&shared.listener_tls_store),
@@ -92,7 +90,6 @@ impl ControlPlaneRuntimeView {
             upstream_pools: view.state.upstream_pools.clone(),
             pingora_load_balancing: Arc::clone(&view.state.pingora_load_balancing),
             listener_runtime_configs: Arc::clone(&view.state.listener_runtime_configs),
-            backend_endpoints: Arc::clone(&view.state.backend_endpoints),
             backend_health_checks: Arc::clone(&view.state.backend_health_checks),
             generation_tasks: Arc::clone(&view.state.generation_tasks),
             listener_tls_store: Arc::clone(&view.shared.listener_tls_store),
@@ -147,12 +144,6 @@ impl ControlPlaneRuntimeView {
 
     pub(super) fn listener_runtime_configs(&self) -> Arc<HashMap<String, ListenerRuntimeConfig>> {
         Arc::clone(&self.listener_runtime_configs)
-    }
-
-    pub(super) fn backend_endpoints(
-        &self,
-    ) -> Arc<HashMap<String, impulse_config::backend_endpoint::BackendEndpoint>> {
-        Arc::clone(&self.backend_endpoints)
     }
 
     pub(super) fn backend_health_checks(
