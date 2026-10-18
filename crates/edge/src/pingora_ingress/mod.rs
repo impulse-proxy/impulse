@@ -1,7 +1,7 @@
 use std::{
     convert::Infallible,
     sync::{
-        Arc, RwLock,
+        Arc, Mutex, RwLock,
         atomic::{AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
@@ -25,7 +25,7 @@ use impulse_transport::{classify_pingora_h1_error, classify_pingora_h2_error};
 use pingora_core::{
     Error, HTTPStatus, InternalError, Result,
     apps::HttpServerOptions,
-    listeners::tls::TlsSettings,
+    listeners::{ConnectionFilter, tls::TlsSettings},
     server::configuration::ServerConf,
     services::{Service as PingoraServiceLifecycle, listening::Service},
     upstreams::peer::{ALPN, HttpPeer},
@@ -38,7 +38,7 @@ use rustls::{
 };
 
 use crate::{
-    REQUEST_ID_COUNTER,
+    Metrics, REQUEST_ID_COUNTER,
     quic_listener::{
         AdmissionPolicyDecision, ForwardingSelectionService, MAX_UPSTREAM_RETRY_ATTEMPTS,
         RetryCoordinator, StableBackendSelection, TargetResolutionRequest,
@@ -51,6 +51,7 @@ use crate::{
     runtime::{
         bundle::{RuntimeBundle, RuntimeBundleHandle},
         connection::{
+            PerSourceTokenBucket, TokenBucket,
             guardrails::{
                 REQUEST_BODY_TOO_LARGE_BODY, RESPONSE_BODY_TOO_LARGE_BODY,
                 RequestBodyGuardrailConfig, RequestBodyGuardrailInput, ResponseBodyGuardrailConfig,
@@ -128,6 +129,45 @@ impl Drop for PingoraSelectedBackend {
 pub(crate) struct PingoraIngressService {
     runtime: RuntimeBundleHandle,
     drain: Arc<PingoraDrainState>,
+}
+
+struct PingoraConnectionFilter {
+    global: Mutex<TokenBucket>,
+    per_source: Mutex<PerSourceTokenBucket>,
+    metrics: Arc<Metrics>,
+}
+
+impl std::fmt::Debug for PingoraConnectionFilter {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PingoraConnectionFilter")
+            .finish_non_exhaustive()
+    }
+}
+
+#[async_trait]
+impl ConnectionFilter for PingoraConnectionFilter {
+    async fn should_accept(&self, addr: Option<&std::net::SocketAddr>) -> bool {
+        let global_allowed = self
+            .global
+            .lock()
+            .map(|mut limiter| limiter.try_consume())
+            .unwrap_or(false);
+        if !global_allowed {
+            self.metrics.inc_ingress_rate_limited();
+            return false;
+        }
+        let source_allowed = addr.is_none_or(|addr| {
+            self.per_source
+                .lock()
+                .map(|mut limiter| limiter.try_consume(addr.ip()))
+                .unwrap_or(false)
+        });
+        if !source_allowed {
+            self.metrics.inc_ingress_rate_limited();
+        }
+        source_allowed
+    }
 }
 
 #[derive(Default)]
@@ -336,6 +376,18 @@ fn pingora_ingress_service_for_listener(
     );
     let current = runtime.current();
     let tls_store = Arc::clone(&current.shared_state.shared_services().listener_tls_store);
+    let transport_policy = &listener.policies.transport;
+    let connection_filter = Arc::new(PingoraConnectionFilter {
+        global: Mutex::new(TokenBucket::new(
+            transport_policy.new_connections_per_sec,
+            transport_policy.new_connections_burst,
+        )),
+        per_source: Mutex::new(PerSourceTokenBucket::new(
+            transport_policy.new_connections_per_sec,
+            transport_policy.new_connections_burst,
+        )),
+        metrics: Arc::clone(&current.shared_state.shared_services().metrics),
+    });
     let tls_state = QUICListener::build_listener_tls_reload_state(&listener).map_err(|error| {
         Error::because(
             InternalError,
@@ -387,6 +439,7 @@ fn pingora_ingress_service_for_listener(
         options.allow_connect_method_proxying = true;
         proxy.server_options = Some(options);
     }
+    service.set_connection_filter(connection_filter);
     service.add_tls_with_settings(&listener_label, None, tls);
     Ok((service, drain))
 }
