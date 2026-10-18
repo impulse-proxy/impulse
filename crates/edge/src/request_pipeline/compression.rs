@@ -7,6 +7,55 @@ pub(crate) enum ResponseCompressionAction {
     Bypass(ResponseCompressionBypassReason),
 }
 
+impl ResponseCompressionAction {
+    pub(crate) const ALL: [Self; 11] = [
+        Self::Gzip,
+        Self::Bypass(ResponseCompressionBypassReason::Disabled),
+        Self::Bypass(ResponseCompressionBypassReason::Bodyless),
+        Self::Bypass(ResponseCompressionBypassReason::Status),
+        Self::Bypass(ResponseCompressionBypassReason::ExistingEncoding),
+        Self::Bypass(ResponseCompressionBypassReason::NoTransform),
+        Self::Bypass(ResponseCompressionBypassReason::Range),
+        Self::Bypass(ResponseCompressionBypassReason::ContentType),
+        Self::Bypass(ResponseCompressionBypassReason::UnknownLength),
+        Self::Bypass(ResponseCompressionBypassReason::BelowMinimumSize),
+        Self::Bypass(ResponseCompressionBypassReason::NotAccepted),
+    ];
+    pub(crate) const COUNT: usize = Self::ALL.len();
+
+    pub(crate) const fn index(self) -> usize {
+        match self {
+            Self::Gzip => 0,
+            Self::Bypass(ResponseCompressionBypassReason::Disabled) => 1,
+            Self::Bypass(ResponseCompressionBypassReason::Bodyless) => 2,
+            Self::Bypass(ResponseCompressionBypassReason::Status) => 3,
+            Self::Bypass(ResponseCompressionBypassReason::ExistingEncoding) => 4,
+            Self::Bypass(ResponseCompressionBypassReason::NoTransform) => 5,
+            Self::Bypass(ResponseCompressionBypassReason::Range) => 6,
+            Self::Bypass(ResponseCompressionBypassReason::ContentType) => 7,
+            Self::Bypass(ResponseCompressionBypassReason::UnknownLength) => 8,
+            Self::Bypass(ResponseCompressionBypassReason::BelowMinimumSize) => 9,
+            Self::Bypass(ResponseCompressionBypassReason::NotAccepted) => 10,
+        }
+    }
+
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::Gzip => "gzip",
+            Self::Bypass(ResponseCompressionBypassReason::Disabled) => "disabled",
+            Self::Bypass(ResponseCompressionBypassReason::Bodyless) => "bodyless",
+            Self::Bypass(ResponseCompressionBypassReason::Status) => "status",
+            Self::Bypass(ResponseCompressionBypassReason::ExistingEncoding) => "existing_encoding",
+            Self::Bypass(ResponseCompressionBypassReason::NoTransform) => "no_transform",
+            Self::Bypass(ResponseCompressionBypassReason::Range) => "range",
+            Self::Bypass(ResponseCompressionBypassReason::ContentType) => "content_type",
+            Self::Bypass(ResponseCompressionBypassReason::UnknownLength) => "unknown_length",
+            Self::Bypass(ResponseCompressionBypassReason::BelowMinimumSize) => "below_minimum_size",
+            Self::Bypass(ResponseCompressionBypassReason::NotAccepted) => "not_accepted",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ResponseCompressionBypassReason {
     Disabled,

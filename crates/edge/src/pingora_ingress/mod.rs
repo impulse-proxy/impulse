@@ -94,6 +94,7 @@ pub(crate) struct PingoraRequestContext {
     response_body_suppressed: bool,
     response_body_limit_exempt: bool,
     response_content_length: Option<usize>,
+    response_compression_action: Option<ResponseCompressionAction>,
     request_body_replayable: bool,
     retry_count: u8,
     retry_backend: Option<(String, usize)>,
@@ -502,6 +503,7 @@ impl ProxyHttp for PingoraIngressService {
             response_body_suppressed: false,
             response_body_limit_exempt: false,
             response_content_length: None,
+            response_compression_action: None,
             request_body_replayable: false,
             retry_count: 0,
             retry_backend: None,
@@ -1143,6 +1145,7 @@ impl ProxyHttp for PingoraIngressService {
             response_status: upstream_response.status,
             response_headers: &upstream_response.headers,
         });
+        ctx.response_compression_action = Some(compression.action);
         match compression.action {
             ResponseCompressionAction::Gzip => session
                 .upstream_compression
@@ -1256,6 +1259,12 @@ impl ProxyHttp for PingoraIngressService {
                 backend_index: Some(selected.index),
             });
         let metrics = &ctx.runtime.shared_state.shared_services().metrics;
+        if let Some(action) = ctx.response_compression_action {
+            metrics.record_response_compression_outcome(action);
+        }
+        if let Some(("gzip", input, output, _duration)) = session.upstream_compression.get_info() {
+            metrics.add_response_compression_bytes(input, output);
+        }
         match (&ctx.terminal_classification, status) {
             (Some(PingoraTerminalClassification::Admission(outcome)), Some(status)) => {
                 let _ = observe_admission_outcome(

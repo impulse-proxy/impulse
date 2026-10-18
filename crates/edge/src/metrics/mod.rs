@@ -17,6 +17,7 @@ use impulse_lb::health::HealthFailureReason;
 
 use crate::{
     observability::{QuotaBackendHealthReason, QuotaPolicyDecision, QuotaPolicyReason},
+    request_pipeline::ResponseCompressionAction,
     runtime::activation::{RuntimeOperationOutcomeReason, RuntimeRejectionReason},
 };
 
@@ -140,6 +141,9 @@ pub struct Metrics {
     pub request_buffered_high_watermark_bytes: AtomicU64,
     pub request_buffer_limit_rejects: AtomicU64,
     pub response_prebuffer_limit_rejects: AtomicU64,
+    response_compression_outcomes: [AtomicU64; ResponseCompressionAction::COUNT],
+    response_compression_input_bytes: AtomicU64,
+    response_compression_output_bytes: AtomicU64,
     pub scid_rotations: AtomicU64,
     pub control_api_connection_limit_drops: AtomicU64,
     pub control_api_audit_event_drops: AtomicU64,

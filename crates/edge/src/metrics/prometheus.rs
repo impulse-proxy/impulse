@@ -515,6 +515,36 @@ impl Metrics {
             self.request_rate_limited.load(Ordering::Relaxed)
         ));
 
+        out.push_str(
+            "# HELP impulse_response_compression_outcomes_total Response compression decisions grouped by a bounded outcome.\n",
+        );
+        out.push_str("# TYPE impulse_response_compression_outcomes_total counter\n");
+        for outcome in ResponseCompressionAction::ALL {
+            out.push_str(&format!(
+                "impulse_response_compression_outcomes_total{{outcome=\"{}\"}} {}\n",
+                outcome.label(),
+                self.response_compression_outcomes[outcome.index()].load(Ordering::Relaxed)
+            ));
+        }
+        out.push_str(
+            "# HELP impulse_response_compression_input_bytes_total Uncompressed response bytes processed by gzip compression.\n",
+        );
+        out.push_str("# TYPE impulse_response_compression_input_bytes_total counter\n");
+        out.push_str(&format!(
+            "impulse_response_compression_input_bytes_total {}\n",
+            self.response_compression_input_bytes
+                .load(Ordering::Relaxed)
+        ));
+        out.push_str(
+            "# HELP impulse_response_compression_output_bytes_total Compressed response bytes produced by gzip compression.\n",
+        );
+        out.push_str("# TYPE impulse_response_compression_output_bytes_total counter\n");
+        out.push_str(&format!(
+            "impulse_response_compression_output_bytes_total {}\n",
+            self.response_compression_output_bytes
+                .load(Ordering::Relaxed)
+        ));
+
         self.append_cached_quota_metrics_families(&mut out);
 
         out.push_str("# HELP impulse_early_data_accepted Total requests accepted in early data.\n");

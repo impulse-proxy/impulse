@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use bytes::Bytes;
 use impulse_errors::{UpstreamProxyErrorKind, classify_upstream_proxy_error};
 use impulse_transport::{UpstreamBody, UpstreamBodyFrame};
@@ -28,6 +30,19 @@ use crate::{
 };
 
 const RESPONSE_GZIP_LEVEL: u32 = 6;
+
+struct ResponseCompressionByteMetrics {
+    metrics: Arc<Metrics>,
+    input: usize,
+    output: usize,
+}
+
+impl Drop for ResponseCompressionByteMetrics {
+    fn drop(&mut self) {
+        self.metrics
+            .add_response_compression_bytes(self.input, self.output);
+    }
+}
 
 fn apply_gzip_response_headers(headers: &mut http::HeaderMap) {
     headers.insert(
@@ -308,6 +323,7 @@ impl QUICListener {
         req: &RequestEnvelope,
         success: ForwardSuccess,
         progress_config: &StreamProgressConfig,
+        metrics: &Metrics,
     ) -> ResponseStartDecision {
         let (status, resp_headers, response_body, prebuilt_response_chunk_rx) = match success {
             ForwardSuccess::Response {
@@ -418,6 +434,7 @@ impl QUICListener {
                 response_status: status,
                 response_headers: &response_headers,
             });
+            metrics.record_response_compression_outcome(compression.action);
             compress_response = matches!(compression.action, ResponseCompressionAction::Gzip);
             if compress_response {
                 apply_gzip_response_headers(&mut response_headers);
@@ -914,6 +931,7 @@ impl QUICListener {
         response_body: UpstreamBody,
         deferred_start: Option<ResponseChunk>,
         pump: ResponseBodyPumpPlan,
+        metrics: Arc<Metrics>,
     ) -> mpsc::Receiver<ResponseChunk> {
         let (chunk_tx, chunk_rx) = mpsc::channel::<ResponseChunk>(RESPONSE_CHUNK_CHANNEL_CAPACITY);
         let fail_tx = chunk_tx.clone();
@@ -930,6 +948,12 @@ impl QUICListener {
                 .compress_response
                 .then(|| Algorithm::Gzip.compressor(RESPONSE_GZIP_LEVEL))
                 .flatten();
+            let mut compression_metrics =
+                compressor.as_ref().map(|_| ResponseCompressionByteMetrics {
+                    metrics,
+                    input: 0,
+                    output: 0,
+                });
             loop {
                 let wait_decision = checked_response_body_guardrails(
                     pump.guardrails,
@@ -1009,6 +1033,9 @@ impl QUICListener {
                             {
                                 let mut chunk = data.slice(start..end);
                                 if let Some(compressor) = compressor.as_mut() {
+                                    if let Some(metrics) = compression_metrics.as_mut() {
+                                        metrics.input = metrics.input.saturating_add(chunk.len());
+                                    }
                                     chunk = match compressor.encode(&chunk, false) {
                                         Ok(chunk) => chunk,
                                         Err(error) => {
@@ -1020,6 +1047,9 @@ impl QUICListener {
                                             return;
                                         }
                                     };
+                                    if let Some(metrics) = compression_metrics.as_mut() {
+                                        metrics.output = metrics.output.saturating_add(chunk.len());
+                                    }
                                 }
                                 if chunk.is_empty() {
                                     continue;
@@ -1084,6 +1114,11 @@ impl QUICListener {
                         } else {
                             None
                         };
+                        if let (Some(metrics), Some(chunk)) =
+                            (compression_metrics.as_mut(), final_chunk.as_ref())
+                        {
+                            metrics.output = metrics.output.saturating_add(chunk.len());
+                        }
                         if pump.defer_headers_until_body_validated
                             && let Some(chunk) = final_chunk.as_ref()
                             && !chunk.is_empty()
@@ -1277,8 +1312,13 @@ impl QUICListener {
                     Self::send_response_start_headers(h3, quic, stream_id, &metadata, false)?;
                 }
                 let deferred_start = Self::into_deferred_response_start_chunk(metadata);
-                let chunk_rx =
-                    Self::spawn_response_body_pump(req, response_body, deferred_start, pump);
+                let chunk_rx = Self::spawn_response_body_pump(
+                    req,
+                    response_body,
+                    deferred_start,
+                    pump,
+                    Arc::clone(&shared_ctx.metrics),
+                );
                 req.response_status = Some(response_status.as_u16());
                 if let Err(state_err) = req.transition_to_streaming_response(
                     chunk_rx,
