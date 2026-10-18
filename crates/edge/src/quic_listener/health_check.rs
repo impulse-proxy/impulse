@@ -29,6 +29,7 @@ impl QUICListener {
             // Stable configured backend identity. DNS refresh changes connect targets
             // underneath this identity without changing health ownership.
             backend_identity: String,
+            health_path: String,
             base_interval_ms: u64,
             timeout: Duration,
             consecutive_failures: u32,
@@ -65,6 +66,7 @@ impl QUICListener {
                     upstream_pool: Arc::clone(upstream_pool),
                     index,
                     backend_identity: address,
+                    health_path: health.path.clone(),
                     base_interval_ms,
                     timeout: health.timeout,
                     consecutive_failures: 0,
@@ -113,11 +115,12 @@ impl QUICListener {
                             }
 
                             let backend_identity = job.backend_identity.clone();
+                            let health_path = job.health_path.clone();
                             let timeout = job.timeout;
                             let pingora_load_balancing = Arc::clone(&pingora_load_balancing);
                             let task = pending.spawn(async move {
                                 pingora_load_balancing
-                                    .run_tcp_health_check(&backend_identity, timeout)
+                                    .run_http_health_check(&backend_identity, &health_path, timeout)
                                     .await
                             });
                             pending_job_indices.insert(task.id(), job_index);

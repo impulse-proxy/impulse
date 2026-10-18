@@ -1575,6 +1575,7 @@ dependencies = [
  "impulse-config",
  "log",
  "pingora-error",
+ "pingora-http",
  "pingora-load-balancing",
 ]
 

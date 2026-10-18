@@ -10,15 +10,18 @@ use std::{
 };
 
 use impulse_config::{
+    BackendEndpoint, BackendScheme,
     config::Backend,
     runtime::{RuntimeLoadBalancingStrategy, RuntimeUpstream},
 };
+use pingora_error::{Error, ErrorType};
+use pingora_http::RequestHeader;
 #[cfg(test)]
 use pingora_load_balancing::discovery::Static as StaticDiscovery;
 use pingora_load_balancing::{
     Backend as PingoraBackend, BackendView, LoadBalancer,
     discovery::ServiceDiscovery,
-    health_check::{HealthCheck, TcpHealthCheck},
+    health_check::{HealthCheck, HttpHealthCheck},
     selection::{Random as PingoraRandom, RoundRobin as PingoraRoundRobin},
 };
 
@@ -642,11 +645,15 @@ where
         })
     }
 
-    pub async fn run_tcp_health_check(
+    pub async fn run_http_health_check(
         &self,
         configured_address: &str,
+        path: &str,
         timeout: Duration,
     ) -> Result<(), String> {
+        let endpoint = BackendEndpoint::parse(configured_address).map_err(|error| {
+            format!("invalid health-check backend '{configured_address}': {error}")
+        })?;
         let discovery = self
             .discoveries
             .values()
@@ -663,8 +670,26 @@ where
             .discover()
             .await
             .map_err(|error| format!("failed to read Pingora backend membership: {error}"))?;
-        let mut check = TcpHealthCheck::default();
+        let tls = endpoint.scheme() == BackendScheme::Https;
+        let mut check = HttpHealthCheck::new(endpoint.authority_host(), tls);
         check.peer_template.options.connection_timeout = Some(timeout);
+        check.peer_template.options.read_timeout = Some(timeout);
+        let mut request = RequestHeader::build("GET", path.as_bytes(), None)
+            .map_err(|error| format!("invalid health-check path '{path}': {error}"))?;
+        request
+            .append_header("Host", endpoint.authority_host())
+            .map_err(|error| format!("invalid health-check Host header: {error}"))?;
+        check.req = request;
+        check.validator = Some(Box::new(|response| {
+            if response.status.is_success() {
+                Ok(())
+            } else {
+                Error::e_explain(
+                    ErrorType::CustomCode("health check status", response.status.as_u16()),
+                    "upstream returned a non-success health-check status",
+                )
+            }
+        }));
         let mut matched = false;
         let mut last_error = None;
 
@@ -688,7 +713,7 @@ where
             ));
         }
         Err(last_error.unwrap_or_else(|| {
-            format!("Pingora TCP health check failed for backend '{configured_address}'")
+            format!("Pingora HTTP health check failed for backend '{configured_address}'")
         }))
     }
 }
