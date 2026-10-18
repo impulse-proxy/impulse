@@ -1,5 +1,3 @@
-use impulse_errors::classify_upstream_proxy_error;
-
 use super::*;
 use crate::runtime::{
     backend::{
@@ -15,10 +13,11 @@ use crate::runtime::{
 impl QUICListener {
     pub(super) fn spawn_health_checks(
         upstream_pools: HashMap<String, Arc<RwLock<UpstreamPool>>>,
-        transport_pool: Arc<UpstreamTransportPool>,
-        backend_endpoints: Arc<HashMap<String, BackendEndpoint>>,
         backend_health_checks: Arc<
             HashMap<String, impulse_config::runtime::RuntimeBackendHealthCheck>,
+        >,
+        pingora_load_balancing: impulse_lb::pingora_backend::SharedPingoraLoadBalancingRuntimeState<
+            impulse_config::runtime::RuntimeBackendTlsPolicy,
         >,
         backend_lifecycle: Arc<BackendLifecycleCoordinator>,
         metrics: Arc<Metrics>,
@@ -30,7 +29,6 @@ impl QUICListener {
             // Stable configured backend identity. DNS refresh changes connect targets
             // underneath this identity without changing health ownership.
             backend_identity: String,
-            health_uri: String,
             base_interval_ms: u64,
             timeout: Duration,
             consecutive_failures: u32,
@@ -51,16 +49,6 @@ impl QUICListener {
                 let Some(health) = backend_health_checks.get(&address) else {
                     continue;
                 };
-                let endpoint = match backend_endpoints.get(&address) {
-                    Some(endpoint) => endpoint,
-                    None => {
-                        error!(
-                            "disabling health checks for backend '{}' due to missing canonical endpoint",
-                            address
-                        );
-                        continue;
-                    }
-                };
                 let base_interval_ms: u64 = health
                     .interval
                     .as_millis()
@@ -77,7 +65,6 @@ impl QUICListener {
                     upstream_pool: Arc::clone(upstream_pool),
                     index,
                     backend_identity: address,
-                    health_uri: endpoint.uri_for_path(&health.path),
                     base_interval_ms,
                     timeout: health.timeout,
                     consecutive_failures: 0,
@@ -100,7 +87,7 @@ impl QUICListener {
         };
 
         for (base_interval_ms, mut jobs) in grouped_jobs {
-            let transport_pool = Arc::clone(&transport_pool);
+            let pingora_load_balancing = Arc::clone(&pingora_load_balancing);
             let backend_lifecycle = Arc::clone(&backend_lifecycle);
             let task_metrics = Arc::clone(&metrics);
             let handle = handle.clone();
@@ -125,17 +112,12 @@ impl QUICListener {
                                 continue;
                             }
 
-                            let health_uri = match job.health_uri.parse() {
-                                Ok(uri) => uri,
-                                Err(_) => continue,
-                            };
-
                             let backend_identity = job.backend_identity.clone();
                             let timeout = job.timeout;
-                            let transport_pool = Arc::clone(&transport_pool);
+                            let pingora_load_balancing = Arc::clone(&pingora_load_balancing);
                             let task = pending.spawn(async move {
-                                transport_pool
-                                    .send_health_check(&backend_identity, health_uri, timeout)
+                                pingora_load_balancing
+                                    .run_tcp_health_check(&backend_identity, timeout)
                                     .await
                             });
                             pending_job_indices.insert(task.id(), job_index);
@@ -181,43 +163,21 @@ impl QUICListener {
                             let job = &mut jobs[job_index];
 
                             let evaluation = match result {
-                                Ok(response) => {
-                                    let outcome =
-                                        match classify_active_health_check_response(response) {
-                                            HealthClassification::Success => {
-                                                BackendHealthObservationOutcome::Success
-                                            }
-                                            HealthClassification::Failure => {
-                                                BackendHealthObservationOutcome::Failure
-                                            }
-                                            HealthClassification::Neutral => {
-                                                BackendHealthObservationOutcome::Neutral
-                                            }
-                                        };
-                                    evaluate_active_health_check(
-                                        BackendIdentity::new(job.backend_identity.clone()),
-                                        outcome,
-                                        None,
-                                        job.base_interval_ms,
-                                        job.consecutive_failures,
-                                    )
-                                }
-                                Err(proxy_err) => {
-                                    let failure_reason = if matches!(proxy_err, ProxyError::Timeout)
-                                    {
-                                        HealthFailureReason::Timeout
-                                    } else {
-                                        HealthFailureReason::Transport
-                                    };
-                                    Self::evaluate_failed_health_check(
-                                        &job.backend_identity,
-                                        task_metrics.as_ref(),
-                                        job.base_interval_ms,
-                                        job.consecutive_failures,
-                                        proxy_err,
-                                        failure_reason,
-                                    )
-                                }
+                                Ok(()) => evaluate_active_health_check(
+                                    BackendIdentity::new(job.backend_identity.clone()),
+                                    BackendHealthObservationOutcome::Success,
+                                    None,
+                                    job.base_interval_ms,
+                                    job.consecutive_failures,
+                                ),
+                                Err(error) => Self::evaluate_failed_health_check(
+                                    &job.backend_identity,
+                                    task_metrics.as_ref(),
+                                    job.base_interval_ms,
+                                    job.consecutive_failures,
+                                    ProxyError::Transport(error),
+                                    HealthFailureReason::Transport,
+                                ),
                             };
 
                             let transition = backend_lifecycle.apply_health_observation(

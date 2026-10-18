@@ -14,9 +14,11 @@ use impulse_config::{
     runtime::{RuntimeLoadBalancingStrategy, RuntimeUpstream},
 };
 #[cfg(test)]
-use pingora_load_balancing::discovery::{ServiceDiscovery, Static as StaticDiscovery};
+use pingora_load_balancing::discovery::Static as StaticDiscovery;
 use pingora_load_balancing::{
     Backend as PingoraBackend, BackendView, LoadBalancer,
+    discovery::ServiceDiscovery,
+    health_check::{HealthCheck, TcpHealthCheck},
     selection::{Random as PingoraRandom, RoundRobin as PingoraRoundRobin},
 };
 
@@ -638,6 +640,56 @@ where
             membership_changed: publication.membership_changed(),
             rebuild_duration,
         })
+    }
+
+    pub async fn run_tcp_health_check(
+        &self,
+        configured_address: &str,
+        timeout: Duration,
+    ) -> Result<(), String> {
+        let discovery = self
+            .discoveries
+            .values()
+            .find(|discovery| discovery.backend_index(configured_address).is_some())
+            .ok_or_else(|| {
+                format!(
+                    "no Pingora discovery backend matches configured address '{configured_address}'"
+                )
+            })?;
+        let backend_index = discovery
+            .backend_index(configured_address)
+            .expect("matched discovery contains the backend");
+        let (backends, _) = discovery
+            .discover()
+            .await
+            .map_err(|error| format!("failed to read Pingora backend membership: {error}"))?;
+        let mut check = TcpHealthCheck::default();
+        check.peer_template.options.connection_timeout = Some(timeout);
+        let mut matched = false;
+        let mut last_error = None;
+
+        for backend in backends {
+            let Some(identity) = backend.ext.get::<PingoraBackendIdentity<T>>() else {
+                continue;
+            };
+            if identity.index() != backend_index {
+                continue;
+            }
+            matched = true;
+            match check.check(&backend).await {
+                Ok(()) => return Ok(()),
+                Err(error) => last_error = Some(error.to_string()),
+            }
+        }
+
+        if !matched {
+            return Err(format!(
+                "Pingora discovery has no active address for backend '{configured_address}'"
+            ));
+        }
+        Err(last_error.unwrap_or_else(|| {
+            format!("Pingora TCP health check failed for backend '{configured_address}'")
+        }))
     }
 }
 
