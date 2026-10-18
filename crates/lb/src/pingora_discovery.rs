@@ -10,12 +10,14 @@ use pingora_load_balancing::{Backend as PingoraBackend, discovery::ServiceDiscov
 
 #[derive(Clone)]
 pub struct ImpulseServiceDiscovery {
+    generation: u64,
     upstream_name: String,
     backends: Arc<RwLock<Vec<BTreeSet<PingoraBackend>>>>,
 }
 
 impl ImpulseServiceDiscovery {
     pub fn from_runtime_upstream<F>(
+        generation: u64,
         upstream_name: &str,
         upstream: &RuntimeUpstream,
         mut map_backend: F,
@@ -39,6 +41,7 @@ impl ImpulseServiceDiscovery {
         }
 
         Ok(Self {
+            generation,
             upstream_name: upstream_name.to_string(),
             backends: Arc::new(RwLock::new(backends)),
         })
@@ -46,9 +49,16 @@ impl ImpulseServiceDiscovery {
 
     pub fn publish_dns_result(
         &self,
+        generation: u64,
         backend_index: usize,
         resolved_addrs: Result<Vec<SocketAddr>, String>,
     ) -> Result<(), String> {
+        if generation != self.generation {
+            return Err(format!(
+                "upstream '{}' rejected DNS result from runtime generation {generation}; active generation is {}",
+                self.upstream_name, self.generation
+            ));
+        }
         let resolved_addrs = resolved_addrs.map_err(|error| {
             format!(
                 "upstream '{}' backend {backend_index} DNS resolution failed: {error}",
@@ -58,7 +68,7 @@ impl ImpulseServiceDiscovery {
         self.publish_resolved_backend(backend_index, resolved_addrs)
     }
 
-    pub fn publish_resolved_backend(
+    fn publish_resolved_backend(
         &self,
         backend_index: usize,
         resolved_addrs: impl IntoIterator<Item = SocketAddr>,

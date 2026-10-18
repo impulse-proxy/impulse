@@ -559,6 +559,7 @@ impl GenerationBackendView {
     {
         let upstream_name = upstream_name.into();
         let discovery = ImpulseServiceDiscovery::from_runtime_upstream(
+            generation,
             &upstream_name,
             upstream,
             &mut map_backend,
