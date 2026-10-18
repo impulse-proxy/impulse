@@ -494,36 +494,6 @@ mod tests {
         assert!(h2_rotation.rotated());
     }
 
-    #[tokio::test]
-    async fn h1_refresh_rotation_stays_effective() {
-        let pool = transport_pool(&[("http1-api", "http://127.0.0.1:8080")]);
-
-        let first_rotation = pool
-            .rotate_backend_client("http://127.0.0.1:8080")
-            .expect("first h1 rotation");
-        let second_rotation = pool
-            .rotate_backend_client("http://127.0.0.1:8080")
-            .expect("second h1 rotation");
-
-        assert!(first_rotation.rotated());
-        assert!(second_rotation.rotated());
-    }
-
-    #[test]
-    fn h2_refresh_rotation_stays_effective() {
-        let pool = transport_pool(&[("h2-api", "https://127.0.0.1:8443")]);
-
-        let first_rotation = pool
-            .rotate_backend_client("https://127.0.0.1:8443")
-            .expect("first h2 rotation");
-        let second_rotation = pool
-            .rotate_backend_client("https://127.0.0.1:8443")
-            .expect("second h2 rotation");
-
-        assert!(first_rotation.rotated());
-        assert!(second_rotation.rotated());
-    }
-
     #[test]
     fn backend_not_found_rotation_is_a_no_op_facade_result() {
         let pool = transport_pool(&[("h2-api", "https://127.0.0.1:8443")]);

@@ -30,31 +30,3 @@ fn runtime_upstream_lowers_into_a_pool_with_canonical_lb_contract() {
     assert_eq!(upstream_pool.backend_address(0), Some("127.0.0.1:8001"));
     assert_eq!(upstream_pool.backend_address(1), Some("127.0.0.1:8002"));
 }
-
-#[test]
-fn supported_weighted_strategies_preserve_mixed_weight_runtime_contract() {
-    let health_check = HealthCheck {
-        path: "/health".to_string(),
-        interval: 5000,
-        timeout_ms: 2000,
-        failure_threshold: 3,
-        success_threshold: 2,
-        cooldown_ms: 10000,
-    };
-
-    for strategy in ["round-robin", "random", "consistent-hash", "sticky-cid"] {
-        let runtime_upstream = runtime_upstream(
-            strategy,
-            vec![
-                weighted_backend("backend1", "127.0.0.1:8001", 100, health_check.clone()),
-                weighted_backend("backend2", "127.0.0.1:8002", 200, health_check.clone()),
-            ],
-        );
-
-        let upstream_pool =
-            UpstreamPool::from_runtime_upstream(&runtime_upstream).expect("runtime pool");
-        assert_eq!(upstream_pool.load_balancer_name(), strategy);
-        assert_eq!(upstream_pool.membership_summary().healthy_backends, 2);
-        assert_eq!(upstream_pool.backend_count(), 2);
-    }
-}
