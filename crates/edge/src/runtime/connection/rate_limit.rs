@@ -4,11 +4,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// A leaky token-bucket rate limiter for new QUIC connection accepts.
+/// A leaky token-bucket rate limiter for new ingress connections.
 ///
 /// Tokens refill at `rate_per_sec` tokens/second up to a cap of `burst`.
-/// Each new `quiche::accept` call consumes one token; if the bucket is empty
-/// the packet is silently dropped (no panic, no connection state allocated).
+/// Each accepted connection consumes one token.
 pub(crate) struct TokenBucket {
     /// Maximum tokens the bucket can hold (burst capacity).
     burst: f64,
@@ -31,7 +30,7 @@ pub(crate) struct PerSourceTokenBucket {
 }
 
 impl PerSourceTokenBucket {
-    pub(super) fn new(rate_per_sec: u32, burst: u32) -> Self {
+    pub(crate) fn new(rate_per_sec: u32, burst: u32) -> Self {
         Self {
             buckets: HashMap::new(),
             rate_per_sec: per_source_rate(rate_per_sec),
@@ -39,7 +38,7 @@ impl PerSourceTokenBucket {
         }
     }
 
-    pub(super) fn reconfigure(&mut self, rate_per_sec: u32, burst: u32) {
+    pub(crate) fn reconfigure(&mut self, rate_per_sec: u32, burst: u32) {
         self.rate_per_sec = per_source_rate(rate_per_sec);
         self.burst = per_source_burst(burst);
         for (bucket, _) in self.buckets.values_mut() {
@@ -47,7 +46,7 @@ impl PerSourceTokenBucket {
         }
     }
 
-    pub(super) fn try_consume(&mut self, source: IpAddr) -> bool {
+    pub(crate) fn try_consume(&mut self, source: IpAddr) -> bool {
         let now = Instant::now();
         self.buckets.retain(|_, (_, last_seen)| {
             now.saturating_duration_since(*last_seen) < SOURCE_IDLE_TTL
@@ -82,7 +81,7 @@ fn per_source_burst(burst: u32) -> u32 {
 }
 
 impl TokenBucket {
-    pub(super) fn new(rate_per_sec: u32, burst: u32) -> Self {
+    pub(crate) fn new(rate_per_sec: u32, burst: u32) -> Self {
         let burst = (burst.max(1)) as f64;
         let rate_per_sec = rate_per_sec.max(1) as f64;
         Self {
@@ -93,7 +92,7 @@ impl TokenBucket {
         }
     }
 
-    pub(super) fn try_consume(&mut self) -> bool {
+    pub(crate) fn try_consume(&mut self) -> bool {
         let now = Instant::now();
         // Refill is intentionally bounded by `burst`: after long idle periods, precision
         // beyond "enough to fill the bucket" is irrelevant and we clamp to capacity.
@@ -117,7 +116,7 @@ impl TokenBucket {
         }
     }
 
-    pub(super) fn reconfigure(&mut self, rate_per_sec: u32, burst: u32) {
+    pub(crate) fn reconfigure(&mut self, rate_per_sec: u32, burst: u32) {
         let burst = burst.max(1) as f64;
         let rate_per_sec = rate_per_sec.max(1) as f64;
         self.burst = burst;
