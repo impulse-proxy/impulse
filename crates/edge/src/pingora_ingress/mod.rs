@@ -26,6 +26,7 @@ use pingora_core::{
     Error, HTTPStatus, InternalError, Result,
     apps::HttpServerOptions,
     listeners::{ConnectionFilter, tls::TlsSettings},
+    protocols::http::compression::Algorithm,
     server::configuration::ServerConf,
     services::{Service as PingoraServiceLifecycle, listening::Service},
     upstreams::peer::{ALPN, HttpPeer},
@@ -46,7 +47,9 @@ use crate::{
     },
     request_pipeline::{
         PipelineRequest, PipelineRoute, ResolvedRequestPolicy, ResolvedRouteTarget,
-        RouteResolutionError, TerminalOutcomeGuard, evaluate_pipeline, resolve_route,
+        ResponseCompressionAction, ResponseCompressionInput, RouteResolutionError,
+        TerminalOutcomeGuard, ensure_vary_accept_encoding, evaluate_pipeline,
+        evaluate_response_compression, resolve_route,
     },
     runtime::{
         bundle::{RuntimeBundle, RuntimeBundleHandle},
@@ -71,6 +74,8 @@ use crate::{
         tls::store::ListenerTlsReloadStore,
     },
 };
+
+const RESPONSE_GZIP_LEVEL: u32 = 6;
 
 pub(crate) struct PingoraRequestContext {
     pub(crate) runtime: Arc<RuntimeBundle>,
@@ -689,6 +694,12 @@ impl ProxyHttp for PingoraIngressService {
             return Ok(true);
         }
 
+        if pipeline.policy.response_compression.enabled {
+            session.upstream_compression.adjust_level(0);
+            session
+                .upstream_compression
+                .adjust_algorithm_level(Algorithm::Gzip, RESPONSE_GZIP_LEVEL);
+        }
         ctx.policy = Some(pipeline.policy);
         ctx.request_body_replayable = session.is_body_empty();
         Ok(false)
@@ -1119,6 +1130,30 @@ impl ProxyHttp for PingoraIngressService {
         for header in normalized.headers {
             upstream_response.append_header(header.name, header.value)?;
         }
+        let policy = ctx.policy.as_ref().ok_or_else(|| {
+            Error::explain(
+                InternalError,
+                "Pingora ingress request filter did not resolve a request policy",
+            )
+        })?;
+        let compression = evaluate_response_compression(ResponseCompressionInput {
+            policy,
+            request_method: method,
+            request_headers: &session.req_header().headers,
+            response_status: upstream_response.status,
+            response_headers: &upstream_response.headers,
+        });
+        match compression.action {
+            ResponseCompressionAction::Gzip => session
+                .upstream_compression
+                .adjust_algorithm_level(Algorithm::Gzip, RESPONSE_GZIP_LEVEL),
+            ResponseCompressionAction::Bypass(_) => {
+                session.upstream_compression.adjust_level(0);
+            }
+        }
+        if compression.vary_accept_encoding {
+            ensure_vary_accept_encoding(&mut upstream_response.headers);
+        }
         ctx.response_body_bytes_received = 0;
         ctx.response_body_suppressed = body_suppressed;
         ctx.response_body_limit_exempt = tunnel_response;
@@ -1126,7 +1161,7 @@ impl ProxyHttp for PingoraIngressService {
         Ok(())
     }
 
-    fn response_body_filter(
+    fn upstream_response_body_filter(
         &self,
         _session: &mut Session,
         body: &mut Option<Bytes>,
