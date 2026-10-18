@@ -7,10 +7,13 @@ use impulse_config::{
     backend_endpoint::BackendEndpoint,
     config::Log,
     runtime::{
-        ListenerRuntimeConfig, RuntimeBackendHealthCheck, RuntimeConfig, RuntimeUpstreamPolicy,
+        ListenerRuntimeConfig, RuntimeBackendHealthCheck, RuntimeBackendTlsPolicy, RuntimeConfig,
+        RuntimeUpstreamPolicy,
     },
 };
-use impulse_lb::upstream_pool::UpstreamPool;
+use impulse_lb::{
+    pingora_backend::SharedPingoraLoadBalancingRuntimeState, upstream_pool::UpstreamPool,
+};
 use impulse_transport::{SharedDnsResolver, UpstreamTransportPool};
 use tokio::sync::Semaphore;
 
@@ -133,6 +136,8 @@ pub struct RuntimeGenerationState {
     pub upstream_policies: Arc<HashMap<String, RuntimeUpstreamPolicy>>,
     /// Per-upstream load-balancing pools.
     pub upstream_pools: HashMap<String, Arc<RwLock<UpstreamPool>>>,
+    /// Pingora selectors owned by this runtime generation.
+    pub pingora_load_balancing: SharedPingoraLoadBalancingRuntimeState<RuntimeBackendTlsPolicy>,
     /// Per-upstream inflight semaphores.
     pub upstream_inflight: HashMap<String, Arc<Semaphore>>,
     /// Global inflight semaphore.

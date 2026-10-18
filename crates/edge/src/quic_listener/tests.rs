@@ -964,12 +964,16 @@ type TestRoutingContext = (
     HashMap<String, impulse_config::runtime::RuntimeUpstreamPolicy>,
     super::RouteIndex,
     Arc<RwLock<super::UpstreamPool>>,
+    impulse_lb::pingora_backend::PingoraLoadBalancingRuntimeState<
+        impulse_config::runtime::RuntimeBackendTlsPolicy,
+    >,
 );
 
 fn test_routing_context(lb_type: &str) -> TestRoutingContext {
     let mut upstreams = HashMap::new();
     upstreams.insert("api_pool".to_string(), test_upstream(lb_type));
     let runtime = runtime_config_with_upstreams(upstreams);
+    let selectors = super::forwarding::test_selectors(&runtime);
     let routing_index = super::RouteIndex::from_runtime_upstreams(&runtime.upstreams);
     let pool = super::UpstreamPool::from_runtime_upstream(
         runtime.upstreams.get("api_pool").expect("upstream"),
@@ -988,13 +992,20 @@ fn test_routing_context(lb_type: &str) -> TestRoutingContext {
             .policy
             .clone(),
     );
-    (upstream_pools, upstream_policies, routing_index, pool)
+    (
+        upstream_pools,
+        upstream_policies,
+        routing_index,
+        pool,
+        selectors,
+    )
 }
 
 #[test]
 fn resolve_backend_round_robin_is_not_pinned_to_first_backend() {
-    let (upstream_pools, upstream_policies, routing_index, _pool) =
+    let (upstream_pools, upstream_policies, routing_index, _pool, selectors) =
         test_routing_context("round-robin");
+    let metrics = super::Metrics::new(1, vec!["route".to_string()]);
 
     let mut picks = Vec::new();
     for _ in 0..4 {
@@ -1010,6 +1021,8 @@ fn resolve_backend_round_robin_is_not_pinned_to_first_backend() {
             &upstream_pools,
             &upstream_policies,
             &routing_index,
+            &selectors,
+            &metrics,
         )
         .expect("resolve backend");
         picks.push(resolved.backend.backend_addr);
@@ -1025,8 +1038,9 @@ fn resolve_backend_round_robin_is_not_pinned_to_first_backend() {
 
 #[test]
 fn resolve_backend_skips_unhealthy_backends() {
-    let (upstream_pools, upstream_policies, routing_index, pool) =
+    let (upstream_pools, upstream_policies, routing_index, pool, selectors) =
         test_routing_context("round-robin");
+    let metrics = super::Metrics::new(1, vec!["route".to_string()]);
     {
         let mut guard = pool.write().expect("pool write");
         guard.mark_backend_failure_from_active_check(0);
@@ -1041,6 +1055,8 @@ fn resolve_backend_skips_unhealthy_backends() {
         &upstream_pools,
         &upstream_policies,
         &routing_index,
+        &selectors,
+        &metrics,
     )
     .expect("resolve backend");
 
@@ -1052,8 +1068,9 @@ fn resolve_backend_skips_unhealthy_backends() {
 
 #[test]
 fn resolve_backend_respects_least_connections_strategy() {
-    let (upstream_pools, upstream_policies, routing_index, pool) =
+    let (upstream_pools, upstream_policies, routing_index, pool, selectors) =
         test_routing_context("least-connections");
+    let metrics = super::Metrics::new(1, vec!["route".to_string()]);
     {
         let guard = pool.read().expect("pool read");
         guard.begin_request_for_accounting(0);
@@ -1067,6 +1084,8 @@ fn resolve_backend_respects_least_connections_strategy() {
         &upstream_pools,
         &upstream_policies,
         &routing_index,
+        &selectors,
+        &metrics,
     )
     .expect("resolve backend");
 
@@ -1093,6 +1112,8 @@ fn resolve_backend_prefers_method_specific_route() {
     upstreams.insert("post_only".to_string(), post_only);
 
     let runtime = runtime_config_with_upstreams(upstreams);
+    let selectors = super::forwarding::test_selectors(&runtime);
+    let metrics = super::Metrics::new(1, vec!["route".to_string()]);
     let routing_index = super::RouteIndex::from_runtime_upstreams(&runtime.upstreams);
     let mut upstream_pools = HashMap::new();
     let mut upstream_policies = HashMap::new();
@@ -1109,6 +1130,8 @@ fn resolve_backend_prefers_method_specific_route() {
         &upstream_pools,
         &upstream_policies,
         &routing_index,
+        &selectors,
+        &metrics,
     )
     .expect("GET resolve");
     assert_eq!(resolved.route.upstream_name, "all_methods");
@@ -1120,6 +1143,8 @@ fn resolve_backend_prefers_method_specific_route() {
         &upstream_pools,
         &upstream_policies,
         &routing_index,
+        &selectors,
+        &metrics,
     )
     .expect("POST resolve");
     assert_eq!(resolved.route.upstream_name, "post_only");
@@ -1128,13 +1153,14 @@ fn resolve_backend_prefers_method_specific_route() {
 
 #[test]
 fn resolve_backend_uses_configured_header_lb_key() {
-    let (upstream_pools, upstream_policies, routing_index, _pool) = {
+    let (upstream_pools, upstream_policies, routing_index, _pool, selectors) = {
         let mut upstreams = HashMap::new();
         upstreams.insert(
             "api_pool".to_string(),
             test_upstream_with("consistent-hash", Some("header:x-user-id"), None),
         );
         let runtime = runtime_config_with_upstreams(upstreams);
+        let selectors = super::forwarding::test_selectors(&runtime);
         let routing_index = super::RouteIndex::from_runtime_upstreams(&runtime.upstreams);
         let pool = super::UpstreamPool::from_runtime_upstream(
             runtime.upstreams.get("api_pool").expect("upstream"),
@@ -1153,8 +1179,15 @@ fn resolve_backend_uses_configured_header_lb_key() {
                 .policy
                 .clone(),
         );
-        (upstream_pools, upstream_policies, routing_index, pool)
+        (
+            upstream_pools,
+            upstream_policies,
+            routing_index,
+            pool,
+            selectors,
+        )
     };
+    let metrics = super::Metrics::new(1, vec!["route".to_string()]);
 
     let header_lookup = |name: &str| {
         if name.eq_ignore_ascii_case("x-user-id") {
@@ -1176,6 +1209,8 @@ fn resolve_backend_uses_configured_header_lb_key() {
         &upstream_pools,
         &upstream_policies,
         &routing_index,
+        &selectors,
+        &metrics,
     )
     .expect("first resolve");
     let second_request = super::forwarding::TestTargetResolutionRequest::new(
@@ -1190,6 +1225,8 @@ fn resolve_backend_uses_configured_header_lb_key() {
         &upstream_pools,
         &upstream_policies,
         &routing_index,
+        &selectors,
+        &metrics,
     )
     .expect("second resolve");
 

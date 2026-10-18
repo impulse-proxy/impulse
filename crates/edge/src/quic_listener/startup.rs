@@ -1,13 +1,18 @@
 use std::{
     collections::HashMap,
-    net::{IpAddr, SocketAddr, SocketAddr as StdSocketAddr, ToSocketAddrs, UdpSocket},
+    net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddr as StdSocketAddr, ToSocketAddrs, UdpSocket},
     sync::{Arc, RwLock},
     time::Duration,
 };
 
 use impulse_config::runtime::{ListenerRuntimeConfig, RuntimeBackendAddressKind, RuntimeConfig};
 use impulse_errors::ProxyError;
-use impulse_lb::upstream_pool::UpstreamPool;
+use impulse_lb::{
+    pingora_backend::{
+        GenerationBackendView, PingoraLoadBalancingRuntimeState, map_validated_backend,
+    },
+    upstream_pool::UpstreamPool,
+};
 use impulse_transport::UpstreamTransportPool;
 use log::{debug, info, warn};
 use socket2::{Domain, Protocol, Socket, Type};
@@ -105,7 +110,7 @@ impl QUICListener {
     }
 
     pub fn build_shared_state(config: &RuntimeConfig) -> Result<SharedRuntimeState, ProxyError> {
-        Self::build_shared_state_with_carried(config, None)
+        Self::build_shared_state_for_generation(config, None, 0)
     }
 
     /// Build the shared runtime state for a generation.
@@ -118,6 +123,14 @@ impl QUICListener {
     pub fn build_shared_state_with_carried(
         config: &RuntimeConfig,
         carried: Option<crate::runtime::generation::CarriedProcessSharedServices>,
+    ) -> Result<SharedRuntimeState, ProxyError> {
+        Self::build_shared_state_for_generation(config, carried, 0)
+    }
+
+    pub(crate) fn build_shared_state_for_generation(
+        config: &RuntimeConfig,
+        carried: Option<crate::runtime::generation::CarriedProcessSharedServices>,
+        generation: u64,
     ) -> Result<SharedRuntimeState, ProxyError> {
         let transport_policy = &config.policies.transport;
         let timeout_policy = &config.policies.timeouts;
@@ -279,6 +292,7 @@ impl QUICListener {
         );
         let mut upstream_pools = HashMap::new();
         let mut upstream_inflight = HashMap::new();
+        let mut pingora_selectors = Vec::with_capacity(config.upstreams.len());
         for (name, runtime_upstream) in &config.upstreams {
             let upstream_pool =
                 UpstreamPool::from_runtime_upstream(runtime_upstream).map_err(|err| {
@@ -289,7 +303,44 @@ impl QUICListener {
                 })?;
             upstream_pools.insert(name.clone(), Arc::new(RwLock::new(upstream_pool)));
             upstream_inflight.insert(name.clone(), Arc::new(Semaphore::new(per_upstream_limit)));
+
+            let tls_identity = runtime_upstream.backend_tls_policy().clone();
+            let view = GenerationBackendView::from_runtime_upstream(
+                generation,
+                name,
+                runtime_upstream,
+                |index, backend| {
+                    let endpoint = &runtime_upstream.backends[index].endpoint;
+                    // shortcut: hostname membership remains logical until Pingora discovery owns DNS.
+                    let address = StdSocketAddr::new(
+                        endpoint
+                            .authority_host
+                            .parse()
+                            .unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED)),
+                        endpoint.authority_port,
+                    );
+                    map_validated_backend(backend, index, address, tls_identity.clone())
+                },
+            )
+            .map_err(|error| {
+                metrics.inc_pingora_lb_selector_failure();
+                ProxyError::Transport(format!(
+                    "failed to create Pingora selector for upstream '{name}': {error}"
+                ))
+            })?;
+            pingora_selectors.push((name.clone(), runtime_upstream.load_balancing.strategy, view));
         }
+        let pingora_load_balancing = Arc::new(
+            PingoraLoadBalancingRuntimeState::new(generation, pingora_selectors).map_err(
+                |error| {
+                    metrics.inc_pingora_lb_selector_failure();
+                    ProxyError::Transport(format!(
+                        "failed to create Pingora load-balancing runtime: {error}"
+                    ))
+                },
+            )?,
+        );
+        metrics.record_pingora_lb_selector_rebuild(generation, pingora_load_balancing.len());
 
         let mut effective_admission = config.policies.admission.clone();
         let default_route_cap_limit = per_upstream_limit.saturating_mul(2).max(1);
@@ -365,6 +416,7 @@ impl QUICListener {
                         .collect(),
                 ),
                 upstream_pools,
+                pingora_load_balancing,
                 upstream_inflight,
                 global_inflight: Arc::new(Semaphore::new(global_inflight_limit)),
                 routing_index,
@@ -496,6 +548,7 @@ impl QUICListener {
             backend_dns_resolver: shared_services.backend_dns_resolver.clone(),
             upstream_policies: Arc::clone(&generation_state.upstream_policies),
             upstream_pools: generation_state.upstream_pools.clone(),
+            pingora_load_balancing: Arc::clone(&generation_state.pingora_load_balancing),
             upstream_inflight: generation_state.upstream_inflight.clone(),
             global_inflight: Arc::clone(&generation_state.global_inflight),
             routing_index: Arc::clone(&generation_state.routing_index),

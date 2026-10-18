@@ -9,8 +9,8 @@ name = "load_balancing"
 harness = false
 
 [dependencies]
+pingora-load-balancing.workspace = true
 log.workspace = true
-rand.workspace = true
 impulse-config = { path = "../config" }
 
 [dev-dependencies]

@@ -76,7 +76,9 @@ impl PingoraH2UpstreamSession {
 
         peer.options.alpn = ALPN::H2;
         peer.group_key = identity.pool_key();
-        let (session, reused) = pool.connector().get_http_session(&peer).await?;
+        let (mut session, reused) = pool.connector().get_http_session(&peer).await?;
+        session.set_read_timeout(peer.options.read_timeout);
+        session.set_write_timeout(peer.options.write_timeout);
         let mut session = match session {
             PingoraHttpSession::H2(session) => session,
             mut session => {

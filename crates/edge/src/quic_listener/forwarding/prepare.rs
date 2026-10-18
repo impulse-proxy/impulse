@@ -464,6 +464,11 @@ impl QUICListener {
             shared_ctx.routing_index,
             shared_ctx.upstream_pools,
             shared_ctx.upstream_policies,
+        )
+        .with_pingora_selection(
+            shared_ctx.pingora_load_balancing,
+            shared_ctx.generation,
+            metrics,
         );
         let intake = Self::build_request_intake(IntakeRequestDescriptor {
             quic_trace_id,
@@ -532,6 +537,7 @@ impl QUICListener {
                         backend_addr,
                         backend_index,
                         backend_lb,
+                        lb_key,
                     },
                 policy: resolved_policy,
                 admission,
@@ -687,6 +693,7 @@ impl QUICListener {
                     backend_addr: Arc::<str>::from(backend_addr.as_str()),
                     backend_index,
                     backend_lb: Some(Arc::<str>::from(backend_lb.as_str())),
+                    lb_key: Arc::<str>::from(lb_key.as_str()),
                     client_addr: peer_address,
                     request_id,
                     trace_id: intake

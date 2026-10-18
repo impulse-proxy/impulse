@@ -158,6 +158,10 @@ impl Metrics {
             runtime_preview_attempts: AtomicU64::new(0),
             runtime_active_generation: AtomicU64::new(0),
             runtime_history_depth: AtomicU64::new(0),
+            pingora_lb_selector_generation: AtomicU64::new(0),
+            pingora_lb_selector_rebuilds: AtomicU64::new(0),
+            pingora_lb_selector_failures: AtomicU64::new(0),
+            pingora_lb_selections: AtomicU64::new(0),
             runtime_activation_outcomes: std::array::from_fn(|_| AtomicU64::new(0)),
             runtime_rollback_outcomes: std::array::from_fn(|_| AtomicU64::new(0)),
             retries_total: AtomicU64::new(0),
@@ -1025,6 +1029,24 @@ impl Metrics {
     pub fn set_runtime_history_depth(&self, depth: usize) {
         let depth = u64::try_from(depth).unwrap_or(u64::MAX);
         self.runtime_history_depth.store(depth, Ordering::Relaxed);
+    }
+
+    pub fn record_pingora_lb_selector_rebuild(&self, generation: u64, selectors: usize) {
+        self.pingora_lb_selector_generation
+            .store(generation, Ordering::Relaxed);
+        self.pingora_lb_selector_rebuilds.fetch_add(
+            u64::try_from(selectors).unwrap_or(u64::MAX),
+            Ordering::Relaxed,
+        );
+    }
+
+    pub fn inc_pingora_lb_selector_failure(&self) {
+        self.pingora_lb_selector_failures
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn inc_pingora_lb_selection(&self) {
+        self.pingora_lb_selections.fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn inc_watchdog_restart_request(&self) {

@@ -1,4 +1,5 @@
-use impulse_config::runtime::RuntimeUpstreamPolicy;
+use impulse_config::runtime::{RuntimeBackendTlsPolicy, RuntimeUpstreamPolicy};
+use impulse_lb::pingora_backend::PingoraLoadBalancingRuntimeState;
 
 use super::{selection::ForwardingSelectionService, *};
 use crate::{
@@ -38,6 +39,9 @@ pub(in crate::quic_listener) struct ResolutionContext<'a> {
     pub(in crate::quic_listener) routing_index: &'a RouteIndex,
     pub(in crate::quic_listener) upstream_pools: &'a HashMap<String, Arc<RwLock<UpstreamPool>>>,
     pub(in crate::quic_listener) upstream_policies: &'a HashMap<String, RuntimeUpstreamPolicy>,
+    pingora_load_balancing: Option<&'a PingoraLoadBalancingRuntimeState<RuntimeBackendTlsPolicy>>,
+    generation: u64,
+    metrics: Option<&'a Metrics>,
 }
 
 impl<'a> ResolutionContext<'a> {
@@ -50,8 +54,57 @@ impl<'a> ResolutionContext<'a> {
             routing_index,
             upstream_pools,
             upstream_policies,
+            pingora_load_balancing: None,
+            generation: 0,
+            metrics: None,
         }
     }
+
+    pub(in crate::quic_listener) fn with_pingora_selection(
+        mut self,
+        pingora_load_balancing: &'a PingoraLoadBalancingRuntimeState<RuntimeBackendTlsPolicy>,
+        generation: u64,
+        metrics: &'a Metrics,
+    ) -> Self {
+        self.pingora_load_balancing = Some(pingora_load_balancing);
+        self.generation = generation;
+        self.metrics = Some(metrics);
+        self
+    }
+}
+
+#[cfg(test)]
+pub(in crate::quic_listener) fn selectors_for_test(
+    runtime: &impulse_config::runtime::RuntimeConfig,
+) -> PingoraLoadBalancingRuntimeState<RuntimeBackendTlsPolicy> {
+    let generation = 1;
+    let views = runtime.upstreams.iter().map(|(name, upstream)| {
+        let tls_identity = upstream.backend_tls_policy().clone();
+        let view = impulse_lb::pingora_backend::GenerationBackendView::from_runtime_upstream(
+            generation,
+            name,
+            upstream,
+            |index, backend| {
+                let endpoint = &upstream.backends[index].endpoint;
+                let address = std::net::SocketAddr::new(
+                    endpoint
+                        .authority_host
+                        .parse()
+                        .unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED)),
+                    endpoint.authority_port,
+                );
+                impulse_lb::pingora_backend::map_validated_backend(
+                    backend,
+                    index,
+                    address,
+                    tls_identity.clone(),
+                )
+            },
+        )
+        .expect("selector view");
+        (name.clone(), upstream.load_balancing.strategy, view)
+    });
+    PingoraLoadBalancingRuntimeState::new(generation, views).expect("selector runtime")
 }
 
 #[derive(Clone, Copy)]
@@ -79,6 +132,7 @@ pub(crate) struct BackendSelection {
     pub(crate) backend_addr: String,
     pub(crate) backend_index: usize,
     pub(in crate::quic_listener) backend_lb: String,
+    pub(crate) lb_key: String,
 }
 
 pub(in crate::quic_listener) struct TargetResolution {
@@ -96,6 +150,7 @@ pub(super) struct ForwardTargetResolution {
     pub(super) backend_addr: String,
     pub(super) backend_index: usize,
     pub(super) backend_lb: String,
+    pub(super) lb_key: String,
 }
 
 pub(super) struct ForwardTargetResolutionInput<'a> {
@@ -238,6 +293,7 @@ impl QUICListener {
             backend_addr,
             backend_index,
             backend_lb,
+            lb_key,
         } = backend;
 
         Ok(ForwardTargetResolution {
@@ -250,6 +306,7 @@ impl QUICListener {
             backend_addr,
             backend_index,
             backend_lb,
+            lb_key,
         })
     }
 
@@ -323,11 +380,32 @@ impl QUICListener {
         begin_request: bool,
     ) -> Result<TargetResolution, ProxyError> {
         let route = Self::resolve_route_target(request, context)?;
-        let backend = ForwardingSelectionService::select_backend(
-            request,
-            &route.upstream_pool,
-            begin_request,
-        )?;
+        let backend = if let Some(selectors) = context.pingora_load_balancing {
+            let metrics = context
+                .metrics
+                .expect("Pingora selection metrics must accompany selector state");
+            let selector = selectors.selector(&route.upstream_name).ok_or_else(|| {
+                metrics.inc_pingora_lb_selector_failure();
+                ProxyError::Transport(format!(
+                    "Pingora selector not found: {}",
+                    route.upstream_name
+                ))
+            })?;
+            ForwardingSelectionService::select_backend_with_selector(
+                request,
+                &route.upstream_pool,
+                selector,
+                context.generation,
+                begin_request,
+                metrics,
+            )?
+        } else {
+            ForwardingSelectionService::select_backend(
+                request,
+                &route.upstream_pool,
+                begin_request,
+            )?
+        };
 
         Self::log_backend_selection(
             request,
@@ -347,8 +425,11 @@ impl QUICListener {
         upstream_pools: &HashMap<String, Arc<RwLock<UpstreamPool>>>,
         upstream_policies: &HashMap<String, RuntimeUpstreamPolicy>,
         routing_index: &RouteIndex,
+        selectors: &PingoraLoadBalancingRuntimeState<RuntimeBackendTlsPolicy>,
+        metrics: &Metrics,
     ) -> Result<TargetResolution, ProxyError> {
-        let context = ResolutionContext::new(routing_index, upstream_pools, upstream_policies);
+        let context = ResolutionContext::new(routing_index, upstream_pools, upstream_policies)
+            .with_pingora_selection(selectors, selectors.generation(), metrics);
         Self::resolve_backend_internal(request, &context, true)
     }
 }
@@ -579,7 +660,10 @@ mod tests {
             .iter()
             .map(|(name, upstream)| (name.clone(), upstream.policy.clone()))
             .collect::<HashMap<_, _>>();
-        let context = ResolutionContext::new(&routing_index, &pools, &policies);
+        let selectors = selectors_for_test(&runtime);
+        let metrics = Metrics::new(1, vec!["route".to_string()]);
+        let context = ResolutionContext::new(&routing_index, &pools, &policies)
+            .with_pingora_selection(&selectors, selectors.generation(), &metrics);
         let request = TargetResolutionRequest::new(
             "CONNECT",
             "/chat/socket",
@@ -587,8 +671,6 @@ mod tests {
             None,
             None,
         );
-        let metrics = Metrics::new(1, vec!["route".to_string()]);
-
         let resolved = QUICListener::resolve_forwarding_target(ForwardTargetResolutionInput {
             request,
             context,

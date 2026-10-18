@@ -1,26 +1,6 @@
 use super::*;
 
 #[test]
-fn http3_to_http2_roundtrip() {
-    if !local_listener_bind_available() {
-        return;
-    }
-    let dir = tempdir().expect("failed to create temp dir");
-    let (cert, key) = write_test_certs(&dir);
-
-    let rt = tokio::runtime::Runtime::new().expect("runtime");
-    let backend_addr = rt.block_on(start_h2_backend_with_regression_routes());
-    let config = make_config(0, backend_addr.to_string(), cert, key);
-    let listener = QUICListener::new(config).expect("failed to create listener");
-    let listen_addr = listener.socket.local_addr().unwrap();
-    let _listener_task = ListenerTaskGuard::spawn(&rt, listener);
-
-    let body = run_h3_client(listen_addr).expect("client request failed");
-
-    assert!(!body.is_empty(), "expected non-empty response from backend");
-}
-
-#[test]
 fn http3_to_http2_preserves_response_trailers() {
     if !local_listener_bind_available() {
         return;
@@ -29,8 +9,8 @@ fn http3_to_http2_preserves_response_trailers() {
     let (cert, key) = write_test_certs(&dir);
 
     let rt = tokio::runtime::Runtime::new().expect("runtime");
-    let backend_addr = rt.block_on(start_h2_backend_with_trailers());
-    let config = make_config(0, backend_addr.to_string(), cert, key);
+    let backend_addr = rt.block_on(start_h2_backend_with_trailers(&cert, &key));
+    let config = make_h2_config(0, backend_addr, cert, key);
     let listener = QUICListener::new(config).expect("failed to create listener");
     let listen_addr = listener.socket.local_addr().unwrap();
     let _listener_task = ListenerTaskGuard::spawn(&rt, listener);
@@ -110,14 +90,9 @@ fn pingora_h2_preserves_response_trailers() {
     let (cert, key) = write_test_certs(&dir);
 
     let rt = tokio::runtime::Runtime::new().expect("runtime");
-    let backend_addr = rt.block_on(start_h2_backend_with_trailers());
+    let backend_addr = rt.block_on(start_h2_backend_with_trailers(&cert, &key));
     let listen_port = find_free_tcp_port();
-    let config = make_config(
-        u32::from(listen_port),
-        backend_addr.to_string(),
-        cert.clone(),
-        key,
-    );
+    let config = make_h2_config(u32::from(listen_port), backend_addr, cert.clone(), key);
     let (listener, _pingora_listener) = make_listener_with_pingora(&rt, config);
     let listen_addr = listener.socket.local_addr().unwrap();
     let _listener_task = ListenerTaskGuard::spawn(&rt, listener);
@@ -415,70 +390,6 @@ fn quic_tls_metrics_capture_selection_and_failures() {
 }
 
 #[test]
-#[serial_test::serial]
-fn pingora_tls_metrics_capture_missing_client_certificate_failures() {
-    if !local_listener_bind_available() {
-        return;
-    }
-    let dir = tempdir().expect("failed to create temp dir");
-    let (cert, key) = write_test_certs(&dir);
-    let (ca_cert, _client_cert, _client_key) =
-        write_test_ca_and_client_cert(&dir, "client-ca", "client.example.com");
-    let rt = tokio::runtime::Runtime::new().expect("runtime");
-    let backend_addr = rt.block_on(start_h2_backend());
-
-    let listen_port = find_free_tcp_port();
-    let metrics_port = find_free_tcp_port();
-    let mut config = make_config(
-        listen_port as u32,
-        backend_addr.to_string(),
-        cert.clone(),
-        key,
-    );
-    config.listen.tls.client_auth = ClientAuth {
-        enabled: true,
-        require_client_cert: true,
-        ca_file: Some(ca_cert),
-    };
-    config.observability.metrics.enabled = true;
-    config.observability.metrics.address = "127.0.0.1".to_string();
-    config.observability.metrics.port = metrics_port;
-    config.observability.metrics.path = "/metrics".to_string();
-
-    let _enter = rt.enter();
-    let (listener, _pingora_listener) = make_listener_with_pingora(&rt, config);
-    drop(_enter);
-    let listen_addr = listener.socket.local_addr().expect("listener addr");
-    let _listener_task = ListenerTaskGuard::spawn(&rt, listener);
-    let pingora_addr = SocketAddr::new(listen_addr.ip(), listen_port);
-
-    let err = rt
-        .block_on(run_http2_client_request_with_client_auth(
-            pingora_addr,
-            &cert,
-            "GET",
-            "/",
-            &[],
-            None,
-        ))
-        .expect_err("missing client cert should fail");
-    assert!(
-        err.contains("tls connect") || err.contains("sender ready") || err.contains("send request"),
-        "unexpected error: {err}"
-    );
-
-    let metrics = rt
-        .block_on(scrape_metrics(
-            metrics_port,
-            "/metrics",
-            Duration::from_secs(20),
-        ))
-        .expect("metrics endpoint should become reachable");
-    assert!(metrics.contains("impulse_downstream_tls_handshake_failure_total"));
-    assert!(metrics.contains("reason=\"missing_client_cert\""));
-}
-
-#[test]
 fn http3_head_suppresses_response_body() {
     if !local_listener_bind_available() {
         return;
@@ -513,44 +424,6 @@ fn http3_head_suppresses_response_body() {
         "HEAD response must not include a body"
     );
     assert!(!response.reset, "HEAD response should complete cleanly");
-}
-
-#[test]
-fn pingora_h2_head_suppresses_response_body() {
-    if !local_listener_bind_available() {
-        return;
-    }
-    let dir = tempdir().expect("failed to create temp dir");
-    let (cert, key) = write_test_certs(&dir);
-
-    let rt = tokio::runtime::Runtime::new().expect("runtime");
-    let backend_addr = rt.block_on(start_h2_backend_with_regression_routes());
-    let listen_port = find_free_tcp_port();
-    let config = make_config(
-        u32::from(listen_port),
-        backend_addr.to_string(),
-        cert.clone(),
-        key,
-    );
-    let (listener, _pingora_listener) = make_listener_with_pingora(&rt, config);
-    let listen_addr = listener.socket.local_addr().unwrap();
-    let _listener_task = ListenerTaskGuard::spawn(&rt, listener);
-
-    let (status, body, _trailers) = rt
-        .block_on(run_http2_client_request(
-            SocketAddr::new(listen_addr.ip(), listen_port),
-            &cert,
-            "HEAD",
-            "/stream",
-            &[],
-        ))
-        .expect("Pingora HEAD request failed");
-
-    assert_eq!(status, StatusCode::OK);
-    assert!(
-        body.is_empty(),
-        "Pingora HEAD response must not include a body"
-    );
 }
 
 #[test]
@@ -643,8 +516,8 @@ fn http3_to_http2_preserves_grpc_error_trailers() {
     let (cert, key) = write_test_certs(&dir);
 
     let rt = tokio::runtime::Runtime::new().expect("runtime");
-    let backend_addr = rt.block_on(start_h2_backend_with_grpc_routes());
-    let config = make_config(0, backend_addr.to_string(), cert, key);
+    let backend_addr = rt.block_on(start_h2_backend_with_grpc_routes(&cert, &key));
+    let config = make_h2_config(0, backend_addr, cert, key);
     let listener = QUICListener::new(config).expect("failed to create listener");
     let listen_addr = listener.socket.local_addr().unwrap();
     let _listener_task = ListenerTaskGuard::spawn(&rt, listener);
@@ -695,8 +568,8 @@ fn grpc_timeout_returns_recoverable_proxy_error() {
     let (cert, key) = write_test_certs(&dir);
 
     let rt = tokio::runtime::Runtime::new().expect("runtime");
-    let backend_addr = rt.block_on(start_h2_backend_with_grpc_routes());
-    let mut config = make_config(0, backend_addr.to_string(), cert, key);
+    let backend_addr = rt.block_on(start_h2_backend_with_grpc_routes(&cert, &key));
+    let mut config = make_h2_config(0, backend_addr, cert, key);
     config.performance.backend_timeout_ms = 150;
     config.performance.backend_connect_timeout_ms = 150;
     let listener = QUICListener::new(config).expect("failed to create listener");

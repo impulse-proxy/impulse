@@ -10,15 +10,23 @@ mod response;
 mod selection;
 mod stream_progress;
 
+use impulse_config::runtime::RuntimeBackendTlsPolicy;
+use impulse_lb::pingora_backend::PingoraLoadBalancingRuntimeState;
+
 pub(in crate::quic_listener) use self::outcome::{
     backend_failure_reason_for_proxy_error, rejection_reason_for_status, terminalize_stream,
 };
 use self::prepare::RequestFinalizationConfig;
 #[cfg(test)]
-pub(in crate::quic_listener) use self::resolve::TargetResolutionRequest as TestTargetResolutionRequest;
+pub(in crate::quic_listener) use self::resolve::{
+    TargetResolutionRequest as TestTargetResolutionRequest, selectors_for_test as test_selectors,
+};
 pub(crate) use self::{
     resolve::TargetResolutionRequest,
-    selection::{ForwardingSelectionService, MAX_UPSTREAM_RETRY_ATTEMPTS, RetryCoordinator},
+    selection::{
+        ForwardingSelectionService, MAX_UPSTREAM_RETRY_ATTEMPTS, RetryCoordinator,
+        StableBackendSelection,
+    },
 };
 use super::*;
 
@@ -29,6 +37,9 @@ pub(in crate::quic_listener) struct ForwardingSharedCtx<'a> {
     pub(in crate::quic_listener) routing_index: &'a RouteIndex,
     pub(in crate::quic_listener) upstream_pools: &'a HashMap<String, Arc<RwLock<UpstreamPool>>>,
     pub(in crate::quic_listener) upstream_policies: &'a HashMap<String, RuntimeUpstreamPolicy>,
+    pub(in crate::quic_listener) pingora_load_balancing:
+        &'a PingoraLoadBalancingRuntimeState<RuntimeBackendTlsPolicy>,
+    pub(in crate::quic_listener) generation: u64,
 }
 
 pub(in crate::quic_listener) struct ForwardingExecutionCtx<'a> {

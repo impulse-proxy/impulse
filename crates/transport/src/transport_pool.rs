@@ -272,12 +272,8 @@ impl UpstreamTransportPool {
                     backend_addr.clone(),
                     Arc::new(Semaphore::new(connection_policy.max_inflight.max(1))),
                 );
-                let (mut peer, address) =
-                    build_pingora_http_peer(&backend.endpoint, connection_policy)?;
-                if peer.is_tls() {
-                    peer.options.verify_cert = tls.verify_certificates;
-                    peer.options.verify_hostname = tls.strict_sni;
-                }
+                let (peer, address) =
+                    build_pingora_http_peer(&backend.endpoint, connection_policy, &tls)?;
                 let identity = PingoraUpstreamConnectionIdentity::new(
                     address,
                     backend.endpoint.transport_kind,

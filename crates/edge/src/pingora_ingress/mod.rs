@@ -20,12 +20,7 @@ use impulse_errors::{
     BridgeError, PoolError, ProxyError, RetryAttemptTelemetryReason, RetryPolicyDecision,
     RetryPolicyDenialReason, classify_upstream_proxy_error, is_idempotent_method,
 };
-use impulse_lb::{
-    alternate_backend::{
-        AlternateBackendDecision, AlternateBackendFailureReason, choose_alternate_backend,
-    },
-    upstream_pool::UpstreamPool,
-};
+use impulse_lb::{alternate_backend::AlternateBackendFailureReason, upstream_pool::UpstreamPool};
 use impulse_transport::{classify_pingora_h1_error, classify_pingora_h2_error};
 use pingora_core::{
     Error, HTTPStatus, InternalError, Result,
@@ -46,8 +41,8 @@ use crate::{
     REQUEST_ID_COUNTER,
     quic_listener::{
         AdmissionPolicyDecision, ForwardingSelectionService, MAX_UPSTREAM_RETRY_ATTEMPTS,
-        RetryCoordinator, TargetResolutionRequest, admission_rejection_response,
-        validate_http_request_parts,
+        RetryCoordinator, StableBackendSelection, TargetResolutionRequest,
+        admission_rejection_response, validate_http_request_parts,
     },
     request_pipeline::{
         PipelineRequest, PipelineRoute, ResolvedRequestPolicy, ResolvedRouteTarget,
@@ -95,6 +90,7 @@ pub(crate) struct PingoraRequestContext {
     request_body_replayable: bool,
     retry_count: u8,
     retry_backend: Option<(String, usize)>,
+    lb_key: Option<String>,
     request_id: u64,
     selected_backend: Option<PingoraSelectedBackend>,
     drain: Arc<PingoraDrainState>,
@@ -420,6 +416,7 @@ impl ProxyHttp for PingoraIngressService {
             request_body_replayable: false,
             retry_count: 0,
             retry_backend: None,
+            lb_key: None,
             request_id: REQUEST_ID_COUNTER.fetch_add(1, Ordering::Relaxed),
             selected_backend: None,
             drain: Arc::clone(&self.drain),
@@ -720,18 +717,40 @@ impl ProxyHttp for PingoraIngressService {
                     .and_then(|value| value.to_str().ok())
                     .map(str::to_owned)
             };
-            let selected = ForwardingSelectionService::select_backend(
-                &TargetResolutionRequest::new(
-                    method,
-                    path,
-                    ctx.authority.as_deref(),
-                    None,
-                    Some(&header_lookup),
-                ),
+            let selection_request = TargetResolutionRequest::new(
+                method,
+                path,
+                ctx.authority.as_deref(),
+                None,
+                Some(&header_lookup),
+            );
+            let selector = state
+                .pingora_load_balancing
+                .selector(route.upstream_name.as_ref())
+                .ok_or_else(|| {
+                    ctx.runtime
+                        .shared_state
+                        .shared_services()
+                        .metrics
+                        .inc_pingora_lb_selector_failure();
+                    Error::explain(
+                        InternalError,
+                        format!(
+                            "Pingora ingress selector is missing: {}",
+                            route.upstream_name
+                        ),
+                    )
+                })?;
+            let selected = ForwardingSelectionService::select_backend_with_selector(
+                &selection_request,
                 &pool,
+                selector,
+                ctx.runtime.generation,
                 true,
+                ctx.runtime.shared_state.shared_services().metrics.as_ref(),
             )
             .map_err(|error| Error::because(InternalError, "backend selection failed", error))?;
+            ctx.lb_key = Some(selected.lb_key);
             ctx.runtime
                 .shared_state
                 .generation_state()
@@ -1217,24 +1236,49 @@ fn handle_pingora_proxy_failure(
         error.set_retry(false);
         return error;
     };
-    let (retry_backend, alternate_failure) = match selected.pool.read() {
-        Ok(pool) => match choose_alternate_backend(&pool, &[selected.index], None) {
-            AlternateBackendDecision::Select(choice) => match pool.backend_address(choice.index) {
-                Some(address) => (Some((address.to_string(), choice.index)), None),
-                None => (
-                    None,
-                    Some(AlternateBackendFailureReason::BackendAddressMissing),
-                ),
-            },
-            AlternateBackendDecision::DoNotSelect { denial } => (None, Some(denial)),
-        },
-        Err(_) => (None, Some(AlternateBackendFailureReason::PoolUnavailable)),
-    };
     let route_name = ctx
         .route
         .as_ref()
         .map(|route| route.upstream_name.as_ref())
         .unwrap_or("unrouted");
+    let selector = ctx
+        .runtime
+        .shared_state
+        .generation_state()
+        .pingora_load_balancing
+        .selector(route_name);
+    let metrics = ctx.runtime.shared_state.shared_services().metrics.as_ref();
+    let stable_selection = match selector {
+        Some(selector) => Some(ForwardingSelectionService::select_stable_backend(
+            selector,
+            &selected.pool,
+            ctx.runtime.generation,
+            ctx.lb_key.as_deref().unwrap_or_default(),
+            &[selected.index],
+            false,
+            metrics,
+        )),
+        None => {
+            metrics.inc_pingora_lb_selector_failure();
+            None
+        }
+    };
+    let (retry_backend, alternate_failure) = match stable_selection {
+        Some(Ok(StableBackendSelection::Selected { address, index })) => {
+            (Some((address, index)), None)
+        }
+        Some(Ok(StableBackendSelection::NoCandidate)) => match selected.pool.read() {
+            Ok(pool) if pool.membership_summary().healthy_backends == 0 => {
+                (None, Some(AlternateBackendFailureReason::NoHealthyBackends))
+            }
+            Ok(_) => (
+                None,
+                Some(AlternateBackendFailureReason::OnlyExcludedBackendsHealthy),
+            ),
+            Err(_) => (None, Some(AlternateBackendFailureReason::PoolUnavailable)),
+        },
+        Some(Err(_)) | None => (None, Some(AlternateBackendFailureReason::PoolUnavailable)),
+    };
     let retry = RetryCoordinator::new(
         ctx.method.as_deref().is_some_and(is_idempotent_method),
         ctx.request_body_replayable && retry_safe,

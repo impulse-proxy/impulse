@@ -7,9 +7,11 @@ use std::{
 
 use impulse_config::{
     backend_endpoint::BackendEndpoint,
-    runtime::{ListenerRuntimeConfig, RuntimeUpstreamPolicy},
+    runtime::{ListenerRuntimeConfig, RuntimeBackendTlsPolicy, RuntimeUpstreamPolicy},
 };
-use impulse_lb::upstream_pool::UpstreamPool;
+use impulse_lb::{
+    pingora_backend::SharedPingoraLoadBalancingRuntimeState, upstream_pool::UpstreamPool,
+};
 use impulse_transport::{SharedDnsResolver, UpstreamTransportPool};
 use tokio::sync::Semaphore;
 
@@ -72,6 +74,7 @@ pub struct QUICListener {
     pub backend_dns_resolver: SharedDnsResolver,
     pub upstream_policies: Arc<HashMap<String, RuntimeUpstreamPolicy>>,
     pub upstream_pools: HashMap<String, Arc<RwLock<UpstreamPool>>>,
+    pub pingora_load_balancing: SharedPingoraLoadBalancingRuntimeState<RuntimeBackendTlsPolicy>,
     pub upstream_inflight: HashMap<String, Arc<Semaphore>>,
     pub global_inflight: Arc<Semaphore>,
     pub(crate) routing_index: Arc<RouteIndex>,
