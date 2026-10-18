@@ -59,7 +59,8 @@ use crate::{
             },
             outcome::{
                 AdmissionOutcomeClass, BackendHealthObservationInput, BackendOutcomeTarget,
-                ClassifiedBackendFailureInput, RouteOutcomeTarget, observe_admission_outcome,
+                ClassifiedBackendFailureInput, RouteOutcomeTarget,
+                apply_passive_readiness_to_pingora, observe_admission_outcome,
                 observe_backend_response_status_and_log,
                 observe_classified_backend_failure_and_log, observe_proxy_error_outcome,
                 observe_status_outcome,
@@ -940,6 +941,16 @@ impl ProxyHttp for PingoraIngressService {
                 upstream_pool: Some(&selected.pool),
                 status: upstream_response.status,
             });
+            apply_passive_readiness_to_pingora(
+                ctx.runtime
+                    .shared_state
+                    .generation_state()
+                    .pingora_load_balancing
+                    .as_ref(),
+                &selected.address,
+                selected.index,
+                Some(&selected.pool),
+            );
         }
         let method = ctx.method.as_deref().ok_or_else(|| {
             Error::explain(
@@ -1351,6 +1362,16 @@ fn record_pingora_backend_failure(ctx: &PingoraRequestContext, error: &ProxyErro
         metrics: shared.metrics.as_ref(),
         classified: &classified,
     });
+    apply_passive_readiness_to_pingora(
+        ctx.runtime
+            .shared_state
+            .generation_state()
+            .pingora_load_balancing
+            .as_ref(),
+        &selected.address,
+        selected.index,
+        Some(&selected.pool),
+    );
 }
 
 fn pingora_response_constraints(preserve_upgrade: bool) -> ResponseProtocolConstraints {

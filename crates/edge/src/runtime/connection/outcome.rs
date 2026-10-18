@@ -4,10 +4,14 @@ use std::{
 };
 
 use http::StatusCode;
+use impulse_config::runtime::RuntimeBackendTlsPolicy;
 use impulse_errors::{
     ClassifiedUpstreamProxyError, PoolError, ProxyError, UpstreamErrorCategory, UpstreamTlsReason,
 };
-use impulse_lb::{HealthTransition, health::HealthFailureReason, upstream_pool::UpstreamPool};
+use impulse_lb::{
+    HealthTransition, health::HealthFailureReason,
+    pingora_backend::PingoraLoadBalancingRuntimeState, upstream_pool::UpstreamPool,
+};
 use log::{error, info};
 
 use crate::{
@@ -762,6 +766,24 @@ pub(crate) fn observe_backend_response_status_and_log(
     input: BackendHealthObservationInput<'_>,
 ) -> Option<HealthTransition> {
     emit_backend_health_transition(input.backend_addr, observe_backend_response_status(input))
+}
+
+pub(crate) fn apply_passive_readiness_to_pingora(
+    pingora_load_balancing: &PingoraLoadBalancingRuntimeState<RuntimeBackendTlsPolicy>,
+    backend_addr: &str,
+    backend_index: usize,
+    upstream_pool: Option<&Arc<RwLock<UpstreamPool>>>,
+) {
+    let Some(upstream_pool) = upstream_pool else {
+        return;
+    };
+    let Ok(pool) = upstream_pool.read() else {
+        return;
+    };
+    let Some(state) = pool.backend_runtime_state(backend_index) else {
+        return;
+    };
+    pingora_load_balancing.set_backend_health(backend_addr, state.healthy);
 }
 
 pub(crate) fn record_classified_backend_failure_metrics(
