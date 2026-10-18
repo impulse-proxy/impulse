@@ -44,6 +44,15 @@ pub(crate) struct PingoraUpstreamConnectionIdentity {
     pub(crate) generation: u64,
 }
 
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct PingoraBackendHealthIdentity(u64);
+
+impl PingoraBackendHealthIdentity {
+    pub fn equivalence_key(self) -> u64 {
+        self.0
+    }
+}
+
 impl PingoraUpstreamConnectionIdentity {
     pub(crate) fn new(
         address: SocketAddr,
@@ -74,5 +83,9 @@ impl PingoraUpstreamConnectionIdentity {
         let mut hasher = DefaultHasher::new();
         self.hash(&mut hasher);
         hasher.finish()
+    }
+
+    pub(crate) fn health_identity(&self) -> PingoraBackendHealthIdentity {
+        PingoraBackendHealthIdentity(self.pool_key())
     }
 }

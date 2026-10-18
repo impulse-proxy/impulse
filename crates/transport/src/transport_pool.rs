@@ -16,7 +16,7 @@ use pingora_core::upstreams::peer::HttpPeer;
 use tokio::sync::{Semaphore, TryAcquireError, mpsc};
 
 use crate::{
-    PingoraUpstreamConnectionIdentity,
+    PingoraBackendHealthIdentity, PingoraUpstreamConnectionIdentity,
     client_rotation::BackendClientRotation,
     exchange::{
         UpstreamCancellation, UpstreamConnectionReuse, UpstreamExchangeCompletion,
@@ -61,6 +61,15 @@ pub struct UpstreamTransportPool {
 }
 
 impl UpstreamTransportPool {
+    pub fn pingora_backend_health_identity(
+        &self,
+        backend: &str,
+    ) -> Option<PingoraBackendHealthIdentity> {
+        self.pingora_backends
+            .get(backend)
+            .map(|backend| backend.identity.health_identity())
+    }
+
     pub fn rotate_pingora_pool(&self, generation: u64) {
         self.pingora_pool.rotate(generation);
     }

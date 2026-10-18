@@ -16,6 +16,7 @@ mod pingora_pool;
 mod runtime_config;
 mod transport_pool;
 
+pub use connection_identity::PingoraBackendHealthIdentity;
 pub(crate) use connection_identity::PingoraUpstreamConnectionIdentity;
 pub use exchange::{
     UpstreamBody, UpstreamBodyFrame, UpstreamCancellation, UpstreamConnectionReuse,
