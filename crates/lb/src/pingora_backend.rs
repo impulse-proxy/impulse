@@ -14,7 +14,7 @@ use impulse_config::{
     runtime::{RuntimeLoadBalancingStrategy, RuntimeUpstream},
 };
 #[cfg(test)]
-use pingora_load_balancing::discovery::Static as StaticDiscovery;
+use pingora_load_balancing::discovery::{ServiceDiscovery, Static as StaticDiscovery};
 use pingora_load_balancing::{
     Backend as PingoraBackend, BackendView, LoadBalancer,
     selection::{Random as PingoraRandom, RoundRobin as PingoraRoundRobin},
@@ -771,8 +771,60 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::runtime_upstream_from_addresses;
 
     const GENERATION: u64 = 17;
+    const HOSTNAME_BACKEND: &str = "http://backend.internal:8080";
+
+    fn poll_ready<F: Future>(future: F) -> F::Output {
+        let waker = Waker::from(Arc::new(NoopWake));
+        let mut context = Context::from_waker(&waker);
+        let mut future = Box::pin(future);
+        match future.as_mut().poll(&mut context) {
+            Poll::Ready(output) => output,
+            Poll::Pending => panic!("test future unexpectedly blocked"),
+        }
+    }
+
+    fn hostname_backend_view(generation: u64) -> GenerationBackendView {
+        let upstream = runtime_upstream_from_addresses("round-robin", None, &[HOSTNAME_BACKEND]);
+        GenerationBackendView::from_runtime_upstream(
+            generation,
+            "api",
+            &upstream,
+            |index, backend| {
+                map_validated_backend(backend, index, SocketAddr::from(([0, 0, 0, 0], 8080)), ())
+            },
+        )
+        .expect("hostname backend view")
+    }
+
+    fn hostname_runtime() -> PingoraLoadBalancingRuntimeState<()> {
+        PingoraLoadBalancingRuntimeState::new(
+            GENERATION,
+            [(
+                "api".to_string(),
+                RuntimeLoadBalancingStrategy::RoundRobin,
+                hostname_backend_view(GENERATION),
+            )],
+        )
+        .expect("hostname selector runtime")
+    }
+
+    fn selected_addresses(
+        runtime: &PingoraLoadBalancingRuntimeState<()>,
+        count: usize,
+    ) -> BTreeSet<SocketAddr> {
+        let selector = runtime.selector("api").expect("api selector");
+        (0..count)
+            .map(|_| {
+                selector
+                    .select_excluding("", &[])
+                    .expect("selection")
+                    .address()
+            })
+            .collect()
+    }
 
     fn backend_view(weights: &[u32]) -> GenerationBackendView {
         let backends = weights
@@ -907,5 +959,85 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn dns_rotation_rebuilds_the_live_selector() {
+        let runtime = hostname_runtime();
+        let first = SocketAddr::from(([10, 0, 0, 1], 8080));
+        let second = SocketAddr::from(([10, 0, 0, 2], 8080));
+        let rotated = SocketAddr::from(([10, 0, 0, 3], 8080));
+
+        let initial =
+            poll_ready(runtime.publish_dns_result(HOSTNAME_BACKEND, Ok(vec![first, second])))
+                .expect("initial DNS publication");
+        assert!(initial.membership_changed());
+        assert_eq!(initial.membership_generation(), 2);
+        assert_eq!(
+            selected_addresses(&runtime, 2),
+            BTreeSet::from([first, second])
+        );
+
+        let update = poll_ready(runtime.publish_dns_result(HOSTNAME_BACKEND, Ok(vec![rotated])))
+            .expect("rotated DNS publication");
+        assert!(update.membership_changed());
+        assert_eq!(update.membership_generation(), 3);
+        assert_eq!(selected_addresses(&runtime, 1), BTreeSet::from([rotated]));
+    }
+
+    #[test]
+    fn dns_failure_retains_the_last_known_good_selector_membership() {
+        let runtime = hostname_runtime();
+        let retained = SocketAddr::from(([10, 0, 0, 4], 8080));
+        poll_ready(runtime.publish_dns_result(HOSTNAME_BACKEND, Ok(vec![retained])))
+            .expect("initial DNS publication");
+
+        assert!(
+            poll_ready(
+                runtime.publish_dns_result(HOSTNAME_BACKEND, Err("lookup failed".to_string()),)
+            )
+            .is_err()
+        );
+        assert_eq!(selected_addresses(&runtime, 1), BTreeSet::from([retained]));
+    }
+
+    #[test]
+    fn dns_recovery_replaces_membership_after_a_failure() {
+        let runtime = hostname_runtime();
+        let retained = SocketAddr::from(([10, 0, 0, 5], 8080));
+        let recovered = SocketAddr::from(([10, 0, 0, 6], 8080));
+        poll_ready(runtime.publish_dns_result(HOSTNAME_BACKEND, Ok(vec![retained])))
+            .expect("initial DNS publication");
+        let _ = poll_ready(
+            runtime.publish_dns_result(HOSTNAME_BACKEND, Err("lookup failed".to_string())),
+        );
+
+        let update = poll_ready(runtime.publish_dns_result(HOSTNAME_BACKEND, Ok(vec![recovered])))
+            .expect("recovered DNS publication");
+        assert_eq!(update.membership_generation(), 3);
+        assert_eq!(selected_addresses(&runtime, 1), BTreeSet::from([recovered]));
+    }
+
+    #[test]
+    fn stale_dns_result_cannot_mutate_a_newer_generation() {
+        let view = hostname_backend_view(GENERATION);
+        let discovery = view.discovery.as_ref().expect("service discovery");
+        let before = poll_ready(discovery.discover())
+            .expect("initial discovery")
+            .0;
+
+        assert!(
+            discovery
+                .publish_dns_result(
+                    GENERATION - 1,
+                    0,
+                    Ok(vec![SocketAddr::from(([10, 0, 0, 7], 8080))]),
+                )
+                .is_err()
+        );
+        let after = poll_ready(discovery.discover())
+            .expect("discovery after stale result")
+            .0;
+        assert_eq!(after, before);
     }
 }
