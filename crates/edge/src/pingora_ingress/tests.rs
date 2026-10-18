@@ -1,7 +1,8 @@
 use std::{
     collections::{HashMap, HashSet},
+    io::Write,
     net::{SocketAddr, TcpStream},
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::Duration,
 };
 
@@ -11,10 +12,20 @@ use impulse_config::{
     runtime::{ListenerRuntimeConfig, RuntimeConfig},
     validator::validate,
 };
-use pingora_core::{server::configuration::ServerConf, services::Service as PingoraService};
+use pingora_core::{
+    listeners::ConnectionFilter, server::configuration::ServerConf,
+    services::Service as PingoraService,
+};
 
-use super::{PingoraListenerTask, pingora_ingress_services, spawn_pingora_ingress_listener};
-use crate::runtime::{bundle::RuntimeBundleHandle, listener::QUICListener};
+use super::{
+    PingoraConnectionAdmissionState, PingoraConnectionFilter, PingoraListenerTask,
+    pingora_ingress_services, spawn_pingora_ingress_listener,
+};
+use crate::runtime::{
+    bundle::RuntimeBundleHandle,
+    connection::{PerSourceTokenBucket, TokenBucket},
+    listener::QUICListener,
+};
 
 #[path = "../../tests/support/mod.rs"]
 mod support;
@@ -128,6 +139,149 @@ async fn stop_pingora_listener(task: &mut PingoraListenerTask) {
     .await
     .expect("Pingora listener shutdown timeout");
     assert!(task.stopped());
+}
+
+fn connection_admission_config(
+    harness: &ProtocolParityHarness,
+    rate_per_sec: u32,
+    burst: u32,
+) -> Config {
+    let mut config = harness.make_config(HashMap::from([(
+        "api".to_string(),
+        make_upstream(
+            "/",
+            vec![make_backend("backend-a", "127.0.0.1:9".to_string())],
+            None,
+            "round-robin",
+        ),
+    )]));
+    config.listen.port = reserve_unused_listener_port();
+    config.performance.new_connections_per_sec = rate_per_sec;
+    config.performance.new_connections_burst = burst;
+    config
+}
+
+fn test_connection_filter(
+    runtime: &Arc<RuntimeBundleHandle>,
+    listener: &ListenerRuntimeConfig,
+) -> PingoraConnectionFilter {
+    let policy = &listener.policies.transport;
+    PingoraConnectionFilter {
+        runtime: runtime.as_ref().clone(),
+        listener_label: format!(
+            "{}:{}",
+            listener.listen.listen.address, listener.listen.listen.port
+        ),
+        state: Mutex::new(PingoraConnectionAdmissionState {
+            generation: runtime.current().generation,
+            rate_per_sec: policy.new_connections_per_sec,
+            burst: policy.new_connections_burst,
+            global: TokenBucket::new(policy.new_connections_per_sec, policy.new_connections_burst),
+            per_source: PerSourceTokenBucket::new(
+                policy.new_connections_per_sec,
+                policy.new_connections_burst,
+            ),
+        }),
+    }
+}
+
+#[test]
+fn pingora_connection_filter_matches_http3_global_and_per_source_admission() {
+    let harness = ProtocolParityHarness::new();
+    let config = connection_admission_config(&harness, 1, 20);
+    let (runtime, listener) = pingora_listener_runtime(config);
+    let filter = test_connection_filter(&runtime, &listener);
+    let mut quic_global = TokenBucket::new(1, 20);
+    let mut quic_per_source = PerSourceTokenBucket::new(1, 20);
+    let sources = [
+        "192.0.2.1:1000".parse::<SocketAddr>().unwrap(),
+        "192.0.2.1:1001".parse::<SocketAddr>().unwrap(),
+        "192.0.2.1:1002".parse::<SocketAddr>().unwrap(),
+        "192.0.2.2:1000".parse::<SocketAddr>().unwrap(),
+        "192.0.2.2:1001".parse::<SocketAddr>().unwrap(),
+        "192.0.2.2:1002".parse::<SocketAddr>().unwrap(),
+    ];
+    let test_runtime = tokio::runtime::Runtime::new().expect("test runtime");
+
+    for source in sources {
+        let pingora_allowed = test_runtime.block_on(filter.should_accept(Some(&source)));
+        let http3_allowed = quic_global.try_consume() && quic_per_source.try_consume(source.ip());
+        assert_eq!(pingora_allowed, http3_allowed, "source {source}");
+    }
+
+    let global_config = connection_admission_config(&harness, 1, 2);
+    let (global_runtime, global_listener) = pingora_listener_runtime(global_config);
+    let global_filter = test_connection_filter(&global_runtime, &global_listener);
+    assert!(test_runtime.block_on(global_filter.should_accept(None)));
+    assert!(test_runtime.block_on(global_filter.should_accept(None)));
+    assert!(!test_runtime.block_on(global_filter.should_accept(None)));
+}
+
+#[test]
+fn pingora_connection_filter_applies_reloaded_generation_limits() {
+    let harness = ProtocolParityHarness::new();
+    let config = connection_admission_config(&harness, 1, 5);
+    let (runtime, listener) = pingora_listener_runtime(config.clone());
+    let filter = test_connection_filter(&runtime, &listener);
+    let test_runtime = tokio::runtime::Runtime::new().expect("test runtime");
+    assert!(test_runtime.block_on(filter.should_accept(None)));
+
+    let mut reloaded = config;
+    reloaded.performance.new_connections_burst = 2;
+    let runtime_config = RuntimeConfig::from_config(&reloaded).expect("reload runtime config");
+    let mut bundle = QUICListener::build_runtime_bundle(
+        "pingora-connection-admission-reload-test".to_string(),
+        reloaded.log,
+        &runtime_config,
+    )
+    .expect("reload runtime bundle");
+    bundle.generation = runtime.current().generation + 1;
+    runtime
+        .replace(bundle)
+        .expect("activate reloaded generation");
+
+    assert!(test_runtime.block_on(filter.should_accept(None)));
+    assert!(test_runtime.block_on(filter.should_accept(None)));
+    assert!(!test_runtime.block_on(filter.should_accept(None)));
+}
+
+#[test]
+fn pingora_connection_filter_rejects_before_tls_negotiation() {
+    if !local_listener_bind_available() {
+        return;
+    }
+
+    let harness = ProtocolParityHarness::new();
+    let config = connection_admission_config(&harness, 1, 1);
+    let (service, addr) = PingoraTestService::start(config).expect("start Pingora ingress");
+    let before = service.metrics_text();
+    let _connections = (0..3)
+        .map(|_| {
+            let mut connection = TcpStream::connect_timeout(&addr, Duration::from_millis(500))
+                .expect("connect to Pingora listener");
+            connection
+                .set_read_timeout(Some(Duration::from_millis(500)))
+                .expect("set read timeout");
+            let _ = connection.write_all(b"not a TLS client hello");
+            connection
+        })
+        .collect::<Vec<_>>();
+    let mut rejected = 0;
+    for _ in 0..50 {
+        rejected = metric_delta(
+            &before,
+            &service.metrics_text(),
+            "impulse_ingress_rate_limited_total ",
+        );
+        if rejected > 0 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(
+        rejected >= 1,
+        "at least one TCP connection must be rejected by the pre-TLS filter"
+    );
 }
 
 #[test]
