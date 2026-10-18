@@ -44,6 +44,20 @@ impl ImpulseServiceDiscovery {
         })
     }
 
+    pub fn publish_dns_result(
+        &self,
+        backend_index: usize,
+        resolved_addrs: Result<Vec<SocketAddr>, String>,
+    ) -> Result<(), String> {
+        let resolved_addrs = resolved_addrs.map_err(|error| {
+            format!(
+                "upstream '{}' backend {backend_index} DNS resolution failed: {error}",
+                self.upstream_name
+            )
+        })?;
+        self.publish_resolved_backend(backend_index, resolved_addrs)
+    }
+
     pub fn publish_resolved_backend(
         &self,
         backend_index: usize,
