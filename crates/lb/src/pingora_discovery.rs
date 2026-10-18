@@ -12,6 +12,7 @@ use pingora_load_balancing::{Backend as PingoraBackend, discovery::ServiceDiscov
 pub struct ImpulseServiceDiscovery {
     generation: u64,
     upstream_name: String,
+    backend_addresses: Arc<Vec<String>>,
     backends: Arc<RwLock<Vec<BTreeSet<PingoraBackend>>>>,
 }
 
@@ -43,8 +44,21 @@ impl ImpulseServiceDiscovery {
         Ok(Self {
             generation,
             upstream_name: upstream_name.to_string(),
+            backend_addresses: Arc::new(
+                upstream
+                    .backends
+                    .iter()
+                    .map(|backend| backend.backend.address.clone())
+                    .collect(),
+            ),
             backends: Arc::new(RwLock::new(backends)),
         })
+    }
+
+    pub fn backend_index(&self, configured_address: &str) -> Option<usize> {
+        self.backend_addresses
+            .iter()
+            .position(|address| address == configured_address)
     }
 
     pub fn publish_dns_result(

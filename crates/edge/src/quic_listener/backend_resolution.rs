@@ -1,5 +1,7 @@
 use std::{net::SocketAddr, time::Duration};
 
+use impulse_config::runtime::RuntimeBackendTlsPolicy;
+use impulse_lb::pingora_backend::SharedPingoraLoadBalancingRuntimeState;
 use log::{debug, error};
 
 use super::*;
@@ -14,6 +16,7 @@ impl QUICListener {
         transport_pool: Arc<UpstreamTransportPool>,
         backend_lifecycle: Arc<BackendLifecycleCoordinator>,
         backend_dns_resolver: SharedDnsResolver,
+        pingora_load_balancing: SharedPingoraLoadBalancingRuntimeState<RuntimeBackendTlsPolicy>,
         metrics: Arc<Metrics>,
         task_registry: Arc<RuntimeTaskRegistry>,
     ) {
@@ -60,6 +63,7 @@ impl QUICListener {
                             &transport_pool,
                             &backend_lifecycle,
                             &backend_dns_resolver,
+                            &pingora_load_balancing,
                         )
                         .await;
                         observe_backend_dns_refresh(task_metrics.as_ref(), &outcome);
@@ -77,6 +81,7 @@ async fn refresh_backend_hostname(
     transport_pool: &UpstreamTransportPool,
     backend_lifecycle: &BackendLifecycleCoordinator,
     backend_dns_resolver: &SharedDnsResolver,
+    pingora_load_balancing: &SharedPingoraLoadBalancingRuntimeState<RuntimeBackendTlsPolicy>,
 ) -> BackendDnsRefreshApplication {
     let resolved_addrs =
         match tokio::net::lookup_host((backend.resolution.authority_host.as_str(), 0)).await {
@@ -86,10 +91,33 @@ async fn refresh_backend_hostname(
             Err(err) => Err(err.to_string()),
         };
 
-    backend_lifecycle.apply_refresh(
+    let outcome = backend_lifecycle.apply_refresh(
         backend,
         resolved_addrs,
         backend_dns_resolver,
         transport_pool,
-    )
+    );
+    let discovery_result = match &outcome {
+        BackendDnsRefreshApplication::Updated { current_addrs, .. }
+        | BackendDnsRefreshApplication::Unchanged { current_addrs, .. } => {
+            Ok(current_addrs.clone())
+        }
+        BackendDnsRefreshApplication::EmptyAnswerRetained { .. } => {
+            Err("DNS resolution returned no addresses".to_string())
+        }
+        BackendDnsRefreshApplication::LookupFailed { error, .. } => Err(error.clone()),
+    };
+    let update_succeeded = discovery_result.is_ok();
+    let publication = pingora_load_balancing
+        .publish_dns_result(&backend.identity.backend_addr, discovery_result)
+        .await;
+    if update_succeeded {
+        if let Err(error) = publication {
+            error!(
+                "failed to publish Pingora DNS membership for backend '{}': {}",
+                backend.identity.backend_addr, error
+            );
+        }
+    }
+    outcome
 }

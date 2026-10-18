@@ -71,6 +71,7 @@ impl QUICListener {
                 runtime.transport_pool(),
                 runtime.backend_lifecycle(),
                 runtime.backend_dns_resolver(),
+                runtime.pingora_load_balancing(),
                 runtime.metrics(),
                 Arc::clone(&task_registry),
             );

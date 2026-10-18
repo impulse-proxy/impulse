@@ -185,7 +185,6 @@ where
 pub struct GenerationKetama<T> {
     generation: u64,
     upstream_name: String,
-    backend_count: usize,
     selector: LoadBalancer<pingora_load_balancing::selection::Consistent>,
     policy: std::marker::PhantomData<T>,
 }
@@ -199,13 +198,12 @@ where
             generation,
             upstream_name,
             view,
+            discovery: _,
         } = view;
-        let backend_count = view.get_backend().len();
 
         Self {
             generation,
             upstream_name,
-            backend_count,
             selector: LoadBalancer::from_backends(view),
             policy: std::marker::PhantomData,
         }
@@ -222,9 +220,13 @@ where
     ) -> Option<BackendSelectionResult<T>> {
         let selected = self
             .selector
-            .select_with(key, self.backend_count, |backend, healthy| {
-                candidate_is_available::<T>(backend, healthy, excluded_backend_indices)
-            })
+            .select_with(
+                key,
+                self.selector.backends().get_backend().len(),
+                |backend, healthy| {
+                    candidate_is_available::<T>(backend, healthy, excluded_backend_indices)
+                },
+            )
             .or_else(|| {
                 first_available_backend::<T>(self.selector.backends(), excluded_backend_indices)
             })?;
@@ -250,7 +252,6 @@ where
 pub struct GenerationWeightedRandom<T> {
     generation: u64,
     upstream_name: String,
-    backend_count: usize,
     selector: LoadBalancer<PingoraRandom>,
     policy: std::marker::PhantomData<T>,
 }
@@ -264,13 +265,12 @@ where
             generation,
             upstream_name,
             view,
+            discovery: _,
         } = view;
-        let backend_count = view.get_backend().len();
 
         Self {
             generation,
             upstream_name,
-            backend_count,
             selector: LoadBalancer::from_backends(view),
             policy: std::marker::PhantomData,
         }
@@ -286,9 +286,13 @@ where
     ) -> Option<BackendSelectionResult<T>> {
         let selected = self
             .selector
-            .select_with(b"", self.backend_count, |backend, healthy| {
-                candidate_is_available::<T>(backend, healthy, excluded_backend_indices)
-            })
+            .select_with(
+                b"",
+                self.selector.backends().get_backend().len(),
+                |backend, healthy| {
+                    candidate_is_available::<T>(backend, healthy, excluded_backend_indices)
+                },
+            )
             .or_else(|| {
                 first_available_backend::<T>(self.selector.backends(), excluded_backend_indices)
             })?;
@@ -314,7 +318,6 @@ where
 pub struct GenerationWeightedRoundRobin<T> {
     generation: u64,
     upstream_name: String,
-    backend_count: usize,
     selector: LoadBalancer<PingoraRoundRobin>,
     policy: std::marker::PhantomData<T>,
 }
@@ -328,13 +331,12 @@ where
             generation,
             upstream_name,
             view,
+            discovery: _,
         } = view;
-        let backend_count = view.get_backend().len();
 
         Self {
             generation,
             upstream_name,
-            backend_count,
             selector: LoadBalancer::from_backends(view),
             policy: std::marker::PhantomData,
         }
@@ -350,9 +352,13 @@ where
     ) -> Option<BackendSelectionResult<T>> {
         let selected = self
             .selector
-            .select_with(b"", self.backend_count, |backend, healthy| {
-                candidate_is_available::<T>(backend, healthy, excluded_backend_indices)
-            })
+            .select_with(
+                b"",
+                self.selector.backends().get_backend().len(),
+                |backend, healthy| {
+                    candidate_is_available::<T>(backend, healthy, excluded_backend_indices)
+                },
+            )
             .or_else(|| {
                 first_available_backend::<T>(self.selector.backends(), excluded_backend_indices)
             })?;
@@ -379,6 +385,7 @@ pub struct GenerationBackendView {
     generation: u64,
     upstream_name: String,
     view: BackendView,
+    discovery: Option<ImpulseServiceDiscovery>,
 }
 
 pub enum GenerationSelector<T> {
@@ -480,6 +487,24 @@ where
             | Self::Unsupported(_) => None,
         }
     }
+
+    async fn rebuild(&self) -> Result<(), String> {
+        let result = match self {
+            Self::WeightedRoundRobin(selector) => selector.selector.update().await,
+            Self::WeightedRandom(selector) => selector.selector.update().await,
+            Self::Ketama(selector) => selector.selector.update().await,
+            Self::StickyCid(selector) => selector.selector.selector.update().await,
+            Self::CustomLeastConnections(view)
+            | Self::CustomLatencyAware(view)
+            | Self::Unsupported(view) => view.view.update(|_| {}).await,
+        };
+        result.map_err(|error| {
+            format!(
+                "failed to rebuild Pingora selector for upstream '{}': {error}",
+                self.upstream_name()
+            )
+        })
+    }
 }
 
 pub type SharedPingoraLoadBalancingRuntimeState<T> = Arc<PingoraLoadBalancingRuntimeState<T>>;
@@ -487,6 +512,7 @@ pub type SharedPingoraLoadBalancingRuntimeState<T> = Arc<PingoraLoadBalancingRun
 pub struct PingoraLoadBalancingRuntimeState<T> {
     generation: u64,
     selectors: HashMap<String, Arc<GenerationSelector<T>>>,
+    discoveries: HashMap<String, ImpulseServiceDiscovery>,
 }
 
 impl<T> PingoraLoadBalancingRuntimeState<T>
@@ -500,6 +526,7 @@ where
         >,
     ) -> Result<Self, String> {
         let mut selectors = HashMap::new();
+        let mut discoveries = HashMap::new();
         for (upstream_name, strategy, view) in backend_views {
             if view.generation() != generation {
                 return Err(format!(
@@ -513,6 +540,7 @@ where
                     view.upstream_name()
                 ));
             }
+            let discovery = view.discovery.clone();
             let selector = GenerationSelector::new(strategy, view);
             if selectors
                 .insert(upstream_name.clone(), Arc::new(selector))
@@ -522,11 +550,15 @@ where
                     "duplicate Pingora backend view for upstream '{upstream_name}'"
                 ));
             }
+            if let Some(discovery) = discovery {
+                discoveries.insert(upstream_name, discovery);
+            }
         }
 
         Ok(Self {
             generation,
             selectors,
+            discoveries,
         })
     }
 
@@ -544,6 +576,32 @@ where
 
     pub fn is_empty(&self) -> bool {
         self.selectors.is_empty()
+    }
+
+    pub async fn publish_dns_result(
+        &self,
+        configured_address: &str,
+        resolved_addrs: Result<Vec<SocketAddr>, String>,
+    ) -> Result<(), String> {
+        let (upstream_name, discovery, backend_index) = self
+            .discoveries
+            .iter()
+            .find_map(|(upstream_name, discovery)| {
+                discovery
+                    .backend_index(configured_address)
+                    .map(|backend_index| (upstream_name, discovery, backend_index))
+            })
+            .ok_or_else(|| {
+                format!(
+                    "no Pingora discovery backend matches configured address '{configured_address}'"
+                )
+            })?;
+        discovery.publish_dns_result(self.generation, backend_index, resolved_addrs)?;
+        self.selectors
+            .get(upstream_name)
+            .expect("discovery and selector maps share upstream keys")
+            .rebuild()
+            .await
     }
 }
 
@@ -564,7 +622,7 @@ impl GenerationBackendView {
             upstream,
             &mut map_backend,
         )?;
-        let view = BackendView::new(Box::new(discovery));
+        let view = BackendView::new(Box::new(discovery.clone()));
         let waker = Waker::from(Arc::new(NoopWake));
         let mut context = Context::from_waker(&waker);
         let mut update = Box::pin(view.update(|_| {}));
@@ -587,6 +645,7 @@ impl GenerationBackendView {
             generation,
             upstream_name,
             view,
+            discovery: Some(discovery),
         })
     }
 
@@ -710,6 +769,7 @@ mod tests {
             generation: GENERATION,
             upstream_name: "api".to_string(),
             view,
+            discovery: None,
         }
     }
 
