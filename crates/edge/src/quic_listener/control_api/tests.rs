@@ -570,6 +570,14 @@ fn activation_service_commits_reloadable_candidate_and_advances_generation() {
         runtime_bundle_from_config(config_path.to_string_lossy().as_ref(), &current_config);
     let handle = RuntimeBundleHandle::new(bundle);
     let generation_before = handle.current_generation();
+    let selector_before = Arc::clone(
+        handle
+            .current_view()
+            .state()
+            .pingora_load_balancing
+            .selector("api")
+            .expect("active Pingora selector"),
+    );
 
     let mut next_config = test_config(cert, key);
     next_config.log.level = "debug".to_string();
@@ -591,6 +599,14 @@ fn activation_service_commits_reloadable_candidate_and_advances_generation() {
     assert_eq!(activation.active_generation, generation_before + 1);
     assert_eq!(activation.activated_generation, Some(generation_before + 1));
     assert_eq!(handle.current_generation(), generation_before + 1);
+    let active = handle.current_view();
+    let selector_after = active
+        .state()
+        .pingora_load_balancing
+        .selector("api")
+        .expect("activated Pingora selector");
+    assert_eq!(selector_after.generation(), generation_before + 1);
+    assert!(!Arc::ptr_eq(&selector_before, selector_after));
     assert_eq!(
         activation.history_entry.operation,
         GenerationOperation::Activate
@@ -782,6 +798,14 @@ fn rollback_service_restores_retained_generation_by_id_and_records_rollback_stat
     let handle = RuntimeBundleHandle::new(bundle_one);
     handle.replace(bundle_two).expect("install generation 2");
     handle.replace(bundle_three).expect("install generation 3");
+    let selector_before = Arc::clone(
+        handle
+            .current_view()
+            .state()
+            .pingora_load_balancing
+            .selector("api")
+            .expect("pre-rollback Pingora selector"),
+    );
 
     let rollback = RuntimeActivationService::rollback_generation(
         &handle,
@@ -796,6 +820,14 @@ fn rollback_service_restores_retained_generation_by_id_and_records_rollback_stat
     assert_eq!(rollback.rolled_back_to, Some(1));
     assert_eq!(rollback.active_generation, 4);
     assert_eq!(handle.current_generation(), 4);
+    let active = handle.current_view();
+    let selector_after = active
+        .state()
+        .pingora_load_balancing
+        .selector("api")
+        .expect("rolled-back Pingora selector");
+    assert_eq!(selector_after.generation(), 4);
+    assert!(!Arc::ptr_eq(&selector_before, selector_after));
     assert_eq!(log::max_level(), LevelFilter::Info);
     assert_eq!(
         rollback.history_entry.operation,

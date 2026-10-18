@@ -1570,9 +1570,11 @@ dependencies = [
 name = "impulse-lb"
 version = "0.6.0"
 dependencies = [
+ "async-trait",
  "criterion",
  "impulse-config",
  "log",
+ "pingora-error",
  "pingora-load-balancing",
 ]
 

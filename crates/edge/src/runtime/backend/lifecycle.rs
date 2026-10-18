@@ -1,13 +1,8 @@
 mod coordinator;
-mod dns;
 mod health;
 
 pub(crate) use self::{
     coordinator::{BackendLifecycleCoordinator, RuntimeBackendLifecycleState},
-    dns::{
-        BackendDnsRefreshApplication, BackendRefreshClassification, log_backend_dns_refresh,
-        observe_backend_dns_refresh,
-    },
     health::{
         ActiveHealthCheckEvaluation, apply_backend_health_observation,
         apply_backend_request_accounting, apply_backend_request_feedback,
@@ -27,7 +22,6 @@ mod test_support {
         runtime::RuntimeConfig,
     };
     use impulse_lb::upstream_pool::UpstreamPool;
-    use impulse_transport::{SharedDnsResolver, UpstreamTransportPool};
 
     fn test_runtime_config(interval: u64, backend_addr: &str) -> RuntimeConfig {
         let mut upstreams = HashMap::new();
@@ -103,15 +97,5 @@ mod test_support {
 
     pub(crate) fn test_active_health_upstream_pool() -> Arc<RwLock<UpstreamPool>> {
         test_upstream_pool_with_interval(1000)
-    }
-
-    pub(crate) fn test_transport_pool(backend_addr: &str) -> UpstreamTransportPool {
-        let runtime = test_runtime_config(0, backend_addr);
-        UpstreamTransportPool::from_runtime_upstreams(
-            runtime.upstreams.values(),
-            &runtime.policies.transport.backend_connections,
-            SharedDnsResolver::new(),
-        )
-        .expect("transport pool")
     }
 }

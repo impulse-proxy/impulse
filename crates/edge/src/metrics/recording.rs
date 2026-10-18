@@ -162,6 +162,8 @@ impl Metrics {
             pingora_lb_selector_rebuilds: AtomicU64::new(0),
             pingora_lb_selector_failures: AtomicU64::new(0),
             pingora_lb_selections: AtomicU64::new(0),
+            pingora_discovery_refresh_outcomes: std::array::from_fn(|_| AtomicU64::new(0)),
+            pingora_discovery_state: RwLock::new(HashMap::new()),
             runtime_activation_outcomes: std::array::from_fn(|_| AtomicU64::new(0)),
             runtime_rollback_outcomes: std::array::from_fn(|_| AtomicU64::new(0)),
             retries_total: AtomicU64::new(0),
@@ -1047,6 +1049,32 @@ impl Metrics {
 
     pub fn inc_pingora_lb_selection(&self) {
         self.pingora_lb_selections.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn record_pingora_discovery_refresh(
+        &self,
+        outcome: PingoraDiscoveryRefreshOutcome,
+        update: Option<&impulse_lb::pingora_backend::PingoraDiscoveryUpdate>,
+    ) {
+        self.pingora_discovery_refresh_outcomes[outcome.index()].fetch_add(1, Ordering::Relaxed);
+        let Some(update) = update else {
+            return;
+        };
+        if !self.route_label_to_id.contains_key(update.upstream_name()) {
+            return;
+        }
+        let mut states = self
+            .pingora_discovery_state
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let state = states
+            .entry(update.upstream_name().to_string())
+            .or_default();
+        state.membership_generation = update.membership_generation();
+        if update.membership_changed() {
+            state.rebuild_duration_ns =
+                u64::try_from(update.rebuild_duration().as_nanos()).unwrap_or(u64::MAX);
+        }
     }
 
     pub fn inc_watchdog_restart_request(&self) {

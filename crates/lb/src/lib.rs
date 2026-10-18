@@ -12,6 +12,7 @@ mod backend_pool;
 pub mod health;
 pub mod load_balancing;
 pub mod pingora_backend;
+pub mod pingora_discovery;
 #[cfg(test)]
 pub(crate) mod test_support;
 pub mod upstream_pool;

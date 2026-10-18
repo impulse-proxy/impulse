@@ -1,20 +1,26 @@
+#[cfg(test)]
+use std::collections::BTreeSet;
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::HashMap,
     future::Future,
     net::SocketAddr,
     sync::Arc,
     task::{Context, Poll, Wake, Waker},
+    time::{Duration, Instant},
 };
 
 use impulse_config::{
     config::Backend,
     runtime::{RuntimeLoadBalancingStrategy, RuntimeUpstream},
 };
+#[cfg(test)]
+use pingora_load_balancing::discovery::{ServiceDiscovery, Static as StaticDiscovery};
 use pingora_load_balancing::{
     Backend as PingoraBackend, BackendView, LoadBalancer,
-    discovery::Static as StaticDiscovery,
     selection::{Random as PingoraRandom, RoundRobin as PingoraRoundRobin},
 };
+
+use crate::pingora_discovery::ImpulseServiceDiscovery;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BackendSelectionResult<P> {
@@ -180,7 +186,6 @@ where
 pub struct GenerationKetama<T> {
     generation: u64,
     upstream_name: String,
-    backend_count: usize,
     selector: LoadBalancer<pingora_load_balancing::selection::Consistent>,
     policy: std::marker::PhantomData<T>,
 }
@@ -194,13 +199,12 @@ where
             generation,
             upstream_name,
             view,
+            discovery: _,
         } = view;
-        let backend_count = view.get_backend().len();
 
         Self {
             generation,
             upstream_name,
-            backend_count,
             selector: LoadBalancer::from_backends(view),
             policy: std::marker::PhantomData,
         }
@@ -217,9 +221,13 @@ where
     ) -> Option<BackendSelectionResult<T>> {
         let selected = self
             .selector
-            .select_with(key, self.backend_count, |backend, healthy| {
-                candidate_is_available::<T>(backend, healthy, excluded_backend_indices)
-            })
+            .select_with(
+                key,
+                self.selector.backends().get_backend().len(),
+                |backend, healthy| {
+                    candidate_is_available::<T>(backend, healthy, excluded_backend_indices)
+                },
+            )
             .or_else(|| {
                 first_available_backend::<T>(self.selector.backends(), excluded_backend_indices)
             })?;
@@ -245,7 +253,6 @@ where
 pub struct GenerationWeightedRandom<T> {
     generation: u64,
     upstream_name: String,
-    backend_count: usize,
     selector: LoadBalancer<PingoraRandom>,
     policy: std::marker::PhantomData<T>,
 }
@@ -259,13 +266,12 @@ where
             generation,
             upstream_name,
             view,
+            discovery: _,
         } = view;
-        let backend_count = view.get_backend().len();
 
         Self {
             generation,
             upstream_name,
-            backend_count,
             selector: LoadBalancer::from_backends(view),
             policy: std::marker::PhantomData,
         }
@@ -281,9 +287,13 @@ where
     ) -> Option<BackendSelectionResult<T>> {
         let selected = self
             .selector
-            .select_with(b"", self.backend_count, |backend, healthy| {
-                candidate_is_available::<T>(backend, healthy, excluded_backend_indices)
-            })
+            .select_with(
+                b"",
+                self.selector.backends().get_backend().len(),
+                |backend, healthy| {
+                    candidate_is_available::<T>(backend, healthy, excluded_backend_indices)
+                },
+            )
             .or_else(|| {
                 first_available_backend::<T>(self.selector.backends(), excluded_backend_indices)
             })?;
@@ -309,7 +319,6 @@ where
 pub struct GenerationWeightedRoundRobin<T> {
     generation: u64,
     upstream_name: String,
-    backend_count: usize,
     selector: LoadBalancer<PingoraRoundRobin>,
     policy: std::marker::PhantomData<T>,
 }
@@ -323,13 +332,12 @@ where
             generation,
             upstream_name,
             view,
+            discovery: _,
         } = view;
-        let backend_count = view.get_backend().len();
 
         Self {
             generation,
             upstream_name,
-            backend_count,
             selector: LoadBalancer::from_backends(view),
             policy: std::marker::PhantomData,
         }
@@ -345,9 +353,13 @@ where
     ) -> Option<BackendSelectionResult<T>> {
         let selected = self
             .selector
-            .select_with(b"", self.backend_count, |backend, healthy| {
-                candidate_is_available::<T>(backend, healthy, excluded_backend_indices)
-            })
+            .select_with(
+                b"",
+                self.selector.backends().get_backend().len(),
+                |backend, healthy| {
+                    candidate_is_available::<T>(backend, healthy, excluded_backend_indices)
+                },
+            )
             .or_else(|| {
                 first_available_backend::<T>(self.selector.backends(), excluded_backend_indices)
             })?;
@@ -374,6 +386,7 @@ pub struct GenerationBackendView {
     generation: u64,
     upstream_name: String,
     view: BackendView,
+    discovery: Option<ImpulseServiceDiscovery>,
 }
 
 pub enum GenerationSelector<T> {
@@ -475,13 +488,58 @@ where
             | Self::Unsupported(_) => None,
         }
     }
+
+    async fn rebuild(&self) -> Result<(), String> {
+        let result = match self {
+            Self::WeightedRoundRobin(selector) => selector.selector.update().await,
+            Self::WeightedRandom(selector) => selector.selector.update().await,
+            Self::Ketama(selector) => selector.selector.update().await,
+            Self::StickyCid(selector) => selector.selector.selector.update().await,
+            Self::CustomLeastConnections(view)
+            | Self::CustomLatencyAware(view)
+            | Self::Unsupported(view) => view.view.update(|_| {}).await,
+        };
+        result.map_err(|error| {
+            format!(
+                "failed to rebuild Pingora selector for upstream '{}': {error}",
+                self.upstream_name()
+            )
+        })
+    }
 }
 
 pub type SharedPingoraLoadBalancingRuntimeState<T> = Arc<PingoraLoadBalancingRuntimeState<T>>;
 
+#[derive(Clone, Debug)]
+pub struct PingoraDiscoveryUpdate {
+    upstream_name: String,
+    membership_generation: u64,
+    membership_changed: bool,
+    rebuild_duration: Duration,
+}
+
+impl PingoraDiscoveryUpdate {
+    pub fn upstream_name(&self) -> &str {
+        &self.upstream_name
+    }
+
+    pub fn membership_generation(&self) -> u64 {
+        self.membership_generation
+    }
+
+    pub fn membership_changed(&self) -> bool {
+        self.membership_changed
+    }
+
+    pub fn rebuild_duration(&self) -> Duration {
+        self.rebuild_duration
+    }
+}
+
 pub struct PingoraLoadBalancingRuntimeState<T> {
     generation: u64,
     selectors: HashMap<String, Arc<GenerationSelector<T>>>,
+    discoveries: HashMap<String, ImpulseServiceDiscovery>,
 }
 
 impl<T> PingoraLoadBalancingRuntimeState<T>
@@ -495,6 +553,7 @@ where
         >,
     ) -> Result<Self, String> {
         let mut selectors = HashMap::new();
+        let mut discoveries = HashMap::new();
         for (upstream_name, strategy, view) in backend_views {
             if view.generation() != generation {
                 return Err(format!(
@@ -508,6 +567,7 @@ where
                     view.upstream_name()
                 ));
             }
+            let discovery = view.discovery.clone();
             let selector = GenerationSelector::new(strategy, view);
             if selectors
                 .insert(upstream_name.clone(), Arc::new(selector))
@@ -517,11 +577,15 @@ where
                     "duplicate Pingora backend view for upstream '{upstream_name}'"
                 ));
             }
+            if let Some(discovery) = discovery {
+                discoveries.insert(upstream_name, discovery);
+            }
         }
 
         Ok(Self {
             generation,
             selectors,
+            discoveries,
         })
     }
 
@@ -540,6 +604,41 @@ where
     pub fn is_empty(&self) -> bool {
         self.selectors.is_empty()
     }
+
+    pub async fn publish_dns_result(
+        &self,
+        configured_address: &str,
+        resolved_addrs: Result<Vec<SocketAddr>, String>,
+    ) -> Result<PingoraDiscoveryUpdate, String> {
+        let (upstream_name, discovery, backend_index) = self
+            .discoveries
+            .iter()
+            .find_map(|(upstream_name, discovery)| {
+                discovery
+                    .backend_index(configured_address)
+                    .map(|backend_index| (upstream_name, discovery, backend_index))
+            })
+            .ok_or_else(|| {
+                format!(
+                    "no Pingora discovery backend matches configured address '{configured_address}'"
+                )
+            })?;
+        let publication =
+            discovery.publish_dns_result(self.generation, backend_index, resolved_addrs)?;
+        let started = Instant::now();
+        self.selectors
+            .get(upstream_name)
+            .expect("discovery and selector maps share upstream keys")
+            .rebuild()
+            .await?;
+        let rebuild_duration = started.elapsed();
+        Ok(PingoraDiscoveryUpdate {
+            upstream_name: upstream_name.clone(),
+            membership_generation: publication.membership_generation(),
+            membership_changed: publication.membership_changed(),
+            rebuild_duration,
+        })
+    }
 }
 
 impl GenerationBackendView {
@@ -553,20 +652,13 @@ impl GenerationBackendView {
         F: FnMut(usize, &Backend) -> Result<PingoraBackend, String>,
     {
         let upstream_name = upstream_name.into();
-        let mapped = upstream
-            .backends
-            .iter()
-            .enumerate()
-            .map(|(index, backend)| map_backend(index, &backend.backend))
-            .collect::<Result<BTreeSet<_>, _>>()?;
-
-        if mapped.len() != upstream.backends.len() {
-            return Err(format!(
-                "upstream '{upstream_name}' contains backends that collapse to the same Pingora identity"
-            ));
-        }
-
-        let view = BackendView::new(StaticDiscovery::new(mapped));
+        let discovery = ImpulseServiceDiscovery::from_runtime_upstream(
+            generation,
+            &upstream_name,
+            upstream,
+            &mut map_backend,
+        )?;
+        let view = BackendView::new(Box::new(discovery.clone()));
         let waker = Waker::from(Arc::new(NoopWake));
         let mut context = Context::from_waker(&waker);
         let mut update = Box::pin(view.update(|_| {}));
@@ -589,6 +681,7 @@ impl GenerationBackendView {
             generation,
             upstream_name,
             view,
+            discovery: Some(discovery),
         })
     }
 
@@ -678,8 +771,60 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::runtime_upstream_from_addresses;
 
     const GENERATION: u64 = 17;
+    const HOSTNAME_BACKEND: &str = "http://backend.internal:8080";
+
+    fn poll_ready<F: Future>(future: F) -> F::Output {
+        let waker = Waker::from(Arc::new(NoopWake));
+        let mut context = Context::from_waker(&waker);
+        let mut future = Box::pin(future);
+        match future.as_mut().poll(&mut context) {
+            Poll::Ready(output) => output,
+            Poll::Pending => panic!("test future unexpectedly blocked"),
+        }
+    }
+
+    fn hostname_backend_view(generation: u64) -> GenerationBackendView {
+        let upstream = runtime_upstream_from_addresses("round-robin", None, &[HOSTNAME_BACKEND]);
+        GenerationBackendView::from_runtime_upstream(
+            generation,
+            "api",
+            &upstream,
+            |index, backend| {
+                map_validated_backend(backend, index, SocketAddr::from(([0, 0, 0, 0], 8080)), ())
+            },
+        )
+        .expect("hostname backend view")
+    }
+
+    fn hostname_runtime() -> PingoraLoadBalancingRuntimeState<()> {
+        PingoraLoadBalancingRuntimeState::new(
+            GENERATION,
+            [(
+                "api".to_string(),
+                RuntimeLoadBalancingStrategy::RoundRobin,
+                hostname_backend_view(GENERATION),
+            )],
+        )
+        .expect("hostname selector runtime")
+    }
+
+    fn selected_addresses(
+        runtime: &PingoraLoadBalancingRuntimeState<()>,
+        count: usize,
+    ) -> BTreeSet<SocketAddr> {
+        let selector = runtime.selector("api").expect("api selector");
+        (0..count)
+            .map(|_| {
+                selector
+                    .select_excluding("", &[])
+                    .expect("selection")
+                    .address()
+            })
+            .collect()
+    }
 
     fn backend_view(weights: &[u32]) -> GenerationBackendView {
         let backends = weights
@@ -712,6 +857,7 @@ mod tests {
             generation: GENERATION,
             upstream_name: "api".to_string(),
             view,
+            discovery: None,
         }
     }
 
@@ -813,5 +959,85 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn dns_rotation_rebuilds_the_live_selector() {
+        let runtime = hostname_runtime();
+        let first = SocketAddr::from(([10, 0, 0, 1], 8080));
+        let second = SocketAddr::from(([10, 0, 0, 2], 8080));
+        let rotated = SocketAddr::from(([10, 0, 0, 3], 8080));
+
+        let initial =
+            poll_ready(runtime.publish_dns_result(HOSTNAME_BACKEND, Ok(vec![first, second])))
+                .expect("initial DNS publication");
+        assert!(initial.membership_changed());
+        assert_eq!(initial.membership_generation(), 2);
+        assert_eq!(
+            selected_addresses(&runtime, 2),
+            BTreeSet::from([first, second])
+        );
+
+        let update = poll_ready(runtime.publish_dns_result(HOSTNAME_BACKEND, Ok(vec![rotated])))
+            .expect("rotated DNS publication");
+        assert!(update.membership_changed());
+        assert_eq!(update.membership_generation(), 3);
+        assert_eq!(selected_addresses(&runtime, 1), BTreeSet::from([rotated]));
+    }
+
+    #[test]
+    fn dns_failure_retains_the_last_known_good_selector_membership() {
+        let runtime = hostname_runtime();
+        let retained = SocketAddr::from(([10, 0, 0, 4], 8080));
+        poll_ready(runtime.publish_dns_result(HOSTNAME_BACKEND, Ok(vec![retained])))
+            .expect("initial DNS publication");
+
+        assert!(
+            poll_ready(
+                runtime.publish_dns_result(HOSTNAME_BACKEND, Err("lookup failed".to_string()),)
+            )
+            .is_err()
+        );
+        assert_eq!(selected_addresses(&runtime, 1), BTreeSet::from([retained]));
+    }
+
+    #[test]
+    fn dns_recovery_replaces_membership_after_a_failure() {
+        let runtime = hostname_runtime();
+        let retained = SocketAddr::from(([10, 0, 0, 5], 8080));
+        let recovered = SocketAddr::from(([10, 0, 0, 6], 8080));
+        poll_ready(runtime.publish_dns_result(HOSTNAME_BACKEND, Ok(vec![retained])))
+            .expect("initial DNS publication");
+        let _ = poll_ready(
+            runtime.publish_dns_result(HOSTNAME_BACKEND, Err("lookup failed".to_string())),
+        );
+
+        let update = poll_ready(runtime.publish_dns_result(HOSTNAME_BACKEND, Ok(vec![recovered])))
+            .expect("recovered DNS publication");
+        assert_eq!(update.membership_generation(), 3);
+        assert_eq!(selected_addresses(&runtime, 1), BTreeSet::from([recovered]));
+    }
+
+    #[test]
+    fn stale_dns_result_cannot_mutate_a_newer_generation() {
+        let view = hostname_backend_view(GENERATION);
+        let discovery = view.discovery.as_ref().expect("service discovery");
+        let before = poll_ready(discovery.discover())
+            .expect("initial discovery")
+            .0;
+
+        assert!(
+            discovery
+                .publish_dns_result(
+                    GENERATION - 1,
+                    0,
+                    Ok(vec![SocketAddr::from(([10, 0, 0, 7], 8080))]),
+                )
+                .is_err()
+        );
+        let after = poll_ready(discovery.discover())
+            .expect("discovery after stale result")
+            .0;
+        assert_eq!(after, before);
     }
 }

@@ -9,7 +9,9 @@ name = "load_balancing"
 harness = false
 
 [dependencies]
+async-trait.workspace = true
 pingora-load-balancing.workspace = true
+pingora-error.workspace = true
 log.workspace = true
 impulse-config = { path = "../config" }
 

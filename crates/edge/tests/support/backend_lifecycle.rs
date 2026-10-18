@@ -9,19 +9,15 @@ use std::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
-    time::SystemTime,
 };
 
 use bytes::Bytes;
 use http::{StatusCode, Uri};
 use http_body_util::Full;
 use hyper::{Request, Response, body::Incoming};
-use impulse_config::config::{Backend, Config, LoadBalancing, RouteMatch, Upstream};
+use impulse_config::config::{Config, Upstream};
 use impulse_edge::runtime::{
-    backend::{
-        event::{BackendLifecycleMutation, BackendRefreshOutcome, BackendRefreshResult},
-        state::{BackendLifecycleInventorySnapshot, BackendLifecycleSnapshot},
-    },
+    backend::state::{BackendLifecycleInventorySnapshot, BackendLifecycleSnapshot},
     bundle::RuntimeBundleHandle,
 };
 use impulse_lb::{
@@ -29,7 +25,6 @@ use impulse_lb::{
     health::HealthFailureReason,
     upstream_pool::{UpstreamBackendRuntimeState, UpstreamPoolMembershipSummary},
 };
-use impulse_transport::TransportClientRotation;
 
 use super::{
     request_path::{H3RequestSpec, H3Response},
@@ -51,61 +46,6 @@ impl ToggleBackendFixture {
     }
 }
 
-#[derive(Debug, Clone)]
-pub(crate) struct HostnameBackendRoute {
-    pub backend_addr: String,
-    pub authority_host: String,
-    pub authority_port: u16,
-}
-
-impl HostnameBackendRoute {
-    pub(crate) fn new(authority_host: impl Into<String>, authority_port: u16) -> Self {
-        let authority_host = authority_host.into();
-        Self {
-            backend_addr: format!("http://{authority_host}:{authority_port}"),
-            authority_host,
-            authority_port,
-        }
-    }
-
-    pub(crate) fn upstream(&self) -> Upstream {
-        Upstream {
-            load_balancing: LoadBalancing {
-                lb_type: "round-robin".to_string(),
-                key: None,
-            },
-            auth: Default::default(),
-            host_policy: Default::default(),
-            forwarded_headers: Default::default(),
-            tls: None,
-            route: RouteMatch {
-                path_prefix: Some("/".to_string()),
-                ..Default::default()
-            },
-            backends: vec![Backend {
-                id: "backend-a".to_string(),
-                address: self.backend_addr.clone(),
-                weight: 1,
-                health_check: None,
-            }],
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub(crate) enum ForcedBackendRefresh {
-    Updated {
-        result: BackendRefreshResult,
-        client_rotation: TransportClientRotation,
-    },
-    Unchanged {
-        result: BackendRefreshResult,
-    },
-    EmptyAnswerRetained {
-        retained_addrs: Vec<SocketAddr>,
-    },
-}
-
 pub(crate) struct BackendLifecycleHarness {
     runtime: RuntimeSwapHarness,
 }
@@ -121,30 +61,12 @@ impl BackendLifecycleHarness {
         self.runtime.make_config(upstreams)
     }
 
-    pub(crate) fn hostname_backend_route(
-        &self,
-        authority_host: impl Into<String>,
-        authority_port: u16,
-    ) -> HostnameBackendRoute {
-        HostnameBackendRoute::new(authority_host, authority_port)
-    }
-
     pub(crate) fn start_listener(&mut self, config: Config) -> Result<SocketAddr, String> {
         self.runtime.start_listener(config)
     }
 
     pub(crate) fn start_h1_static_backend(&mut self, body: &'static [u8]) -> SocketAddr {
         self.runtime.start_h1_static_backend(body)
-    }
-
-    pub(crate) fn try_start_h1_static_backend_at(
-        &mut self,
-        bind_addr: SocketAddr,
-        body: &'static [u8],
-    ) -> Result<SocketAddr, String> {
-        self.try_start_h1_backend_at(bind_addr, move |_req| async move {
-            Ok::<_, Infallible>(Response::new(Full::new(Bytes::from_static(body))))
-        })
     }
 
     pub(crate) fn start_h1_backend<F, Fut>(&mut self, handler: F) -> SocketAddr
@@ -298,110 +220,6 @@ impl BackendLifecycleHarness {
             .write()
             .map_err(|_| format!("upstream pool '{upstream_name}' poisoned"))?;
         Ok(guard.mark_backend_healthy(index))
-    }
-
-    pub(crate) fn cache_hostname_resolution(
-        &self,
-        authority_host: &str,
-        resolved_addrs: &[SocketAddr],
-    ) -> Result<(), String> {
-        let handle = self.runtime_bundle_handle()?;
-        handle
-            .current_view()
-            .shared_services()
-            .backend_dns_resolver
-            .set_host_addrs(
-                authority_host,
-                resolved_addrs
-                    .iter()
-                    .copied()
-                    .map(|addr| SocketAddr::new(addr.ip(), 0)),
-            );
-        Ok(())
-    }
-
-    pub(crate) fn cached_hostname_resolution(
-        &self,
-        authority_host: &str,
-    ) -> Result<Option<Vec<SocketAddr>>, String> {
-        let handle = self.runtime_bundle_handle()?;
-        Ok(handle
-            .current_view()
-            .shared_services()
-            .backend_dns_resolver
-            .cached_addrs(authority_host))
-    }
-
-    pub(crate) fn force_hostname_refresh(
-        &self,
-        backend_addr: &str,
-        resolved_addrs: Vec<SocketAddr>,
-    ) -> Result<ForcedBackendRefresh, String> {
-        let handle = self.runtime_bundle_handle()?;
-        let current = handle.current_view();
-        let backend = current
-            .shared_services()
-            .backend_lifecycle
-            .backend(backend_addr)
-            .ok_or_else(|| format!("missing backend lifecycle state '{backend_addr}'"))?;
-
-        if !backend.resolution.is_hostname() {
-            return Err(format!(
-                "backend '{backend_addr}' is not hostname-backed and cannot be refreshed"
-            ));
-        }
-
-        if resolved_addrs.is_empty() {
-            return Ok(ForcedBackendRefresh::EmptyAnswerRetained {
-                retained_addrs: backend.resolution.resolved_addrs,
-            });
-        }
-
-        current
-            .shared_services()
-            .backend_dns_resolver
-            .set_host_addrs(
-                &backend.resolution.authority_host,
-                resolved_addrs
-                    .iter()
-                    .copied()
-                    .map(|addr| SocketAddr::new(addr.ip(), 0)),
-            );
-
-        let mutation = current
-            .shared_services()
-            .backend_resolution_store
-            .apply_resolution_refresh(backend_addr, resolved_addrs, SystemTime::now())
-            .ok_or_else(|| format!("failed to apply resolution refresh for '{backend_addr}'"))?;
-
-        let BackendLifecycleMutation::ResolutionUpdated { result, .. } = mutation else {
-            return Err(format!(
-                "unexpected backend lifecycle mutation while refreshing '{backend_addr}'"
-            ));
-        };
-
-        match result.outcome {
-            BackendRefreshOutcome::Updated { .. } => {
-                let rotation = current
-                    .shared_services()
-                    .transport_pool
-                    .rotate_backend_client(backend_addr)
-                    .map_err(|err| format!("rotate backend client '{backend_addr}': {err}"))?;
-                Ok(ForcedBackendRefresh::Updated {
-                    result,
-                    client_rotation: rotation,
-                })
-            }
-            BackendRefreshOutcome::Unchanged { .. } => {
-                Ok(ForcedBackendRefresh::Unchanged { result })
-            }
-            BackendRefreshOutcome::EmptyAnswerRetained { retained_addrs } => {
-                Ok(ForcedBackendRefresh::EmptyAnswerRetained { retained_addrs })
-            }
-            BackendRefreshOutcome::LookupFailed { error, .. } => Err(format!(
-                "unexpected lookup failure while forcing hostname refresh for '{backend_addr}': {error}"
-            )),
-        }
     }
 
     fn resolve_pool_backend_index(
