@@ -179,53 +179,20 @@ impl QUICListener {
                             };
                             let job = &mut jobs[job_index];
 
-                            let evaluation = match result {
-                                Ok(()) => evaluate_active_health_check(
-                                    BackendIdentity::new(job.backend_identity.clone()),
-                                    BackendHealthObservationOutcome::Success,
-                                    None,
-                                    job.base_interval_ms,
-                                    job.consecutive_failures,
-                                ),
-                                Err(error) => Self::evaluate_failed_health_check(
-                                    &job.backend_identity,
-                                    task_metrics.as_ref(),
-                                    job.base_interval_ms,
-                                    job.consecutive_failures,
-                                    ProxyError::Transport(error),
-                                    HealthFailureReason::Transport,
-                                ),
-                            };
-
-                            let transition = backend_lifecycle.apply_health_observation(
-                                Some(&job.upstream_pool),
-                                Some(job.index),
-                                &evaluation.observation,
+                            let evaluation = Self::record_pingora_health_observation(
+                                &job.backend_identity,
+                                &job.upstream_pool,
+                                job.index,
+                                pingora_load_balancing.as_ref(),
+                                backend_lifecycle.as_ref(),
+                                task_metrics.as_ref(),
+                                job.base_interval_ms,
+                                job.consecutive_failures,
+                                result,
                             );
-                            if let Ok(pool) = job.upstream_pool.read()
-                                && let Some(state) = pool.backend_runtime_state(job.index)
-                            {
-                                pingora_load_balancing
-                                    .set_backend_health(&job.backend_identity, state.healthy);
-                            }
-
-                            match evaluation.observation.outcome {
-                                BackendHealthObservationOutcome::Success => {
-                                    task_metrics.inc_health_check_success();
-                                }
-                                BackendHealthObservationOutcome::Failure => {
-                                    task_metrics.inc_health_check_failure();
-                                }
-                                BackendHealthObservationOutcome::Neutral => {}
-                            }
 
                             job.consecutive_failures = evaluation.next_consecutive_failures;
                             job.next_due_at = Instant::now() + evaluation.next_delay;
-
-                            let _ = crate::runtime::connection::outcome::log_backend_health_transition_result(
-                                &job.backend_identity,
-                                transition,
-                            );
                         }
                     }
                 },
@@ -240,6 +207,62 @@ pub(super) fn classify_active_health_check_response(status: StatusCode) -> Healt
 }
 
 impl QUICListener {
+    #[allow(clippy::too_many_arguments)]
+    fn record_pingora_health_observation(
+        backend_identity: &str,
+        upstream_pool: &Arc<RwLock<UpstreamPool>>,
+        backend_index: usize,
+        pingora_load_balancing: &impulse_lb::pingora_backend::PingoraLoadBalancingRuntimeState<
+            impulse_config::runtime::RuntimeBackendTlsPolicy,
+        >,
+        backend_lifecycle: &BackendLifecycleCoordinator,
+        metrics: &Metrics,
+        base_interval_ms: u64,
+        consecutive_failures: u32,
+        result: Result<(), String>,
+    ) -> ActiveHealthCheckEvaluation {
+        let evaluation = match result {
+            Ok(()) => evaluate_active_health_check(
+                BackendIdentity::new(backend_identity.to_string()),
+                BackendHealthObservationOutcome::Success,
+                None,
+                base_interval_ms,
+                consecutive_failures,
+            ),
+            Err(error) => Self::evaluate_failed_health_check(
+                backend_identity,
+                metrics,
+                base_interval_ms,
+                consecutive_failures,
+                ProxyError::Transport(error),
+                HealthFailureReason::Transport,
+            ),
+        };
+
+        let transition = backend_lifecycle.apply_health_observation(
+            Some(upstream_pool),
+            Some(backend_index),
+            &evaluation.observation,
+        );
+        if let Ok(pool) = upstream_pool.read()
+            && let Some(state) = pool.backend_runtime_state(backend_index)
+        {
+            pingora_load_balancing.set_backend_health(backend_identity, state.healthy);
+        }
+
+        match evaluation.observation.outcome {
+            BackendHealthObservationOutcome::Success => metrics.inc_health_check_success(),
+            BackendHealthObservationOutcome::Failure => metrics.inc_health_check_failure(),
+            BackendHealthObservationOutcome::Neutral => {}
+        }
+        let _ = crate::runtime::connection::outcome::log_backend_health_transition_result(
+            backend_identity,
+            transition,
+        );
+
+        evaluation
+    }
+
     fn evaluate_failed_health_check(
         backend_identity: &str,
         metrics: &Metrics,
