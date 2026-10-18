@@ -75,11 +75,13 @@ impl QUICListener {
                 Arc::clone(&task_registry),
             );
             Self::spawn_jwks_refresh(runtime.runtime_config(), Arc::clone(&task_registry));
-            Self::spawn_health_checks(
+            let pingora_load_balancing = runtime.pingora_load_balancing();
+            Self::spawn_pingora_health_service(
+                pingora_load_balancing.generation(),
                 runtime.upstream_pools().clone(),
                 runtime.transport_pool(),
                 runtime.backend_health_checks(),
-                runtime.pingora_load_balancing(),
+                pingora_load_balancing,
                 runtime.backend_lifecycle(),
                 runtime.metrics(),
                 Arc::clone(&task_registry),

@@ -23,10 +23,10 @@ use rcgen::{Certificate, CertificateParams, SanType};
 use tempfile::tempdir;
 
 use super::{
-    ConnectionRoutes, TokenBucket, can_poll_upstream_result, classify_active_health_check_response,
-    collect_h3_trailers, connection_header_tokens, is_bodyless_request_mode,
-    is_connect_tunnel_response, purge_connection_routes, resolve_primary_from_radix_prefix,
-    should_strip_h3_response_header, sweep_closed_connections,
+    ConnectionRoutes, TokenBucket, can_poll_upstream_result, collect_h3_trailers,
+    connection_header_tokens, is_bodyless_request_mode, is_connect_tunnel_response,
+    purge_connection_routes, resolve_primary_from_radix_prefix, should_strip_h3_response_header,
+    sweep_closed_connections,
 };
 use crate::{
     REQUEST_ID_COUNTER,
@@ -1234,22 +1234,6 @@ fn resolve_backend_uses_configured_header_lb_key() {
         first.backend.backend_addr, second.backend.backend_addr,
         "consistent-hash should remain stable when configured header key is constant"
     );
-}
-
-#[test]
-fn active_health_check_classification_matches_shared_policy() {
-    assert!(matches!(
-        classify_active_health_check_response(StatusCode::MOVED_PERMANENTLY),
-        crate::runtime::health::HealthClassification::Success
-    ));
-    assert!(matches!(
-        classify_active_health_check_response(StatusCode::BAD_REQUEST),
-        crate::runtime::health::HealthClassification::Neutral
-    ));
-    assert!(matches!(
-        classify_active_health_check_response(StatusCode::BAD_GATEWAY),
-        crate::runtime::health::HealthClassification::Failure
-    ));
 }
 
 #[test]

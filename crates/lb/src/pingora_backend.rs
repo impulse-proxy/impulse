@@ -10,18 +10,18 @@ use std::{
 };
 
 use impulse_config::{
-    BackendEndpoint, BackendScheme,
     config::Backend,
     runtime::{RuntimeLoadBalancingStrategy, RuntimeUpstream},
 };
-use pingora_error::{Error, ErrorType};
-use pingora_http::RequestHeader;
 #[cfg(test)]
 use pingora_load_balancing::discovery::Static as StaticDiscovery;
+pub use pingora_load_balancing::{
+    Backend as PingoraBackend, HealthCheckService, HealthRegistry,
+    health_check::{HealthCheck as PingoraHealthCheck, HttpHealthCheck as PingoraHttpHealthCheck},
+};
 use pingora_load_balancing::{
-    Backend as PingoraBackend, BackendView, LoadBalancer,
+    BackendView, LoadBalancer,
     discovery::ServiceDiscovery,
-    health_check::{HealthCheck, HttpHealthCheck},
     selection::{Random as PingoraRandom, RoundRobin as PingoraRoundRobin},
 };
 
@@ -567,6 +567,7 @@ pub struct PingoraLoadBalancingRuntimeState<T> {
     generation: u64,
     selectors: HashMap<String, Arc<GenerationSelector<T>>>,
     discoveries: HashMap<String, ImpulseServiceDiscovery>,
+    health_registry: Option<Arc<HealthRegistry>>,
 }
 
 impl<T> PingoraLoadBalancingRuntimeState<T>
@@ -584,6 +585,26 @@ where
         backend_views: impl IntoIterator<
             Item = (String, RuntimeLoadBalancingStrategy, GenerationBackendView),
         >,
+    ) -> Result<Self, String> {
+        Self::new_inner(generation, backend_views, None)
+    }
+
+    pub fn new_with_health_registry(
+        generation: u64,
+        backend_views: impl IntoIterator<
+            Item = (String, RuntimeLoadBalancingStrategy, GenerationBackendView),
+        >,
+        health_registry: Arc<HealthRegistry>,
+    ) -> Result<Self, String> {
+        Self::new_inner(generation, backend_views, Some(health_registry))
+    }
+
+    fn new_inner(
+        generation: u64,
+        backend_views: impl IntoIterator<
+            Item = (String, RuntimeLoadBalancingStrategy, GenerationBackendView),
+        >,
+        health_registry: Option<Arc<HealthRegistry>>,
     ) -> Result<Self, String> {
         let mut selectors = HashMap::new();
         let mut discoveries = HashMap::new();
@@ -619,6 +640,7 @@ where
             generation,
             selectors,
             discoveries,
+            health_registry,
         })
     }
 
@@ -636,6 +658,10 @@ where
 
     pub fn is_empty(&self) -> bool {
         self.selectors.is_empty()
+    }
+
+    pub fn health_registry(&self) -> Option<Arc<HealthRegistry>> {
+        self.health_registry.as_ref().map(Arc::clone)
     }
 
     pub async fn publish_dns_result(
@@ -672,78 +698,6 @@ where
             rebuild_duration,
         })
     }
-
-    pub async fn run_http_health_check(
-        &self,
-        configured_address: &str,
-        path: &str,
-        timeout: Duration,
-    ) -> Result<(), String> {
-        let endpoint = BackendEndpoint::parse(configured_address).map_err(|error| {
-            format!("invalid health-check backend '{configured_address}': {error}")
-        })?;
-        let discovery = self
-            .discoveries
-            .values()
-            .find(|discovery| discovery.backend_index(configured_address).is_some())
-            .ok_or_else(|| {
-                format!(
-                    "no Pingora discovery backend matches configured address '{configured_address}'"
-                )
-            })?;
-        let backend_index = discovery
-            .backend_index(configured_address)
-            .expect("matched discovery contains the backend");
-        let (backends, _) = discovery
-            .discover()
-            .await
-            .map_err(|error| format!("failed to read Pingora backend membership: {error}"))?;
-        let tls = endpoint.scheme() == BackendScheme::Https;
-        let mut check = HttpHealthCheck::new(endpoint.authority_host(), tls);
-        check.peer_template.options.connection_timeout = Some(timeout);
-        check.peer_template.options.read_timeout = Some(timeout);
-        let mut request = RequestHeader::build("GET", path.as_bytes(), None)
-            .map_err(|error| format!("invalid health-check path '{path}': {error}"))?;
-        request
-            .append_header("Host", endpoint.authority_host())
-            .map_err(|error| format!("invalid health-check Host header: {error}"))?;
-        check.req = request;
-        check.validator = Some(Box::new(|response| {
-            if response.status.is_success() {
-                Ok(())
-            } else {
-                Error::e_explain(
-                    ErrorType::CustomCode("health check status", response.status.as_u16()),
-                    "upstream returned a non-success health-check status",
-                )
-            }
-        }));
-        let mut matched = false;
-        let mut last_error = None;
-
-        for backend in backends {
-            let Some(identity) = backend.ext.get::<PingoraBackendIdentity<T>>() else {
-                continue;
-            };
-            if identity.index() != backend_index {
-                continue;
-            }
-            matched = true;
-            match check.check(&backend).await {
-                Ok(()) => return Ok(()),
-                Err(error) => last_error = Some(error.to_string()),
-            }
-        }
-
-        if !matched {
-            return Err(format!(
-                "Pingora discovery has no active address for backend '{configured_address}'"
-            ));
-        }
-        Err(last_error.unwrap_or_else(|| {
-            format!("Pingora HTTP health check failed for backend '{configured_address}'")
-        }))
-    }
 }
 
 impl GenerationBackendView {
@@ -751,7 +705,39 @@ impl GenerationBackendView {
         generation: u64,
         upstream_name: impl Into<String>,
         upstream: &RuntimeUpstream,
+        map_backend: F,
+    ) -> Result<Self, String>
+    where
+        F: FnMut(usize, &Backend) -> Result<PingoraBackend, String>,
+    {
+        Self::from_runtime_upstream_inner(generation, upstream_name, upstream, map_backend, None)
+    }
+
+    pub fn from_runtime_upstream_with_health_registry<F>(
+        generation: u64,
+        upstream_name: impl Into<String>,
+        upstream: &RuntimeUpstream,
+        map_backend: F,
+        health_registry: Arc<HealthRegistry>,
+    ) -> Result<Self, String>
+    where
+        F: FnMut(usize, &Backend) -> Result<PingoraBackend, String>,
+    {
+        Self::from_runtime_upstream_inner(
+            generation,
+            upstream_name,
+            upstream,
+            map_backend,
+            Some(health_registry),
+        )
+    }
+
+    fn from_runtime_upstream_inner<F>(
+        generation: u64,
+        upstream_name: impl Into<String>,
+        upstream: &RuntimeUpstream,
         mut map_backend: F,
+        health_registry: Option<Arc<HealthRegistry>>,
     ) -> Result<Self, String>
     where
         F: FnMut(usize, &Backend) -> Result<PingoraBackend, String>,
@@ -763,7 +749,12 @@ impl GenerationBackendView {
             upstream,
             &mut map_backend,
         )?;
-        let view = BackendView::new(Box::new(discovery.clone()));
+        let view = match health_registry {
+            Some(health_registry) => {
+                BackendView::new_with_health_registry(Box::new(discovery.clone()), health_registry)
+            }
+            None => BackendView::new(Box::new(discovery.clone())),
+        };
         let waker = Waker::from(Arc::new(NoopWake));
         let mut context = Context::from_waker(&waker);
         let mut update = Box::pin(view.update(|_| {}));
