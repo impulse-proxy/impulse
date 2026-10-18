@@ -188,6 +188,12 @@ impl QUICListener {
                                 Some(job.index),
                                 &evaluation.observation,
                             );
+                            if let Ok(pool) = job.upstream_pool.read()
+                                && let Some(state) = pool.backend_runtime_state(job.index)
+                            {
+                                pingora_load_balancing
+                                    .set_backend_health(&job.backend_identity, state.healthy);
+                            }
 
                             match evaluation.observation.outcome {
                                 BackendHealthObservationOutcome::Success => {

@@ -408,6 +408,28 @@ impl<T> GenerationSelector<T>
 where
     T: Clone + Send + Sync + 'static,
 {
+    fn set_backend_enabled(&self, configured_address: &str, enabled: bool) {
+        let backends = match self {
+            Self::WeightedRoundRobin(selector) => selector.selector.backends(),
+            Self::WeightedRandom(selector) => selector.selector.backends(),
+            Self::Ketama(selector) => selector.selector.backends(),
+            Self::StickyCid(selector) => selector.selector.selector.backends(),
+            Self::CustomLeastConnections(view)
+            | Self::CustomLatencyAware(view)
+            | Self::Unsupported(view) => &view.view,
+        };
+
+        for backend in backends.get_backend().iter() {
+            if backend
+                .ext
+                .get::<PingoraBackendIdentity<T>>()
+                .is_some_and(|identity| identity.configured_address() == configured_address)
+            {
+                backends.set_enable(backend, enabled);
+            }
+        }
+    }
+
     fn new(strategy: RuntimeLoadBalancingStrategy, view: GenerationBackendView) -> Self {
         match strategy {
             RuntimeLoadBalancingStrategy::RoundRobin => {
@@ -551,6 +573,12 @@ impl<T> PingoraLoadBalancingRuntimeState<T>
 where
     T: Clone + Send + Sync + 'static,
 {
+    pub fn set_backend_health(&self, configured_address: &str, healthy: bool) {
+        for selector in self.selectors.values() {
+            selector.set_backend_enabled(configured_address, healthy);
+        }
+    }
+
     pub fn new(
         generation: u64,
         backend_views: impl IntoIterator<
