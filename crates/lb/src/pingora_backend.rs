@@ -1,5 +1,7 @@
+#[cfg(test)]
+use std::collections::BTreeSet;
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::HashMap,
     future::Future,
     net::SocketAddr,
     sync::Arc,
@@ -10,11 +12,14 @@ use impulse_config::{
     config::Backend,
     runtime::{RuntimeLoadBalancingStrategy, RuntimeUpstream},
 };
+#[cfg(test)]
+use pingora_load_balancing::discovery::Static as StaticDiscovery;
 use pingora_load_balancing::{
     Backend as PingoraBackend, BackendView, LoadBalancer,
-    discovery::Static as StaticDiscovery,
     selection::{Random as PingoraRandom, RoundRobin as PingoraRoundRobin},
 };
+
+use crate::pingora_discovery::ImpulseServiceDiscovery;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BackendSelectionResult<P> {
@@ -553,20 +558,12 @@ impl GenerationBackendView {
         F: FnMut(usize, &Backend) -> Result<PingoraBackend, String>,
     {
         let upstream_name = upstream_name.into();
-        let mapped = upstream
-            .backends
-            .iter()
-            .enumerate()
-            .map(|(index, backend)| map_backend(index, &backend.backend))
-            .collect::<Result<BTreeSet<_>, _>>()?;
-
-        if mapped.len() != upstream.backends.len() {
-            return Err(format!(
-                "upstream '{upstream_name}' contains backends that collapse to the same Pingora identity"
-            ));
-        }
-
-        let view = BackendView::new(StaticDiscovery::new(mapped));
+        let discovery = ImpulseServiceDiscovery::from_runtime_upstream(
+            &upstream_name,
+            upstream,
+            &mut map_backend,
+        )?;
+        let view = BackendView::new(Box::new(discovery));
         let waker = Waker::from(Arc::new(NoopWake));
         let mut context = Context::from_waker(&waker);
         let mut update = Box::pin(view.update(|_| {}));
