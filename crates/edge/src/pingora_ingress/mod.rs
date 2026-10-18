@@ -38,7 +38,7 @@ use rustls::{
 };
 
 use crate::{
-    Metrics, REQUEST_ID_COUNTER,
+    REQUEST_ID_COUNTER,
     quic_listener::{
         AdmissionPolicyDecision, ForwardingSelectionService, MAX_UPSTREAM_RETRY_ATTEMPTS,
         RetryCoordinator, StableBackendSelection, TargetResolutionRequest,
@@ -132,9 +132,17 @@ pub(crate) struct PingoraIngressService {
 }
 
 struct PingoraConnectionFilter {
-    global: Mutex<TokenBucket>,
-    per_source: Mutex<PerSourceTokenBucket>,
-    metrics: Arc<Metrics>,
+    runtime: RuntimeBundleHandle,
+    listener_label: String,
+    state: Mutex<PingoraConnectionAdmissionState>,
+}
+
+struct PingoraConnectionAdmissionState {
+    generation: u64,
+    rate_per_sec: u32,
+    burst: u32,
+    global: TokenBucket,
+    per_source: PerSourceTokenBucket,
 }
 
 impl std::fmt::Debug for PingoraConnectionFilter {
@@ -148,23 +156,39 @@ impl std::fmt::Debug for PingoraConnectionFilter {
 #[async_trait]
 impl ConnectionFilter for PingoraConnectionFilter {
     async fn should_accept(&self, addr: Option<&std::net::SocketAddr>) -> bool {
-        let global_allowed = self
-            .global
-            .lock()
-            .map(|mut limiter| limiter.try_consume())
-            .unwrap_or(false);
-        if !global_allowed {
-            self.metrics.inc_ingress_rate_limited();
+        let current = self.runtime.current();
+        let metrics = &current.shared_state.shared_services().metrics;
+        let Some(listener) = current.listener_runtime_config(&self.listener_label) else {
+            metrics.inc_ingress_rate_limited();
+            return false;
+        };
+        let policy = &listener.policies.transport;
+        let Ok(mut state) = self.state.lock() else {
+            metrics.inc_ingress_rate_limited();
+            return false;
+        };
+        if state.generation != current.generation {
+            if state.rate_per_sec != policy.new_connections_per_sec
+                || state.burst != policy.new_connections_burst
+            {
+                state
+                    .global
+                    .reconfigure(policy.new_connections_per_sec, policy.new_connections_burst);
+                state
+                    .per_source
+                    .reconfigure(policy.new_connections_per_sec, policy.new_connections_burst);
+                state.rate_per_sec = policy.new_connections_per_sec;
+                state.burst = policy.new_connections_burst;
+            }
+            state.generation = current.generation;
+        }
+        if !state.global.try_consume() {
+            metrics.inc_ingress_rate_limited();
             return false;
         }
-        let source_allowed = addr.is_none_or(|addr| {
-            self.per_source
-                .lock()
-                .map(|mut limiter| limiter.try_consume(addr.ip()))
-                .unwrap_or(false)
-        });
+        let source_allowed = addr.is_none_or(|addr| state.per_source.try_consume(addr.ip()));
         if !source_allowed {
-            self.metrics.inc_ingress_rate_limited();
+            metrics.inc_ingress_rate_limited();
         }
         source_allowed
     }
@@ -378,15 +402,21 @@ fn pingora_ingress_service_for_listener(
     let tls_store = Arc::clone(&current.shared_state.shared_services().listener_tls_store);
     let transport_policy = &listener.policies.transport;
     let connection_filter = Arc::new(PingoraConnectionFilter {
-        global: Mutex::new(TokenBucket::new(
-            transport_policy.new_connections_per_sec,
-            transport_policy.new_connections_burst,
-        )),
-        per_source: Mutex::new(PerSourceTokenBucket::new(
-            transport_policy.new_connections_per_sec,
-            transport_policy.new_connections_burst,
-        )),
-        metrics: Arc::clone(&current.shared_state.shared_services().metrics),
+        runtime: runtime.clone(),
+        listener_label: listener_label.clone(),
+        state: Mutex::new(PingoraConnectionAdmissionState {
+            generation: current.generation,
+            rate_per_sec: transport_policy.new_connections_per_sec,
+            burst: transport_policy.new_connections_burst,
+            global: TokenBucket::new(
+                transport_policy.new_connections_per_sec,
+                transport_policy.new_connections_burst,
+            ),
+            per_source: PerSourceTokenBucket::new(
+                transport_policy.new_connections_per_sec,
+                transport_policy.new_connections_burst,
+            ),
+        }),
     });
     let tls_state = QUICListener::build_listener_tls_reload_state(&listener).map_err(|error| {
         Error::because(
