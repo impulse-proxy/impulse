@@ -371,6 +371,7 @@ mod tests {
             auth: Default::default(),
             host_policy: Default::default(),
             forwarded_headers: Default::default(),
+            compression: Default::default(),
             tls: None,
             route: RouteMatch {
                 path_prefix: Some(path_prefix.to_string()),

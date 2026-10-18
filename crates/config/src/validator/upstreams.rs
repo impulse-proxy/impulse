@@ -153,6 +153,13 @@ pub(super) fn validate_upstreams(config: &Config) -> bool {
         if !validate_upstream_auth(upstream_name, upstream) {
             return false;
         }
+        if upstream.compression.minimum_size_bytes == 0 {
+            validation_error!(
+                "upstream['{}'].compression.minimum_size_bytes must be greater than 0",
+                upstream_name
+            );
+            return false;
+        }
 
         if upstream.backends.is_empty() {
             validation_error!("Upstream '{}' has no backends configured", upstream_name);

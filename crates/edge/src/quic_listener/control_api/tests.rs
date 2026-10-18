@@ -66,6 +66,7 @@ fn test_config(cert: String, key: String) -> ImpulseConfigConfig {
             auth: Default::default(),
             host_policy: Default::default(),
             forwarded_headers: Default::default(),
+            compression: Default::default(),
             tls: None,
             route: RouteMatch {
                 path_prefix: Some("/".to_string()),

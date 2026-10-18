@@ -398,6 +398,7 @@ mod tests {
                     forwarded_headers: ForwardedHeaderPolicy {
                         mode: ForwardedHeaderPolicyMode::Append,
                     },
+                    compression: Default::default(),
                     tls: None,
                     route: RouteMatch {
                         host: Some(format!("{name}.example.com")),

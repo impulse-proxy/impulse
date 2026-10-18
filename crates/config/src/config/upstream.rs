@@ -14,9 +14,28 @@ pub struct Upstream {
     #[serde(default)]
     pub forwarded_headers: ForwardedHeaderPolicy,
     #[serde(default)]
+    pub compression: ResponseCompression,
+    #[serde(default)]
     pub tls: Option<UpstreamTls>,
     pub route: RouteMatch,
     pub backends: Vec<Backend>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
+#[serde(default)]
+#[serde(deny_unknown_fields)]
+pub struct ResponseCompression {
+    pub enabled: bool,
+    pub minimum_size_bytes: usize,
+}
+
+impl Default for ResponseCompression {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            minimum_size_bytes: 1_024,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, Default)]

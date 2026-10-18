@@ -58,6 +58,7 @@ fn transport_test_config(http_backend: &str, https_backend: &str) -> Config {
                 auth: Default::default(),
                 host_policy: Default::default(),
                 forwarded_headers: Default::default(),
+                compression: Default::default(),
                 tls: None,
                 route: RouteMatch {
                     host: Some(route_host.to_string()),

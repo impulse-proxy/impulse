@@ -55,6 +55,7 @@ pub(crate) fn sample_config() -> Config {
             forwarded_headers: ForwardedHeaderPolicy {
                 mode: ForwardedHeaderPolicyMode::Append,
             },
+            compression: Default::default(),
             tls: None,
             route: RouteMatch {
                 host: Some("api.example.com".to_string()),
