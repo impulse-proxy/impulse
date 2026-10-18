@@ -14,9 +14,14 @@ use impulse_config::{
     runtime::{RuntimeLoadBalancingStrategy, RuntimeUpstream},
 };
 #[cfg(test)]
-use pingora_load_balancing::discovery::{ServiceDiscovery, Static as StaticDiscovery};
+use pingora_load_balancing::discovery::Static as StaticDiscovery;
+pub use pingora_load_balancing::{
+    Backend as PingoraBackend, HealthCheckService, HealthRegistry,
+    health_check::{HealthCheck as PingoraHealthCheck, HttpHealthCheck as PingoraHttpHealthCheck},
+};
 use pingora_load_balancing::{
-    Backend as PingoraBackend, BackendView, LoadBalancer,
+    BackendView, LoadBalancer,
+    discovery::ServiceDiscovery,
     selection::{Random as PingoraRandom, RoundRobin as PingoraRoundRobin},
 };
 
@@ -403,6 +408,28 @@ impl<T> GenerationSelector<T>
 where
     T: Clone + Send + Sync + 'static,
 {
+    fn set_backend_enabled(&self, configured_address: &str, enabled: bool) {
+        let backends = match self {
+            Self::WeightedRoundRobin(selector) => selector.selector.backends(),
+            Self::WeightedRandom(selector) => selector.selector.backends(),
+            Self::Ketama(selector) => selector.selector.backends(),
+            Self::StickyCid(selector) => selector.selector.selector.backends(),
+            Self::CustomLeastConnections(view)
+            | Self::CustomLatencyAware(view)
+            | Self::Unsupported(view) => &view.view,
+        };
+
+        for backend in backends.get_backend().iter() {
+            if backend
+                .ext
+                .get::<PingoraBackendIdentity<T>>()
+                .is_some_and(|identity| identity.configured_address() == configured_address)
+            {
+                backends.set_enable(backend, enabled);
+            }
+        }
+    }
+
     fn new(strategy: RuntimeLoadBalancingStrategy, view: GenerationBackendView) -> Self {
         match strategy {
             RuntimeLoadBalancingStrategy::RoundRobin => {
@@ -540,17 +567,44 @@ pub struct PingoraLoadBalancingRuntimeState<T> {
     generation: u64,
     selectors: HashMap<String, Arc<GenerationSelector<T>>>,
     discoveries: HashMap<String, ImpulseServiceDiscovery>,
+    health_registry: Option<Arc<HealthRegistry>>,
 }
 
 impl<T> PingoraLoadBalancingRuntimeState<T>
 where
     T: Clone + Send + Sync + 'static,
 {
+    pub fn set_backend_health(&self, configured_address: &str, healthy: bool) {
+        for selector in self.selectors.values() {
+            selector.set_backend_enabled(configured_address, healthy);
+        }
+    }
+
     pub fn new(
         generation: u64,
         backend_views: impl IntoIterator<
             Item = (String, RuntimeLoadBalancingStrategy, GenerationBackendView),
         >,
+    ) -> Result<Self, String> {
+        Self::new_inner(generation, backend_views, None)
+    }
+
+    pub fn new_with_health_registry(
+        generation: u64,
+        backend_views: impl IntoIterator<
+            Item = (String, RuntimeLoadBalancingStrategy, GenerationBackendView),
+        >,
+        health_registry: Arc<HealthRegistry>,
+    ) -> Result<Self, String> {
+        Self::new_inner(generation, backend_views, Some(health_registry))
+    }
+
+    fn new_inner(
+        generation: u64,
+        backend_views: impl IntoIterator<
+            Item = (String, RuntimeLoadBalancingStrategy, GenerationBackendView),
+        >,
+        health_registry: Option<Arc<HealthRegistry>>,
     ) -> Result<Self, String> {
         let mut selectors = HashMap::new();
         let mut discoveries = HashMap::new();
@@ -586,6 +640,7 @@ where
             generation,
             selectors,
             discoveries,
+            health_registry,
         })
     }
 
@@ -603,6 +658,10 @@ where
 
     pub fn is_empty(&self) -> bool {
         self.selectors.is_empty()
+    }
+
+    pub fn health_registry(&self) -> Option<Arc<HealthRegistry>> {
+        self.health_registry.as_ref().map(Arc::clone)
     }
 
     pub async fn publish_dns_result(
@@ -646,7 +705,39 @@ impl GenerationBackendView {
         generation: u64,
         upstream_name: impl Into<String>,
         upstream: &RuntimeUpstream,
+        map_backend: F,
+    ) -> Result<Self, String>
+    where
+        F: FnMut(usize, &Backend) -> Result<PingoraBackend, String>,
+    {
+        Self::from_runtime_upstream_inner(generation, upstream_name, upstream, map_backend, None)
+    }
+
+    pub fn from_runtime_upstream_with_health_registry<F>(
+        generation: u64,
+        upstream_name: impl Into<String>,
+        upstream: &RuntimeUpstream,
+        map_backend: F,
+        health_registry: Arc<HealthRegistry>,
+    ) -> Result<Self, String>
+    where
+        F: FnMut(usize, &Backend) -> Result<PingoraBackend, String>,
+    {
+        Self::from_runtime_upstream_inner(
+            generation,
+            upstream_name,
+            upstream,
+            map_backend,
+            Some(health_registry),
+        )
+    }
+
+    fn from_runtime_upstream_inner<F>(
+        generation: u64,
+        upstream_name: impl Into<String>,
+        upstream: &RuntimeUpstream,
         mut map_backend: F,
+        health_registry: Option<Arc<HealthRegistry>>,
     ) -> Result<Self, String>
     where
         F: FnMut(usize, &Backend) -> Result<PingoraBackend, String>,
@@ -658,7 +749,12 @@ impl GenerationBackendView {
             upstream,
             &mut map_backend,
         )?;
-        let view = BackendView::new(Box::new(discovery.clone()));
+        let view = match health_registry {
+            Some(health_registry) => {
+                BackendView::new_with_health_registry(Box::new(discovery.clone()), health_registry)
+            }
+            None => BackendView::new(Box::new(discovery.clone())),
+        };
         let waker = Waker::from(Arc::new(NoopWake));
         let mut context = Context::from_waker(&waker);
         let mut update = Box::pin(view.update(|_| {}));

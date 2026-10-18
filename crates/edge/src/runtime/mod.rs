@@ -9,7 +9,6 @@ pub mod backend;
 pub mod bundle;
 pub(crate) mod connection;
 pub(crate) mod generation;
-pub mod health;
 pub mod listener;
 pub mod policy;
 pub mod privilege_drop;

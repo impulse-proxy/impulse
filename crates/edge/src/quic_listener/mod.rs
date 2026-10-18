@@ -81,7 +81,6 @@ use crate::{
             response::{ForwardResult, ForwardSuccess, ResponseChunk, UpstreamResult},
             stream::{CancellationReason, TerminalReason, TunnelMode},
         },
-        health::{HealthClassification, outcome_from_status},
         listener::QUICListener,
         tasks::RuntimeTaskRegistry,
         tls::{
@@ -102,8 +101,8 @@ mod connection;
 mod control_api;
 mod control_plane;
 mod forwarding;
-mod health_check;
 mod metrics;
+mod pingora_health;
 mod protocol;
 mod runtime_endpoint;
 mod runtime_state;
@@ -134,8 +133,6 @@ pub(crate) use forwarding::{
     ForwardingSelectionService, MAX_UPSTREAM_RETRY_ATTEMPTS, RetryCoordinator,
     StableBackendSelection, TargetResolutionRequest,
 };
-#[cfg(test)]
-use health_check::classify_active_health_check_response;
 pub(in crate::quic_listener) use protocol::{
     can_poll_upstream_result, collect_h3_trailers, is_connect_method, is_tunnel_response,
 };

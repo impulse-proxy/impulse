@@ -1,5 +1,6 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, hash_map::DefaultHasher},
+    hash::{Hash, Hasher},
     net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddr as StdSocketAddr, ToSocketAddrs, UdpSocket},
     sync::{Arc, RwLock},
     time::Duration,
@@ -9,11 +10,12 @@ use impulse_config::runtime::{ListenerRuntimeConfig, RuntimeBackendAddressKind, 
 use impulse_errors::ProxyError;
 use impulse_lb::{
     pingora_backend::{
-        GenerationBackendView, PingoraLoadBalancingRuntimeState, map_validated_backend,
+        GenerationBackendView, HealthRegistry, PingoraLoadBalancingRuntimeState,
+        map_validated_backend,
     },
     upstream_pool::UpstreamPool,
 };
-use impulse_transport::UpstreamTransportPool;
+use impulse_transport::{PingoraBackendHealthIdentity, UpstreamTransportPool};
 use log::{debug, info, warn};
 use socket2::{Domain, Protocol, Socket, Type};
 use tokio::sync::Semaphore;
@@ -293,6 +295,19 @@ impl QUICListener {
         let mut upstream_pools = HashMap::new();
         let mut upstream_inflight = HashMap::new();
         let mut pingora_selectors = Vec::with_capacity(config.upstreams.len());
+        let pingora_health_registry = Arc::new(HealthRegistry::with_equivalence(|backend| {
+            backend
+                .ext
+                .get::<PingoraBackendHealthIdentity>()
+                .map_or_else(
+                    || {
+                        let mut hasher = DefaultHasher::new();
+                        backend.hash(&mut hasher);
+                        hasher.finish()
+                    },
+                    |identity| identity.equivalence_key(),
+                )
+        }));
         for (name, runtime_upstream) in &config.upstreams {
             let upstream_pool =
                 UpstreamPool::from_runtime_upstream(runtime_upstream).map_err(|err| {
@@ -305,7 +320,7 @@ impl QUICListener {
             upstream_inflight.insert(name.clone(), Arc::new(Semaphore::new(per_upstream_limit)));
 
             let tls_identity = runtime_upstream.backend_tls_policy().clone();
-            let view = GenerationBackendView::from_runtime_upstream(
+            let view = GenerationBackendView::from_runtime_upstream_with_health_registry(
                 generation,
                 name,
                 runtime_upstream,
@@ -319,8 +334,20 @@ impl QUICListener {
                             .unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED)),
                         endpoint.authority_port,
                     );
-                    map_validated_backend(backend, index, address, tls_identity.clone())
+                    let mut mapped =
+                        map_validated_backend(backend, index, address, tls_identity.clone())?;
+                    let health_identity = transport_pool
+                        .pingora_backend_health_identity(&backend.address)
+                        .ok_or_else(|| {
+                            format!(
+                                "missing Pingora health identity for backend '{}'",
+                                backend.address
+                            )
+                        })?;
+                    mapped.ext.insert(health_identity);
+                    Ok(mapped)
                 },
+                Arc::clone(&pingora_health_registry),
             )
             .map_err(|error| {
                 metrics.inc_pingora_lb_selector_failure();
@@ -331,14 +358,17 @@ impl QUICListener {
             pingora_selectors.push((name.clone(), runtime_upstream.load_balancing.strategy, view));
         }
         let pingora_load_balancing = Arc::new(
-            PingoraLoadBalancingRuntimeState::new(generation, pingora_selectors).map_err(
-                |error| {
-                    metrics.inc_pingora_lb_selector_failure();
-                    ProxyError::Transport(format!(
-                        "failed to create Pingora load-balancing runtime: {error}"
-                    ))
-                },
-            )?,
+            PingoraLoadBalancingRuntimeState::new_with_health_registry(
+                generation,
+                pingora_selectors,
+                pingora_health_registry,
+            )
+            .map_err(|error| {
+                metrics.inc_pingora_lb_selector_failure();
+                ProxyError::Transport(format!(
+                    "failed to create Pingora load-balancing runtime: {error}"
+                ))
+            })?,
         );
         metrics.record_pingora_lb_selector_rebuild(generation, pingora_load_balancing.len());
 

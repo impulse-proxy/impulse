@@ -642,6 +642,12 @@ impl QUICListener {
                             classified: &classified,
                         },
                     );
+                crate::runtime::connection::outcome::apply_passive_readiness_to_pingora(
+                    shared_ctx.pingora_load_balancing,
+                    backend_addr,
+                    backend_index,
+                    upstream_pool.as_ref(),
+                );
 
                 match classified.kind {
                     UpstreamProxyErrorKind::Timeout => {
@@ -1034,6 +1040,12 @@ impl QUICListener {
                             status: *status,
                         },
                     );
+                    crate::runtime::connection::outcome::apply_passive_readiness_to_pingora(
+                        shared_ctx.pingora_load_balancing,
+                        addr,
+                        idx,
+                        req.upstream_pool.as_ref(),
+                    );
                 }
                 let _ = crate::runtime::connection::outcome::observe_status_outcome(
                     metrics,
@@ -1407,6 +1419,12 @@ impl QUICListener {
                                 classified,
                             },
                         );
+                        crate::runtime::connection::outcome::apply_passive_readiness_to_pingora(
+                            shared_ctx.pingora_load_balancing,
+                            addr,
+                            idx,
+                            upstream_pool,
+                        );
                     } else if let (Some(addr), Some(idx)) =
                         (req.backend_addr.as_deref(), req.backend_index)
                         && crate::runtime::connection::outcome::observe_backend_response_status_and_log(
@@ -1421,6 +1439,12 @@ impl QUICListener {
                             },
                         ).is_some()
                     {
+                        crate::runtime::connection::outcome::apply_passive_readiness_to_pingora(
+                            shared_ctx.pingora_load_balancing,
+                            addr,
+                            idx,
+                            upstream_pool,
+                        );
                     }
                     match err {
                         ProxyError::Timeout => {

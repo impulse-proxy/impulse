@@ -44,6 +44,15 @@ pub(crate) struct PingoraUpstreamConnectionIdentity {
     pub(crate) generation: u64,
 }
 
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct PingoraBackendHealthIdentity(u64);
+
+impl PingoraBackendHealthIdentity {
+    pub fn equivalence_key(self) -> u64 {
+        self.0
+    }
+}
+
 impl PingoraUpstreamConnectionIdentity {
     pub(crate) fn new(
         address: SocketAddr,
@@ -74,5 +83,98 @@ impl PingoraUpstreamConnectionIdentity {
         let mut hasher = DefaultHasher::new();
         self.hash(&mut hasher);
         hasher.finish()
+    }
+
+    pub(crate) fn health_identity(&self) -> PingoraBackendHealthIdentity {
+        PingoraBackendHealthIdentity(self.pool_key())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{collections::HashSet, net::SocketAddr};
+
+    use impulse_config::runtime::RuntimeBackendTransportKind;
+
+    use super::*;
+
+    fn identity(tls: &TlsClientConfig, generation: u64) -> PingoraUpstreamConnectionIdentity {
+        PingoraUpstreamConnectionIdentity::new(
+            "127.0.0.1:8443"
+                .parse::<SocketAddr>()
+                .expect("socket address"),
+            RuntimeBackendTransportKind::H2,
+            "backend.internal".to_string(),
+            Some(tls),
+            None,
+            generation,
+        )
+    }
+
+    #[test]
+    fn equivalent_backends_share_one_health_probe_identity() {
+        let tls = TlsClientConfig::default();
+        let identities = HashSet::from([
+            identity(&tls, 7).health_identity(),
+            identity(&tls, 7).health_identity(),
+        ]);
+
+        assert_eq!(identities.len(), 1);
+    }
+
+    #[test]
+    fn tls_security_identity_prevents_health_probe_sharing() {
+        let baseline = TlsClientConfig {
+            ca_file_fingerprint_sha256: Some("ca-a".to_string()),
+            ca_dir_fingerprint_sha256: Some("ca-dir-a".to_string()),
+            client_certificate_fingerprint_sha256: Some("cert-a".to_string()),
+            client_key_fingerprint_sha256: Some("key-a".to_string()),
+            ..TlsClientConfig::default()
+        };
+        let baseline_identity = identity(&baseline, 7).health_identity();
+        let mut different_sni = identity(&baseline, 7);
+        different_sni.sni = "other.internal".to_string();
+        assert_ne!(different_sni.health_identity(), baseline_identity);
+
+        let variants = [
+            TlsClientConfig {
+                verify_certificates: false,
+                ..baseline.clone()
+            },
+            TlsClientConfig {
+                strict_sni: false,
+                ..baseline.clone()
+            },
+            TlsClientConfig {
+                ca_file_fingerprint_sha256: Some("ca-b".to_string()),
+                ..baseline.clone()
+            },
+            TlsClientConfig {
+                ca_dir_fingerprint_sha256: Some("ca-dir-b".to_string()),
+                ..baseline.clone()
+            },
+            TlsClientConfig {
+                client_certificate_fingerprint_sha256: Some("cert-b".to_string()),
+                ..baseline.clone()
+            },
+            TlsClientConfig {
+                client_key_fingerprint_sha256: Some("key-b".to_string()),
+                ..baseline.clone()
+            },
+        ];
+
+        for variant in variants {
+            assert_ne!(identity(&variant, 7).health_identity(), baseline_identity);
+        }
+    }
+
+    #[test]
+    fn runtime_generations_do_not_share_health_probe_identity() {
+        let tls = TlsClientConfig::default();
+
+        assert_ne!(
+            identity(&tls, 7).health_identity(),
+            identity(&tls, 8).health_identity()
+        );
     }
 }
