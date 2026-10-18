@@ -925,7 +925,7 @@ impl Metrics {
         ));
 
         out.push_str(
-            "# HELP impulse_ingress_rate_limited_total Initial packets dropped by the new-connection rate limiter.\n",
+            "# HELP impulse_ingress_rate_limited_total Ingress connection attempts rejected by connection admission filtering.\n",
         );
         out.push_str("# TYPE impulse_ingress_rate_limited_total counter\n");
         out.push_str(&format!(

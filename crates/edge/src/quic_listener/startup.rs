@@ -23,10 +23,7 @@ use tokio::sync::Semaphore;
 use crate::{
     Metrics,
     constants::UDP_READ_TIMEOUT_MS,
-    quic_listener::{
-        ListenerRuntimeSettings, PerSourceTokenBucket, TokenBucket,
-        runtime_state::PreparedListenerStartup,
-    },
+    quic_listener::{ListenerRuntimeSettings, runtime_state::PreparedListenerStartup},
     resilience::{quota::QuotaRuntime, runtime::RuntimeResilience},
     routing::index::RouteIndex,
     runtime::{
@@ -35,6 +32,7 @@ use crate::{
             store::RuntimeBackendResolutionStore,
         },
         bundle::{RuntimeBundle, RuntimeBundleHandle},
+        connection::{PerSourceTokenBucket, TokenBucket},
         generation::{RuntimeGenerationState, RuntimeSharedServices, StartupOwnedRuntimeState},
         listener::{QUICListener, ShutdownSignal},
         shared_state::SharedRuntimeState,

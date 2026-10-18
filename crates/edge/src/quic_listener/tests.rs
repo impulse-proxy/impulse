@@ -23,16 +23,16 @@ use rcgen::{Certificate, CertificateParams, SanType};
 use tempfile::tempdir;
 
 use super::{
-    ConnectionRoutes, TokenBucket, can_poll_upstream_result, collect_h3_trailers,
-    connection_header_tokens, is_bodyless_request_mode, is_connect_tunnel_response,
-    purge_connection_routes, resolve_primary_from_radix_prefix, should_strip_h3_response_header,
-    sweep_closed_connections,
+    ConnectionRoutes, can_poll_upstream_result, collect_h3_trailers, connection_header_tokens,
+    is_bodyless_request_mode, is_connect_tunnel_response, purge_connection_routes,
+    resolve_primary_from_radix_prefix, should_strip_h3_response_header, sweep_closed_connections,
 };
 use crate::{
     REQUEST_ID_COUNTER,
     cid_radix::CidRadix,
     quic_listener::forwarding::terminalize_stream,
     runtime::connection::{
+        TokenBucket,
         guardrails::{
             BodyLimitKind, ResponseBodyGuardrailConfig, ResponseBodyGuardrailDecision,
             ResponseBodyGuardrailInput, checked_response_body_guardrails,
