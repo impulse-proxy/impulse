@@ -1589,6 +1589,7 @@ dependencies = [
  "impulse-errors",
  "pingora-core",
  "pingora-http",
+ "rustls-pki-types",
  "tokio",
 ]
 

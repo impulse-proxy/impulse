@@ -398,25 +398,13 @@ impl QUICListener {
         let backend_endpoints = Arc::clone(&exec_ctx.backend_endpoints);
         let transport = Arc::clone(&exec_ctx.transport_pool);
         let hedge_delay = resilience.hedging_delay;
-        let alternate_backend = req.upstream_pool.as_ref().map(|upstream_pool| {
-            let Some(selector) = shared_ctx
-                .pingora_load_balancing
-                .selector(pending_forward.upstream_name.as_ref())
-            else {
-                shared_ctx.metrics.inc_pingora_lb_selector_failure();
-                return ResolvedAlternateBackend::Unavailable {
-                    reason: AlternateBackendFailureReason::PoolUnavailable,
-                };
-            };
-            Self::resolve_alternate_backend(
-                upstream_pool,
-                selector,
-                shared_ctx.generation,
-                pending_forward.lb_key.as_ref(),
-                pending_forward.backend_index,
-                shared_ctx.metrics.as_ref(),
-            )
-        });
+        let alternate_pool = req.upstream_pool.clone();
+        let alternate_selector = shared_ctx
+            .pingora_load_balancing
+            .selector(pending_forward.upstream_name.as_ref())
+            .cloned();
+        let alternate_generation = shared_ctx.generation;
+        let alternate_metrics = Arc::clone(&shared_ctx.metrics);
         let trace_span_for_upstream = req.trace_span.clone();
         let (result_tx, result_rx) = oneshot::channel::<UpstreamResult>();
         let tunnel_mode = req.tunnel_mode;
@@ -427,6 +415,8 @@ impl QUICListener {
         let hedge_configured =
             resilience.hedging_route_enabled_for(pending_forward.upstream_name.as_ref());
         let hedge_tunnel_request = req.tunnel_mode != TunnelMode::None;
+        let needs_alternate_before_primary =
+            hedge_configured && hedge_method_allowed && bodyless_mode && !hedge_tunnel_request;
         let policy = RetryCoordinator::new(
             method_idempotent,
             bodyless_mode,
@@ -435,6 +425,27 @@ impl QUICListener {
             hedge_tunnel_request,
         );
         let fut = async move {
+            let resolve_alternate = || {
+                alternate_pool.as_ref().map(|upstream_pool| {
+                    let Some(selector) = alternate_selector.as_ref() else {
+                        alternate_metrics.inc_pingora_lb_selector_failure();
+                        return ResolvedAlternateBackend::Unavailable {
+                            reason: AlternateBackendFailureReason::PoolUnavailable,
+                        };
+                    };
+                    Self::resolve_alternate_backend(
+                        upstream_pool,
+                        selector,
+                        alternate_generation,
+                        pending_forward.lb_key.as_ref(),
+                        pending_forward.backend_index,
+                        alternate_metrics.as_ref(),
+                    )
+                })
+            };
+            let mut alternate_backend = needs_alternate_before_primary
+                .then(|| resolve_alternate())
+                .flatten();
             let route_name = pending_forward.upstream_name.as_ref();
             let primary_backend = pending_forward.backend_addr.as_ref();
             let circuit_breakers = circuit_breakers.as_ref();
@@ -601,7 +612,10 @@ impl QUICListener {
                             .await
                             {
                                 Ok(response) => response,
-                                Err(primary_err) => Self::retry_primary_error(
+                                Err(primary_err) => {
+                                    alternate_backend =
+                                        alternate_backend.or_else(|| resolve_alternate());
+                                    Self::retry_primary_error(
                                         primary_err,
                                         RetryExecutionCtx {
                                             request_id,
@@ -616,7 +630,8 @@ impl QUICListener {
                                             transport: transport_pool,
                                         },
                                     )
-                                    .await?,
+                                    .await?
+                                }
                             }
                         }
                         HedgePolicyDecision::Hedge { reason } => {
@@ -636,7 +651,10 @@ impl QUICListener {
                             .await
                             {
                                 Ok(response) => response,
-                                Err(primary_err) => Self::retry_primary_error(
+                                Err(primary_err) => {
+                                    alternate_backend =
+                                        alternate_backend.or_else(|| resolve_alternate());
+                                    Self::retry_primary_error(
                                         primary_err,
                                         RetryExecutionCtx {
                                             request_id,
@@ -651,7 +669,8 @@ impl QUICListener {
                                             transport: transport_pool,
                                         },
                                     )
-                                    .await?,
+                                    .await?
+                                }
                             }
                         }
                     };

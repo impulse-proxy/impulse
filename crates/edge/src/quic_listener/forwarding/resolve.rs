@@ -73,6 +73,40 @@ impl<'a> ResolutionContext<'a> {
     }
 }
 
+#[cfg(test)]
+pub(in crate::quic_listener) fn selectors_for_test(
+    runtime: &impulse_config::runtime::RuntimeConfig,
+) -> PingoraLoadBalancingRuntimeState<RuntimeBackendTlsPolicy> {
+    let generation = 1;
+    let views = runtime.upstreams.iter().map(|(name, upstream)| {
+        let tls_identity = upstream.backend_tls_policy().clone();
+        let view = impulse_lb::pingora_backend::GenerationBackendView::from_runtime_upstream(
+            generation,
+            name,
+            upstream,
+            |index, backend| {
+                let endpoint = &upstream.backends[index].endpoint;
+                let address = std::net::SocketAddr::new(
+                    endpoint
+                        .authority_host
+                        .parse()
+                        .unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED)),
+                    endpoint.authority_port,
+                );
+                impulse_lb::pingora_backend::map_validated_backend(
+                    backend,
+                    index,
+                    address,
+                    tls_identity.clone(),
+                )
+            },
+        )
+        .expect("selector view");
+        (name.clone(), upstream.load_balancing.strategy, view)
+    });
+    PingoraLoadBalancingRuntimeState::new(generation, views).expect("selector runtime")
+}
+
 #[derive(Clone, Copy)]
 pub(in crate::quic_listener) struct ResolutionObservation<'a> {
     pub(in crate::quic_listener) metrics: &'a Metrics,
@@ -391,8 +425,11 @@ impl QUICListener {
         upstream_pools: &HashMap<String, Arc<RwLock<UpstreamPool>>>,
         upstream_policies: &HashMap<String, RuntimeUpstreamPolicy>,
         routing_index: &RouteIndex,
+        selectors: &PingoraLoadBalancingRuntimeState<RuntimeBackendTlsPolicy>,
+        metrics: &Metrics,
     ) -> Result<TargetResolution, ProxyError> {
-        let context = ResolutionContext::new(routing_index, upstream_pools, upstream_policies);
+        let context = ResolutionContext::new(routing_index, upstream_pools, upstream_policies)
+            .with_pingora_selection(selectors, selectors.generation(), metrics);
         Self::resolve_backend_internal(request, &context, true)
     }
 }
@@ -623,7 +660,10 @@ mod tests {
             .iter()
             .map(|(name, upstream)| (name.clone(), upstream.policy.clone()))
             .collect::<HashMap<_, _>>();
-        let context = ResolutionContext::new(&routing_index, &pools, &policies);
+        let selectors = selectors_for_test(&runtime);
+        let metrics = Metrics::new(1, vec!["route".to_string()]);
+        let context = ResolutionContext::new(&routing_index, &pools, &policies)
+            .with_pingora_selection(&selectors, selectors.generation(), &metrics);
         let request = TargetResolutionRequest::new(
             "CONNECT",
             "/chat/socket",
@@ -631,8 +671,6 @@ mod tests {
             None,
             None,
         );
-        let metrics = Metrics::new(1, vec!["route".to_string()]);
-
         let resolved = QUICListener::resolve_forwarding_target(ForwardTargetResolutionInput {
             request,
             context,

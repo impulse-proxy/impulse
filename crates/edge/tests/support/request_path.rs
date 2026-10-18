@@ -207,15 +207,6 @@ impl QuicRequestPathHarness {
         addr
     }
 
-    pub(crate) fn start_h1_raw_response_backend(&mut self, response_bytes: Vec<u8>) -> SocketAddr {
-        let fixture = self
-            .rt
-            .block_on(start_h1_raw_response_backend(response_bytes));
-        let addr = fixture.addr;
-        self.backends.push(fixture);
-        addr
-    }
-
     pub(crate) fn start_h2_backend<F, Fut>(&mut self, handler: F) -> SocketAddr
     where
         F: Fn(Request<Incoming>) -> Fut + Send + Sync + 'static,
@@ -1393,48 +1384,6 @@ pub(crate) async fn start_h1_delayed_chunked_backend(
                 }
 
                 let _ = stream.write_all(b"0\r\n\r\n").await;
-                let _ = stream.shutdown().await;
-            });
-        }
-    });
-
-    BackendFixture {
-        addr,
-        stop,
-        accept_task,
-    }
-}
-
-pub(crate) async fn start_h1_raw_response_backend(response_bytes: Vec<u8>) -> BackendFixture {
-    let listener = bind_tcp_listener();
-    let addr = listener.local_addr().expect("h1 raw local addr");
-    let stop = Arc::new(AtomicBool::new(false));
-    let stop_flag = Arc::clone(&stop);
-
-    let accept_task = tokio::spawn(async move {
-        while !stop_flag.load(Ordering::Relaxed) {
-            let (mut stream, _) = match listener.accept().await {
-                Ok(value) => value,
-                Err(_) => break,
-            };
-            let response_bytes = response_bytes.clone();
-            tokio::spawn(async move {
-                let mut buf = [0u8; 4096];
-                let mut request = Vec::new();
-                loop {
-                    match stream.read(&mut buf).await {
-                        Ok(0) => return,
-                        Ok(read) => {
-                            request.extend_from_slice(&buf[..read]);
-                            if request.windows(4).any(|window| window == b"\r\n\r\n") {
-                                break;
-                            }
-                        }
-                        Err(_) => return,
-                    }
-                }
-
-                let _ = stream.write_all(&response_bytes).await;
                 let _ = stream.shutdown().await;
             });
         }

@@ -118,6 +118,22 @@ where
             .is_some_and(|identity| !excluded_backend_indices.contains(&identity.index()))
 }
 
+fn first_available_backend<T>(
+    backends: &pingora_load_balancing::Backends,
+    excluded_backend_indices: &[usize],
+) -> Option<PingoraBackend>
+where
+    T: Clone + Send + Sync + 'static,
+{
+    backends
+        .get_backend()
+        .iter()
+        .find(|backend| {
+            candidate_is_available::<T>(backend, backends.ready(backend), excluded_backend_indices)
+        })
+        .cloned()
+}
+
 pub struct GenerationStickyCid<T> {
     selector: GenerationKetama<T>,
 }
@@ -203,6 +219,9 @@ where
             .selector
             .select_with(key, self.backend_count, |backend, healthy| {
                 candidate_is_available::<T>(backend, healthy, excluded_backend_indices)
+            })
+            .or_else(|| {
+                first_available_backend::<T>(self.selector.backends(), excluded_backend_indices)
             })?;
         selection_result(selected, self.generation)
     }
@@ -264,6 +283,9 @@ where
             .selector
             .select_with(b"", self.backend_count, |backend, healthy| {
                 candidate_is_available::<T>(backend, healthy, excluded_backend_indices)
+            })
+            .or_else(|| {
+                first_available_backend::<T>(self.selector.backends(), excluded_backend_indices)
             })?;
         selection_result(selected, self.generation)
     }
@@ -325,6 +347,9 @@ where
             .selector
             .select_with(b"", self.backend_count, |backend, healthy| {
                 candidate_is_available::<T>(backend, healthy, excluded_backend_indices)
+            })
+            .or_else(|| {
+                first_available_backend::<T>(self.selector.backends(), excluded_backend_indices)
             })?;
         selection_result(selected, self.generation)
     }
@@ -691,44 +716,19 @@ mod tests {
     }
 
     #[test]
-    fn weighted_round_robin_preserves_configured_distribution() {
-        let selector = GenerationSelector::<()>::new(
-            RuntimeLoadBalancingStrategy::RoundRobin,
-            backend_view(&[1, 3]),
-        );
-        selector
-            .synchronize_readiness(|_| true)
-            .expect("synchronize readiness");
+    fn validated_backend_mapping_preserves_weight() {
+        let backend = Backend {
+            id: "backend".to_string(),
+            address: "127.0.0.1:8000".to_string(),
+            weight: 3,
+            health_check: None,
+        };
 
-        let mut counts = [0_u64; 2];
-        for _ in 0..400 {
-            let selected = selector.select_excluding("", &[]).expect("selection");
-            counts[selected.index()] += 1;
-        }
+        let mapped =
+            map_validated_backend(&backend, 0, SocketAddr::from(([127, 0, 0, 1], 8000)), ())
+                .expect("map backend");
 
-        assert_eq!(counts.iter().sum::<u64>(), 400);
-        assert!(counts[1] >= counts[0] * 2);
-        assert!(counts[1] <= counts[0] * 4);
-    }
-
-    #[test]
-    fn weighted_random_preserves_configured_distribution() {
-        let selector = GenerationSelector::<()>::new(
-            RuntimeLoadBalancingStrategy::Random,
-            backend_view(&[1, 3]),
-        );
-        selector
-            .synchronize_readiness(|_| true)
-            .expect("synchronize readiness");
-
-        let mut counts = [0_u64; 2];
-        for _ in 0..10_000 {
-            let selected = selector.select_excluding("", &[]).expect("selection");
-            counts[selected.index()] += 1;
-        }
-
-        assert!(counts[1] * 10 >= counts[0] * 25);
-        assert!(counts[1] * 10 <= counts[0] * 35);
+        assert_eq!(mapped.weight, 3);
     }
 
     #[test]

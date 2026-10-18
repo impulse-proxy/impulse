@@ -9,8 +9,9 @@ bytes.workspace = true
 hyper.workspace = true
 h2 = "0.4"
 tokio.workspace = true
-pingora-core.workspace = true
+pingora-core = { workspace = true, features = ["rustls"] }
 pingora-http.workspace = true
+rustls-pki-types.workspace = true
 impulse-errors = { path = "../errors" }
 impulse-config = { path = "../config" }
 

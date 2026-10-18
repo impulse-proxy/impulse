@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap,
     convert::Infallible,
+    future::Future,
     net::{IpAddr, SocketAddr},
     pin::Pin,
     sync::{
@@ -37,8 +38,8 @@ use rustls_pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
 use tempfile::{TempDir, tempdir};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::{
-    TlsConnector,
-    rustls::{ClientConfig, RootCertStore, pki_types::ServerName},
+    TlsAcceptor, TlsConnector,
+    rustls::{ClientConfig, RootCertStore, ServerConfig, pki_types::ServerName},
 };
 
 mod support;
@@ -189,6 +190,13 @@ fn make_config(port: u32, backend_addr: String, cert: String, key: String) -> Co
     make_config_with_upstreams(port, upstream, cert, key)
 }
 
+fn make_h2_config(port: u32, backend_addr: SocketAddr, cert: String, key: String) -> Config {
+    let mut config = make_config(port, format!("https://{backend_addr}"), cert, key);
+    config.upstream_tls.verify_certificates = false;
+    config.upstream_tls.strict_sni = false;
+    config
+}
+
 fn make_config_with_upstreams(
     port: u32,
     upstream: HashMap<String, Upstream>,
@@ -301,11 +309,6 @@ async fn start_h1_backend_with_websocket_upgrade() -> SocketAddr {
     let addr = fixture.addr;
     std::mem::forget(fixture);
     addr
-}
-
-fn run_h3_client(addr: SocketAddr) -> Result<String, String> {
-    request_support::run_h3_get_to(addr, "localhost", "/", &[])
-        .map(|response| String::from_utf8_lossy(&response.body).into_owned())
 }
 
 fn run_h3_client_chunked_post(
@@ -912,7 +915,20 @@ impl Body for TrailerThenEndBody {
     }
 }
 
-async fn start_h2_backend_with_trailers() -> SocketAddr {
+async fn start_h2_test_backend<F, Fut>(cert_path: &str, key_path: &str, handler: F) -> SocketAddr
+where
+    F: Fn(Request<Incoming>) -> Fut + Clone + Send + Sync + 'static,
+    Fut: Future<Output = Result<Response<TestBody>, hyper::Error>> + Send + 'static,
+{
+    let mut tls_config = ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(
+            read_test_certificate_chain(cert_path).expect("backend certificate"),
+            read_test_private_key(key_path).expect("backend private key"),
+        )
+        .expect("backend TLS config");
+    tls_config.alpn_protocols = vec![b"h2".to_vec()];
+    let acceptor = TlsAcceptor::from(Arc::new(tls_config));
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
 
@@ -922,32 +938,15 @@ async fn start_h2_backend_with_trailers() -> SocketAddr {
                 Ok(v) => v,
                 Err(_) => break,
             };
+            let acceptor = acceptor.clone();
+            let handler = handler.clone();
             tokio::spawn(async move {
-                let io = TokioIo::new(stream);
-                let service = service_fn(|_req: Request<Incoming>| async move {
-                    let mut trailers = HeaderMap::new();
-                    trailers.insert(
-                        http::HeaderName::from_static("grpc-status"),
-                        HeaderValue::from_static("0"),
-                    );
-                    trailers.insert(
-                        http::HeaderName::from_static("grpc-message"),
-                        HeaderValue::from_static("ok"),
-                    );
-
-                    let body =
-                        TrailerThenEndBody::new(Bytes::from_static(b"hello\n"), trailers).boxed();
-                    Ok::<_, hyper::Error>(
-                        Response::builder()
-                            .header("content-type", "application/grpc")
-                            .header(http::header::TRAILER, "grpc-status, grpc-message")
-                            .body(body)
-                            .expect("response"),
-                    )
-                });
-
-                let _ = hyper::server::conn::http1::Builder::new()
-                    .serve_connection(io, service)
+                let Ok(stream) = acceptor.accept(stream).await else {
+                    return;
+                };
+                let service = service_fn(handler);
+                let _ = hyper::server::conn::http2::Builder::new(TokioExecutor::new())
+                    .serve_connection(TokioIo::new(stream), service)
                     .await;
             });
         }
@@ -956,86 +955,88 @@ async fn start_h2_backend_with_trailers() -> SocketAddr {
     addr
 }
 
-async fn start_h2_backend_with_grpc_routes() -> SocketAddr {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
+async fn start_h2_backend_with_trailers(cert_path: &str, key_path: &str) -> SocketAddr {
+    start_h2_test_backend(cert_path, key_path, |_req| async move {
+        let mut trailers = HeaderMap::new();
+        trailers.insert(
+            http::HeaderName::from_static("grpc-status"),
+            HeaderValue::from_static("0"),
+        );
+        trailers.insert(
+            http::HeaderName::from_static("grpc-message"),
+            HeaderValue::from_static("ok"),
+        );
 
-    tokio::spawn(async move {
-        loop {
-            let (stream, _) = match listener.accept().await {
-                Ok(v) => v,
-                Err(_) => break,
-            };
-            tokio::spawn(async move {
-                let io = TokioIo::new(stream);
-                let service = service_fn(|req: Request<Incoming>| async move {
-                    let response: Response<TestBody> = match req.uri().path() {
-                        "/grpc-ok" => {
-                            let mut trailers = HeaderMap::new();
-                            trailers.insert(
-                                http::HeaderName::from_static("grpc-status"),
-                                HeaderValue::from_static("0"),
-                            );
-                            trailers.insert(
-                                http::HeaderName::from_static("grpc-message"),
-                                HeaderValue::from_static("ok"),
-                            );
-                            Response::builder()
-                                .header("content-type", "application/grpc")
-                                .header(http::header::TRAILER, "grpc-status, grpc-message")
-                                .body(
-                                    TrailerThenEndBody::new(
-                                        Bytes::from_static(b"\x00\x00\x00\x00\x00"),
-                                        trailers,
-                                    )
-                                    .boxed(),
-                                )
-                                .expect("grpc ok response")
-                        }
-                        "/grpc-error" => {
-                            let mut trailers = HeaderMap::new();
-                            trailers.insert(
-                                http::HeaderName::from_static("grpc-status"),
-                                HeaderValue::from_static("14"),
-                            );
-                            trailers.insert(
-                                http::HeaderName::from_static("grpc-message"),
-                                HeaderValue::from_static("unavailable"),
-                            );
-                            Response::builder()
-                                .header("content-type", "application/grpc")
-                                .header(http::header::TRAILER, "grpc-status, grpc-message")
-                                .body(TrailerThenEndBody::new(Bytes::new(), trailers).boxed())
-                                .expect("grpc error response")
-                        }
-                        "/grpc-timeout" => {
-                            tokio::time::sleep(Duration::from_secs(BACKEND_TIMEOUT_SECS + 1)).await;
-                            Response::new(Full::new(Bytes::from_static(b"late\n")).boxed())
-                        }
-                        "/health" => Response::new(Full::new(Bytes::from_static(b"ok\n")).boxed()),
-                        _ => Response::builder()
-                            .status(StatusCode::NOT_FOUND)
-                            .body(Full::new(Bytes::from_static(b"missing\n")).boxed())
-                            .expect("not found response"),
-                    };
-                    Ok::<_, hyper::Error>(response)
-                });
+        let body = TrailerThenEndBody::new(Bytes::from_static(b"hello\n"), trailers).boxed();
+        Ok::<_, hyper::Error>(
+            Response::builder()
+                .header("content-type", "application/grpc")
+                .header(http::header::TRAILER, "grpc-status, grpc-message")
+                .body(body)
+                .expect("response"),
+        )
+    })
+    .await
+}
 
-                let _ = hyper::server::conn::http1::Builder::new()
-                    .serve_connection(io, service)
-                    .await;
-            });
-        }
-    });
-
-    addr
+async fn start_h2_backend_with_grpc_routes(cert_path: &str, key_path: &str) -> SocketAddr {
+    start_h2_test_backend(cert_path, key_path, |req| async move {
+        let response: Response<TestBody> = match req.uri().path() {
+            "/grpc-ok" => {
+                let mut trailers = HeaderMap::new();
+                trailers.insert(
+                    http::HeaderName::from_static("grpc-status"),
+                    HeaderValue::from_static("0"),
+                );
+                trailers.insert(
+                    http::HeaderName::from_static("grpc-message"),
+                    HeaderValue::from_static("ok"),
+                );
+                Response::builder()
+                    .header("content-type", "application/grpc")
+                    .header(http::header::TRAILER, "grpc-status, grpc-message")
+                    .body(
+                        TrailerThenEndBody::new(
+                            Bytes::from_static(b"\x00\x00\x00\x00\x00"),
+                            trailers,
+                        )
+                        .boxed(),
+                    )
+                    .expect("grpc ok response")
+            }
+            "/grpc-error" => {
+                let mut trailers = HeaderMap::new();
+                trailers.insert(
+                    http::HeaderName::from_static("grpc-status"),
+                    HeaderValue::from_static("14"),
+                );
+                trailers.insert(
+                    http::HeaderName::from_static("grpc-message"),
+                    HeaderValue::from_static("unavailable"),
+                );
+                Response::builder()
+                    .header("content-type", "application/grpc")
+                    .header(http::header::TRAILER, "grpc-status, grpc-message")
+                    .body(TrailerThenEndBody::new(Bytes::new(), trailers).boxed())
+                    .expect("grpc error response")
+            }
+            "/grpc-timeout" => {
+                tokio::time::sleep(Duration::from_secs(BACKEND_TIMEOUT_SECS + 1)).await;
+                Response::new(Full::new(Bytes::from_static(b"late\n")).boxed())
+            }
+            "/health" => Response::new(Full::new(Bytes::from_static(b"ok\n")).boxed()),
+            _ => Response::builder()
+                .status(StatusCode::NOT_FOUND)
+                .body(Full::new(Bytes::from_static(b"missing\n")).boxed())
+                .expect("not found response"),
+        };
+        Ok::<_, hyper::Error>(response)
+    })
+    .await
 }
 
 fn read_test_root_store(cert_path: &str) -> Result<RootCertStore, String> {
-    let certs = CertificateDer::pem_file_iter(cert_path)
-        .map_err(|err| format!("open cert file: {err}"))?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|err| format!("parse certs: {err}"))?;
+    let certs = read_test_certificate_chain(cert_path)?;
     let mut roots = RootCertStore::empty();
     for cert in certs {
         roots
@@ -1043,6 +1044,13 @@ fn read_test_root_store(cert_path: &str) -> Result<RootCertStore, String> {
             .map_err(|err| format!("add root cert: {err}"))?;
     }
     Ok(roots)
+}
+
+fn read_test_certificate_chain(cert_path: &str) -> Result<Vec<CertificateDer<'static>>, String> {
+    CertificateDer::pem_file_iter(cert_path)
+        .map_err(|err| format!("open cert file: {err}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|err| format!("parse certs: {err}"))
 }
 
 fn read_test_leaf_der(cert_path: &str) -> Result<Vec<u8>, String> {

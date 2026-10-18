@@ -338,7 +338,7 @@ mod tests {
         metrics.backend_timeouts.store(12, Ordering::Relaxed);
         wait_until(
             Duration::from_secs(3),
-            || watchdog.is_degraded(),
+            || metrics.watchdog_degraded_windows.load(Ordering::Relaxed) >= 2,
             "post-recovery degraded watchdog window",
         )
         .await;

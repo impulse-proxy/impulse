@@ -18,7 +18,9 @@ pub(in crate::quic_listener) use self::outcome::{
 };
 use self::prepare::RequestFinalizationConfig;
 #[cfg(test)]
-pub(in crate::quic_listener) use self::resolve::TargetResolutionRequest as TestTargetResolutionRequest;
+pub(in crate::quic_listener) use self::resolve::{
+    TargetResolutionRequest as TestTargetResolutionRequest, selectors_for_test as test_selectors,
+};
 pub(crate) use self::{
     resolve::TargetResolutionRequest,
     selection::{

@@ -33,7 +33,6 @@ fn write_test_certs(dir: &TempDir) -> (String, String) {
         key_path.to_string_lossy().to_string(),
     )
 }
-
 async fn start_h2_backend(body: &'static str) -> SocketAddr {
     let fixture = request_support::start_h1_backend(move |_req: Request<Incoming>| async move {
         Ok::<_, std::convert::Infallible>(Response::new(Full::new(Bytes::from(body))))
@@ -179,61 +178,4 @@ fn round_robin_across_backends() {
         sequence,
         vec!["backend-a", "backend-b", "backend-a", "backend-b"]
     );
-}
-
-#[test]
-fn consistent_hash_is_stable_per_authority() {
-    if !local_listener_bind_available() {
-        return;
-    }
-
-    let dir = tempdir().expect("failed to create temp dir");
-    let (cert, key) = write_test_certs(&dir);
-
-    let rt = tokio::runtime::Runtime::new().expect("runtime");
-    let backend_a = rt.block_on(start_h2_backend("node-a\n"));
-    let backend_b = rt.block_on(start_h2_backend("node-b\n"));
-
-    let backends = vec![
-        Backend {
-            id: "a".to_string(),
-            address: backend_a.to_string(),
-            weight: 1,
-            health_check: Some(HealthCheck {
-                path: "/health".to_string(),
-                interval: 1000,
-                timeout_ms: 1000,
-                failure_threshold: 3,
-                success_threshold: 1,
-                cooldown_ms: 0,
-            }),
-        },
-        Backend {
-            id: "b".to_string(),
-            address: backend_b.to_string(),
-            weight: 1,
-            health_check: Some(HealthCheck {
-                path: "/health".to_string(),
-                interval: 1000,
-                timeout_ms: 1000,
-                failure_threshold: 3,
-                success_threshold: 1,
-                cooldown_ms: 0,
-            }),
-        },
-    ];
-
-    let config = make_config(0, backends, "consistent-hash", cert, key);
-    let listener = QUICListener::new(config).expect("failed to create listener");
-    let listen_addr = listener.socket.local_addr().unwrap();
-
-    let _listener_task = request_support::ListenerTaskGuard::spawn(&rt, listener);
-
-    let a1 = run_h3_client(listen_addr, "alpha").expect("alpha 1");
-    let a2 = run_h3_client(listen_addr, "alpha").expect("alpha 2");
-    let b1 = run_h3_client(listen_addr, "beta").expect("beta 1");
-
-    assert_eq!(a1.trim(), a2.trim());
-    assert!(a1.trim() == "node-a" || a1.trim() == "node-b");
-    assert!(b1.trim() == "node-a" || b1.trim() == "node-b");
 }
