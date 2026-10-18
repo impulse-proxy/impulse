@@ -240,3 +240,101 @@ fn header_contains_token(headers: &HeaderMap, name: http::header::HeaderName, to
         })
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn policy() -> RuntimeResponseCompressionPolicy {
+        RuntimeResponseCompressionPolicy {
+            enabled: true,
+            minimum_size_bytes: 64,
+        }
+    }
+
+    fn response_headers() -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        );
+        headers.insert(header::CONTENT_LENGTH, HeaderValue::from_static("128"));
+        headers
+    }
+
+    fn evaluate(
+        method: &str,
+        request_headers: &HeaderMap,
+        status: StatusCode,
+        response_headers: &HeaderMap,
+    ) -> ResponseCompressionEvaluation {
+        evaluate_response_compression(ResponseCompressionInput {
+            policy: &policy(),
+            request_method: method,
+            request_headers,
+            response_status: status,
+            response_headers,
+        })
+    }
+
+    #[test]
+    fn gzip_negotiation_honors_quality_and_wildcards() {
+        let response_headers = response_headers();
+        for (value, expected) in [
+            ("gzip", ResponseCompressionAction::Gzip),
+            ("br, *;q=0.5", ResponseCompressionAction::Gzip),
+            (
+                "gzip;q=0, *;q=1",
+                ResponseCompressionAction::Bypass(ResponseCompressionBypassReason::NotAccepted),
+            ),
+            (
+                "br",
+                ResponseCompressionAction::Bypass(ResponseCompressionBypassReason::NotAccepted),
+            ),
+        ] {
+            let mut request_headers = HeaderMap::new();
+            request_headers.insert(
+                header::ACCEPT_ENCODING,
+                HeaderValue::from_str(value).expect("accept-encoding"),
+            );
+            let evaluated = evaluate("GET", &request_headers, StatusCode::OK, &response_headers);
+            assert_eq!(evaluated.action, expected, "{value}");
+            assert!(evaluated.vary_accept_encoding);
+        }
+    }
+
+    #[test]
+    fn bodyless_range_and_preencoded_responses_bypass_compression() {
+        let accepted =
+            HeaderMap::from_iter([(header::ACCEPT_ENCODING, HeaderValue::from_static("gzip"))]);
+
+        assert_eq!(
+            evaluate("HEAD", &accepted, StatusCode::OK, &response_headers()).action,
+            ResponseCompressionAction::Bypass(ResponseCompressionBypassReason::Bodyless)
+        );
+        assert_eq!(
+            evaluate(
+                "GET",
+                &accepted,
+                StatusCode::NO_CONTENT,
+                &response_headers(),
+            )
+            .action,
+            ResponseCompressionAction::Bypass(ResponseCompressionBypassReason::Bodyless)
+        );
+
+        let mut range = accepted.clone();
+        range.insert(header::RANGE, HeaderValue::from_static("bytes=0-15"));
+        assert_eq!(
+            evaluate("GET", &range, StatusCode::OK, &response_headers()).action,
+            ResponseCompressionAction::Bypass(ResponseCompressionBypassReason::Range)
+        );
+
+        let mut preencoded = response_headers();
+        preencoded.insert(header::CONTENT_ENCODING, HeaderValue::from_static("gzip"));
+        assert_eq!(
+            evaluate("GET", &accepted, StatusCode::OK, &preencoded).action,
+            ResponseCompressionAction::Bypass(ResponseCompressionBypassReason::ExistingEncoding)
+        );
+    }
+}

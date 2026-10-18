@@ -8,7 +8,9 @@ use std::{
 
 use http_body_util::BodyExt;
 use impulse_config::{
-    config::{ApiKeyAuth, Config, RouteAuth, ScopedRateLimit, ScopedRateLimitScope},
+    config::{
+        ApiKeyAuth, Config, ResponseCompression, RouteAuth, ScopedRateLimit, ScopedRateLimitScope,
+    },
     runtime::{ListenerRuntimeConfig, RuntimeConfig},
     validator::validate,
 };
@@ -465,6 +467,160 @@ fn pingora_and_http3_share_request_contracts() {
 }
 
 #[test]
+fn pingora_and_http3_match_response_compression_contracts() {
+    if !local_listener_bind_available() {
+        return;
+    }
+
+    let mut harness = ProtocolParityHarness::new();
+    let backend_addr = harness.start_h1_backend(|request| async move {
+        let (status, body, content_encoding) = match request.uri().path() {
+            "/bodyless" => (http::StatusCode::NO_CONTENT, bytes::Bytes::new(), None),
+            "/preencoded" => (
+                http::StatusCode::OK,
+                bytes::Bytes::from_static(b"already encoded"),
+                Some("gzip"),
+            ),
+            "/too-large" => (
+                http::StatusCode::OK,
+                bytes::Bytes::from(vec![b'a'; 256]),
+                None,
+            ),
+            _ => (
+                http::StatusCode::OK,
+                bytes::Bytes::from(vec![b'a'; 96]),
+                None,
+            ),
+        };
+        let mut response = hyper::Response::builder()
+            .status(status)
+            .header(http::header::CONTENT_TYPE, "text/plain")
+            .header(http::header::CONTENT_LENGTH, body.len().to_string());
+        if let Some(content_encoding) = content_encoding {
+            response = response.header(http::header::CONTENT_ENCODING, content_encoding);
+        }
+        Ok::<_, std::convert::Infallible>(
+            response
+                .body(http_body_util::Full::new(body))
+                .expect("backend response"),
+        )
+    });
+
+    let mut upstream = make_upstream(
+        "/",
+        vec![make_backend("backend-a", backend_addr.to_string())],
+        None,
+        "round-robin",
+    );
+    upstream.compression = ResponseCompression {
+        enabled: true,
+        minimum_size_bytes: 1,
+    };
+    let mut config = harness.make_config(HashMap::from([("api".to_string(), upstream)]));
+    config.performance.max_response_body_bytes = 128;
+    let mut pingora_config = config.clone();
+    pingora_config.listen.port = reserve_unused_listener_port();
+    let (_pingora, pingora_addr) =
+        PingoraTestService::start(pingora_config).expect("start Pingora ingress");
+    harness
+        .start_listener(config)
+        .expect("start HTTP/3 ingress");
+
+    let selected_headers = &["content-encoding", "content-length", "vary"];
+    let (pingora, http3) = protocol_pair(
+        &harness,
+        pingora_addr,
+        ParityRequestSpec {
+            method: "GET",
+            authority: "localhost",
+            path: "/compress",
+            headers: &[("accept-encoding", "gzip")],
+            body: None,
+            user_agent: "impulse-compression-parity-test",
+            selected_response_headers: selected_headers,
+        },
+    );
+    assert_eq!(pingora, http3);
+    assert_eq!(selected_header(&pingora, "content-encoding"), Some("gzip"));
+    assert!(
+        selected_header(&pingora, "vary")
+            .is_some_and(|value| value.eq_ignore_ascii_case("accept-encoding"))
+    );
+    assert_eq!(selected_header(&pingora, "content-length"), None);
+    assert_ne!(pingora.body, vec![b'a'; 96]);
+
+    for (method, path, headers) in [
+        ("GET", "/compress", &[("accept-encoding", "identity")][..]),
+        (
+            "GET",
+            "/compress",
+            &[("accept-encoding", "gzip"), ("range", "bytes=0-15")][..],
+        ),
+        ("HEAD", "/compress", &[("accept-encoding", "gzip")][..]),
+        ("GET", "/bodyless", &[("accept-encoding", "gzip")][..]),
+    ] {
+        let (pingora, http3) = protocol_pair(
+            &harness,
+            pingora_addr,
+            ParityRequestSpec {
+                method,
+                authority: "localhost",
+                path,
+                headers,
+                body: None,
+                user_agent: "impulse-compression-parity-test",
+                selected_response_headers: selected_headers,
+            },
+        );
+        assert_eq!(pingora, http3, "{method} {path}");
+        assert_eq!(
+            selected_header(&pingora, "content-encoding"),
+            None,
+            "{method} {path} must bypass compression"
+        );
+        if method == "HEAD" || path == "/bodyless" {
+            assert!(pingora.body.is_empty(), "{method} {path} must be bodyless");
+        }
+    }
+
+    let (pingora, http3) = protocol_pair(
+        &harness,
+        pingora_addr,
+        ParityRequestSpec {
+            method: "GET",
+            authority: "localhost",
+            path: "/preencoded",
+            headers: &[("accept-encoding", "gzip")],
+            body: None,
+            user_agent: "impulse-compression-parity-test",
+            selected_response_headers: selected_headers,
+        },
+    );
+    assert_eq!(pingora, http3);
+    assert_eq!(selected_header(&pingora, "content-encoding"), Some("gzip"));
+    assert_eq!(pingora.body, b"already encoded".to_vec());
+
+    let (pingora, http3) = protocol_pair(
+        &harness,
+        pingora_addr,
+        ParityRequestSpec {
+            method: "GET",
+            authority: "localhost",
+            path: "/too-large",
+            headers: &[("accept-encoding", "gzip")],
+            body: None,
+            user_agent: "impulse-compression-parity-test",
+            selected_response_headers: selected_headers,
+        },
+    );
+    assert_eq!(pingora, http3);
+    assert_eq!(
+        pingora.status,
+        http::StatusCode::SERVICE_UNAVAILABLE.as_u16()
+    );
+}
+
+#[test]
 fn pingora_and_http3_share_consistent_hash_backend_selection() {
     if !local_listener_bind_available() {
         return;
@@ -700,11 +856,27 @@ fn metric_delta(before: &str, after: &str, prefix: &str) -> u64 {
     counter(after, prefix).saturating_sub(counter(before, prefix))
 }
 
+fn selected_header<'a>(response: &'a ParityResponseSnapshot, name: &str) -> Option<&'a str> {
+    response
+        .selected_headers
+        .iter()
+        .find_map(|(header, value)| header.eq_ignore_ascii_case(name).then_some(value.as_str()))
+}
+
 fn assert_protocol_parity(
     harness: &ProtocolParityHarness,
     pingora_addr: SocketAddr,
     request: ParityRequestSpec<'_>,
 ) {
+    let (pingora, quic) = protocol_pair(harness, pingora_addr, request);
+    assert_eq!(pingora, quic);
+}
+
+fn protocol_pair(
+    harness: &ProtocolParityHarness,
+    pingora_addr: SocketAddr,
+    request: ParityRequestSpec<'_>,
+) -> (ParityResponseSnapshot, ParityResponseSnapshot) {
     let quic = harness.run_quic(request).expect("HTTP/3 parity response");
     let pingora = run_http2_request_to(
         pingora_addr,
@@ -721,7 +893,7 @@ fn assert_protocol_parity(
     .map(|response| snapshot(response, request.selected_response_headers))
     .expect("Pingora parity response");
 
-    assert_eq!(pingora, quic.response);
+    (pingora, quic.response)
 }
 
 fn snapshot(

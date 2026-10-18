@@ -1977,4 +1977,22 @@ mod tests {
         }
         assert!(immediate.is_none());
     }
+
+    #[test]
+    fn cancelled_compression_scope_records_partial_stream_bytes() {
+        let metrics = Arc::new(Metrics::default());
+        {
+            let mut accounting = ResponseCompressionByteMetrics {
+                metrics: Arc::clone(&metrics),
+                input: 0,
+                output: 0,
+            };
+            accounting.input = 4_096;
+            accounting.output = 512;
+        }
+
+        let rendered = metrics.render_prometheus();
+        assert!(rendered.contains("impulse_response_compression_input_bytes_total 4096\n"));
+        assert!(rendered.contains("impulse_response_compression_output_bytes_total 512\n"));
+    }
 }
