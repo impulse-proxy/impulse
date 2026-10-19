@@ -1,9 +1,96 @@
-use http::uri::Authority;
+use http::{HeaderMap, header, uri::Authority};
+use impulse_config::runtime::RuntimeResponseCachePolicy;
 use pingora_cache::key::CacheKey;
 
 use crate::routing::util::canonical_request_target;
 
 const CACHE_KEY_NAMESPACE: &[u8] = b"impulse-response-cache-v1";
+const SUPPORTED_VARY_HEADER: &str = "accept-encoding";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResponseCacheBypassReason {
+    Disabled,
+    UnsupportedMethod,
+    Authorization,
+    Cookie,
+    RequestBody,
+    Upgrade,
+    Tunnel,
+    SetCookie,
+    Private,
+    NoStore,
+    MalformedHeader,
+    UnsupportedVary,
+}
+
+pub struct ResponseCacheRequestEligibilityInput<'a> {
+    pub policy: &'a RuntimeResponseCachePolicy,
+    pub method: &'a str,
+    pub headers: &'a HeaderMap,
+    pub has_body: bool,
+    pub is_upgrade: bool,
+    pub is_tunnel: bool,
+}
+
+pub struct ResponseCacheResponseEligibilityInput<'a> {
+    pub headers: &'a HeaderMap,
+}
+
+pub fn evaluate_cache_request_eligibility(
+    input: ResponseCacheRequestEligibilityInput<'_>,
+) -> Result<ResponseCacheRepresentation, ResponseCacheBypassReason> {
+    if !input.policy.enabled {
+        return Err(ResponseCacheBypassReason::Disabled);
+    }
+    if input.headers.contains_key(header::AUTHORIZATION) {
+        return Err(ResponseCacheBypassReason::Authorization);
+    }
+    if input.headers.contains_key(header::COOKIE) {
+        return Err(ResponseCacheBypassReason::Cookie);
+    }
+    if input.has_body {
+        return Err(ResponseCacheBypassReason::RequestBody);
+    }
+    if input.is_upgrade
+        || input.headers.contains_key(header::UPGRADE)
+        || header_contains_token(input.headers, header::CONNECTION, "upgrade")?
+    {
+        return Err(ResponseCacheBypassReason::Upgrade);
+    }
+    if input.is_tunnel {
+        return Err(ResponseCacheBypassReason::Tunnel);
+    }
+    match input.method {
+        method if method.eq_ignore_ascii_case("GET") => Ok(ResponseCacheRepresentation::Get),
+        method if method.eq_ignore_ascii_case("HEAD") => Ok(ResponseCacheRepresentation::Head),
+        _ => Err(ResponseCacheBypassReason::UnsupportedMethod),
+    }
+}
+
+pub fn evaluate_cache_response_eligibility(
+    input: ResponseCacheResponseEligibilityInput<'_>,
+) -> Result<(), ResponseCacheBypassReason> {
+    if input.headers.contains_key(header::SET_COOKIE) {
+        return Err(ResponseCacheBypassReason::SetCookie);
+    }
+    if header_contains_directive(input.headers, header::CACHE_CONTROL, "private")? {
+        return Err(ResponseCacheBypassReason::Private);
+    }
+    if header_contains_directive(input.headers, header::CACHE_CONTROL, "no-store")? {
+        return Err(ResponseCacheBypassReason::NoStore);
+    }
+    for value in input.headers.get_all(header::VARY).iter() {
+        let value = value
+            .to_str()
+            .map_err(|_| ResponseCacheBypassReason::MalformedHeader)?;
+        for name in value.split(',').map(str::trim) {
+            if name.is_empty() || !name.eq_ignore_ascii_case(SUPPORTED_VARY_HEADER) {
+                return Err(ResponseCacheBypassReason::UnsupportedVary);
+            }
+        }
+    }
+    Ok(())
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResponseCacheRepresentation {
@@ -56,7 +143,7 @@ pub fn canonical_response_cache_key(input: ResponseCacheKeyInput<'_>) -> Option<
     push_component(&mut primary, authority.as_bytes());
     push_component(&mut primary, target.as_bytes());
     push_component(&mut primary, input.representation.as_bytes());
-    push_component(&mut primary, b"accept-encoding");
+    push_component(&mut primary, SUPPORTED_VARY_HEADER.as_bytes());
     push_component(&mut primary, accept_encoding.as_bytes());
 
     Some(CacheKey::new(primary, ""))
@@ -99,6 +186,48 @@ fn canonical_accept_encoding(raw: Option<&str>) -> String {
         .collect::<Vec<_>>();
     encodings.sort_unstable();
     encodings.join(",")
+}
+
+fn header_contains_token(
+    headers: &HeaderMap,
+    name: header::HeaderName,
+    expected: &str,
+) -> Result<bool, ResponseCacheBypassReason> {
+    for value in headers.get_all(name).iter() {
+        let value = value
+            .to_str()
+            .map_err(|_| ResponseCacheBypassReason::MalformedHeader)?;
+        if value
+            .split(',')
+            .map(str::trim)
+            .any(|token| token.eq_ignore_ascii_case(expected))
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn header_contains_directive(
+    headers: &HeaderMap,
+    name: header::HeaderName,
+    expected: &str,
+) -> Result<bool, ResponseCacheBypassReason> {
+    for value in headers.get_all(name).iter() {
+        let value = value
+            .to_str()
+            .map_err(|_| ResponseCacheBypassReason::MalformedHeader)?;
+        if value.split(',').map(str::trim).any(|directive| {
+            directive
+                .split_once('=')
+                .map_or(directive, |(name, _)| name)
+                .trim()
+                .eq_ignore_ascii_case(expected)
+        }) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn push_component(key: &mut Vec<u8>, component: &[u8]) {
