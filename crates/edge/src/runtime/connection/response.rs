@@ -101,6 +101,7 @@ pub(crate) struct ResponseBodyPumpPlan {
     pub(crate) progressive_emission_allowed: bool,
     pub(crate) defer_headers_until_body_validated: bool,
     pub(crate) tunnel_response: bool,
+    pub(crate) compress_response: bool,
 }
 
 pub(crate) enum ResponseStartObservation {

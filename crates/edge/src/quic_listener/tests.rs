@@ -70,6 +70,7 @@ fn test_upstream_with(lb_type: &str, lb_key: Option<&str>, method: Option<&str>)
         auth: Default::default(),
         host_policy: Default::default(),
         forwarded_headers: Default::default(),
+        compression: Default::default(),
         tls: None,
         route: RouteMatch {
             host: None,
@@ -192,6 +193,7 @@ fn dns_resolution_test_config(cert: String, key: String) -> ImpulseConfigConfig 
             auth: Default::default(),
             host_policy: Default::default(),
             forwarded_headers: Default::default(),
+            compression: Default::default(),
             tls: None,
             route: RouteMatch {
                 host: Some("api.example.com".to_string()),

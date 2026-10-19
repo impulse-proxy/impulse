@@ -36,6 +36,7 @@ mod test_support {
                 auth: Default::default(),
                 host_policy: Default::default(),
                 forwarded_headers: Default::default(),
+                compression: Default::default(),
                 route: RouteMatch {
                     host: Some("api.example.com".to_string()),
                     path_prefix: None,

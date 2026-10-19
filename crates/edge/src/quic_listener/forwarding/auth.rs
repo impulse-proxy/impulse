@@ -1114,6 +1114,7 @@ mod tests {
             },
             host: RuntimeHostPolicy::default(),
             forwarded_headers: RuntimeForwardedHeaderPolicy::default(),
+            response_compression: Default::default(),
             protocol: RuntimeProtocolPolicy::default(),
         };
         let brownout = BrownoutController::new(false, 100, 90, Vec::new());

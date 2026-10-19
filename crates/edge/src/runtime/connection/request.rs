@@ -6,7 +6,10 @@ use std::{
 };
 
 use bytes::Bytes;
-use impulse_config::config::{ForwardedHeaderPolicy, UpstreamHostPolicy};
+use impulse_config::{
+    config::{ForwardedHeaderPolicy, UpstreamHostPolicy},
+    runtime::RuntimeResponseCompressionPolicy,
+};
 use impulse_lb::upstream_pool::UpstreamPool;
 use tokio::sync::{mpsc, oneshot};
 use tracing::Span;
@@ -990,6 +993,7 @@ pub struct PendingForward {
     pub traceparent: Option<Arc<str>>,
     pub host_policy: UpstreamHostPolicy,
     pub forwarded_header_policy: ForwardedHeaderPolicy,
+    pub response_compression: RuntimeResponseCompressionPolicy,
     pub(crate) auth_header_mutations: Vec<PendingHeaderMutation>,
 }
 
@@ -1019,6 +1023,7 @@ impl PendingForward {
             traceparent: None,
             host_policy: UpstreamHostPolicy::default(),
             forwarded_header_policy: ForwardedHeaderPolicy::default(),
+            response_compression: RuntimeResponseCompressionPolicy::default(),
             auth_header_mutations: Vec::new(),
         }
     }

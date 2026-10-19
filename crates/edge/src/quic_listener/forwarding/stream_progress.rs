@@ -398,7 +398,12 @@ impl QUICListener {
                 match forward_result.forward {
                     Ok(success) => {
                         let decision = if let Some(req) = streams.get(&stream_id) {
-                            Self::prepare_response_start_decision(req, success, progress_config)
+                            Self::prepare_response_start_decision(
+                                req,
+                                success,
+                                progress_config,
+                                metrics,
+                            )
                         } else {
                             continue;
                         };

@@ -740,6 +740,7 @@ mod tests {
             },
             host: Default::default(),
             forwarded_headers: Default::default(),
+            response_compression: Default::default(),
             protocol: Default::default(),
         }
     }
@@ -765,6 +766,7 @@ mod tests {
             },
             host: Default::default(),
             forwarded_headers: Default::default(),
+            response_compression: Default::default(),
             protocol: Default::default(),
         }
     }
@@ -838,6 +840,7 @@ mod tests {
                 auth: RouteAuth::default(),
                 host_policy: UpstreamHostPolicy::default(),
                 forwarded_headers: ForwardedHeaderPolicy::default(),
+                compression: Default::default(),
                 tls: None,
                 route: RouteMatch {
                     host: None,
@@ -923,6 +926,7 @@ mod tests {
                     },
                     host_policy: UpstreamHostPolicy::default(),
                     forwarded_headers: ForwardedHeaderPolicy::default(),
+                    compression: Default::default(),
                     tls: None,
                     route: RouteMatch {
                         host: None,
@@ -1984,6 +1988,7 @@ mod tests {
                     auth: RouteAuth::default(),
                     host_policy: UpstreamHostPolicy::default(),
                     forwarded_headers: ForwardedHeaderPolicy::default(),
+                    compression: Default::default(),
                     tls: None,
                     route: RouteMatch {
                         host: None,

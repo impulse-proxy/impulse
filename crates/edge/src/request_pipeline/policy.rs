@@ -1,6 +1,6 @@
 use impulse_config::{
     config::{ForwardedHeaderPolicy, UpstreamHostPolicy},
-    runtime::{RuntimeExternalAuth, RuntimeUpstreamPolicy},
+    runtime::{RuntimeExternalAuth, RuntimeResponseCompressionPolicy, RuntimeUpstreamPolicy},
 };
 
 use crate::runtime::connection::auth::{ExternalAuthFailureDisposition, ExternalAuthTaskConfig};
@@ -12,6 +12,7 @@ pub(crate) fn resolve_policy(upstream_policy: &RuntimeUpstreamPolicy) -> Resolve
         local_auth_policy: upstream_policy.clone(),
         host_policy: upstream_policy.host.0.clone(),
         forwarded_header_policy: upstream_policy.forwarded_headers.0.clone(),
+        response_compression: upstream_policy.response_compression.clone(),
         external_auth: upstream_policy
             .upstream_auth
             .external_auth
@@ -27,6 +28,7 @@ pub(crate) struct ResolvedRequestPolicy {
     pub(crate) local_auth_policy: RuntimeUpstreamPolicy,
     pub(crate) host_policy: UpstreamHostPolicy,
     pub(crate) forwarded_header_policy: ForwardedHeaderPolicy,
+    pub(crate) response_compression: RuntimeResponseCompressionPolicy,
     pub(crate) external_auth: Option<ExternalAuthPlan>,
 }
 

@@ -1,23 +1,75 @@
+use std::sync::Arc;
+
 use bytes::Bytes;
 use impulse_errors::{UpstreamProxyErrorKind, classify_upstream_proxy_error};
 use impulse_transport::{UpstreamBody, UpstreamBodyFrame};
+use pingora_core::protocols::http::compression::Algorithm;
 use tokio::sync::mpsc::error::TryRecvError;
 
 use super::*;
-use crate::runtime::connection::{
-    auth::ExternalAuthDecision,
-    guardrails::{
-        BodyLimitKind, BodyTimeoutKind, ProgressiveEmissionPolicy, RESPONSE_BODY_TOO_LARGE_BODY,
-        ResponseBodyGuardrailConfig, ResponseBodyGuardrailDecision, ResponseBodyGuardrailInput,
-        checked_response_body_guardrails, is_unknown_length_response_prebuffer_reason,
-        response_body_limit_reason, response_chunk_ranges,
+use crate::{
+    request_pipeline::{
+        ResponseCompressionAction, ResponseCompressionInput, ensure_vary_accept_encoding,
+        evaluate_response_compression,
     },
-    response::{
-        ImmediateResponseStart, ResponseBodyPumpPlan, ResponseChunk, ResponseStartDecision,
-        ResponseStartMetadata, ResponseStartObservation,
+    runtime::connection::{
+        auth::ExternalAuthDecision,
+        guardrails::{
+            BodyLimitKind, BodyTimeoutKind, ProgressiveEmissionPolicy,
+            RESPONSE_BODY_TOO_LARGE_BODY, ResponseBodyGuardrailConfig,
+            ResponseBodyGuardrailDecision, ResponseBodyGuardrailInput,
+            checked_response_body_guardrails, is_unknown_length_response_prebuffer_reason,
+            response_body_limit_reason, response_chunk_ranges,
+        },
+        response::{
+            ImmediateResponseStart, ResponseBodyPumpPlan, ResponseChunk, ResponseStartDecision,
+            ResponseStartMetadata, ResponseStartObservation,
+        },
+        stream::{BackendFailureReason, CompletionReason, ResponseEmissionState, TimeoutReason},
     },
-    stream::{BackendFailureReason, CompletionReason, ResponseEmissionState, TimeoutReason},
 };
+
+const RESPONSE_GZIP_LEVEL: u32 = 6;
+
+struct ResponseCompressionByteMetrics {
+    metrics: Arc<Metrics>,
+    input: usize,
+    output: usize,
+}
+
+impl Drop for ResponseCompressionByteMetrics {
+    fn drop(&mut self) {
+        self.metrics
+            .add_response_compression_bytes(self.input, self.output);
+    }
+}
+
+fn apply_gzip_response_headers(headers: &mut http::HeaderMap) {
+    headers.insert(
+        http::header::CONTENT_ENCODING,
+        http::HeaderValue::from_static("gzip"),
+    );
+    headers.remove(http::header::CONTENT_LENGTH);
+    headers.remove(http::header::ACCEPT_RANGES);
+    ensure_vary_accept_encoding(headers);
+
+    let Some(etag) = headers.get(http::header::ETAG).cloned() else {
+        return;
+    };
+    if etag.as_bytes().starts_with(b"W/") {
+        return;
+    }
+    if etag.as_bytes().starts_with(b"\"") {
+        let mut weak = Vec::with_capacity(etag.as_bytes().len() + 2);
+        weak.extend_from_slice(b"W/");
+        weak.extend_from_slice(etag.as_bytes());
+        if let Ok(weak) = http::HeaderValue::from_bytes(&weak) {
+            headers.insert(http::header::ETAG, weak);
+            return;
+        }
+    }
+    headers.remove(http::header::ETAG);
+}
 
 fn response_body_guardrail_chunk(decision: ResponseBodyGuardrailDecision) -> Option<ResponseChunk> {
     match decision {
@@ -271,6 +323,7 @@ impl QUICListener {
         req: &RequestEnvelope,
         success: ForwardSuccess,
         progress_config: &StreamProgressConfig,
+        metrics: &Metrics,
     ) -> ResponseStartDecision {
         let (status, resp_headers, response_body, prebuilt_response_chunk_rx) = match success {
             ForwardSuccess::Response {
@@ -359,15 +412,39 @@ impl QUICListener {
             };
         }
 
-        let mut headers: Vec<(Vec<u8>, Vec<u8>)> = normalized_response
-            .headers
+        let mut response_headers = http::HeaderMap::new();
+        for header in normalized_response.headers {
+            response_headers.append(header.name, header.value);
+        }
+        let mut compress_response = false;
+        if let Some(pending_forward) = req.pending_forward() {
+            let mut request_headers = http::HeaderMap::new();
+            for header in pending_forward.original_request_headers() {
+                if let (Ok(name), Ok(value)) = (
+                    http::header::HeaderName::from_bytes(header.name()),
+                    http::HeaderValue::from_bytes(header.value()),
+                ) {
+                    request_headers.append(name, value);
+                }
+            }
+            let compression = evaluate_response_compression(ResponseCompressionInput {
+                policy: &pending_forward.response_compression,
+                request_method: &req.method,
+                request_headers: &request_headers,
+                response_status: status,
+                response_headers: &response_headers,
+            });
+            metrics.record_response_compression_outcome(compression.action);
+            compress_response = matches!(compression.action, ResponseCompressionAction::Gzip);
+            if compress_response {
+                apply_gzip_response_headers(&mut response_headers);
+            } else if compression.vary_accept_encoding {
+                ensure_vary_accept_encoding(&mut response_headers);
+            }
+        }
+        let mut headers: Vec<(Vec<u8>, Vec<u8>)> = response_headers
             .iter()
-            .map(|header| {
-                (
-                    header.name.as_str().as_bytes().to_vec(),
-                    header.value.as_bytes().to_vec(),
-                )
-            })
+            .map(|(name, value)| (name.as_str().as_bytes().to_vec(), value.as_bytes().to_vec()))
             .collect();
         headers.push((
             b"alt-svc".to_vec(),
@@ -430,6 +507,7 @@ impl QUICListener {
                 progressive_emission_allowed: progressive_body_emission_allowed,
                 defer_headers_until_body_validated,
                 tunnel_response,
+                compress_response,
             },
             observation,
         }
@@ -853,6 +931,7 @@ impl QUICListener {
         response_body: UpstreamBody,
         deferred_start: Option<ResponseChunk>,
         pump: ResponseBodyPumpPlan,
+        metrics: Arc<Metrics>,
     ) -> mpsc::Receiver<ResponseChunk> {
         let (chunk_tx, chunk_rx) = mpsc::channel::<ResponseChunk>(RESPONSE_CHUNK_CHANNEL_CAPACITY);
         let fail_tx = chunk_tx.clone();
@@ -865,6 +944,16 @@ impl QUICListener {
             let mut prebuffered_bytes: usize = 0;
             let mut buffered_chunks: Vec<Bytes> = Vec::new();
             let mut buffered_trailers: Option<Vec<(Vec<u8>, Vec<u8>)>> = None;
+            let mut compressor = pump
+                .compress_response
+                .then(|| Algorithm::Gzip.compressor(RESPONSE_GZIP_LEVEL))
+                .flatten();
+            let mut compression_metrics =
+                compressor.as_ref().map(|_| ResponseCompressionByteMetrics {
+                    metrics,
+                    input: 0,
+                    output: 0,
+                });
             loop {
                 let wait_decision = checked_response_body_guardrails(
                     pump.guardrails,
@@ -942,25 +1031,56 @@ impl QUICListener {
                             for (start, end) in
                                 response_chunk_ranges(data.len(), streaming.chunk_emission)
                             {
-                                let chunk = data.slice(start..end);
-                                match streaming.emission {
-                                    ProgressiveEmissionPolicy::PrebufferUntilValidated => {
-                                        buffered_chunks.push(chunk);
+                                let mut chunk = data.slice(start..end);
+                                if let Some(compressor) = compressor.as_mut() {
+                                    if let Some(metrics) = compression_metrics.as_mut() {
+                                        metrics.input = metrics.input.saturating_add(chunk.len());
                                     }
-                                    ProgressiveEmissionPolicy::StreamProgressively => {
-                                        if chunk_tx.send(ResponseChunk::Data(chunk)).await.is_err()
-                                        {
+                                    chunk = match compressor.encode(&chunk, false) {
+                                        Ok(chunk) => chunk,
+                                        Err(error) => {
+                                            let _ = chunk_tx
+                                                .send(ResponseChunk::Error(ProxyError::Transport(
+                                                    format!("response compression failed: {error}"),
+                                                )))
+                                                .await;
                                             return;
                                         }
+                                    };
+                                    if let Some(metrics) = compression_metrics.as_mut() {
+                                        metrics.output = metrics.output.saturating_add(chunk.len());
                                     }
-                                    ProgressiveEmissionPolicy::SuppressBody => {}
+                                }
+                                if chunk.is_empty() {
+                                    continue;
+                                }
+                                for (start, end) in
+                                    response_chunk_ranges(chunk.len(), streaming.chunk_emission)
+                                {
+                                    let chunk = chunk.slice(start..end);
+                                    match streaming.emission {
+                                        ProgressiveEmissionPolicy::PrebufferUntilValidated => {
+                                            buffered_chunks.push(chunk);
+                                        }
+                                        ProgressiveEmissionPolicy::StreamProgressively => {
+                                            if chunk_tx
+                                                .send(ResponseChunk::Data(chunk))
+                                                .await
+                                                .is_err()
+                                            {
+                                                return;
+                                            }
+                                        }
+                                        ProgressiveEmissionPolicy::SuppressBody => {}
+                                    }
                                 }
                             }
                         }
                         UpstreamBodyFrame::Trailers(trailers) => {
                             let trailer_headers = collect_h3_trailers(&trailers);
                             if !trailer_headers.is_empty() {
-                                if pump.defer_headers_until_body_validated {
+                                if pump.defer_headers_until_body_validated || pump.compress_response
+                                {
                                     buffered_trailers = Some(trailer_headers);
                                 } else if chunk_tx
                                     .send(ResponseChunk::Trailers {
@@ -979,6 +1099,32 @@ impl QUICListener {
                         return;
                     }
                     Ok(None) => {
+                        let final_chunk = if let Some(compressor) = compressor.as_mut() {
+                            match compressor.encode(&[], true) {
+                                Ok(chunk) => Some(chunk),
+                                Err(error) => {
+                                    let _ = chunk_tx
+                                        .send(ResponseChunk::Error(ProxyError::Transport(format!(
+                                            "response compression failed: {error}"
+                                        ))))
+                                        .await;
+                                    return;
+                                }
+                            }
+                        } else {
+                            None
+                        };
+                        if let (Some(metrics), Some(chunk)) =
+                            (compression_metrics.as_mut(), final_chunk.as_ref())
+                        {
+                            metrics.output = metrics.output.saturating_add(chunk.len());
+                        }
+                        if pump.defer_headers_until_body_validated
+                            && let Some(chunk) = final_chunk.as_ref()
+                            && !chunk.is_empty()
+                        {
+                            buffered_chunks.push(chunk.clone());
+                        }
                         if let Some(start) = deferred_start.take()
                             && chunk_tx.send(start).await.is_err()
                         {
@@ -990,6 +1136,11 @@ impl QUICListener {
                                     return;
                                 }
                             }
+                        } else if let Some(chunk) = final_chunk
+                            && !chunk.is_empty()
+                            && chunk_tx.send(ResponseChunk::Data(chunk)).await.is_err()
+                        {
+                            return;
                         }
                         if let Some(headers) = buffered_trailers
                             && chunk_tx
@@ -1161,8 +1312,13 @@ impl QUICListener {
                     Self::send_response_start_headers(h3, quic, stream_id, &metadata, false)?;
                 }
                 let deferred_start = Self::into_deferred_response_start_chunk(metadata);
-                let chunk_rx =
-                    Self::spawn_response_body_pump(req, response_body, deferred_start, pump);
+                let chunk_rx = Self::spawn_response_body_pump(
+                    req,
+                    response_body,
+                    deferred_start,
+                    pump,
+                    Arc::clone(&shared_ctx.metrics),
+                );
                 req.response_status = Some(response_status.as_u16());
                 if let Err(state_err) = req.transition_to_streaming_response(
                     chunk_rx,
@@ -1820,5 +1976,23 @@ mod tests {
             _ => panic!("deferred metadata must produce a start chunk"),
         }
         assert!(immediate.is_none());
+    }
+
+    #[test]
+    fn cancelled_compression_scope_records_partial_stream_bytes() {
+        let metrics = Arc::new(Metrics::default());
+        {
+            let mut accounting = ResponseCompressionByteMetrics {
+                metrics: Arc::clone(&metrics),
+                input: 0,
+                output: 0,
+            };
+            accounting.input = 4_096;
+            accounting.output = 512;
+        }
+
+        let rendered = metrics.render_prometheus();
+        assert!(rendered.contains("impulse_response_compression_input_bytes_total 4096\n"));
+        assert!(rendered.contains("impulse_response_compression_output_bytes_total 512\n"));
     }
 }

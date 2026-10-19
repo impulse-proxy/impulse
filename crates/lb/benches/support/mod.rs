@@ -24,6 +24,7 @@ pub fn runtime_upstream(backend_count: usize, strategy: &str) -> RuntimeUpstream
             auth: Default::default(),
             host_policy: Default::default(),
             forwarded_headers: Default::default(),
+            compression: Default::default(),
             tls: None,
             route: RouteMatch {
                 host: None,

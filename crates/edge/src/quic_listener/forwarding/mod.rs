@@ -345,6 +345,7 @@ mod tests {
             },
             host: Default::default(),
             forwarded_headers: Default::default(),
+            response_compression: Default::default(),
             protocol: Default::default(),
         };
         let headers = [("x-api-key".to_string(), "secret-key".to_string())]
@@ -396,6 +397,7 @@ mod tests {
             },
             host: Default::default(),
             forwarded_headers: Default::default(),
+            response_compression: Default::default(),
             protocol: Default::default(),
         };
         let headers = [("authorization".to_string(), format!("Bearer {token}"))]
@@ -1193,6 +1195,7 @@ mod tests {
             },
             host: Default::default(),
             forwarded_headers: Default::default(),
+            response_compression: Default::default(),
             protocol: Default::default(),
         };
         let allowed_claims = serde_json::json!({

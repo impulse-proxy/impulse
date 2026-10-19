@@ -166,6 +166,7 @@ fn make_config(port: u32, backend_addr: String, cert: String, key: String) -> Co
             auth: Default::default(),
             host_policy: Default::default(),
             forwarded_headers: Default::default(),
+            compression: Default::default(),
             tls: None,
             route: RouteMatch {
                 path_prefix: Some("/".to_string()),
