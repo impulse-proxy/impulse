@@ -1,10 +1,12 @@
 use bytes::Bytes;
 use http::StatusCode;
+use impulse_config::runtime::RuntimeResponseCachePolicy;
 use impulse_errors::{
     HedgeOutcomeTelemetryReason, HedgeTriggerTelemetryReason, ProxyError,
     RetryAttemptTelemetryReason, RetryPolicyDenialReason,
 };
 use impulse_transport::UpstreamBody;
+use pingora_cache::HttpCache;
 use tokio::sync::mpsc;
 
 use crate::{
@@ -17,6 +19,8 @@ pub(crate) enum ForwardSuccess {
         status: http::StatusCode,
         headers: http::HeaderMap,
         body: UpstreamBody,
+        cache_miss: Option<(HttpCache, RuntimeResponseCachePolicy)>,
+        cache_hit: bool,
     },
     Tunnel {
         status: http::StatusCode,
@@ -102,11 +106,13 @@ pub(crate) struct ResponseBodyPumpPlan {
     pub(crate) defer_headers_until_body_validated: bool,
     pub(crate) tunnel_response: bool,
     pub(crate) compress_response: bool,
+    pub(crate) response_cache: Option<HttpCache>,
 }
 
 pub(crate) enum ResponseStartObservation {
     Status {
         status: StatusCode,
+        backend_used: bool,
     },
     ProxyError {
         status: StatusCode,

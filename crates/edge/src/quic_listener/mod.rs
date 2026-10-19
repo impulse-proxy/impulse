@@ -403,6 +403,10 @@ impl QUICListener {
             upstream_inflight: &self.upstream_inflight,
             global_inflight: Arc::clone(&self.global_inflight),
             inflight_acquire_wait: self.inflight_acquire_wait,
+            response_cache: self
+                .runtime_bundle
+                .as_ref()
+                .and_then(|runtime| runtime.response_cache()),
         };
         let progress_config = StreamProgressConfig {
             backend_body_idle_timeout: self.backend_body_idle_timeout,
@@ -488,6 +492,10 @@ impl QUICListener {
             upstream_inflight: &self.upstream_inflight,
             global_inflight: Arc::clone(&self.global_inflight),
             inflight_acquire_wait: self.inflight_acquire_wait,
+            response_cache: self
+                .runtime_bundle
+                .as_ref()
+                .and_then(|runtime| runtime.response_cache()),
         };
         let progress_config = StreamProgressConfig {
             backend_body_idle_timeout: self.backend_body_idle_timeout,

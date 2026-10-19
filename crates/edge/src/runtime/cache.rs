@@ -1,11 +1,13 @@
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use http::{HeaderMap, header, uri::Authority};
 use impulse_config::runtime::RuntimeResponseCachePolicy;
 use pingora_cache::{
-    HttpCache, MemCache, eviction::simple_lru::Manager as LruEvictionManager, key::CacheKey,
-    lock::CacheLock,
+    HttpCache, MemCache, cache_control::CacheControl,
+    eviction::simple_lru::Manager as LruEvictionManager, filters::calculate_expires_header_time,
+    key::CacheKey, lock::CacheLock,
 };
+use pingora_http::ResponseHeader;
 
 use crate::routing::util::canonical_request_target;
 
@@ -43,6 +45,41 @@ impl BoundedPingoraMemoryCache {
         );
         cache.set_max_file_size_bytes(max_object_bytes.min(self.max_object_bytes));
     }
+}
+
+pub fn response_cache_ttl(
+    response: &ResponseHeader,
+    max_ttl_secs: u64,
+    now: SystemTime,
+) -> Option<Duration> {
+    let cache_control_ttl = match CacheControl::from_resp_headers(response) {
+        Some(cache_control)
+            if cache_control.no_cache()
+                || cache_control.no_store()
+                || cache_control.has_key("private") =>
+        {
+            return None;
+        }
+        Some(cache_control) => cache_control
+            .s_maxage()
+            .ok()?
+            .or(cache_control.max_age().ok()?)
+            .map(u64::from),
+        None => None,
+    };
+    let origin_ttl = match cache_control_ttl {
+        Some(seconds) => Some(Duration::from_secs(seconds)),
+        None if response.headers.contains_key(header::EXPIRES) => Some(
+            calculate_expires_header_time(response)?
+                .duration_since(now)
+                .ok()?,
+        ),
+        None => None,
+    };
+    let ttl = origin_ttl
+        .unwrap_or_else(|| Duration::from_secs(max_ttl_secs))
+        .min(Duration::from_secs(max_ttl_secs));
+    (!ttl.is_zero()).then_some(ttl)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

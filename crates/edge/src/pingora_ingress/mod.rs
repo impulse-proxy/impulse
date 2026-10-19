@@ -24,7 +24,6 @@ use impulse_lb::{alternate_backend::AlternateBackendFailureReason, upstream_pool
 use impulse_transport::{classify_pingora_h1_error, classify_pingora_h2_error};
 use pingora_cache::{
     CacheKey, CacheMeta, NoCacheReason, RespCacheable, cache_control::CacheControl,
-    filters::calculate_expires_header_time,
 };
 use pingora_core::{
     Error, HTTPStatus, InternalError, Result,
@@ -61,7 +60,7 @@ use crate::{
             BoundedPingoraMemoryCache, ResponseCacheKeyInput, ResponseCacheRepresentation,
             ResponseCacheRequestEligibilityInput, ResponseCacheResponseEligibilityInput,
             canonical_response_cache_key, evaluate_cache_request_eligibility,
-            evaluate_cache_response_eligibility,
+            evaluate_cache_response_eligibility, response_cache_ttl,
         },
         connection::{
             PerSourceTokenBucket, TokenBucket,
@@ -1639,41 +1638,6 @@ fn pingora_response_constraints(preserve_upgrade: bool) -> ResponseProtocolConst
         protocol: ResponseNormalizationProtocol::Http1,
         preserve_upgrade,
     }
-}
-
-fn response_cache_ttl(
-    response: &ResponseHeader,
-    max_ttl_secs: u64,
-    now: SystemTime,
-) -> Option<Duration> {
-    let cache_control_ttl = match CacheControl::from_resp_headers(response) {
-        Some(cache_control)
-            if cache_control.no_cache()
-                || cache_control.no_store()
-                || cache_control.has_key("private") =>
-        {
-            return None;
-        }
-        Some(cache_control) => cache_control
-            .s_maxage()
-            .ok()?
-            .or(cache_control.max_age().ok()?)
-            .map(u64::from),
-        None => None,
-    };
-    let origin_ttl = match cache_control_ttl {
-        Some(seconds) => Some(Duration::from_secs(seconds)),
-        None if response.headers.contains_key(http::header::EXPIRES) => Some(
-            calculate_expires_header_time(response)?
-                .duration_since(now)
-                .ok()?,
-        ),
-        None => None,
-    };
-    let ttl = origin_ttl
-        .unwrap_or_else(|| Duration::from_secs(max_ttl_secs))
-        .min(Duration::from_secs(max_ttl_secs));
-    (!ttl.is_zero()).then_some(ttl)
 }
 
 fn bridge_headers(headers: &http::HeaderMap) -> Vec<quiche::h3::Header> {
