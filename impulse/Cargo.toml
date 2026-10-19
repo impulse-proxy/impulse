@@ -14,8 +14,6 @@ log.workspace = true
 tokio.workspace = true
 quiche.workspace = true
 rand.workspace = true
-libc.workspace = true
-core_affinity.workspace = true
 
 impulse-config = { path = "../crates/config" }
 impulse-edge = { path = "../crates/edge" }

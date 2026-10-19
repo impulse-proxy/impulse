@@ -24,7 +24,6 @@ hyper-util = { workspace = true, features = ["client-legacy", "http1", "http2", 
 hyper-rustls.workspace = true
 tokio.workspace = true
 redis.workspace = true
-serial_test = "3"
 rand.workspace = true
 hmac = "0.12"
 sha2 = "0.10"
@@ -56,11 +55,7 @@ harness = false
 
 [dev-dependencies]
 criterion = "0.5"
-rand.workspace = true
 rcgen = "0.12"
+serial_test = "3"
 tempfile = "3"
-bytes.workspace = true
-http.workspace = true
-http-body-util.workspace = true
-tokio.workspace = true
 serde_yaml.workspace = true

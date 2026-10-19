@@ -1464,11 +1464,9 @@ name = "impulse"
 version = "0.6.0"
 dependencies = [
  "clap",
- "core_affinity",
  "impulse-config",
  "impulse-edge",
  "impulse-utils",
- "libc",
  "log",
  "quiche",
  "rand",
@@ -1574,7 +1572,6 @@ dependencies = [
  "async-trait",
  "criterion",
  "impulse-config",
- "log",
  "pingora-error",
  "pingora-load-balancing",
 ]
