@@ -1,11 +1,37 @@
 use http::{HeaderMap, header, uri::Authority};
 use impulse_config::runtime::RuntimeResponseCachePolicy;
-use pingora_cache::key::CacheKey;
+use pingora_cache::{
+    HttpCache, MemCache, eviction::simple_lru::Manager as LruEvictionManager, key::CacheKey,
+};
 
 use crate::routing::util::canonical_request_target;
 
 const CACHE_KEY_NAMESPACE: &[u8] = b"impulse-response-cache-v1";
 const SUPPORTED_VARY_HEADER: &str = "accept-encoding";
+
+pub struct BoundedPingoraMemoryCache {
+    storage: MemCache,
+    eviction: LruEvictionManager,
+    max_object_bytes: usize,
+}
+
+impl BoundedPingoraMemoryCache {
+    pub fn new(policy: &RuntimeResponseCachePolicy) -> Self {
+        Self {
+            storage: MemCache::new(),
+            eviction: LruEvictionManager::new_with_watermark(
+                policy.max_bytes,
+                Some(policy.max_entries),
+            ),
+            max_object_bytes: policy.max_object_bytes,
+        }
+    }
+
+    pub fn enable(&'static self, cache: &mut HttpCache) {
+        cache.enable(&self.storage, Some(&self.eviction), None, None, None);
+        cache.set_max_file_size_bytes(self.max_object_bytes);
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResponseCacheBypassReason {
