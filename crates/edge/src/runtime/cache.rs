@@ -1,17 +1,22 @@
+use std::time::Duration;
+
 use http::{HeaderMap, header, uri::Authority};
 use impulse_config::runtime::RuntimeResponseCachePolicy;
 use pingora_cache::{
     HttpCache, MemCache, eviction::simple_lru::Manager as LruEvictionManager, key::CacheKey,
+    lock::CacheLock,
 };
 
 use crate::routing::util::canonical_request_target;
 
 const CACHE_KEY_NAMESPACE: &[u8] = b"impulse-response-cache-v1";
+const CACHE_LOCK_AGE_TIMEOUT: Duration = Duration::from_secs(60);
 const SUPPORTED_VARY_HEADER: &str = "accept-encoding";
 
 pub struct BoundedPingoraMemoryCache {
     storage: MemCache,
     eviction: LruEvictionManager,
+    lock: CacheLock,
     max_object_bytes: usize,
 }
 
@@ -23,12 +28,19 @@ impl BoundedPingoraMemoryCache {
                 policy.max_bytes,
                 Some(policy.max_entries),
             ),
+            lock: CacheLock::new(CACHE_LOCK_AGE_TIMEOUT),
             max_object_bytes: policy.max_object_bytes,
         }
     }
 
     pub fn enable(&'static self, cache: &mut HttpCache) {
-        cache.enable(&self.storage, Some(&self.eviction), None, None, None);
+        cache.enable(
+            &self.storage,
+            Some(&self.eviction),
+            None,
+            Some(&self.lock),
+            None,
+        );
         cache.set_max_file_size_bytes(self.max_object_bytes);
     }
 }
