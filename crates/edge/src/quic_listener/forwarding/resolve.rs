@@ -1,3 +1,9 @@
+#[cfg(test)]
+use std::{
+    collections::hash_map::DefaultHasher,
+    hash::{Hash, Hasher},
+};
+
 use impulse_config::runtime::{RuntimeBackendTlsPolicy, RuntimeUpstreamPolicy};
 use impulse_lb::pingora_backend::PingoraLoadBalancingRuntimeState;
 
@@ -69,6 +75,13 @@ pub(in crate::quic_listener) fn selectors_for_test(
     runtime: &impulse_config::runtime::RuntimeConfig,
 ) -> PingoraLoadBalancingRuntimeState<RuntimeBackendTlsPolicy> {
     let generation = 1;
+    let health_registry = Arc::new(
+        impulse_lb::pingora_backend::HealthRegistry::with_equivalence(|backend| {
+            let mut hasher = DefaultHasher::new();
+            backend.hash(&mut hasher);
+            hasher.finish()
+        }),
+    );
     let views = runtime.upstreams.iter().map(|(name, upstream)| {
         let tls_identity = upstream.backend_tls_policy().clone();
         let view = impulse_lb::pingora_backend::GenerationBackendView::from_runtime_upstream(
@@ -91,11 +104,13 @@ pub(in crate::quic_listener) fn selectors_for_test(
                     tls_identity.clone(),
                 )
             },
+            Arc::clone(&health_registry),
         )
         .expect("selector view");
         (name.clone(), upstream.load_balancing.strategy, view)
     });
-    PingoraLoadBalancingRuntimeState::new(generation, views).expect("selector runtime")
+    PingoraLoadBalancingRuntimeState::new(generation, views, health_registry)
+        .expect("selector runtime")
 }
 
 #[derive(Clone, Copy)]

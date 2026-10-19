@@ -1,18 +1,17 @@
 //! Load-balancing primitives for runtime-selected backend picking.
 //!
-//! Canonical consumers should depend on [`upstream_pool`], [`load_balancing`],
-//! [`alternate_backend`], and [`health`]. The remaining modules are kept
-//! private as implementation substrate and are not intended as orchestration
-//! entrypoints.
+//! Canonical consumers should depend on [`upstream_pool`],
+//! [`alternate_backend`], and [`health`]. Selection implementations remain
+//! private behind those runtime entrypoints.
 
 mod algorithms;
 pub mod alternate_backend;
 mod backend;
 mod backend_pool;
 pub mod health;
-pub mod load_balancing;
+mod load_balancing;
 pub mod pingora_backend;
-pub mod pingora_discovery;
+mod pingora_discovery;
 #[cfg(test)]
 pub(crate) mod test_support;
 pub mod upstream_pool;

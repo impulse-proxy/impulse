@@ -708,15 +708,9 @@ pub fn backend_health_reason(
     match (source, outcome) {
         (S::ActiveCheck, O::Success) => Some(BackendHealthReason::ActiveProbeSuccess),
         (S::ActiveCheck, O::Failure) => Some(BackendHealthReason::ActiveProbeFailure),
-        (S::PassiveRequest | S::RequestCompletion, O::Success) => {
-            Some(BackendHealthReason::PassiveSuccess)
-        }
-        (S::PassiveRequest | S::RequestCompletion, O::Failure) => {
-            Some(BackendHealthReason::PassiveFailure)
-        }
-        // Control-plane driven observations are administrative, not probe health;
-        // and any Neutral outcome carries no health reason.
-        (S::ControlPlane, _) | (_, O::Neutral) => None,
+        (S::PassiveRequest, O::Success) => Some(BackendHealthReason::PassiveSuccess),
+        (S::PassiveRequest, O::Failure) => Some(BackendHealthReason::PassiveFailure),
+        (_, O::Neutral) => None,
     }
 }
 
@@ -1310,13 +1304,8 @@ mod tests {
                 backend_health_reason(S::PassiveRequest, O::Failure),
                 Some(BackendHealthReason::PassiveFailure)
             );
-            assert_eq!(
-                backend_health_reason(S::RequestCompletion, O::Success),
-                Some(BackendHealthReason::PassiveSuccess)
-            );
-            // Neutral and control-plane observations carry no health reason.
+            // Neutral observations carry no health reason.
             assert_eq!(backend_health_reason(S::ActiveCheck, O::Neutral), None);
-            assert_eq!(backend_health_reason(S::ControlPlane, O::Success), None);
         }
 
         #[test]

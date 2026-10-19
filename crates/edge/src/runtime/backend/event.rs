@@ -3,33 +3,7 @@ use std::time::Duration;
 use http::StatusCode;
 use impulse_lb::health::HealthFailureReason;
 
-use super::state::{
-    BackendHealthState, BackendIdentity, BackendLifecycleSnapshot, BackendMembershipState,
-};
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum BackendLifecycleEvent {
-    HealthObservation(BackendHealthObservation),
-    RequestFeedback(BackendRequestFeedback),
-    Mutation(BackendLifecycleMutation),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum BackendLifecycleMutation {
-    HealthUpdated {
-        identity: BackendIdentity,
-        state: BackendHealthState,
-    },
-    MembershipUpdated {
-        identity: BackendIdentity,
-        state: BackendMembershipState,
-    },
-    SnapshotPublished(BackendLifecycleSnapshot),
-    Noop {
-        identity: BackendIdentity,
-        reason: &'static str,
-    },
-}
+use super::state::BackendIdentity;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BackendHealthObservation {
@@ -58,8 +32,6 @@ impl BackendHealthObservation {
 pub enum BackendHealthObservationSource {
     ActiveCheck,
     PassiveRequest,
-    RequestCompletion,
-    ControlPlane,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

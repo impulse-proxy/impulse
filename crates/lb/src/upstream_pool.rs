@@ -127,14 +127,6 @@ impl UpstreamPool {
         self.pool.address(index)
     }
 
-    pub fn backend_count(&self) -> usize {
-        self.pool.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.pool.is_empty()
-    }
-
     pub fn backend_indices(&self) -> Vec<usize> {
         self.pool.all_indices()
     }
@@ -174,10 +166,6 @@ impl UpstreamPool {
 
     pub fn lb_strategy(&self) -> RuntimeLoadBalancingStrategy {
         self.lb_policy.strategy
-    }
-
-    pub fn load_balancer_name(&self) -> &'static str {
-        self.lb_policy.strategy.canonical_name()
     }
 
     pub fn lb_key_spec(&self) -> Option<&RuntimeRequestKeySpec> {

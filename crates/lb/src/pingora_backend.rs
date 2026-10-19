@@ -77,7 +77,7 @@ impl<P> BackendSelectionResult<P> {
     }
 }
 
-pub fn synchronize_backend_readiness<T>(
+fn synchronize_backend_readiness<T>(
     view: &BackendView,
     mut is_healthy: impl FnMut(usize) -> bool,
 ) -> Result<(), String>
@@ -144,7 +144,7 @@ where
         .cloned()
 }
 
-pub struct GenerationStickyCid<T> {
+struct GenerationStickyCid<T> {
     selector: GenerationKetama<T>,
 }
 
@@ -152,17 +152,13 @@ impl<T> GenerationStickyCid<T>
 where
     T: Clone + Send + Sync + 'static,
 {
-    pub fn from_backend_view(view: GenerationBackendView) -> Self {
+    fn from_backend_view(view: GenerationBackendView) -> Self {
         Self {
             selector: GenerationKetama::from_backend_view(view),
         }
     }
 
-    pub fn select(&self, cid_key: &str) -> Option<BackendSelectionResult<T>> {
-        self.select_excluding(cid_key, &[])
-    }
-
-    pub fn select_excluding(
+    fn select_excluding(
         &self,
         cid_key: &str,
         excluded_backend_indices: &[usize],
@@ -171,23 +167,20 @@ where
             .select_excluding(cid_key.as_bytes(), excluded_backend_indices)
     }
 
-    pub fn synchronize_readiness(
-        &self,
-        is_healthy: impl FnMut(usize) -> bool,
-    ) -> Result<(), String> {
+    fn synchronize_readiness(&self, is_healthy: impl FnMut(usize) -> bool) -> Result<(), String> {
         self.selector.synchronize_readiness(is_healthy)
     }
 
-    pub fn generation(&self) -> u64 {
+    fn generation(&self) -> u64 {
         self.selector.generation()
     }
 
-    pub fn upstream_name(&self) -> &str {
+    fn upstream_name(&self) -> &str {
         self.selector.upstream_name()
     }
 }
 
-pub struct GenerationKetama<T> {
+struct GenerationKetama<T> {
     generation: u64,
     upstream_name: String,
     selector: LoadBalancer<pingora_load_balancing::selection::Consistent>,
@@ -198,7 +191,7 @@ impl<T> GenerationKetama<T>
 where
     T: Clone + Send + Sync + 'static,
 {
-    pub fn from_backend_view(view: GenerationBackendView) -> Self {
+    fn from_backend_view(view: GenerationBackendView) -> Self {
         let GenerationBackendView {
             generation,
             upstream_name,
@@ -214,11 +207,7 @@ where
         }
     }
 
-    pub fn select(&self, key: &[u8]) -> Option<BackendSelectionResult<T>> {
-        self.select_excluding(key, &[])
-    }
-
-    pub fn select_excluding(
+    fn select_excluding(
         &self,
         key: &[u8],
         excluded_backend_indices: &[usize],
@@ -238,23 +227,20 @@ where
         selection_result(selected, self.generation)
     }
 
-    pub fn synchronize_readiness(
-        &self,
-        is_healthy: impl FnMut(usize) -> bool,
-    ) -> Result<(), String> {
+    fn synchronize_readiness(&self, is_healthy: impl FnMut(usize) -> bool) -> Result<(), String> {
         synchronize_backend_readiness::<T>(self.selector.backends(), is_healthy)
     }
 
-    pub fn generation(&self) -> u64 {
+    fn generation(&self) -> u64 {
         self.generation
     }
 
-    pub fn upstream_name(&self) -> &str {
+    fn upstream_name(&self) -> &str {
         &self.upstream_name
     }
 }
 
-pub struct GenerationWeightedRandom<T> {
+struct GenerationWeightedRandom<T> {
     generation: u64,
     upstream_name: String,
     selector: LoadBalancer<PingoraRandom>,
@@ -265,7 +251,7 @@ impl<T> GenerationWeightedRandom<T>
 where
     T: Clone + Send + Sync + 'static,
 {
-    pub fn from_backend_view(view: GenerationBackendView) -> Self {
+    fn from_backend_view(view: GenerationBackendView) -> Self {
         let GenerationBackendView {
             generation,
             upstream_name,
@@ -281,11 +267,7 @@ where
         }
     }
 
-    pub fn select(&self) -> Option<BackendSelectionResult<T>> {
-        self.select_excluding(&[])
-    }
-
-    pub fn select_excluding(
+    fn select_excluding(
         &self,
         excluded_backend_indices: &[usize],
     ) -> Option<BackendSelectionResult<T>> {
@@ -304,23 +286,20 @@ where
         selection_result(selected, self.generation)
     }
 
-    pub fn synchronize_readiness(
-        &self,
-        is_healthy: impl FnMut(usize) -> bool,
-    ) -> Result<(), String> {
+    fn synchronize_readiness(&self, is_healthy: impl FnMut(usize) -> bool) -> Result<(), String> {
         synchronize_backend_readiness::<T>(self.selector.backends(), is_healthy)
     }
 
-    pub fn generation(&self) -> u64 {
+    fn generation(&self) -> u64 {
         self.generation
     }
 
-    pub fn upstream_name(&self) -> &str {
+    fn upstream_name(&self) -> &str {
         &self.upstream_name
     }
 }
 
-pub struct GenerationWeightedRoundRobin<T> {
+struct GenerationWeightedRoundRobin<T> {
     generation: u64,
     upstream_name: String,
     selector: LoadBalancer<PingoraRoundRobin>,
@@ -331,7 +310,7 @@ impl<T> GenerationWeightedRoundRobin<T>
 where
     T: Clone + Send + Sync + 'static,
 {
-    pub fn from_backend_view(view: GenerationBackendView) -> Self {
+    fn from_backend_view(view: GenerationBackendView) -> Self {
         let GenerationBackendView {
             generation,
             upstream_name,
@@ -347,11 +326,7 @@ where
         }
     }
 
-    pub fn select(&self) -> Option<BackendSelectionResult<T>> {
-        self.select_excluding(&[])
-    }
-
-    pub fn select_excluding(
+    fn select_excluding(
         &self,
         excluded_backend_indices: &[usize],
     ) -> Option<BackendSelectionResult<T>> {
@@ -370,18 +345,15 @@ where
         selection_result(selected, self.generation)
     }
 
-    pub fn synchronize_readiness(
-        &self,
-        is_healthy: impl FnMut(usize) -> bool,
-    ) -> Result<(), String> {
+    fn synchronize_readiness(&self, is_healthy: impl FnMut(usize) -> bool) -> Result<(), String> {
         synchronize_backend_readiness::<T>(self.selector.backends(), is_healthy)
     }
 
-    pub fn generation(&self) -> u64 {
+    fn generation(&self) -> u64 {
         self.generation
     }
 
-    pub fn upstream_name(&self) -> &str {
+    fn upstream_name(&self) -> &str {
         &self.upstream_name
     }
 }
@@ -393,7 +365,7 @@ pub struct GenerationBackendView {
     discovery: Option<ImpulseServiceDiscovery>,
 }
 
-pub enum GenerationSelector<T> {
+enum GenerationSelectorKind<T> {
     WeightedRoundRobin(GenerationWeightedRoundRobin<T>),
     WeightedRandom(GenerationWeightedRandom<T>),
     Ketama(GenerationKetama<T>),
@@ -402,17 +374,22 @@ pub enum GenerationSelector<T> {
     CustomLatencyAware(GenerationBackendView),
 }
 
+pub struct GenerationSelector<T> {
+    kind: GenerationSelectorKind<T>,
+}
+
 impl<T> GenerationSelector<T>
 where
     T: Clone + Send + Sync + 'static,
 {
     fn set_backend_enabled(&self, configured_address: &str, enabled: bool) {
-        let backends = match self {
-            Self::WeightedRoundRobin(selector) => selector.selector.backends(),
-            Self::WeightedRandom(selector) => selector.selector.backends(),
-            Self::Ketama(selector) => selector.selector.backends(),
-            Self::StickyCid(selector) => selector.selector.selector.backends(),
-            Self::CustomLeastConnections(view) | Self::CustomLatencyAware(view) => &view.view,
+        let backends = match &self.kind {
+            GenerationSelectorKind::WeightedRoundRobin(selector) => selector.selector.backends(),
+            GenerationSelectorKind::WeightedRandom(selector) => selector.selector.backends(),
+            GenerationSelectorKind::Ketama(selector) => selector.selector.backends(),
+            GenerationSelectorKind::StickyCid(selector) => selector.selector.selector.backends(),
+            GenerationSelectorKind::CustomLeastConnections(view)
+            | GenerationSelectorKind::CustomLatencyAware(view) => &view.view,
         };
 
         for backend in backends.get_backend().iter() {
@@ -430,58 +407,62 @@ where
         strategy: RuntimeLoadBalancingStrategy,
         view: GenerationBackendView,
     ) -> Result<Self, String> {
-        Ok(match strategy {
-            RuntimeLoadBalancingStrategy::RoundRobin => {
-                Self::WeightedRoundRobin(GenerationWeightedRoundRobin::from_backend_view(view))
-            }
-            RuntimeLoadBalancingStrategy::Random => {
-                Self::WeightedRandom(GenerationWeightedRandom::from_backend_view(view))
-            }
+        let kind = match strategy {
+            RuntimeLoadBalancingStrategy::RoundRobin => GenerationSelectorKind::WeightedRoundRobin(
+                GenerationWeightedRoundRobin::from_backend_view(view),
+            ),
+            RuntimeLoadBalancingStrategy::Random => GenerationSelectorKind::WeightedRandom(
+                GenerationWeightedRandom::from_backend_view(view),
+            ),
             RuntimeLoadBalancingStrategy::ConsistentHash => {
-                Self::Ketama(GenerationKetama::from_backend_view(view))
+                GenerationSelectorKind::Ketama(GenerationKetama::from_backend_view(view))
             }
             RuntimeLoadBalancingStrategy::StickyCid => {
-                Self::StickyCid(GenerationStickyCid::from_backend_view(view))
+                GenerationSelectorKind::StickyCid(GenerationStickyCid::from_backend_view(view))
             }
-            RuntimeLoadBalancingStrategy::LeastConnections => Self::CustomLeastConnections(view),
-            RuntimeLoadBalancingStrategy::LatencyAware => Self::CustomLatencyAware(view),
+            RuntimeLoadBalancingStrategy::LeastConnections => {
+                GenerationSelectorKind::CustomLeastConnections(view)
+            }
+            RuntimeLoadBalancingStrategy::LatencyAware => {
+                GenerationSelectorKind::CustomLatencyAware(view)
+            }
             RuntimeLoadBalancingStrategy::Other => {
                 return Err(format!(
                     "unsupported load-balancing strategy for upstream '{}'",
                     view.upstream_name()
                 ));
             }
-        })
+        };
+        Ok(Self { kind })
     }
 
     pub fn generation(&self) -> u64 {
-        match self {
-            Self::WeightedRoundRobin(selector) => selector.generation(),
-            Self::WeightedRandom(selector) => selector.generation(),
-            Self::Ketama(selector) => selector.generation(),
-            Self::StickyCid(selector) => selector.generation(),
-            Self::CustomLeastConnections(view) | Self::CustomLatencyAware(view) => {
-                view.generation()
-            }
+        match &self.kind {
+            GenerationSelectorKind::WeightedRoundRobin(selector) => selector.generation(),
+            GenerationSelectorKind::WeightedRandom(selector) => selector.generation(),
+            GenerationSelectorKind::Ketama(selector) => selector.generation(),
+            GenerationSelectorKind::StickyCid(selector) => selector.generation(),
+            GenerationSelectorKind::CustomLeastConnections(view)
+            | GenerationSelectorKind::CustomLatencyAware(view) => view.generation(),
         }
     }
 
     pub fn upstream_name(&self) -> &str {
-        match self {
-            Self::WeightedRoundRobin(selector) => selector.upstream_name(),
-            Self::WeightedRandom(selector) => selector.upstream_name(),
-            Self::Ketama(selector) => selector.upstream_name(),
-            Self::StickyCid(selector) => selector.upstream_name(),
-            Self::CustomLeastConnections(view) | Self::CustomLatencyAware(view) => {
-                view.upstream_name()
-            }
+        match &self.kind {
+            GenerationSelectorKind::WeightedRoundRobin(selector) => selector.upstream_name(),
+            GenerationSelectorKind::WeightedRandom(selector) => selector.upstream_name(),
+            GenerationSelectorKind::Ketama(selector) => selector.upstream_name(),
+            GenerationSelectorKind::StickyCid(selector) => selector.upstream_name(),
+            GenerationSelectorKind::CustomLeastConnections(view)
+            | GenerationSelectorKind::CustomLatencyAware(view) => view.upstream_name(),
         }
     }
 
     pub fn uses_custom_dynamic_selector(&self) -> bool {
         matches!(
-            self,
-            Self::CustomLeastConnections(_) | Self::CustomLatencyAware(_)
+            &self.kind,
+            GenerationSelectorKind::CustomLeastConnections(_)
+                | GenerationSelectorKind::CustomLatencyAware(_)
         )
     }
 
@@ -489,12 +470,19 @@ where
         &self,
         is_healthy: impl FnMut(usize) -> bool,
     ) -> Result<(), String> {
-        match self {
-            Self::WeightedRoundRobin(selector) => selector.synchronize_readiness(is_healthy),
-            Self::WeightedRandom(selector) => selector.synchronize_readiness(is_healthy),
-            Self::Ketama(selector) => selector.synchronize_readiness(is_healthy),
-            Self::StickyCid(selector) => selector.synchronize_readiness(is_healthy),
-            Self::CustomLeastConnections(view) | Self::CustomLatencyAware(view) => {
+        match &self.kind {
+            GenerationSelectorKind::WeightedRoundRobin(selector) => {
+                selector.synchronize_readiness(is_healthy)
+            }
+            GenerationSelectorKind::WeightedRandom(selector) => {
+                selector.synchronize_readiness(is_healthy)
+            }
+            GenerationSelectorKind::Ketama(selector) => selector.synchronize_readiness(is_healthy),
+            GenerationSelectorKind::StickyCid(selector) => {
+                selector.synchronize_readiness(is_healthy)
+            }
+            GenerationSelectorKind::CustomLeastConnections(view)
+            | GenerationSelectorKind::CustomLatencyAware(view) => {
                 view.synchronize_readiness::<T>(is_healthy)
             }
         }
@@ -505,28 +493,36 @@ where
         key: &str,
         excluded_backend_indices: &[usize],
     ) -> Option<BackendSelectionResult<T>> {
-        match self {
-            Self::WeightedRoundRobin(selector) => {
+        match &self.kind {
+            GenerationSelectorKind::WeightedRoundRobin(selector) => {
                 selector.select_excluding(excluded_backend_indices)
             }
-            Self::WeightedRandom(selector) => selector.select_excluding(excluded_backend_indices),
-            Self::Ketama(selector) => {
+            GenerationSelectorKind::WeightedRandom(selector) => {
+                selector.select_excluding(excluded_backend_indices)
+            }
+            GenerationSelectorKind::Ketama(selector) => {
                 selector.select_excluding(key.as_bytes(), excluded_backend_indices)
             }
-            Self::StickyCid(selector) => selector.select_excluding(key, excluded_backend_indices),
-            Self::CustomLeastConnections(_) | Self::CustomLatencyAware(_) => None,
+            GenerationSelectorKind::StickyCid(selector) => {
+                selector.select_excluding(key, excluded_backend_indices)
+            }
+            GenerationSelectorKind::CustomLeastConnections(_)
+            | GenerationSelectorKind::CustomLatencyAware(_) => None,
         }
     }
 
     async fn rebuild(&self) -> Result<(), String> {
-        let result = match self {
-            Self::WeightedRoundRobin(selector) => selector.selector.update().await,
-            Self::WeightedRandom(selector) => selector.selector.update().await,
-            Self::Ketama(selector) => selector.selector.update().await,
-            Self::StickyCid(selector) => selector.selector.selector.update().await,
-            Self::CustomLeastConnections(view) | Self::CustomLatencyAware(view) => {
-                view.view.update(|_| {}).await
+        let result = match &self.kind {
+            GenerationSelectorKind::WeightedRoundRobin(selector) => {
+                selector.selector.update().await
             }
+            GenerationSelectorKind::WeightedRandom(selector) => selector.selector.update().await,
+            GenerationSelectorKind::Ketama(selector) => selector.selector.update().await,
+            GenerationSelectorKind::StickyCid(selector) => {
+                selector.selector.selector.update().await
+            }
+            GenerationSelectorKind::CustomLeastConnections(view)
+            | GenerationSelectorKind::CustomLatencyAware(view) => view.view.update(|_| {}).await,
         };
         result.map_err(|error| {
             format!(
@@ -569,7 +565,7 @@ pub struct PingoraLoadBalancingRuntimeState<T> {
     generation: u64,
     selectors: HashMap<String, Arc<GenerationSelector<T>>>,
     discoveries: HashMap<String, ImpulseServiceDiscovery>,
-    health_registry: Option<Arc<HealthRegistry>>,
+    health_registry: Arc<HealthRegistry>,
 }
 
 impl<T> PingoraLoadBalancingRuntimeState<T>
@@ -587,26 +583,7 @@ where
         backend_views: impl IntoIterator<
             Item = (String, RuntimeLoadBalancingStrategy, GenerationBackendView),
         >,
-    ) -> Result<Self, String> {
-        Self::new_inner(generation, backend_views, None)
-    }
-
-    pub fn new_with_health_registry(
-        generation: u64,
-        backend_views: impl IntoIterator<
-            Item = (String, RuntimeLoadBalancingStrategy, GenerationBackendView),
-        >,
         health_registry: Arc<HealthRegistry>,
-    ) -> Result<Self, String> {
-        Self::new_inner(generation, backend_views, Some(health_registry))
-    }
-
-    fn new_inner(
-        generation: u64,
-        backend_views: impl IntoIterator<
-            Item = (String, RuntimeLoadBalancingStrategy, GenerationBackendView),
-        >,
-        health_registry: Option<Arc<HealthRegistry>>,
     ) -> Result<Self, String> {
         let mut selectors = HashMap::new();
         let mut discoveries = HashMap::new();
@@ -658,12 +635,8 @@ where
         self.selectors.len()
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.selectors.is_empty()
-    }
-
-    pub fn health_registry(&self) -> Option<Arc<HealthRegistry>> {
-        self.health_registry.as_ref().map(Arc::clone)
+    pub fn health_registry(&self) -> Arc<HealthRegistry> {
+        Arc::clone(&self.health_registry)
     }
 
     pub async fn publish_dns_result(
@@ -708,55 +681,21 @@ impl GenerationBackendView {
         upstream_name: impl Into<String>,
         upstream: &RuntimeUpstream,
         map_backend: F,
-    ) -> Result<Self, String>
-    where
-        F: FnMut(usize, &Backend) -> Result<PingoraBackend, String>,
-    {
-        Self::from_runtime_upstream_inner(generation, upstream_name, upstream, map_backend, None)
-    }
-
-    pub fn from_runtime_upstream_with_health_registry<F>(
-        generation: u64,
-        upstream_name: impl Into<String>,
-        upstream: &RuntimeUpstream,
-        map_backend: F,
         health_registry: Arc<HealthRegistry>,
     ) -> Result<Self, String>
     where
         F: FnMut(usize, &Backend) -> Result<PingoraBackend, String>,
     {
-        Self::from_runtime_upstream_inner(
-            generation,
-            upstream_name,
-            upstream,
-            map_backend,
-            Some(health_registry),
-        )
-    }
-
-    fn from_runtime_upstream_inner<F>(
-        generation: u64,
-        upstream_name: impl Into<String>,
-        upstream: &RuntimeUpstream,
-        mut map_backend: F,
-        health_registry: Option<Arc<HealthRegistry>>,
-    ) -> Result<Self, String>
-    where
-        F: FnMut(usize, &Backend) -> Result<PingoraBackend, String>,
-    {
         let upstream_name = upstream_name.into();
+        let mut map_backend = map_backend;
         let discovery = ImpulseServiceDiscovery::from_runtime_upstream(
             generation,
             &upstream_name,
             upstream,
             &mut map_backend,
         )?;
-        let view = match health_registry {
-            Some(health_registry) => {
-                BackendView::new_with_health_registry(Box::new(discovery.clone()), health_registry)
-            }
-            None => BackendView::new(Box::new(discovery.clone())),
-        };
+        let view =
+            BackendView::new_with_health_registry(Box::new(discovery.clone()), health_registry);
         let waker = Waker::from(Arc::new(NoopWake));
         let mut context = Context::from_waker(&waker);
         let mut update = Box::pin(view.update(|_| {}));
@@ -791,10 +730,6 @@ impl GenerationBackendView {
         &self.upstream_name
     }
 
-    pub fn view(&self) -> &BackendView {
-        &self.view
-    }
-
     pub fn synchronize_readiness<T>(
         &self,
         is_healthy: impl FnMut(usize) -> bool,
@@ -803,10 +738,6 @@ impl GenerationBackendView {
         T: Clone + Send + Sync + 'static,
     {
         synchronize_backend_readiness::<T>(&self.view, is_healthy)
-    }
-
-    pub fn into_view(self) -> BackendView {
-        self.view
     }
 }
 
@@ -868,6 +799,11 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        collections::hash_map::DefaultHasher,
+        hash::{Hash, Hasher},
+    };
+
     use pingora_load_balancing::discovery::ServiceDiscovery;
 
     use super::*;
@@ -875,6 +811,14 @@ mod tests {
 
     const GENERATION: u64 = 17;
     const HOSTNAME_BACKEND: &str = "http://backend.internal:8080";
+
+    fn health_registry() -> Arc<HealthRegistry> {
+        Arc::new(HealthRegistry::with_equivalence(|backend| {
+            let mut hasher = DefaultHasher::new();
+            backend.hash(&mut hasher);
+            hasher.finish()
+        }))
+    }
 
     fn poll_ready<F: Future>(future: F) -> F::Output {
         let waker = Waker::from(Arc::new(NoopWake));
@@ -895,6 +839,7 @@ mod tests {
             |index, backend| {
                 map_validated_backend(backend, index, SocketAddr::from(([0, 0, 0, 0], 8080)), ())
             },
+            health_registry(),
         )
         .expect("hostname backend view")
     }
@@ -907,6 +852,7 @@ mod tests {
                 RuntimeLoadBalancingStrategy::RoundRobin,
                 hostname_backend_view(GENERATION),
             )],
+            health_registry(),
         )
         .expect("hostname selector runtime")
     }
@@ -1034,6 +980,7 @@ mod tests {
                 RuntimeLoadBalancingStrategy::ConsistentHash,
                 backend_view(&[1, 1]),
             )],
+            health_registry(),
         )
         .expect("selector runtime");
         let selector = runtime.selector("api").expect("api selector");
@@ -1058,6 +1005,7 @@ mod tests {
                     RuntimeLoadBalancingStrategy::RoundRobin,
                     backend_view(&[1]),
                 )],
+                health_registry(),
             )
             .is_err()
         );

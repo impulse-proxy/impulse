@@ -318,7 +318,7 @@ impl QUICListener {
             upstream_inflight.insert(name.clone(), Arc::new(Semaphore::new(per_upstream_limit)));
 
             let tls_identity = runtime_upstream.backend_tls_policy().clone();
-            let view = GenerationBackendView::from_runtime_upstream_with_health_registry(
+            let view = GenerationBackendView::from_runtime_upstream(
                 generation,
                 name,
                 runtime_upstream,
@@ -356,7 +356,7 @@ impl QUICListener {
             pingora_selectors.push((name.clone(), runtime_upstream.load_balancing.strategy, view));
         }
         let pingora_load_balancing = Arc::new(
-            PingoraLoadBalancingRuntimeState::new_with_health_registry(
+            PingoraLoadBalancingRuntimeState::new(
                 generation,
                 pingora_selectors,
                 pingora_health_registry,

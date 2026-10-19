@@ -315,10 +315,7 @@ impl QUICListener {
         else {
             return;
         };
-        let Some(registry) = pingora_load_balancing.health_registry() else {
-            log::error!("Pingora health service disabled: no shared health registry");
-            return;
-        };
+        let registry = pingora_load_balancing.health_registry();
         registry.set_health_check(Box::new(ImpulsePingoraHealthCheck::new(
             generation,
             &upstream_pools,

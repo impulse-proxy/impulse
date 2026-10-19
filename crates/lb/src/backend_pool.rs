@@ -58,11 +58,6 @@ impl BackendPool {
         self.backends.len()
     }
 
-    #[must_use = "this returns a bool, it does not modify the pool"]
-    pub fn is_empty(&self) -> bool {
-        self.backends.is_empty()
-    }
-
     pub fn address(&self, index: usize) -> Option<&str> {
         self.backends.get(index).map(|b| b.address())
     }

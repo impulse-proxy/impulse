@@ -12,7 +12,7 @@ use impulse_config::{config::Backend, runtime::RuntimeUpstream};
 use pingora_load_balancing::{Backend as PingoraBackend, discovery::ServiceDiscovery};
 
 #[derive(Clone)]
-pub struct ImpulseServiceDiscovery {
+pub(crate) struct ImpulseServiceDiscovery {
     generation: u64,
     upstream_name: String,
     backend_addresses: Arc<Vec<String>>,
@@ -21,23 +21,23 @@ pub struct ImpulseServiceDiscovery {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct DiscoveryPublication {
+pub(crate) struct DiscoveryPublication {
     membership_changed: bool,
     membership_generation: u64,
 }
 
 impl DiscoveryPublication {
-    pub fn membership_changed(self) -> bool {
+    pub(crate) fn membership_changed(self) -> bool {
         self.membership_changed
     }
 
-    pub fn membership_generation(self) -> u64 {
+    pub(crate) fn membership_generation(self) -> u64 {
         self.membership_generation
     }
 }
 
 impl ImpulseServiceDiscovery {
-    pub fn from_runtime_upstream<F>(
+    pub(crate) fn from_runtime_upstream<F>(
         generation: u64,
         upstream_name: &str,
         upstream: &RuntimeUpstream,
@@ -76,13 +76,13 @@ impl ImpulseServiceDiscovery {
         })
     }
 
-    pub fn backend_index(&self, configured_address: &str) -> Option<usize> {
+    pub(crate) fn backend_index(&self, configured_address: &str) -> Option<usize> {
         self.backend_addresses
             .iter()
             .position(|address| address == configured_address)
     }
 
-    pub fn publish_dns_result(
+    pub(crate) fn publish_dns_result(
         &self,
         generation: u64,
         backend_index: usize,
