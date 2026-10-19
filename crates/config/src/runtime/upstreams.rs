@@ -331,6 +331,10 @@ fn validate_upstream_policy(
     upstream_name: &str,
     upstream: &Upstream,
 ) -> Result<(), RuntimeConfigError> {
+    upstream.cache.validate().map_err(|error| {
+        RuntimeConfigError::ConfigInvalid(format!("upstream '{upstream_name}' cache.{error}"))
+    })?;
+
     match upstream.host_policy.mode {
         UpstreamHostPolicyMode::PassThrough | UpstreamHostPolicyMode::Upstream => {
             if upstream.host_policy.host.is_some() {
