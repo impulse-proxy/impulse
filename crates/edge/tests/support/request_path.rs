@@ -337,6 +337,7 @@ pub(crate) fn make_upstream(
         host_policy: Default::default(),
         forwarded_headers: Default::default(),
         compression: Default::default(),
+        cache: Default::default(),
         tls,
         route: RouteMatch {
             host: None,

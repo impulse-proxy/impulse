@@ -91,6 +91,7 @@ fn upstream(id: String, route: RouteMatch) -> Upstream {
         host_policy: Default::default(),
         forwarded_headers: Default::default(),
         compression: Default::default(),
+        cache: Default::default(),
         tls: None,
         route,
         backends: vec![Backend {

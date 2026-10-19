@@ -16,6 +16,8 @@ pub struct Upstream {
     #[serde(default)]
     pub compression: ResponseCompression,
     #[serde(default)]
+    pub cache: ResponseCache,
+    #[serde(default)]
     pub tls: Option<UpstreamTls>,
     pub route: RouteMatch,
     pub backends: Vec<Backend>,
@@ -36,6 +38,13 @@ impl Default for ResponseCompression {
             minimum_size_bytes: 1_024,
         }
     }
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, Default, PartialEq, Eq)]
+#[serde(default)]
+#[serde(deny_unknown_fields)]
+pub struct ResponseCache {
+    pub enabled: bool,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, Default)]

@@ -71,6 +71,7 @@ impl RuntimeUpstream {
             host_policy: self.policy.host.0.clone(),
             forwarded_headers: self.policy.forwarded_headers.0.clone(),
             compression: self.policy.response_compression.as_config(),
+            cache: Default::default(),
             tls: Some(self.effective_tls.clone()),
             route: self.route.as_config(),
             backends: self
@@ -829,6 +830,7 @@ mod tests {
             host_policy: UpstreamHostPolicy::default(),
             forwarded_headers: ForwardedHeaderPolicy::default(),
             compression: Default::default(),
+            cache: Default::default(),
             tls: None,
             route: RouteMatch {
                 host: host.map(str::to_string),

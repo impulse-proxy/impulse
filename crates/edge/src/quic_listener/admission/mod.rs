@@ -841,6 +841,7 @@ mod tests {
                 host_policy: UpstreamHostPolicy::default(),
                 forwarded_headers: ForwardedHeaderPolicy::default(),
                 compression: Default::default(),
+                cache: Default::default(),
                 tls: None,
                 route: RouteMatch {
                     host: None,
@@ -927,6 +928,7 @@ mod tests {
                     host_policy: UpstreamHostPolicy::default(),
                     forwarded_headers: ForwardedHeaderPolicy::default(),
                     compression: Default::default(),
+                    cache: Default::default(),
                     tls: None,
                     route: RouteMatch {
                         host: None,
@@ -1989,6 +1991,7 @@ mod tests {
                     host_policy: UpstreamHostPolicy::default(),
                     forwarded_headers: ForwardedHeaderPolicy::default(),
                     compression: Default::default(),
+                    cache: Default::default(),
                     tls: None,
                     route: RouteMatch {
                         host: None,

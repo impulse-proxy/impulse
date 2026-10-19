@@ -42,6 +42,7 @@ fn base_config(cert: &str, key: &str) -> Config {
             host_policy: Default::default(),
             forwarded_headers: Default::default(),
             compression: Default::default(),
+            cache: Default::default(),
             tls: None,
             route: RouteMatch {
                 host: None,
@@ -1459,6 +1460,7 @@ fn rejects_ambiguous_route_matchers_with_same_host_path_and_method() {
         host_policy: Default::default(),
         forwarded_headers: Default::default(),
         compression: Default::default(),
+        cache: Default::default(),
         tls: None,
         route: RouteMatch {
             host: Some("api.example.com".to_string()),
@@ -1527,6 +1529,7 @@ fn allows_same_host_and_path_when_methods_differ() {
         host_policy: Default::default(),
         forwarded_headers: Default::default(),
         compression: Default::default(),
+        cache: Default::default(),
         tls: None,
         route: RouteMatch {
             host: Some("api.example.com".to_string()),
