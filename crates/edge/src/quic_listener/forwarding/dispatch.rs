@@ -15,10 +15,7 @@ use impulse_transport::{
 use pingora_cache::{HitStatus, HttpCache, NoCacheReason, lock::LockWaitOutcome};
 
 use super::{
-    selection::{
-        ForwardingSelectionService, MAX_UPSTREAM_RETRY_ATTEMPTS, RetryCoordinator,
-        StableBackendSelection,
-    },
+    selection::{ForwardingSelectionService, MAX_UPSTREAM_RETRY_ATTEMPTS, RetryCoordinator},
     *,
 };
 use crate::{
@@ -458,7 +455,7 @@ impl QUICListener {
         primary_index: usize,
         metrics: &Metrics,
     ) -> ResolvedAlternateBackend {
-        match ForwardingSelectionService::select_stable_backend(
+        match ForwardingSelectionService::select_backend_excluding(
             selector,
             upstream_pool,
             generation,
@@ -467,10 +464,10 @@ impl QUICListener {
             false,
             metrics,
         ) {
-            Ok(StableBackendSelection::Selected { address, .. }) => {
+            Ok(Some(BackendCandidate { address, .. })) => {
                 ResolvedAlternateBackend::Selected { address }
             }
-            Ok(StableBackendSelection::NoCandidate) => {
+            Ok(None) => {
                 let reason = match upstream_pool.read() {
                     Ok(pool) if pool.membership_summary().healthy_backends == 0 => {
                         AlternateBackendFailureReason::NoHealthyBackends

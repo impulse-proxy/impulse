@@ -13,7 +13,6 @@ use impulse_lb::{
     pingora_backend::GenerationSelector,
     upstream_pool::UpstreamPool,
 };
-use log::error;
 
 use super::{
     super::QUICListener,
@@ -35,53 +34,13 @@ pub(crate) struct ForwardingSelectionService;
 
 pub(crate) const MAX_UPSTREAM_RETRY_ATTEMPTS: u8 = 1;
 
-pub(crate) enum StableBackendSelection {
-    Selected { address: String, index: usize },
-    NoCandidate,
+pub(crate) struct BackendCandidate {
+    pub(crate) address: String,
+    pub(crate) index: usize,
 }
 
 impl ForwardingSelectionService {
     pub(crate) fn select_backend(
-        request: &TargetResolutionRequest<'_>,
-        upstream_pool: &Arc<RwLock<UpstreamPool>>,
-        begin_request: bool,
-    ) -> Result<BackendSelection, ProxyError> {
-        let mut pool = upstream_pool
-            .write()
-            .map_err(|_| ProxyError::Transport("upstream pool lock poisoned".into()))?;
-        if pool.is_empty() {
-            return Err(ProxyError::Transport("no servers in upstream".into()));
-        }
-
-        let ResolvedLbKey {
-            value: lb_key,
-            source: _lb_key_source,
-        } = QUICListener::resolve_lb_key_for_runtime_request(
-            pool.lb_strategy(),
-            pool.lb_key_spec(),
-            request,
-        );
-        let backend_lb = pool.lb_strategy().canonical_name().to_string();
-        let backend_index = if begin_request {
-            pool.pick(lb_key.as_str())
-        } else {
-            pool.pick_without_begin(lb_key.as_str())
-        }
-        .ok_or_else(|| Self::no_healthy_servers_error(&pool))?;
-        let backend_addr = pool
-            .backend_address(backend_index)
-            .map(str::to_string)
-            .ok_or_else(|| ProxyError::Transport("invalid server address".into()))?;
-
-        Ok(BackendSelection {
-            backend_addr,
-            backend_index,
-            backend_lb,
-            lb_key,
-        })
-    }
-
-    pub(crate) fn select_backend_with_selector(
         request: &TargetResolutionRequest<'_>,
         upstream_pool: &Arc<RwLock<UpstreamPool>>,
         selector: &GenerationSelector<RuntimeBackendTlsPolicy>,
@@ -104,7 +63,7 @@ impl ForwardingSelectionService {
             );
             (lb_key, pool.lb_strategy().canonical_name().to_string())
         };
-        match Self::select_stable_backend(
+        let Some(selected) = Self::select_backend_excluding(
             selector,
             upstream_pool,
             generation,
@@ -112,20 +71,19 @@ impl ForwardingSelectionService {
             &[],
             begin_request,
             metrics,
-        )? {
-            StableBackendSelection::Selected { address, index } => Ok(BackendSelection {
-                backend_addr: address,
-                backend_index: index,
-                backend_lb,
-                lb_key,
-            }),
-            StableBackendSelection::NoCandidate => {
-                Err(ProxyError::Transport("no healthy servers".into()))
-            }
-        }
+        )?
+        else {
+            return Err(ProxyError::Transport("no healthy servers".into()));
+        };
+        Ok(BackendSelection {
+            backend_addr: selected.address,
+            backend_index: selected.index,
+            backend_lb,
+            lb_key,
+        })
     }
 
-    pub(crate) fn select_stable_backend(
+    pub(crate) fn select_backend_excluding(
         selector: &GenerationSelector<RuntimeBackendTlsPolicy>,
         pool: &Arc<RwLock<UpstreamPool>>,
         generation: u64,
@@ -133,7 +91,7 @@ impl ForwardingSelectionService {
         excluded_backend_indices: &[usize],
         begin_request: bool,
         metrics: &Metrics,
-    ) -> Result<StableBackendSelection, ProxyError> {
+    ) -> Result<Option<BackendCandidate>, ProxyError> {
         if selector.generation() != generation {
             metrics.inc_pingora_lb_selector_failure();
             return Err(ProxyError::Transport(format!(
@@ -161,7 +119,7 @@ impl ForwardingSelectionService {
             })?;
         let Some(selected) = selector.select_excluding(key, excluded_backend_indices) else {
             metrics.inc_pingora_lb_selector_failure();
-            return Ok(StableBackendSelection::NoCandidate);
+            return Ok(None);
         };
         if selected.generation() != generation {
             metrics.inc_pingora_lb_selector_failure();
@@ -179,10 +137,10 @@ impl ForwardingSelectionService {
         };
         if begin_request && !pool.begin_request_if_healthy(index) {
             metrics.inc_pingora_lb_selector_failure();
-            return Ok(StableBackendSelection::NoCandidate);
+            return Ok(None);
         }
         metrics.inc_pingora_lb_selection();
-        Ok(StableBackendSelection::Selected { address, index })
+        Ok(Some(BackendCandidate { address, index }))
     }
 
     fn select_custom_dynamic_backend(
@@ -190,7 +148,7 @@ impl ForwardingSelectionService {
         key: &str,
         excluded_backend_indices: &[usize],
         begin_request: bool,
-    ) -> Result<StableBackendSelection, ProxyError> {
+    ) -> Result<Option<BackendCandidate>, ProxyError> {
         let mut pool = pool
             .write()
             .map_err(|_| ProxyError::Transport("upstream pool lock poisoned".into()))?;
@@ -213,14 +171,14 @@ impl ForwardingSelectionService {
             }
         };
         let Some(index) = selected else {
-            return Ok(StableBackendSelection::NoCandidate);
+            return Ok(None);
         };
         let Some(address) = pool.backend_address(index).map(str::to_string) else {
             return Err(ProxyError::Transport(
                 "custom selector returned an invalid backend index".into(),
             ));
         };
-        Ok(StableBackendSelection::Selected { address, index })
+        Ok(Some(BackendCandidate { address, index }))
     }
 
     pub(super) fn allow_backend_request<'a>(
@@ -239,15 +197,6 @@ impl ForwardingSelectionService {
     ) -> bool {
         matches!(primary_err, ProxyError::Pool(PoolError::CircuitOpen(_)))
             || retry_budget.allow_retry(route_name).is_ok()
-    }
-
-    fn no_healthy_servers_error(pool: &UpstreamPool) -> ProxyError {
-        let summary = pool.membership_summary();
-        error!(
-            "no healthy backends available: {}/{} backends healthy",
-            summary.healthy_backends, summary.total_backends
-        );
-        ProxyError::Transport("no healthy servers".into())
     }
 }
 

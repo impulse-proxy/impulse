@@ -464,8 +464,6 @@ impl QUICListener {
             shared_ctx.routing_index,
             shared_ctx.upstream_pools,
             shared_ctx.upstream_policies,
-        )
-        .with_pingora_selection(
             shared_ctx.pingora_load_balancing,
             shared_ctx.generation,
             metrics,

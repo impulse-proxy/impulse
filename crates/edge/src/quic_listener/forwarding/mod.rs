@@ -24,8 +24,7 @@ pub(in crate::quic_listener) use self::resolve::{
 pub(crate) use self::{
     resolve::TargetResolutionRequest,
     selection::{
-        ForwardingSelectionService, MAX_UPSTREAM_RETRY_ATTEMPTS, RetryCoordinator,
-        StableBackendSelection,
+        BackendCandidate, ForwardingSelectionService, MAX_UPSTREAM_RETRY_ATTEMPTS, RetryCoordinator,
     },
 };
 use super::*;

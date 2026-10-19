@@ -39,9 +39,9 @@ pub(in crate::quic_listener) struct ResolutionContext<'a> {
     pub(in crate::quic_listener) routing_index: &'a RouteIndex,
     pub(in crate::quic_listener) upstream_pools: &'a HashMap<String, Arc<RwLock<UpstreamPool>>>,
     pub(in crate::quic_listener) upstream_policies: &'a HashMap<String, RuntimeUpstreamPolicy>,
-    pingora_load_balancing: Option<&'a PingoraLoadBalancingRuntimeState<RuntimeBackendTlsPolicy>>,
+    pingora_load_balancing: &'a PingoraLoadBalancingRuntimeState<RuntimeBackendTlsPolicy>,
     generation: u64,
-    metrics: Option<&'a Metrics>,
+    metrics: &'a Metrics,
 }
 
 impl<'a> ResolutionContext<'a> {
@@ -49,27 +49,18 @@ impl<'a> ResolutionContext<'a> {
         routing_index: &'a RouteIndex,
         upstream_pools: &'a HashMap<String, Arc<RwLock<UpstreamPool>>>,
         upstream_policies: &'a HashMap<String, RuntimeUpstreamPolicy>,
+        pingora_load_balancing: &'a PingoraLoadBalancingRuntimeState<RuntimeBackendTlsPolicy>,
+        generation: u64,
+        metrics: &'a Metrics,
     ) -> Self {
         Self {
             routing_index,
             upstream_pools,
             upstream_policies,
-            pingora_load_balancing: None,
-            generation: 0,
-            metrics: None,
+            pingora_load_balancing,
+            generation,
+            metrics,
         }
-    }
-
-    pub(in crate::quic_listener) fn with_pingora_selection(
-        mut self,
-        pingora_load_balancing: &'a PingoraLoadBalancingRuntimeState<RuntimeBackendTlsPolicy>,
-        generation: u64,
-        metrics: &'a Metrics,
-    ) -> Self {
-        self.pingora_load_balancing = Some(pingora_load_balancing);
-        self.generation = generation;
-        self.metrics = Some(metrics);
-        self
     }
 }
 
@@ -380,32 +371,24 @@ impl QUICListener {
         begin_request: bool,
     ) -> Result<TargetResolution, ProxyError> {
         let route = Self::resolve_route_target(request, context)?;
-        let backend = if let Some(selectors) = context.pingora_load_balancing {
-            let metrics = context
-                .metrics
-                .expect("Pingora selection metrics must accompany selector state");
-            let selector = selectors.selector(&route.upstream_name).ok_or_else(|| {
-                metrics.inc_pingora_lb_selector_failure();
+        let selector = context
+            .pingora_load_balancing
+            .selector(&route.upstream_name)
+            .ok_or_else(|| {
+                context.metrics.inc_pingora_lb_selector_failure();
                 ProxyError::Transport(format!(
                     "Pingora selector not found: {}",
                     route.upstream_name
                 ))
             })?;
-            ForwardingSelectionService::select_backend_with_selector(
-                request,
-                &route.upstream_pool,
-                selector,
-                context.generation,
-                begin_request,
-                metrics,
-            )?
-        } else {
-            ForwardingSelectionService::select_backend(
-                request,
-                &route.upstream_pool,
-                begin_request,
-            )?
-        };
+        let backend = ForwardingSelectionService::select_backend(
+            request,
+            &route.upstream_pool,
+            selector,
+            context.generation,
+            begin_request,
+            context.metrics,
+        )?;
 
         Self::log_backend_selection(
             request,
@@ -428,8 +411,14 @@ impl QUICListener {
         selectors: &PingoraLoadBalancingRuntimeState<RuntimeBackendTlsPolicy>,
         metrics: &Metrics,
     ) -> Result<TargetResolution, ProxyError> {
-        let context = ResolutionContext::new(routing_index, upstream_pools, upstream_policies)
-            .with_pingora_selection(selectors, selectors.generation(), metrics);
+        let context = ResolutionContext::new(
+            routing_index,
+            upstream_pools,
+            upstream_policies,
+            selectors,
+            selectors.generation(),
+            metrics,
+        );
         Self::resolve_backend_internal(request, &context, true)
     }
 }
@@ -566,7 +555,16 @@ mod tests {
             .iter()
             .map(|(name, upstream)| (name.clone(), upstream.policy.clone()))
             .collect::<HashMap<_, _>>();
-        let context = ResolutionContext::new(&routing_index, &pools, &policies);
+        let selectors = selectors_for_test(&runtime);
+        let metrics = Metrics::new(1, vec!["route".to_string()]);
+        let context = ResolutionContext::new(
+            &routing_index,
+            &pools,
+            &policies,
+            &selectors,
+            selectors.generation(),
+            &metrics,
+        );
         let request = TargetResolutionRequest::new(
             "POST",
             "/api/orders",
@@ -604,7 +602,16 @@ mod tests {
             .iter()
             .map(|(name, upstream)| (name.clone(), upstream.policy.clone()))
             .collect::<HashMap<_, _>>();
-        let context = ResolutionContext::new(&routing_index, &pools, &policies);
+        let selectors = selectors_for_test(&runtime);
+        let metrics = Metrics::new(1, vec!["route".to_string()]);
+        let context = ResolutionContext::new(
+            &routing_index,
+            &pools,
+            &policies,
+            &selectors,
+            selectors.generation(),
+            &metrics,
+        );
 
         let request = TargetResolutionRequest::new(
             "GET",
@@ -664,8 +671,14 @@ mod tests {
             .collect::<HashMap<_, _>>();
         let selectors = selectors_for_test(&runtime);
         let metrics = Metrics::new(1, vec!["route".to_string()]);
-        let context = ResolutionContext::new(&routing_index, &pools, &policies)
-            .with_pingora_selection(&selectors, selectors.generation(), &metrics);
+        let context = ResolutionContext::new(
+            &routing_index,
+            &pools,
+            &policies,
+            &selectors,
+            selectors.generation(),
+            &metrics,
+        );
         let request = TargetResolutionRequest::new(
             "CONNECT",
             "/chat/socket",

@@ -125,12 +125,12 @@ pub(crate) use connection::purge_connection_routes;
 #[cfg(test)]
 use connection::resolve_primary_from_radix_prefix;
 pub(crate) use connection::{ConnectionRoutes, sweep_closed_connections};
+pub(crate) use forwarding::{
+    BackendCandidate, ForwardingSelectionService, MAX_UPSTREAM_RETRY_ATTEMPTS, RetryCoordinator,
+    TargetResolutionRequest,
+};
 use forwarding::{
     ForwardingExecutionCtx, ForwardingSharedCtx, H3RequestHandlingConfig, StreamProgressConfig,
-};
-pub(crate) use forwarding::{
-    ForwardingSelectionService, MAX_UPSTREAM_RETRY_ATTEMPTS, RetryCoordinator,
-    StableBackendSelection, TargetResolutionRequest,
 };
 pub(in crate::quic_listener) use protocol::{
     can_poll_upstream_result, collect_h3_trailers, is_connect_method, is_tunnel_response,

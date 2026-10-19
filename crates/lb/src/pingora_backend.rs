@@ -400,7 +400,6 @@ pub enum GenerationSelector<T> {
     StickyCid(GenerationStickyCid<T>),
     CustomLeastConnections(GenerationBackendView),
     CustomLatencyAware(GenerationBackendView),
-    Unsupported(GenerationBackendView),
 }
 
 impl<T> GenerationSelector<T>
@@ -413,9 +412,7 @@ where
             Self::WeightedRandom(selector) => selector.selector.backends(),
             Self::Ketama(selector) => selector.selector.backends(),
             Self::StickyCid(selector) => selector.selector.selector.backends(),
-            Self::CustomLeastConnections(view)
-            | Self::CustomLatencyAware(view)
-            | Self::Unsupported(view) => &view.view,
+            Self::CustomLeastConnections(view) | Self::CustomLatencyAware(view) => &view.view,
         };
 
         for backend in backends.get_backend().iter() {
@@ -429,8 +426,11 @@ where
         }
     }
 
-    fn new(strategy: RuntimeLoadBalancingStrategy, view: GenerationBackendView) -> Self {
-        match strategy {
+    fn new(
+        strategy: RuntimeLoadBalancingStrategy,
+        view: GenerationBackendView,
+    ) -> Result<Self, String> {
+        Ok(match strategy {
             RuntimeLoadBalancingStrategy::RoundRobin => {
                 Self::WeightedRoundRobin(GenerationWeightedRoundRobin::from_backend_view(view))
             }
@@ -445,8 +445,13 @@ where
             }
             RuntimeLoadBalancingStrategy::LeastConnections => Self::CustomLeastConnections(view),
             RuntimeLoadBalancingStrategy::LatencyAware => Self::CustomLatencyAware(view),
-            RuntimeLoadBalancingStrategy::Other => Self::Unsupported(view),
-        }
+            RuntimeLoadBalancingStrategy::Other => {
+                return Err(format!(
+                    "unsupported load-balancing strategy for upstream '{}'",
+                    view.upstream_name()
+                ));
+            }
+        })
     }
 
     pub fn generation(&self) -> u64 {
@@ -455,9 +460,9 @@ where
             Self::WeightedRandom(selector) => selector.generation(),
             Self::Ketama(selector) => selector.generation(),
             Self::StickyCid(selector) => selector.generation(),
-            Self::CustomLeastConnections(view)
-            | Self::CustomLatencyAware(view)
-            | Self::Unsupported(view) => view.generation(),
+            Self::CustomLeastConnections(view) | Self::CustomLatencyAware(view) => {
+                view.generation()
+            }
         }
     }
 
@@ -467,9 +472,9 @@ where
             Self::WeightedRandom(selector) => selector.upstream_name(),
             Self::Ketama(selector) => selector.upstream_name(),
             Self::StickyCid(selector) => selector.upstream_name(),
-            Self::CustomLeastConnections(view)
-            | Self::CustomLatencyAware(view)
-            | Self::Unsupported(view) => view.upstream_name(),
+            Self::CustomLeastConnections(view) | Self::CustomLatencyAware(view) => {
+                view.upstream_name()
+            }
         }
     }
 
@@ -489,9 +494,9 @@ where
             Self::WeightedRandom(selector) => selector.synchronize_readiness(is_healthy),
             Self::Ketama(selector) => selector.synchronize_readiness(is_healthy),
             Self::StickyCid(selector) => selector.synchronize_readiness(is_healthy),
-            Self::CustomLeastConnections(view)
-            | Self::CustomLatencyAware(view)
-            | Self::Unsupported(view) => view.synchronize_readiness::<T>(is_healthy),
+            Self::CustomLeastConnections(view) | Self::CustomLatencyAware(view) => {
+                view.synchronize_readiness::<T>(is_healthy)
+            }
         }
     }
 
@@ -509,9 +514,7 @@ where
                 selector.select_excluding(key.as_bytes(), excluded_backend_indices)
             }
             Self::StickyCid(selector) => selector.select_excluding(key, excluded_backend_indices),
-            Self::CustomLeastConnections(_)
-            | Self::CustomLatencyAware(_)
-            | Self::Unsupported(_) => None,
+            Self::CustomLeastConnections(_) | Self::CustomLatencyAware(_) => None,
         }
     }
 
@@ -521,9 +524,9 @@ where
             Self::WeightedRandom(selector) => selector.selector.update().await,
             Self::Ketama(selector) => selector.selector.update().await,
             Self::StickyCid(selector) => selector.selector.selector.update().await,
-            Self::CustomLeastConnections(view)
-            | Self::CustomLatencyAware(view)
-            | Self::Unsupported(view) => view.view.update(|_| {}).await,
+            Self::CustomLeastConnections(view) | Self::CustomLatencyAware(view) => {
+                view.view.update(|_| {}).await
+            }
         };
         result.map_err(|error| {
             format!(
@@ -621,7 +624,7 @@ where
                 ));
             }
             let discovery = view.discovery.clone();
-            let selector = GenerationSelector::new(strategy, view);
+            let selector = GenerationSelector::new(strategy, view)?;
             if selectors
                 .insert(upstream_name.clone(), Arc::new(selector))
                 .is_some()
@@ -979,7 +982,8 @@ mod tests {
         let selector = GenerationSelector::<()>::new(
             RuntimeLoadBalancingStrategy::RoundRobin,
             backend_view(&[1, 1]),
-        );
+        )
+        .expect("round-robin selector");
         selector
             .synchronize_readiness(|index| index == 1)
             .expect("synchronize readiness");
@@ -1003,7 +1007,8 @@ mod tests {
             RuntimeLoadBalancingStrategy::ConsistentHash,
             RuntimeLoadBalancingStrategy::StickyCid,
         ] {
-            let selector = GenerationSelector::<()>::new(strategy, backend_view(&[1, 1]));
+            let selector = GenerationSelector::<()>::new(strategy, backend_view(&[1, 1]))
+                .expect("Pingora selector");
             selector
                 .synchronize_readiness(|_| true)
                 .expect("synchronize readiness");

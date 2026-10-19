@@ -45,8 +45,8 @@ use crate::{
     REQUEST_ID_COUNTER,
     metrics::ResponseCacheOutcome,
     quic_listener::{
-        AdmissionPolicyDecision, ForwardingSelectionService, MAX_UPSTREAM_RETRY_ATTEMPTS,
-        RetryCoordinator, StableBackendSelection, TargetResolutionRequest,
+        AdmissionPolicyDecision, BackendCandidate, ForwardingSelectionService,
+        MAX_UPSTREAM_RETRY_ATTEMPTS, RetryCoordinator, TargetResolutionRequest,
         admission_rejection_response, validate_http_request_parts,
     },
     request_pipeline::{
@@ -1001,7 +1001,7 @@ impl ProxyHttp for PingoraIngressService {
                         ),
                     )
                 })?;
-            let selected = ForwardingSelectionService::select_backend_with_selector(
+            let selected = ForwardingSelectionService::select_backend(
                 &selection_request,
                 &pool,
                 selector,
@@ -1584,8 +1584,8 @@ fn handle_pingora_proxy_failure(
         .pingora_load_balancing
         .selector(route_name);
     let metrics = ctx.runtime.shared_state.shared_services().metrics.as_ref();
-    let stable_selection = match selector {
-        Some(selector) => Some(ForwardingSelectionService::select_stable_backend(
+    let selection = match selector {
+        Some(selector) => Some(ForwardingSelectionService::select_backend_excluding(
             selector,
             &selected.pool,
             ctx.runtime.generation,
@@ -1599,11 +1599,9 @@ fn handle_pingora_proxy_failure(
             None
         }
     };
-    let (retry_backend, alternate_failure) = match stable_selection {
-        Some(Ok(StableBackendSelection::Selected { address, index })) => {
-            (Some((address, index)), None)
-        }
-        Some(Ok(StableBackendSelection::NoCandidate)) => match selected.pool.read() {
+    let (retry_backend, alternate_failure) = match selection {
+        Some(Ok(Some(BackendCandidate { address, index }))) => (Some((address, index)), None),
+        Some(Ok(None)) => match selected.pool.read() {
             Ok(pool) if pool.membership_summary().healthy_backends == 0 => {
                 (None, Some(AlternateBackendFailureReason::NoHealthyBackends))
             }
