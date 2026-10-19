@@ -23,7 +23,7 @@ use impulse_errors::{
 use impulse_lb::{alternate_backend::AlternateBackendFailureReason, upstream_pool::UpstreamPool};
 use impulse_transport::{classify_pingora_h1_error, classify_pingora_h2_error};
 use pingora_cache::{
-    CacheKey, CacheMeta, NoCacheReason, RespCacheable, cache_control::CacheControl,
+    CacheKey, CacheMeta, CachePhase, NoCacheReason, RespCacheable, cache_control::CacheControl,
 };
 use pingora_core::{
     Error, HTTPStatus, InternalError, Result,
@@ -43,6 +43,7 @@ use rustls::{
 
 use crate::{
     REQUEST_ID_COUNTER,
+    metrics::ResponseCacheOutcome,
     quic_listener::{
         AdmissionPolicyDecision, ForwardingSelectionService, MAX_UPSTREAM_RETRY_ATTEMPTS,
         RetryCoordinator, StableBackendSelection, TargetResolutionRequest,
@@ -106,6 +107,7 @@ pub(crate) struct PingoraRequestContext {
     response_content_length: Option<usize>,
     response_compression_action: Option<ResponseCompressionAction>,
     response_cache_representation: Option<ResponseCacheRepresentation>,
+    response_cache_bypass_recorded: bool,
     request_body_replayable: bool,
     retry_count: u8,
     retry_backend: Option<(String, usize)>,
@@ -522,6 +524,7 @@ impl ProxyHttp for PingoraIngressService {
             response_content_length: None,
             response_compression_action: None,
             response_cache_representation: None,
+            response_cache_bypass_recorded: false,
             request_body_replayable: false,
             retry_count: 0,
             retry_backend: None,
@@ -738,6 +741,12 @@ impl ProxyHttp for PingoraIngressService {
         if CacheControl::from_req_headers(session.req_header())
             .is_some_and(|cache_control| cache_control.no_cache() || cache_control.no_store())
         {
+            ctx.runtime
+                .shared_state
+                .shared_services()
+                .metrics
+                .record_response_cache_outcome(ResponseCacheOutcome::Bypass);
+            ctx.response_cache_bypass_recorded = true;
             return Ok(());
         }
         let representation =
@@ -750,6 +759,12 @@ impl ProxyHttp for PingoraIngressService {
                 is_tunnel,
             });
         let Ok(representation) = representation else {
+            ctx.runtime
+                .shared_state
+                .shared_services()
+                .metrics
+                .record_response_cache_outcome(ResponseCacheOutcome::Bypass);
+            ctx.response_cache_bypass_recorded = true;
             return Ok(());
         };
         cache.enable(&mut session.cache, cache_policy.max_object_bytes);
@@ -801,6 +816,11 @@ impl ProxyHttp for PingoraIngressService {
         ctx: &mut Self::CTX,
     ) -> Result<RespCacheable> {
         let Some(policy) = ctx.policy.as_ref() else {
+            ctx.runtime
+                .shared_state
+                .shared_services()
+                .metrics
+                .record_response_cache_outcome(ResponseCacheOutcome::Rejection);
             return Ok(RespCacheable::Uncacheable(NoCacheReason::Custom(
                 "impulse_policy",
             )));
@@ -811,6 +831,11 @@ impl ProxyHttp for PingoraIngressService {
             })
             .is_err()
         {
+            ctx.runtime
+                .shared_state
+                .shared_services()
+                .metrics
+                .record_response_cache_outcome(ResponseCacheOutcome::Rejection);
             return Ok(RespCacheable::Uncacheable(NoCacheReason::Custom(
                 "impulse_policy",
             )));
@@ -821,9 +846,19 @@ impl ProxyHttp for PingoraIngressService {
             policy.local_auth_policy.response_cache.max_ttl_secs,
             now,
         ) else {
+            ctx.runtime
+                .shared_state
+                .shared_services()
+                .metrics
+                .record_response_cache_outcome(ResponseCacheOutcome::Rejection);
             return Ok(RespCacheable::Uncacheable(NoCacheReason::OriginNotCache));
         };
         let Some(fresh_until) = now.checked_add(ttl) else {
+            ctx.runtime
+                .shared_state
+                .shared_services()
+                .metrics
+                .record_response_cache_outcome(ResponseCacheOutcome::Rejection);
             return Ok(RespCacheable::Uncacheable(NoCacheReason::OriginNotCache));
         };
         Ok(RespCacheable::Cacheable(CacheMeta::new(
@@ -1395,6 +1430,33 @@ impl ProxyHttp for PingoraIngressService {
                 backend_index: Some(selected.index),
             });
         let metrics = &ctx.runtime.shared_state.shared_services().metrics;
+        match session.cache.phase() {
+            CachePhase::Hit | CachePhase::Revalidated => {
+                metrics.record_response_cache_outcome(ResponseCacheOutcome::Hit);
+            }
+            CachePhase::Miss => {
+                metrics.record_response_cache_outcome(ResponseCacheOutcome::Miss);
+            }
+            CachePhase::Expired => {
+                metrics.record_response_cache_outcome(ResponseCacheOutcome::Expiry);
+                metrics.record_response_cache_outcome(ResponseCacheOutcome::Miss);
+            }
+            CachePhase::Stale | CachePhase::StaleUpdating => {
+                metrics.record_response_cache_outcome(ResponseCacheOutcome::Expiry);
+                metrics.record_response_cache_outcome(ResponseCacheOutcome::Hit);
+            }
+            CachePhase::Bypass if !ctx.response_cache_bypass_recorded => {
+                metrics.record_response_cache_outcome(ResponseCacheOutcome::Bypass);
+            }
+            CachePhase::Disabled(_)
+            | CachePhase::Uninit
+            | CachePhase::CacheKey
+            | CachePhase::Bypass
+            | CachePhase::RevalidatedNoCache(_) => {}
+        }
+        if session.cache.lock_duration().is_some() {
+            metrics.record_response_cache_outcome(ResponseCacheOutcome::LockWait);
+        }
         if let Some(action) = ctx.response_compression_action {
             metrics.record_response_compression_outcome(action);
         }

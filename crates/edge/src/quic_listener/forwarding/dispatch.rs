@@ -22,6 +22,7 @@ use super::{
     *,
 };
 use crate::{
+    metrics::ResponseCacheOutcome,
     observability::{HedgeDecisionReason, RetryDecisionReason},
     runtime::{
         cache::{
@@ -127,12 +128,17 @@ fn alternate_backend_policy_state(
 impl QUICListener {
     async fn lookup_h3_response_cache(
         cache_store: &'static crate::runtime::cache::BoundedPingoraMemoryCache,
+        metrics: &Metrics,
         policy: impulse_config::runtime::RuntimeResponseCachePolicy,
         pending_forward: &PendingForward,
         namespace: u64,
         has_body: bool,
         is_tunnel: bool,
     ) -> H3CacheLookup {
+        let bypass = || {
+            metrics.record_response_cache_outcome(ResponseCacheOutcome::Bypass);
+            H3CacheLookup::Bypass
+        };
         let mut headers = http::HeaderMap::new();
         for header in pending_forward.original_request_headers() {
             if let (Ok(name), Ok(value)) = (
@@ -149,7 +155,7 @@ impl QUICListener {
             .collect::<std::result::Result<Vec<_>, _>>()
         {
             Ok(values) => values,
-            Err(_) => return H3CacheLookup::Bypass,
+            Err(_) => return bypass(),
         };
         let request_disables_cache = cache_control
             .into_iter()
@@ -173,13 +179,13 @@ impl QUICListener {
                 is_tunnel,
             })
         else {
-            return H3CacheLookup::Bypass;
+            return bypass();
         };
         if request_disables_cache {
-            return H3CacheLookup::Bypass;
+            return bypass();
         }
         let Some(authority) = pending_forward.authority.as_deref() else {
-            return H3CacheLookup::Bypass;
+            return bypass();
         };
         let accept_encoding = match headers
             .get_all(http::header::ACCEPT_ENCODING)
@@ -188,7 +194,7 @@ impl QUICListener {
             .collect::<std::result::Result<Vec<_>, _>>()
         {
             Ok(values) => values.join(","),
-            Err(_) => return H3CacheLookup::Bypass,
+            Err(_) => return bypass(),
         };
         let Some(key) = canonical_response_cache_key(ResponseCacheKeyInput {
             scheme: "https",
@@ -198,7 +204,7 @@ impl QUICListener {
             accept_encoding: (!accept_encoding.is_empty()).then_some(accept_encoding.as_str()),
             namespace,
         }) else {
-            return H3CacheLookup::Bypass;
+            return bypass();
         };
 
         let mut cache = HttpCache::new();
@@ -238,8 +244,9 @@ impl QUICListener {
                         }
                     };
                     if !spawn_async_task(body_pump, "h3-cache-hit") {
-                        return H3CacheLookup::Bypass;
+                        return bypass();
                     }
+                    metrics.record_response_cache_outcome(ResponseCacheOutcome::Hit);
                     return H3CacheLookup::Hit(ForwardSuccess::Response {
                         status: response.status,
                         headers: response.headers.clone(),
@@ -249,29 +256,33 @@ impl QUICListener {
                     });
                 }
                 Ok(Some((meta, handler))) => {
+                    metrics.record_response_cache_outcome(ResponseCacheOutcome::Expiry);
                     cache.cache_found(meta, handler, HitStatus::Expired);
                 }
                 Ok(None) => {}
-                Err(_) => return H3CacheLookup::Bypass,
+                Err(_) => return bypass(),
             }
             if cache.is_cache_locked() {
-                match cache.cache_lock_wait().await {
+                let outcome = cache.cache_lock_wait().await;
+                metrics.record_response_cache_outcome(ResponseCacheOutcome::LockWait);
+                match outcome {
                     LockWaitOutcome::Done
                     | LockWaitOutcome::TransientError
                     | LockWaitOutcome::Dangling
                     | LockWaitOutcome::AgeTimeout => continue,
                     LockWaitOutcome::WaitTimeout
                     | LockWaitOutcome::GiveUp
-                    | LockWaitOutcome::Abandoned { .. } => return H3CacheLookup::Bypass,
+                    | LockWaitOutcome::Abandoned { .. } => return bypass(),
                 }
             }
             cache.cache_miss();
+            metrics.record_response_cache_outcome(ResponseCacheOutcome::Miss);
             return H3CacheLookup::Miss(H3CacheMiss {
                 cache: Some(cache),
                 policy: Some(policy),
             });
         }
-        H3CacheLookup::Bypass
+        bypass()
     }
 
     async fn send_upstream_request(
@@ -655,6 +666,7 @@ impl QUICListener {
                 {
                     match Self::lookup_h3_response_cache(
                         cache_store,
+                        alternate_metrics.as_ref(),
                         cache_policy,
                         pending_forward.as_ref(),
                         response_cache_namespace,

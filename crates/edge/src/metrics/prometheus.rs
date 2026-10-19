@@ -544,6 +544,17 @@ impl Metrics {
             self.response_compression_output_bytes
                 .load(Ordering::Relaxed)
         ));
+        out.push_str(
+            "# HELP impulse_response_cache_outcomes_total Response cache events grouped by a bounded outcome.\n",
+        );
+        out.push_str("# TYPE impulse_response_cache_outcomes_total counter\n");
+        for outcome in ResponseCacheOutcome::ALL {
+            out.push_str(&format!(
+                "impulse_response_cache_outcomes_total{{outcome=\"{}\"}} {}\n",
+                outcome.label(),
+                self.response_cache_outcomes[outcome.index()].load(Ordering::Relaxed)
+            ));
+        }
 
         self.append_cached_quota_metrics_families(&mut out);
 

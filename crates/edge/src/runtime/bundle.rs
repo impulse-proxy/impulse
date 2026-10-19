@@ -70,6 +70,7 @@ fn bounded_response_cache(runtime: &RuntimeBundle) -> Option<&'static BoundedPin
     }
     Some(Box::leak(Box::new(BoundedPingoraMemoryCache::new(
         &storage_policy,
+        Arc::clone(&runtime.shared_state.shared_services().metrics),
     ))))
 }
 

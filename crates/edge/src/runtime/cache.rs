@@ -1,15 +1,24 @@
-use std::time::{Duration, SystemTime};
+use std::{
+    sync::Arc,
+    time::{Duration, SystemTime},
+};
 
+use async_trait::async_trait;
 use http::{HeaderMap, header, uri::Authority};
 use impulse_config::runtime::RuntimeResponseCachePolicy;
 use pingora_cache::{
-    HttpCache, MemCache, cache_control::CacheControl,
-    eviction::simple_lru::Manager as LruEvictionManager, filters::calculate_expires_header_time,
-    key::CacheKey, lock::CacheLock,
+    HttpCache, MemCache,
+    cache_control::CacheControl,
+    eviction::{
+        CacheEntryKey, CacheEntryKeyRef, EvictionManager, simple_lru::Manager as LruEvictionManager,
+    },
+    filters::calculate_expires_header_time,
+    key::CacheKey,
+    lock::CacheLock,
 };
 use pingora_http::ResponseHeader;
 
-use crate::routing::util::canonical_request_target;
+use crate::{Metrics, metrics::ResponseCacheOutcome, routing::util::canonical_request_target};
 
 const CACHE_KEY_NAMESPACE: &[u8] = b"impulse-response-cache-v1";
 const CACHE_LOCK_AGE_TIMEOUT: Duration = Duration::from_secs(60);
@@ -17,19 +26,22 @@ const SUPPORTED_VARY_HEADER: &str = "accept-encoding";
 
 pub struct BoundedPingoraMemoryCache {
     storage: MemCache,
-    eviction: LruEvictionManager,
+    eviction: ObservedEvictionManager,
     lock: CacheLock,
     max_object_bytes: usize,
 }
 
 impl BoundedPingoraMemoryCache {
-    pub fn new(policy: &RuntimeResponseCachePolicy) -> Self {
+    pub fn new(policy: &RuntimeResponseCachePolicy, metrics: Arc<Metrics>) -> Self {
         Self {
             storage: MemCache::new(),
-            eviction: LruEvictionManager::new_with_watermark(
-                policy.max_bytes,
-                Some(policy.max_entries),
-            ),
+            eviction: ObservedEvictionManager {
+                inner: LruEvictionManager::new_with_watermark(
+                    policy.max_bytes,
+                    Some(policy.max_entries),
+                ),
+                metrics,
+            },
             lock: CacheLock::new(CACHE_LOCK_AGE_TIMEOUT),
             max_object_bytes: policy.max_object_bytes,
         }
@@ -44,6 +56,73 @@ impl BoundedPingoraMemoryCache {
             None,
         );
         cache.set_max_file_size_bytes(max_object_bytes.min(self.max_object_bytes));
+    }
+}
+
+struct ObservedEvictionManager {
+    inner: LruEvictionManager,
+    metrics: Arc<Metrics>,
+}
+
+impl ObservedEvictionManager {
+    fn record(&self, evicted: Vec<CacheEntryKey>) -> Vec<CacheEntryKey> {
+        self.metrics
+            .add_response_cache_outcomes(ResponseCacheOutcome::Eviction, evicted.len());
+        evicted
+    }
+}
+
+#[async_trait]
+impl EvictionManager for ObservedEvictionManager {
+    fn total_size(&self) -> usize {
+        self.inner.total_size()
+    }
+    fn total_items(&self) -> usize {
+        self.inner.total_items()
+    }
+    fn evicted_size(&self) -> usize {
+        self.inner.evicted_size()
+    }
+    fn evicted_items(&self) -> usize {
+        self.inner.evicted_items()
+    }
+
+    fn admit(
+        &self,
+        item: CacheEntryKey,
+        size: usize,
+        fresh_until: SystemTime,
+    ) -> Vec<CacheEntryKey> {
+        self.record(self.inner.admit(item, size, fresh_until))
+    }
+
+    fn increment_weight(
+        &self,
+        item: &CacheEntryKey,
+        delta: usize,
+        max_weight: Option<usize>,
+    ) -> Vec<CacheEntryKey> {
+        self.record(self.inner.increment_weight(item, delta, max_weight))
+    }
+
+    fn remove(&self, item: CacheEntryKeyRef<'_>) {
+        self.inner.remove(item);
+    }
+
+    fn access(&self, item: &CacheEntryKey, size: usize, fresh_until: SystemTime) -> bool {
+        self.inner.access(item, size, fresh_until)
+    }
+
+    fn peek(&self, item: &CacheEntryKey) -> bool {
+        self.inner.peek(item)
+    }
+
+    async fn save(&self, dir_path: &str) -> pingora_core::Result<()> {
+        self.inner.save(dir_path).await
+    }
+
+    async fn load(&self, dir_path: &str) -> pingora_core::Result<()> {
+        self.inner.load(dir_path).await
     }
 }
 

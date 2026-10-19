@@ -10,6 +10,7 @@ use tokio::sync::mpsc::error::TryRecvError;
 
 use super::*;
 use crate::{
+    metrics::ResponseCacheOutcome,
     request_pipeline::{
         ResponseCompressionAction, ResponseCompressionInput, ensure_vary_accept_encoding,
         evaluate_response_compression,
@@ -88,31 +89,37 @@ fn prepare_response_cache(
     )>,
     status: http::StatusCode,
     headers: &http::HeaderMap,
+    metrics: &Metrics,
 ) -> Option<HttpCache> {
     let (mut cache, policy) = cache_miss?;
     if status != http::StatusCode::OK
         || evaluate_cache_response_eligibility(ResponseCacheResponseEligibilityInput { headers })
             .is_err()
     {
+        metrics.record_response_cache_outcome(ResponseCacheOutcome::Rejection);
         cache.disable(NoCacheReason::OriginNotCache);
         return None;
     }
     let Ok(mut response) = ResponseHeader::build(status, Some(headers.len())) else {
+        metrics.record_response_cache_outcome(ResponseCacheOutcome::Rejection);
         cache.disable(NoCacheReason::StorageError);
         return None;
     };
     for (name, value) in headers {
         if response.append_header(name.clone(), value.clone()).is_err() {
+            metrics.record_response_cache_outcome(ResponseCacheOutcome::Rejection);
             cache.disable(NoCacheReason::StorageError);
             return None;
         }
     }
     let now = SystemTime::now();
     let Some(ttl) = response_cache_ttl(&response, policy.max_ttl_secs, now) else {
+        metrics.record_response_cache_outcome(ResponseCacheOutcome::Rejection);
         cache.disable(NoCacheReason::OriginNotCache);
         return None;
     };
     let Some(fresh_until) = now.checked_add(ttl) else {
+        metrics.record_response_cache_outcome(ResponseCacheOutcome::Rejection);
         cache.disable(NoCacheReason::StorageError);
         return None;
     };
@@ -556,7 +563,8 @@ impl QUICListener {
                 ensure_vary_accept_encoding(&mut response_headers);
             }
         }
-        let mut response_cache = prepare_response_cache(cache_miss, status, &response_headers);
+        let mut response_cache =
+            prepare_response_cache(cache_miss, status, &response_headers, metrics);
         let mut headers: Vec<(Vec<u8>, Vec<u8>)> = response_headers
             .iter()
             .map(|(name, value)| (name.as_str().as_bytes().to_vec(), value.as_bytes().to_vec()))

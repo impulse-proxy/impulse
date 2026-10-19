@@ -36,6 +36,46 @@ pub(crate) enum PingoraDiscoveryRefreshOutcome {
     PublishFailed,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum ResponseCacheOutcome {
+    Hit,
+    Miss,
+    Bypass,
+    Rejection,
+    Eviction,
+    Expiry,
+    LockWait,
+}
+
+impl ResponseCacheOutcome {
+    const ALL: [Self; 7] = [
+        Self::Hit,
+        Self::Miss,
+        Self::Bypass,
+        Self::Rejection,
+        Self::Eviction,
+        Self::Expiry,
+        Self::LockWait,
+    ];
+    const COUNT: usize = Self::ALL.len();
+
+    const fn index(self) -> usize {
+        self as usize
+    }
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Hit => "hit",
+            Self::Miss => "miss",
+            Self::Bypass => "bypass",
+            Self::Rejection => "rejection",
+            Self::Eviction => "eviction",
+            Self::Expiry => "expiry",
+            Self::LockWait => "lock_wait",
+        }
+    }
+}
+
 impl PingoraDiscoveryRefreshOutcome {
     const ALL: [Self; 4] = [
         Self::Updated,
@@ -144,6 +184,7 @@ pub struct Metrics {
     response_compression_outcomes: [AtomicU64; ResponseCompressionAction::COUNT],
     response_compression_input_bytes: AtomicU64,
     response_compression_output_bytes: AtomicU64,
+    response_cache_outcomes: [AtomicU64; ResponseCacheOutcome::COUNT],
     pub scid_rotations: AtomicU64,
     pub control_api_connection_limit_drops: AtomicU64,
     pub control_api_audit_event_drops: AtomicU64,
