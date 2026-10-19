@@ -9,8 +9,8 @@ mod routing;
 mod types;
 
 pub(crate) use compression::{
-    ResponseCompressionAction, ResponseCompressionBypassReason, ResponseCompressionEvaluation,
-    ResponseCompressionInput, ensure_vary_accept_encoding, evaluate_response_compression,
+    ResponseCompressionAction, ResponseCompressionInput, ensure_vary_accept_encoding,
+    evaluate_response_compression,
 };
 pub(crate) use outcome::TerminalOutcomeGuard;
 pub(crate) use pipeline::evaluate_pipeline;

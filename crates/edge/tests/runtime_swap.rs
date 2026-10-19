@@ -150,6 +150,7 @@ fn single_backend_upstream_with_address(address: String, tls: Option<UpstreamTls
         auth: Default::default(),
         host_policy: Default::default(),
         forwarded_headers: Default::default(),
+        compression: Default::default(),
         tls,
         route: RouteMatch {
             path_prefix: Some("/".to_string()),

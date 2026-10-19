@@ -33,6 +33,7 @@ impl RuntimeResponseCompressionPolicy {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn as_config(&self) -> ResponseCompression {
         ResponseCompression {
             enabled: self.enabled,

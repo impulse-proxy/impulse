@@ -24,6 +24,7 @@ fn test_upstream_with_method(
         auth: Default::default(),
         host_policy: Default::default(),
         forwarded_headers: Default::default(),
+        compression: Default::default(),
         tls: None,
         route: RouteMatch {
             host: host.map(str::to_string),

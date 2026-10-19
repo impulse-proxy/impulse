@@ -1155,7 +1155,15 @@ impl ProxyHttp for PingoraIngressService {
             }
         }
         if compression.vary_accept_encoding {
-            ensure_vary_accept_encoding(&mut upstream_response.headers);
+            let mut vary_headers = http::HeaderMap::new();
+            for value in upstream_response.headers.get_all(http::header::VARY).iter() {
+                vary_headers.append(http::header::VARY, value.clone());
+            }
+            ensure_vary_accept_encoding(&mut vary_headers);
+            upstream_response.remove_header(&http::header::VARY);
+            for value in vary_headers.get_all(http::header::VARY).iter() {
+                upstream_response.append_header(http::header::VARY, value.clone())?;
+            }
         }
         ctx.response_body_bytes_received = 0;
         ctx.response_body_suppressed = body_suppressed;
