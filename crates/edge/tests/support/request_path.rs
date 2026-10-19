@@ -23,6 +23,7 @@ use hyper::{
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use impulse_config::{
     config::{Backend, Config, LoadBalancing, RouteMatch, Upstream, UpstreamTls},
+    runtime::RuntimeBackendTlsPolicy,
     validator::validate,
 };
 use impulse_edge::{
@@ -31,6 +32,8 @@ use impulse_edge::{
     QUIC_INITIAL_STREAM_DATA, REQUEST_TIMEOUT_SECS, UDP_READ_TIMEOUT_MS,
     runtime::listener::QUICListener,
 };
+use impulse_lb::pingora_backend::SharedPingoraLoadBalancingRuntimeState;
+use impulse_transport::SharedDnsResolver;
 use quiche::h3::NameValue;
 use rand::RngCore;
 use rcgen::{Certificate, CertificateParams, SanType};
@@ -126,6 +129,8 @@ impl Drop for ListenerTaskGuard {
 pub(crate) struct QuicRequestPathHarness {
     backends: Vec<BackendFixture>,
     listener_task: Option<ListenerTaskGuard>,
+    backend_dns_resolver: Option<SharedDnsResolver>,
+    pingora_load_balancing: Option<SharedPingoraLoadBalancingRuntimeState<RuntimeBackendTlsPolicy>>,
     metrics: Option<Arc<Metrics>>,
     rt: tokio::runtime::Runtime,
     pub tls: TestTlsMaterial,
@@ -137,6 +142,8 @@ impl QuicRequestPathHarness {
         Self {
             backends: Vec::new(),
             listener_task: None,
+            backend_dns_resolver: None,
+            pingora_load_balancing: None,
             metrics: None,
             rt: tokio::runtime::Runtime::new().expect("runtime"),
             tls: TestTlsMaterial::localhost(),
@@ -156,6 +163,8 @@ impl QuicRequestPathHarness {
     pub(crate) fn start_listener(&mut self, config: Config) -> Result<SocketAddr, String> {
         validate(&config).map_err(|err| format!("config validation failed: {err}"))?;
         let listener = QUICListener::new(config).map_err(|err| format!("listener: {err}"))?;
+        self.backend_dns_resolver = Some(listener.backend_dns_resolver.clone());
+        self.pingora_load_balancing = Some(Arc::clone(&listener.pingora_load_balancing));
         self.metrics = Some(Arc::clone(&listener.metrics));
         let listen_addr = listener
             .socket
@@ -289,6 +298,18 @@ impl QuicRequestPathHarness {
         self.metrics
             .as_ref()
             .map(|metrics| metrics.render_prometheus())
+    }
+
+    pub(crate) fn discovery_runtime(
+        &self,
+    ) -> Option<(
+        SharedDnsResolver,
+        SharedPingoraLoadBalancingRuntimeState<RuntimeBackendTlsPolicy>,
+    )> {
+        Some((
+            self.backend_dns_resolver.clone()?,
+            Arc::clone(self.pingora_load_balancing.as_ref()?),
+        ))
     }
 }
 

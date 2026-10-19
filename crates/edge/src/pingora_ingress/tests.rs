@@ -747,6 +747,68 @@ fn pingora_and_http3_share_consistent_hash_backend_selection() {
     assert_eq!(selected_backends.len(), 2);
 }
 
+#[test]
+fn pingora_and_http3_use_published_discovery_membership() {
+    if !local_listener_bind_available() {
+        return;
+    }
+
+    let mut harness = ProtocolParityHarness::new();
+    let backend_addr = harness.start_h1_static_backend(b"discovered backend\n");
+    let backend_host = "backend.final-runtime.test";
+    let configured_address = format!("http://{backend_host}:{}", backend_addr.port());
+    let config = harness.make_config(HashMap::from([(
+        "api".to_string(),
+        make_upstream(
+            "/",
+            vec![make_backend("discovered", configured_address.clone())],
+            None,
+            "round-robin",
+        ),
+    )]));
+    let mut pingora_config = config.clone();
+    pingora_config.listen.port = reserve_unused_listener_port();
+    let (pingora, pingora_addr) =
+        PingoraTestService::start(pingora_config).expect("start Pingora discovery ingress");
+    harness
+        .start_listener(config)
+        .expect("start HTTP/3 discovery ingress");
+
+    let pingora_generation = pingora.runtime_bundle.current();
+    let pingora_discovery = (
+        pingora_generation
+            .shared_state
+            .shared_services()
+            .backend_dns_resolver
+            .clone(),
+        Arc::clone(
+            &pingora_generation
+                .shared_state
+                .generation_state()
+                .pingora_load_balancing,
+        ),
+    );
+    let http3_discovery = harness
+        .discovery_runtime()
+        .expect("HTTP/3 discovery runtime");
+    for (backend_dns_resolver, pingora_load_balancing) in [pingora_discovery, http3_discovery] {
+        backend_dns_resolver.set_host_addrs(backend_host, [SocketAddr::new(backend_addr.ip(), 0)]);
+        pingora
+            ._runtime
+            .block_on(
+                pingora_load_balancing
+                    .publish_dns_result(&configured_address, Ok(vec![backend_addr])),
+            )
+            .expect("publish discovered backend membership");
+    }
+
+    assert_protocol_parity(
+        &harness,
+        pingora_addr,
+        ParityRequestSpec::get("localhost", "/discovered"),
+    );
+}
+
 #[derive(Debug, PartialEq, Eq)]
 struct HybridRuntimeMetrics {
     requests_success: u64,
@@ -777,7 +839,30 @@ fn pingora_and_http3_match_final_hybrid_runtime_behavior() {
     }
 
     let mut harness = ProtocolParityHarness::new();
-    let generic_backend = harness.start_h1_static_backend(b"generic route\n");
+    let generic_backend_a = harness.start_h1_backend(|_request| async move {
+        let body = bytes::Bytes::from(vec![b'a'; 96]);
+        Ok::<_, std::convert::Infallible>(
+            hyper::Response::builder()
+                .status(200)
+                .header(http::header::CACHE_CONTROL, "public, max-age=60")
+                .header(http::header::CONTENT_TYPE, "text/plain")
+                .header(http::header::CONTENT_LENGTH, body.len().to_string())
+                .body(http_body_util::Full::new(body))
+                .expect("generic backend A response"),
+        )
+    });
+    let generic_backend_b = harness.start_h1_backend(|_request| async move {
+        let body = bytes::Bytes::from(vec![b'b'; 96]);
+        Ok::<_, std::convert::Infallible>(
+            hyper::Response::builder()
+                .status(200)
+                .header(http::header::CACHE_CONTROL, "public, max-age=60")
+                .header(http::header::CONTENT_TYPE, "text/plain")
+                .header(http::header::CONTENT_LENGTH, body.len().to_string())
+                .body(http_body_util::Full::new(body))
+                .expect("generic backend B response"),
+        )
+    });
     let admin_backend = harness.start_h1_static_backend(b"admin route\n");
     let limited_backend = harness.start_h1_static_backend(b"limited route\n");
     let unhealthy_backend = harness.start_h1_backend(|_request| async move {
@@ -804,16 +889,29 @@ fn pingora_and_http3_match_final_hybrid_runtime_behavior() {
         }),
         ..RouteAuth::default()
     };
+    let mut generic = make_upstream(
+        "/api",
+        vec![
+            make_backend("generic-a", generic_backend_a.to_string()),
+            make_backend("generic-b", generic_backend_b.to_string()),
+        ],
+        None,
+        "consistent-hash",
+    );
+    generic.load_balancing.key = Some("path".to_string());
+    generic.compression = ResponseCompression {
+        enabled: true,
+        minimum_size_bytes: 1,
+    };
+    generic.cache = ResponseCache {
+        enabled: true,
+        max_bytes: 4096,
+        max_entries: 64,
+        max_object_bytes: 1024,
+        max_ttl_secs: 60,
+    };
     let mut config = harness.make_config(HashMap::from([
-        (
-            "generic".to_string(),
-            make_upstream(
-                "/api",
-                vec![make_backend("generic", generic_backend.to_string())],
-                None,
-                "round-robin",
-            ),
-        ),
+        ("generic".to_string(), generic),
         ("admin".to_string(), admin),
         (
             "limited".to_string(),
@@ -851,6 +949,63 @@ fn pingora_and_http3_match_final_hybrid_runtime_behavior() {
     harness
         .start_listener(config)
         .expect("start HTTP/3 ingress");
+
+    let quic_feature_metrics_before = harness
+        .metrics_text()
+        .expect("HTTP/3 feature metrics before matrix");
+    let pingora_feature_metrics_before = pingora.metrics_text();
+    let mut selected_backends = HashSet::new();
+    for index in 0..64 {
+        let path = format!("/api/cache/{index}");
+        let request = ParityRequestSpec {
+            method: "GET",
+            authority: "localhost",
+            path: &path,
+            headers: &[("accept-encoding", "gzip")],
+            body: None,
+            user_agent: "impulse-final-runtime-test",
+            selected_response_headers: &["content-encoding", "vary"],
+        };
+        let first = protocol_pair(&harness, pingora_addr, request);
+        let second = protocol_pair(&harness, pingora_addr, request);
+        assert_eq!(first, second, "cached response for {path}");
+        assert_eq!(selected_header(&first.0, "content-encoding"), Some("gzip"));
+        selected_backends.insert(first.0.body);
+        if selected_backends.len() == 2 {
+            break;
+        }
+    }
+    assert_eq!(selected_backends.len(), 2);
+
+    let quic_feature_metrics_after = harness
+        .metrics_text()
+        .expect("HTTP/3 feature metrics after matrix");
+    let pingora_feature_metrics_after = pingora.metrics_text();
+    for (before, after) in [
+        (
+            pingora_feature_metrics_before.as_str(),
+            pingora_feature_metrics_after.as_str(),
+        ),
+        (
+            quic_feature_metrics_before.as_str(),
+            quic_feature_metrics_after.as_str(),
+        ),
+    ] {
+        assert!(
+            metric_delta(
+                before,
+                after,
+                "impulse_response_compression_outcomes_total{outcome=\"gzip\"} ",
+            ) >= 1
+        );
+        assert!(
+            metric_delta(
+                before,
+                after,
+                "impulse_response_cache_outcomes_total{outcome=\"hit\"} ",
+            ) >= 1
+        );
+    }
 
     let quic_metrics_before = harness
         .metrics_text()

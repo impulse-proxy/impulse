@@ -5,7 +5,12 @@ use std::{collections::HashMap, convert::Infallible, net::SocketAddr};
 use bytes::Bytes;
 use http_body_util::Full;
 use hyper::{Request, Response, body::Incoming};
-use impulse_config::config::{Backend, Config, Upstream, UpstreamTls};
+use impulse_config::{
+    config::{Backend, Config, Upstream, UpstreamTls},
+    runtime::RuntimeBackendTlsPolicy,
+};
+use impulse_lb::pingora_backend::SharedPingoraLoadBalancingRuntimeState;
+use impulse_transport::SharedDnsResolver;
 
 use super::request_path::{H3RequestSpec, H3Response, QuicRequestPathHarness};
 
@@ -103,6 +108,15 @@ impl ProtocolParityHarness {
 
     pub(crate) fn metrics_text(&self) -> Option<String> {
         self.inner.metrics_text()
+    }
+
+    pub(crate) fn discovery_runtime(
+        &self,
+    ) -> Option<(
+        SharedDnsResolver,
+        SharedPingoraLoadBalancingRuntimeState<RuntimeBackendTlsPolicy>,
+    )> {
+        self.inner.discovery_runtime()
     }
 }
 
