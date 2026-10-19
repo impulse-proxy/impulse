@@ -82,7 +82,8 @@ pub(in crate::quic_listener) fn selectors_for_test(
             hasher.finish()
         }),
     );
-    let views = runtime.upstreams.iter().map(|(name, upstream)| {
+    let view_health_registry = Arc::clone(&health_registry);
+    let views = runtime.upstreams.iter().map(move |(name, upstream)| {
         let tls_identity = upstream.backend_tls_policy().clone();
         let view = impulse_lb::pingora_backend::GenerationBackendView::from_runtime_upstream(
             generation,
@@ -104,7 +105,7 @@ pub(in crate::quic_listener) fn selectors_for_test(
                     tls_identity.clone(),
                 )
             },
-            Arc::clone(&health_registry),
+            Arc::clone(&view_health_registry),
         )
         .expect("selector view");
         (name.clone(), upstream.load_balancing.strategy, view)

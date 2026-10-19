@@ -749,12 +749,13 @@ impl ProxyHttp for PingoraIngressService {
             ctx.response_cache_bypass_recorded = true;
             return Ok(());
         }
+        let has_body = !session.is_body_empty();
         let representation =
             evaluate_cache_request_eligibility(ResponseCacheRequestEligibilityInput {
                 policy: cache_policy,
                 method,
                 headers: &session.req_header().headers,
-                has_body: !session.is_body_empty(),
+                has_body,
                 is_upgrade: ctx.body_limit_exempt && !is_tunnel,
                 is_tunnel,
             });

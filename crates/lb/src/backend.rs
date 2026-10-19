@@ -53,10 +53,6 @@ impl BackendState {
         &self.address
     }
 
-    pub fn health_check(&self) -> Option<&HealthCheck> {
-        self.health_check.as_ref()
-    }
-
     pub fn active_requests(&self) -> usize {
         self.active_requests.load(Ordering::Relaxed)
     }

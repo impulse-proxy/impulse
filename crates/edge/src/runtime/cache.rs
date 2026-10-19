@@ -455,7 +455,7 @@ mod tests {
             }
         })
         .expect("HEAD cache key");
-        assert_ne!(get, head);
+        assert_ne!(get.primary_key_str(), head.primary_key_str());
     }
 
     #[test]

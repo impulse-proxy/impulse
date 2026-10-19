@@ -16,7 +16,6 @@ use impulse_lb::{
 
 use super::{
     super::QUICListener,
-    lb_key::ResolvedLbKey,
     resolve::{BackendSelection, TargetResolutionRequest},
 };
 use crate::{
@@ -53,14 +52,12 @@ impl ForwardingSelectionService {
                 metrics.inc_pingora_lb_selector_failure();
                 ProxyError::Transport("upstream pool lock poisoned".into())
             })?;
-            let ResolvedLbKey {
-                value: lb_key,
-                source: _,
-            } = QUICListener::resolve_lb_key_for_runtime_request(
+            let lb_key = QUICListener::resolve_lb_key_for_runtime_request(
                 pool.lb_strategy(),
                 pool.lb_key_spec(),
                 request,
-            );
+            )
+            .value;
             (lb_key, pool.lb_strategy().canonical_name().to_string())
         };
         let Some(selected) = Self::select_backend_excluding(

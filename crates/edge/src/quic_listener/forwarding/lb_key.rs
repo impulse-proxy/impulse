@@ -55,6 +55,7 @@ impl<'a> LbKeyResolutionInput<'a> {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg(test)]
 pub(super) enum LbKeySource {
     ConfiguredSpec,
     StickyCidFallback,
@@ -63,6 +64,7 @@ pub(super) enum LbKeySource {
 
 pub(super) struct ResolvedLbKey {
     pub(super) value: String,
+    #[cfg(test)]
     pub(super) source: LbKeySource,
 }
 
@@ -229,6 +231,7 @@ impl QUICListener {
         {
             return ResolvedLbKey {
                 value,
+                #[cfg(test)]
                 source: LbKeySource::ConfiguredSpec,
             };
         }
@@ -238,12 +241,14 @@ impl QUICListener {
         {
             return ResolvedLbKey {
                 value: cid_key.to_string(),
+                #[cfg(test)]
                 source: LbKeySource::StickyCidFallback,
             };
         }
 
         ResolvedLbKey {
             value: default_key,
+            #[cfg(test)]
             source: LbKeySource::DefaultFallback,
         }
     }
@@ -261,6 +266,7 @@ impl QUICListener {
         {
             return ResolvedLbKey {
                 value,
+                #[cfg(test)]
                 source: LbKeySource::ConfiguredSpec,
             };
         }
@@ -270,12 +276,14 @@ impl QUICListener {
         {
             return ResolvedLbKey {
                 value: cid_key.to_string(),
+                #[cfg(test)]
                 source: LbKeySource::StickyCidFallback,
             };
         }
 
         ResolvedLbKey {
             value: default_key,
+            #[cfg(test)]
             source: LbKeySource::DefaultFallback,
         }
     }

@@ -3,8 +3,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use impulse_config::config::HealthCheck;
-
 use crate::{
     backend::BackendState,
     health::{HealthFailureReason, HealthTransition},
@@ -200,15 +198,6 @@ impl BackendPool {
         transition
     }
 
-    /// True when any backend is passively ejected and pending transition into
-    /// the probe-eligible recovery state.
-    /// Clock-free so the read-locked hot path pays only a branch (no syscall):
-    /// while something is pending, callers take the write-locked slow path where
-    /// `reconcile_readmit` checks the actual cooldown clock.
-    pub fn readmit_due(&self) -> bool {
-        self.earliest_readmit.is_some()
-    }
-
     /// Advance passively-ejected backends into probe eligibility once their
     /// cooldown has elapsed. Reads the clock only when recovery is actually
     /// pending, keeping the healthy pick path syscall-free.
@@ -239,16 +228,6 @@ impl BackendPool {
             }
         }
         self.earliest_readmit = next;
-    }
-
-    pub fn health_check(&self, index: usize) -> Option<HealthCheck> {
-        self.backends
-            .get(index)
-            .and_then(|b| b.health_check().cloned())
-    }
-
-    pub fn healthy_indices(&self) -> Vec<usize> {
-        self.healthy.clone()
     }
 
     #[must_use]
@@ -491,18 +470,18 @@ mod tests {
             create_backend_state("10.0.0.3:1"),
         ]);
 
-        assert_eq!(pool.healthy_indices(), vec![0, 1, 2]);
+        assert_eq!(pool.healthy, vec![0, 1, 2]);
 
         pool.mark_failure(1);
         pool.mark_failure(1);
         pool.mark_failure(1);
-        assert_eq!(pool.healthy_indices(), vec![0, 2]);
+        assert_eq!(pool.healthy, vec![0, 2]);
 
         pool.mark_failure(1);
-        assert_eq!(pool.healthy_indices(), vec![0, 2]);
+        assert_eq!(pool.healthy, vec![0, 2]);
 
         pool.mark_success(1);
-        let healthy = pool.healthy_indices();
+        let healthy = &pool.healthy;
         assert_eq!(healthy.len(), 3);
         assert!(healthy.contains(&0));
         assert!(healthy.contains(&1));
@@ -516,9 +495,9 @@ mod tests {
         pool.mark_failure(0);
         pool.mark_failure(0);
 
-        assert!(pool.healthy_indices().is_empty());
+        assert!(pool.healthy.is_empty());
         pool.mark_success(0);
-        assert_eq!(pool.healthy_indices(), vec![0]);
+        assert_eq!(pool.healthy, vec![0]);
     }
 
     #[test]
@@ -546,15 +525,15 @@ mod tests {
             Some(HealthTransition::BecameUnhealthy)
         ));
         assert_eq!(pool.healthy_len(), 0);
-        assert!(pool.readmit_due());
+        assert!(pool.earliest_readmit.is_some());
 
         pool.reconcile_readmit_at(Instant::now());
         assert_eq!(pool.healthy_len(), 0);
-        assert!(pool.readmit_due());
+        assert!(pool.earliest_readmit.is_some());
 
         pool.reconcile_readmit_at(Instant::now() + Duration::from_millis(10_001));
         assert_eq!(pool.healthy_len(), 0);
-        assert!(!pool.readmit_due());
+        assert!(pool.earliest_readmit.is_none());
         assert!(pool.backend(0).is_some_and(BackendState::is_probing));
 
         let transition = pool.mark_success(0);
@@ -648,14 +627,14 @@ mod tests {
         pool.reconcile_readmit_at(Instant::now() + Duration::from_millis(10_001));
 
         assert!(pool.backend(0).is_some_and(BackendState::is_probing));
-        assert!(!pool.readmit_due());
+        assert!(pool.earliest_readmit.is_none());
 
         assert!(
             pool.mark_request_failure(0, HealthFailureReason::Transport)
                 .is_none()
         );
         assert!(!pool.backend(0).is_some_and(BackendState::is_probing));
-        assert!(pool.readmit_due());
+        assert!(pool.earliest_readmit.is_some());
     }
 
     #[test]

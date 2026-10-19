@@ -150,15 +150,20 @@ impl Drop for ResponseCacheFill {
 }
 
 async fn write_response_cache_chunk(cache_fill: &mut ResponseCacheFill, chunk: &Bytes) {
-    let failure = match cache_fill.cache.as_mut() {
-        Some(cache) if !cache.track_body_bytes_for_max_file_size(chunk.len()) => {
+    let failure = if let Some(cache) = cache_fill.cache.as_mut() {
+        if !cache.track_body_bytes_for_max_file_size(chunk.len()) {
             Some(NoCacheReason::ResponseTooLarge)
+        } else if let Some(writer) = cache.miss_handler() {
+            writer
+                .write_body(chunk.clone(), false)
+                .await
+                .err()
+                .map(|_| NoCacheReason::StorageError)
+        } else {
+            Some(NoCacheReason::StorageError)
         }
-        Some(cache) => match cache.miss_handler() {
-            Some(writer) if writer.write_body(chunk.clone(), false).await.is_ok() => None,
-            Some(_) | None => Some(NoCacheReason::StorageError),
-        },
-        None => None,
+    } else {
+        None
     };
     if let Some(reason) = failure {
         cache_fill.disable(reason);
