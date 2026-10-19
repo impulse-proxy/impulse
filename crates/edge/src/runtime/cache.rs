@@ -388,3 +388,175 @@ fn push_component(key: &mut Vec<u8>, component: &[u8]) {
     key.extend_from_slice(&(component.len() as u64).to_be_bytes());
     key.extend_from_slice(component);
 }
+
+#[cfg(test)]
+mod tests {
+    use pingora_cache::{CacheMeta, lock::LockWaitOutcome};
+
+    use super::*;
+
+    fn policy(max_bytes: usize, max_entries: usize) -> RuntimeResponseCachePolicy {
+        RuntimeResponseCachePolicy {
+            enabled: true,
+            max_bytes,
+            max_entries,
+            max_object_bytes: max_bytes,
+            max_ttl_secs: 60,
+        }
+    }
+
+    fn request_eligibility<'a>(
+        method: &'a str,
+        headers: &'a HeaderMap,
+    ) -> ResponseCacheRequestEligibilityInput<'a> {
+        ResponseCacheRequestEligibilityInput {
+            policy: Box::leak(Box::new(policy(1024, 8))),
+            method,
+            headers,
+            has_body: false,
+            is_upgrade: false,
+            is_tunnel: false,
+        }
+    }
+
+    #[test]
+    fn private_requests_bypass_cache_and_head_has_its_own_representation() {
+        for name in [header::AUTHORIZATION, header::COOKIE] {
+            let mut headers = HeaderMap::new();
+            headers.insert(name, http::HeaderValue::from_static("private"));
+            assert!(
+                evaluate_cache_request_eligibility(request_eligibility("GET", &headers)).is_err()
+            );
+        }
+
+        let headers = HeaderMap::new();
+        assert_eq!(
+            evaluate_cache_request_eligibility(request_eligibility("HEAD", &headers)),
+            Ok(ResponseCacheRepresentation::Head)
+        );
+        let get = canonical_response_cache_key(ResponseCacheKeyInput {
+            scheme: "https",
+            authority: "example.com",
+            path_and_query: "/asset",
+            representation: ResponseCacheRepresentation::Get,
+            accept_encoding: None,
+            namespace: 1,
+        })
+        .expect("GET cache key");
+        let head = canonical_response_cache_key(ResponseCacheKeyInput {
+            representation: ResponseCacheRepresentation::Head,
+            ..ResponseCacheKeyInput {
+                scheme: "https",
+                authority: "example.com",
+                path_and_query: "/asset",
+                representation: ResponseCacheRepresentation::Get,
+                accept_encoding: None,
+                namespace: 1,
+            }
+        })
+        .expect("HEAD cache key");
+        assert_ne!(get, head);
+    }
+
+    #[test]
+    fn vary_policy_and_expiry_are_enforced() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::VARY,
+            http::HeaderValue::from_static("accept-encoding"),
+        );
+        assert!(
+            evaluate_cache_response_eligibility(ResponseCacheResponseEligibilityInput {
+                headers: &headers,
+            })
+            .is_ok()
+        );
+        headers.insert(header::VARY, http::HeaderValue::from_static("user-agent"));
+        assert_eq!(
+            evaluate_cache_response_eligibility(ResponseCacheResponseEligibilityInput {
+                headers: &headers,
+            }),
+            Err(ResponseCacheBypassReason::UnsupportedVary)
+        );
+
+        let now = SystemTime::now();
+        let response = ResponseHeader::build(http::StatusCode::OK, None).expect("response");
+        let ttl = response_cache_ttl(&response, 1, now).expect("bounded cache TTL");
+        let meta = CacheMeta::new(
+            now.checked_add(ttl).expect("fresh timestamp"),
+            now,
+            0,
+            0,
+            response,
+        );
+        assert!(meta.is_fresh(now));
+        assert!(!meta.is_fresh(now + Duration::from_secs(2)));
+    }
+
+    #[tokio::test]
+    async fn cache_lock_coalesces_fills_and_releases_waiters_after_cancellation() {
+        let cache_store = Box::leak(Box::new(BoundedPingoraMemoryCache::new(
+            &policy(1024, 8),
+            Arc::new(Metrics::default()),
+        )));
+        let key = CacheKey::new("stampede", "");
+
+        let mut writer = HttpCache::new();
+        cache_store.enable(&mut writer, 1024);
+        writer.set_cache_key(key.clone());
+        assert!(
+            writer
+                .cache_lookup()
+                .await
+                .expect("writer lookup")
+                .is_none()
+        );
+        assert!(!writer.is_cache_locked());
+
+        let mut reader = HttpCache::new();
+        cache_store.enable(&mut reader, 1024);
+        reader.set_cache_key(key);
+        assert!(
+            reader
+                .cache_lookup()
+                .await
+                .expect("reader lookup")
+                .is_none()
+        );
+        assert!(reader.is_cache_locked());
+
+        drop(writer);
+        let outcome = tokio::time::timeout(Duration::from_secs(1), reader.cache_lock_wait())
+            .await
+            .expect("cancelled fill releases waiter");
+        assert!(matches!(
+            outcome,
+            LockWaitOutcome::TransientError | LockWaitOutcome::Dangling
+        ));
+    }
+
+    #[test]
+    fn eviction_keeps_cache_within_memory_and_entry_bounds() {
+        let metrics = Arc::new(Metrics::default());
+        let cache = BoundedPingoraMemoryCache::new(&policy(8, 2), Arc::clone(&metrics));
+        let first = CacheEntryKey::key_only(CacheKey::new("first", "").to_compact());
+        let second = CacheEntryKey::key_only(CacheKey::new("second", "").to_compact());
+        let third = CacheEntryKey::key_only(CacheKey::new("third", "").to_compact());
+
+        assert!(cache.eviction.admit(first, 4, SystemTime::now()).is_empty());
+        assert!(
+            cache
+                .eviction
+                .admit(second, 4, SystemTime::now())
+                .is_empty()
+        );
+        assert_eq!(cache.eviction.admit(third, 4, SystemTime::now()).len(), 1);
+        assert!(cache.eviction.total_size() <= 8);
+        assert!(cache.eviction.total_items() <= 2);
+        assert!(
+            metrics
+                .render_prometheus()
+                .contains("impulse_response_cache_outcomes_total{outcome=\"eviction\"} 1\n")
+        );
+    }
+}

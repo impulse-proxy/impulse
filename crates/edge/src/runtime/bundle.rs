@@ -1278,6 +1278,39 @@ mod tests {
         }
 
         #[test]
+        fn cache_namespace_rotates_only_for_incompatible_activation() {
+            let dir = tempdir().expect("tempdir");
+            let (cert, key) = write_test_cert_for_name(dir.path(), "server", "api.example.com");
+            let mut config = test_config(cert, key, "127.0.0.1:7001");
+            config
+                .upstream
+                .get_mut("api")
+                .expect("api upstream")
+                .cache
+                .enabled = true;
+
+            let initial = runtime_bundle_from_config(1, "initial.yaml", &config);
+            let handle = RuntimeBundleHandle::new(initial);
+            assert_eq!(handle.current_with_response_cache_namespace().1, 1);
+
+            let compatible = runtime_bundle_from_config(2, "compatible.yaml", &config);
+            handle.replace(compatible).expect("compatible activation");
+            assert_eq!(handle.current_with_response_cache_namespace().1, 1);
+
+            config
+                .upstream
+                .get_mut("api")
+                .expect("api upstream")
+                .cache
+                .max_ttl_secs = 30;
+            let incompatible = runtime_bundle_from_config(3, "incompatible.yaml", &config);
+            handle
+                .replace(incompatible)
+                .expect("incompatible activation");
+            assert_eq!(handle.current_with_response_cache_namespace().1, 3);
+        }
+
+        #[test]
         fn runtime_observability_metrics_follow_active_generation_and_history_depth() {
             let dir = tempdir().expect("tempdir");
             let (current_bundle, next_bundle) = runtime_bundle_pair(
