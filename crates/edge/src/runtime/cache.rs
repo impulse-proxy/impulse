@@ -188,7 +188,7 @@ pub struct ResponseCacheKeyInput<'a> {
     pub path_and_query: &'a str,
     pub representation: ResponseCacheRepresentation,
     pub accept_encoding: Option<&'a str>,
-    pub generation: u64,
+    pub namespace: u64,
 }
 
 pub fn canonical_response_cache_key(input: ResponseCacheKeyInput<'_>) -> Option<CacheKey> {
@@ -213,7 +213,7 @@ pub fn canonical_response_cache_key(input: ResponseCacheKeyInput<'_>) -> Option<
             + 64,
     );
     push_component(&mut primary, CACHE_KEY_NAMESPACE);
-    push_component(&mut primary, &input.generation.to_be_bytes());
+    push_component(&mut primary, &input.namespace.to_be_bytes());
     push_component(&mut primary, scheme.as_bytes());
     push_component(&mut primary, authority.as_bytes());
     push_component(&mut primary, target.as_bytes());

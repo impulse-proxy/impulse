@@ -1,6 +1,9 @@
 use std::{
     collections::VecDeque,
-    sync::{Arc, RwLock},
+    sync::{
+        Arc, RwLock,
+        atomic::{AtomicU64, Ordering},
+    },
     time::Duration,
 };
 
@@ -68,6 +71,32 @@ fn bounded_response_cache(runtime: &RuntimeBundle) -> Option<&'static BoundedPin
     Some(Box::leak(Box::new(BoundedPingoraMemoryCache::new(
         &storage_policy,
     ))))
+}
+
+fn response_cache_namespaces_compatible(current: &RuntimeBundle, next: &RuntimeBundle) -> bool {
+    let current = current
+        .runtime_config
+        .upstreams
+        .iter()
+        .filter(|(_, upstream)| upstream.policy.response_cache.enabled)
+        .collect::<Vec<_>>();
+    let next_count = next
+        .runtime_config
+        .upstreams
+        .values()
+        .filter(|upstream| upstream.policy.response_cache.enabled)
+        .count();
+
+    current.len() == next_count
+        && current.into_iter().all(|(name, upstream)| {
+            next.runtime_config
+                .upstreams
+                .get(name)
+                .filter(|candidate| candidate.policy.response_cache.enabled)
+                .is_some_and(|candidate| {
+                    upstream.route == candidate.route && upstream.policy == candidate.policy
+                })
+        })
 }
 
 /// Read-only view of the generation currently installed in the process.
@@ -216,6 +245,7 @@ impl RuntimeGenerationRecord {
 pub struct RuntimeBundleHandle {
     inner: Arc<RwLock<Arc<RuntimeBundle>>>,
     response_cache: Option<&'static BoundedPingoraMemoryCache>,
+    response_cache_namespace: Arc<AtomicU64>,
     history: Arc<RwLock<VecDeque<RuntimeGenerationRecord>>>,
     generation_history: Arc<RwLock<VecDeque<GenerationHistoryEntry>>>,
     generation_events: Arc<RwLock<VecDeque<GenerationChangeEvent>>>,
@@ -231,9 +261,11 @@ impl RuntimeBundleHandle {
         let lifecycle = RuntimeLifecycleState::new();
         let _ = lifecycle.mark_running();
         let response_cache = bounded_response_cache(&bundle);
+        let response_cache_namespace = bundle.generation;
         let handle = Self {
             inner: Arc::new(RwLock::new(Arc::new(bundle))),
             response_cache,
+            response_cache_namespace: Arc::new(AtomicU64::new(response_cache_namespace)),
             history: Arc::new(RwLock::new(VecDeque::new())),
             generation_history: Arc::new(RwLock::new(VecDeque::new())),
             generation_events: Arc::new(RwLock::new(VecDeque::new())),
@@ -250,6 +282,24 @@ impl RuntimeBundleHandle {
 
     pub(crate) fn response_cache(&self) -> Option<&'static BoundedPingoraMemoryCache> {
         self.response_cache
+    }
+
+    pub(crate) fn current_with_response_cache_namespace(&self) -> (Arc<RuntimeBundle>, u64) {
+        let guard = self
+            .inner
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        (
+            Arc::clone(&guard),
+            self.response_cache_namespace.load(Ordering::Acquire),
+        )
+    }
+
+    pub(crate) fn current_view_with_response_cache_namespace(
+        &self,
+    ) -> (ActiveRuntimeGeneration, u64) {
+        let (bundle, namespace) = self.current_with_response_cache_namespace();
+        (ActiveRuntimeGeneration { bundle }, namespace)
     }
 
     /// The shared process lifecycle state machine (Phase 6). All clones of this
@@ -491,6 +541,8 @@ impl RuntimeBundleHandle {
                     expected_generation, previous_generation
                 )));
             }
+            let rotate_response_cache_namespace =
+                !response_cache_namespaces_compatible(guard.as_ref(), &bundle);
             bundle
                 .shared_state
                 .shared_services()
@@ -499,7 +551,12 @@ impl RuntimeBundleHandle {
             // --- old-generation teardown boundary: BEGIN ---
             // The previous bundle's generation-owned state is now unreachable to
             // new readers; existing readers keep their clone until it drains.
-            std::mem::replace(&mut *guard, Arc::new(bundle))
+            let previous = std::mem::replace(&mut *guard, Arc::new(bundle));
+            if rotate_response_cache_namespace {
+                self.response_cache_namespace
+                    .store(generation, Ordering::Release);
+            }
+            previous
         };
         // Retire only the previous generation's generation-owned background tasks.
         // Startup-owned and process-shared resources are not torn down here.

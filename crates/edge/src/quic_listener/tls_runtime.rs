@@ -491,7 +491,8 @@ impl QUICListener {
             return self.sync_tls_reload_state_if_needed();
         };
 
-        let runtime = runtime_bundle.current_view();
+        let (runtime, response_cache_namespace) =
+            runtime_bundle.current_view_with_response_cache_namespace();
         let current_tls_generation = runtime
             .shared_services()
             .listener_tls_store
@@ -559,6 +560,7 @@ impl QUICListener {
         );
         self.quic_config = Self::build_quic_config(&self.config)?;
         self.runtime_generation = runtime.generation();
+        self.response_cache_namespace = response_cache_namespace;
         self.tls_reload_generation = current_tls_generation;
         info!(
             "Reloaded runtime configuration for listener {} at generation {}",

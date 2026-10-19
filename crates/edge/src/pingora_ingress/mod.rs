@@ -88,6 +88,7 @@ const RESPONSE_GZIP_LEVEL: u32 = 6;
 
 pub(crate) struct PingoraRequestContext {
     pub(crate) runtime: Arc<RuntimeBundle>,
+    response_cache_namespace: u64,
     pub(crate) route: Option<ResolvedRouteTarget>,
     pub(crate) policy: Option<ResolvedRequestPolicy>,
     pub(crate) terminal_outcome: TerminalOutcomeGuard,
@@ -499,8 +500,11 @@ impl ProxyHttp for PingoraIngressService {
 
     fn new_ctx(&self) -> Self::CTX {
         self.drain.active_requests.fetch_add(1, Ordering::AcqRel);
+        let (runtime, response_cache_namespace) =
+            self.runtime.current_with_response_cache_namespace();
         PingoraRequestContext {
-            runtime: self.runtime.current(),
+            runtime,
+            response_cache_namespace,
             route: None,
             policy: None,
             terminal_outcome: TerminalOutcomeGuard::default(),
@@ -785,7 +789,7 @@ impl ProxyHttp for PingoraIngressService {
             path_and_query: path,
             representation,
             accept_encoding: (!accept_encoding.is_empty()).then_some(accept_encoding.as_str()),
-            generation: ctx.runtime.generation,
+            namespace: ctx.response_cache_namespace,
         })
         .ok_or_else(|| Error::explain(InternalError, "response cache key is invalid"))
     }

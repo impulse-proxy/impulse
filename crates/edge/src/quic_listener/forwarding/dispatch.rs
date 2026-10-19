@@ -129,7 +129,7 @@ impl QUICListener {
         cache_store: &'static crate::runtime::cache::BoundedPingoraMemoryCache,
         policy: impulse_config::runtime::RuntimeResponseCachePolicy,
         pending_forward: &PendingForward,
-        generation: u64,
+        namespace: u64,
         has_body: bool,
         is_tunnel: bool,
     ) -> H3CacheLookup {
@@ -196,7 +196,7 @@ impl QUICListener {
             path_and_query: pending_forward.path.as_ref(),
             representation,
             accept_encoding: (!accept_encoding.is_empty()).then_some(accept_encoding.as_str()),
-            generation,
+            namespace,
         }) else {
             return H3CacheLookup::Bypass;
         };
@@ -597,6 +597,7 @@ impl QUICListener {
         let alternate_generation = shared_ctx.generation;
         let alternate_metrics = Arc::clone(&shared_ctx.metrics);
         let response_cache_store = exec_ctx.response_cache;
+        let response_cache_namespace = exec_ctx.response_cache_namespace;
         let response_cache_policy = shared_ctx
             .upstream_policies
             .get(pending_forward.upstream_name.as_ref())
@@ -656,7 +657,7 @@ impl QUICListener {
                         cache_store,
                         cache_policy,
                         pending_forward.as_ref(),
-                        alternate_generation,
+                        response_cache_namespace,
                         !bodyless_mode,
                         tunnel_mode != TunnelMode::None,
                     )

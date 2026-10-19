@@ -262,16 +262,16 @@ pub struct RuntimeBackend {
     pub health_check: Option<RuntimeBackendHealthCheck>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RuntimeHostPolicy(pub UpstreamHostPolicy);
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RuntimeForwardedHeaderPolicy(pub ForwardedHeaderPolicy);
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RuntimeProtocolPolicy(pub ProtocolPolicy);
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RuntimeUpstreamPolicy {
     /// Upstream-owned auth policy selected after route lookup resolves an upstream.
     pub upstream_auth: RuntimeAuthPolicy,

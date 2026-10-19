@@ -407,6 +407,7 @@ impl QUICListener {
                 .runtime_bundle
                 .as_ref()
                 .and_then(|runtime| runtime.response_cache()),
+            response_cache_namespace: self.response_cache_namespace,
         };
         let progress_config = StreamProgressConfig {
             backend_body_idle_timeout: self.backend_body_idle_timeout,
@@ -496,6 +497,7 @@ impl QUICListener {
                 .runtime_bundle
                 .as_ref()
                 .and_then(|runtime| runtime.response_cache()),
+            response_cache_namespace: self.response_cache_namespace,
         };
         let progress_config = StreamProgressConfig {
             backend_body_idle_timeout: self.backend_body_idle_timeout,

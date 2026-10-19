@@ -604,6 +604,7 @@ impl QUICListener {
             require_client_cert,
             runtime_bundle: None,
             runtime_generation: 0,
+            response_cache_namespace: 0,
             recv_buf: Box::new([0; crate::constants::MAX_DATAGRAM_SIZE_BYTES]),
             send_buf: Box::new([0; crate::constants::MAX_DATAGRAM_SIZE_BYTES]),
             connections: HashMap::new(),
@@ -634,7 +635,8 @@ impl QUICListener {
         runtime_bundle: Arc<RuntimeBundleHandle>,
         shutdown: ShutdownSignal,
     ) -> Result<Self, ProxyError> {
-        let runtime = runtime_bundle.current_view();
+        let (runtime, response_cache_namespace) =
+            runtime_bundle.current_view_with_response_cache_namespace();
         let listener_config = runtime
             .listener_runtime_config(listener_label)
             .ok_or_else(|| {
@@ -650,12 +652,16 @@ impl QUICListener {
             shutdown,
         )?;
         listener.runtime_generation = runtime.generation();
+        listener.response_cache_namespace = response_cache_namespace;
         listener.runtime_bundle = Some(runtime_bundle);
         Ok(listener)
     }
 
     pub fn with_runtime_bundle(mut self, runtime_bundle: Arc<RuntimeBundleHandle>) -> Self {
-        self.runtime_generation = runtime_bundle.current_generation();
+        let (runtime, response_cache_namespace) =
+            runtime_bundle.current_view_with_response_cache_namespace();
+        self.runtime_generation = runtime.generation();
+        self.response_cache_namespace = response_cache_namespace;
         self.runtime_bundle = Some(runtime_bundle);
         self
     }
