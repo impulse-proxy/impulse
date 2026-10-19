@@ -29,6 +29,7 @@ pub(crate) use self::{
     },
 };
 use super::*;
+use crate::runtime::cache::BoundedPingoraMemoryCache;
 
 // Shared forwarding dependencies passed through extracted submodules.
 pub(in crate::quic_listener) struct ForwardingSharedCtx<'a> {
@@ -48,6 +49,8 @@ pub(in crate::quic_listener) struct ForwardingExecutionCtx<'a> {
     pub(in crate::quic_listener) upstream_inflight: &'a HashMap<String, Arc<Semaphore>>,
     pub(in crate::quic_listener) global_inflight: Arc<Semaphore>,
     pub(in crate::quic_listener) inflight_acquire_wait: Duration,
+    pub(in crate::quic_listener) response_cache: Option<&'static BoundedPingoraMemoryCache>,
+    pub(in crate::quic_listener) response_cache_namespace: u64,
 }
 
 pub(in crate::quic_listener) struct StreamProgressConfig {
@@ -345,6 +348,7 @@ mod tests {
             },
             host: Default::default(),
             forwarded_headers: Default::default(),
+            response_cache: Default::default(),
             response_compression: Default::default(),
             protocol: Default::default(),
         };
@@ -397,6 +401,7 @@ mod tests {
             },
             host: Default::default(),
             forwarded_headers: Default::default(),
+            response_cache: Default::default(),
             response_compression: Default::default(),
             protocol: Default::default(),
         };
@@ -1195,6 +1200,7 @@ mod tests {
             },
             host: Default::default(),
             forwarded_headers: Default::default(),
+            response_cache: Default::default(),
             response_compression: Default::default(),
             protocol: Default::default(),
         };

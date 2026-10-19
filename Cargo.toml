@@ -48,6 +48,7 @@ opentelemetry = "0.28.0"
 opentelemetry_sdk = { version = "0.28.0", features = ["rt-tokio"] }
 opentelemetry-otlp = { version = "0.28.0", features = ["grpc-tonic", "trace"] }
 redis = { version = "0.27", features = ["tokio-comp"] }
+pingora-cache = { version = "=0.9.0", default-features = false }
 pingora-core = { version = "=0.9.0", default-features = false }
 pingora-error = "=0.9.0"
 pingora-http = { version = "=0.9.0", default-features = false }

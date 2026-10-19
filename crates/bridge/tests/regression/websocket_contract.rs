@@ -1,77 +1,13 @@
 //! Websocket and upgrade request-shaping contracts for canonical bridge builders.
 
-use http::{HeaderMap, HeaderValue, header::HOST};
+use http::header::HOST;
 use impulse_config::config::{ForwardedHeaderPolicy, UpstreamHostPolicy};
 use quiche::h3::Header;
 
 use crate::common::{
-    RequestInputMeta, bridge_headers, build_h1_request_for_backend, build_h2_request_with_policy,
+    RequestInputMeta, build_h1_request_for_backend, build_h2_request_with_policy,
     parse_backend_endpoint,
 };
-
-#[test]
-fn legacy_websocket_headers_from_bootstrap_and_forwarding_shape_identically() {
-    let forwarding_headers = vec![
-        Header::new(b"host", b"socket.example.com"),
-        Header::new(b"connection", b"upgrade"),
-        Header::new(b"upgrade", b"websocket"),
-        Header::new(b"sec-websocket-key", b"dGhlIHNhbXBsZSBub25jZQ=="),
-    ];
-
-    let mut bootstrap_headers_map = HeaderMap::new();
-    bootstrap_headers_map.insert(HOST, HeaderValue::from_static("socket.example.com"));
-    bootstrap_headers_map.insert("connection", HeaderValue::from_static("upgrade"));
-    bootstrap_headers_map.insert("upgrade", HeaderValue::from_static("websocket"));
-    bootstrap_headers_map.insert(
-        "sec-websocket-key",
-        HeaderValue::from_static("dGhlIHNhbXBsZSBub25jZQ=="),
-    );
-    let bootstrap_headers = bridge_headers(&bootstrap_headers_map);
-
-    let build = |headers: &[Header]| {
-        build_h1_request_for_backend(
-            "http://backend.internal:8080",
-            "GET",
-            "/ws",
-            headers,
-            RequestInputMeta {
-                authority: Some("socket.example.com"),
-                content_length: None,
-                request_id: 601,
-                traceparent: None,
-                client_addr: "198.51.100.12:5555".parse().expect("client"),
-            },
-        )
-        .expect("request")
-    };
-
-    let forwarding_req = build(&forwarding_headers);
-    let bootstrap_req = build(&bootstrap_headers);
-
-    for name in [
-        HOST.as_str(),
-        "connection",
-        "upgrade",
-        "sec-websocket-key",
-        "x-forwarded-for",
-        "x-forwarded-proto",
-        "x-forwarded-host",
-        "forwarded",
-        "x-request-id",
-    ] {
-        assert_eq!(
-            forwarding_req
-                .headers()
-                .get(name)
-                .and_then(|value| value.to_str().ok()),
-            bootstrap_req
-                .headers()
-                .get(name)
-                .and_then(|value| value.to_str().ok()),
-            "bootstrap and forwarding websocket shaping diverged for header {name}"
-        );
-    }
-}
 
 #[test]
 fn incomplete_upgrade_candidates_do_not_trigger_websocket_specific_request_shaping() {

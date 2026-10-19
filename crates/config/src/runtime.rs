@@ -30,10 +30,10 @@ pub use self::{
         RuntimeQuotaBackendFailurePolicy, RuntimeQuotaCounterBackend, RuntimeQuotaEnforcementMode,
         RuntimeQuotaLocalFallback, RuntimeQuotaPolicy, RuntimeQuotaPolicySet,
         RuntimeQuotaSelectorDimension, RuntimeQuotaSelectorMatcher, RuntimeQuotaWindow,
-        RuntimeRateLimitPolicy, RuntimeRequestKeySpec, RuntimeResponseCompressionPolicy,
-        RuntimeRetryBudgetPolicy, RuntimeRouteHostPattern, RuntimeRouteMatchPolicy,
-        RuntimeRouteQueuePolicy, RuntimeScopedRateLimitPolicy, RuntimeTimeoutPolicy,
-        RuntimeTransportPolicy, RuntimeWatchdogPolicy,
+        RuntimeRateLimitPolicy, RuntimeRequestKeySpec, RuntimeResponseCachePolicy,
+        RuntimeResponseCompressionPolicy, RuntimeRetryBudgetPolicy, RuntimeRouteHostPattern,
+        RuntimeRouteMatchPolicy, RuntimeRouteQueuePolicy, RuntimeScopedRateLimitPolicy,
+        RuntimeTimeoutPolicy, RuntimeTransportPolicy, RuntimeWatchdogPolicy,
     },
     secrets::{
         FilesystemSecretProvider, LiteralSecretProvider, RuntimeResolvedSecret,
@@ -262,21 +262,22 @@ pub struct RuntimeBackend {
     pub health_check: Option<RuntimeBackendHealthCheck>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RuntimeHostPolicy(pub UpstreamHostPolicy);
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RuntimeForwardedHeaderPolicy(pub ForwardedHeaderPolicy);
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RuntimeProtocolPolicy(pub ProtocolPolicy);
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RuntimeUpstreamPolicy {
     /// Upstream-owned auth policy selected after route lookup resolves an upstream.
     pub upstream_auth: RuntimeAuthPolicy,
     pub host: RuntimeHostPolicy,
     pub forwarded_headers: RuntimeForwardedHeaderPolicy,
+    pub response_cache: RuntimeResponseCachePolicy,
     pub response_compression: RuntimeResponseCompressionPolicy,
     pub protocol: RuntimeProtocolPolicy,
 }
@@ -338,6 +339,7 @@ mod tests {
                     mode: ForwardedHeaderPolicyMode::Append,
                 },
                 compression: Default::default(),
+                cache: Default::default(),
                 tls: None,
                 route: RouteMatch {
                     host: Some("api.example.com".to_string()),

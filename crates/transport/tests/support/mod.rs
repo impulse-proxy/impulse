@@ -64,6 +64,7 @@ pub(crate) fn build_pool(
                 host_policy: Default::default(),
                 forwarded_headers: Default::default(),
                 compression: Default::default(),
+                cache: Default::default(),
                 tls: None,
                 route: RouteMatch {
                     host: Some(format!("backend-{index}.example.com")),

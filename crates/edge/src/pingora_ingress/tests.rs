@@ -2,14 +2,18 @@ use std::{
     collections::{HashMap, HashSet},
     io::Write,
     net::{SocketAddr, TcpStream},
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::Duration,
 };
 
 use http_body_util::BodyExt;
 use impulse_config::{
     config::{
-        ApiKeyAuth, Config, ResponseCompression, RouteAuth, ScopedRateLimit, ScopedRateLimitScope,
+        ApiKeyAuth, Config, ResponseCache, ResponseCompression, RouteAuth, ScopedRateLimit,
+        ScopedRateLimitScope,
     },
     runtime::{ListenerRuntimeConfig, RuntimeConfig},
     validator::validate,
@@ -618,6 +622,73 @@ fn pingora_and_http3_match_response_compression_contracts() {
         pingora.status,
         http::StatusCode::SERVICE_UNAVAILABLE.as_u16()
     );
+}
+
+#[test]
+fn pingora_and_http3_share_bounded_response_cache_behavior() {
+    if !local_listener_bind_available() {
+        return;
+    }
+
+    let mut harness = ProtocolParityHarness::new();
+    let backend_requests = Arc::new(AtomicUsize::new(0));
+    let observed_requests = Arc::clone(&backend_requests);
+    let backend_addr = harness.start_h1_backend(move |_request| {
+        let observed_requests = Arc::clone(&observed_requests);
+        async move {
+            observed_requests.fetch_add(1, Ordering::Relaxed);
+            Ok::<_, std::convert::Infallible>(
+                hyper::Response::builder()
+                    .status(200)
+                    .header(http::header::CACHE_CONTROL, "public, max-age=60")
+                    .body(http_body_util::Full::new(bytes::Bytes::from_static(
+                        b"cached response\n",
+                    )))
+                    .expect("cacheable backend response"),
+            )
+        }
+    });
+    let mut upstream = make_upstream(
+        "/cache",
+        vec![make_backend("backend-a", backend_addr.to_string())],
+        None,
+        "round-robin",
+    );
+    upstream.cache = ResponseCache {
+        enabled: true,
+        max_bytes: 4096,
+        max_entries: 4,
+        max_object_bytes: 1024,
+        max_ttl_secs: 60,
+    };
+    let config = harness.make_config(HashMap::from([("cache".to_string(), upstream)]));
+    let mut pingora_config = config.clone();
+    pingora_config.listen.port = reserve_unused_listener_port();
+    let (pingora_service, pingora_addr) =
+        PingoraTestService::start(pingora_config).expect("start Pingora cache ingress");
+    harness
+        .start_listener(config)
+        .expect("start HTTP/3 cache ingress");
+
+    let request = ParityRequestSpec::get("localhost", "/cache/object");
+    let first = protocol_pair(&harness, pingora_addr, request);
+    assert_eq!(first.0, first.1);
+    assert_eq!(backend_requests.load(Ordering::Relaxed), 2);
+
+    let second = protocol_pair(&harness, pingora_addr, request);
+    assert_eq!(second, first);
+    assert_eq!(
+        backend_requests.load(Ordering::Relaxed),
+        2,
+        "each ingress must serve its second request from the shared cache contract"
+    );
+    assert!(
+        pingora_service
+            .metrics_text()
+            .contains("impulse_response_cache_outcomes_total{outcome=\"hit\"} 1\n")
+    );
+    let http3_metrics = harness.metrics_text().expect("HTTP/3 cache metrics");
+    assert!(http3_metrics.contains("impulse_response_cache_outcomes_total{outcome=\"hit\"} 1\n"));
 }
 
 #[test]

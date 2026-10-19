@@ -48,6 +48,7 @@ fn upstream_with_policy(lb_type: &str, key: Option<&str>, backends: Vec<Backend>
         host_policy: Default::default(),
         forwarded_headers: Default::default(),
         compression: Default::default(),
+        cache: Default::default(),
         tls: None,
         route: RouteMatch {
             path_prefix: Some("/".to_string()),

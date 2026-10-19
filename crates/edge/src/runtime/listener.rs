@@ -67,6 +67,7 @@ pub struct QUICListener {
     pub tls_reload_generation: u64,
     pub runtime_bundle: Option<Arc<RuntimeBundleHandle>>,
     pub runtime_generation: u64,
+    pub response_cache_namespace: u64,
     pub quic_config: quiche::Config,
     pub h3_config: Arc<quiche::h3::Config>,
     pub transport_pool: Arc<UpstreamTransportPool>,

@@ -4,7 +4,7 @@ use std::{
         Arc, Mutex, RwLock,
         atomic::{AtomicUsize, Ordering},
     },
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime},
 };
 
 use async_trait::async_trait;
@@ -22,6 +22,9 @@ use impulse_errors::{
 };
 use impulse_lb::{alternate_backend::AlternateBackendFailureReason, upstream_pool::UpstreamPool};
 use impulse_transport::{classify_pingora_h1_error, classify_pingora_h2_error};
+use pingora_cache::{
+    CacheKey, CacheMeta, CachePhase, NoCacheReason, RespCacheable, cache_control::CacheControl,
+};
 use pingora_core::{
     Error, HTTPStatus, InternalError, Result,
     apps::HttpServerOptions,
@@ -40,6 +43,7 @@ use rustls::{
 
 use crate::{
     REQUEST_ID_COUNTER,
+    metrics::ResponseCacheOutcome,
     quic_listener::{
         AdmissionPolicyDecision, ForwardingSelectionService, MAX_UPSTREAM_RETRY_ATTEMPTS,
         RetryCoordinator, StableBackendSelection, TargetResolutionRequest,
@@ -53,6 +57,12 @@ use crate::{
     },
     runtime::{
         bundle::{RuntimeBundle, RuntimeBundleHandle},
+        cache::{
+            BoundedPingoraMemoryCache, ResponseCacheKeyInput, ResponseCacheRepresentation,
+            ResponseCacheRequestEligibilityInput, ResponseCacheResponseEligibilityInput,
+            canonical_response_cache_key, evaluate_cache_request_eligibility,
+            evaluate_cache_response_eligibility, response_cache_ttl,
+        },
         connection::{
             PerSourceTokenBucket, TokenBucket,
             guardrails::{
@@ -79,6 +89,7 @@ const RESPONSE_GZIP_LEVEL: u32 = 6;
 
 pub(crate) struct PingoraRequestContext {
     pub(crate) runtime: Arc<RuntimeBundle>,
+    response_cache_namespace: u64,
     pub(crate) route: Option<ResolvedRouteTarget>,
     pub(crate) policy: Option<ResolvedRequestPolicy>,
     pub(crate) terminal_outcome: TerminalOutcomeGuard,
@@ -95,6 +106,8 @@ pub(crate) struct PingoraRequestContext {
     response_body_limit_exempt: bool,
     response_content_length: Option<usize>,
     response_compression_action: Option<ResponseCompressionAction>,
+    response_cache_representation: Option<ResponseCacheRepresentation>,
+    response_cache_bypass_recorded: bool,
     request_body_replayable: bool,
     retry_count: u8,
     retry_backend: Option<(String, usize)>,
@@ -134,6 +147,7 @@ impl Drop for PingoraSelectedBackend {
 
 pub(crate) struct PingoraIngressService {
     runtime: RuntimeBundleHandle,
+    response_cache: Option<&'static BoundedPingoraMemoryCache>,
     drain: Arc<PingoraDrainState>,
 }
 
@@ -405,6 +419,7 @@ fn pingora_ingress_service_for_listener(
         listener.listen.listen.address, listener.listen.listen.port
     );
     let current = runtime.current();
+    let response_cache = runtime.response_cache();
     let tls_store = Arc::clone(&current.shared_state.shared_services().listener_tls_store);
     let transport_policy = &listener.policies.transport;
     let connection_filter = Arc::new(PingoraConnectionFilter {
@@ -466,6 +481,7 @@ fn pingora_ingress_service_for_listener(
         configuration,
         PingoraIngressService {
             runtime,
+            response_cache,
             drain: Arc::clone(&drain),
         },
         &format!("Impulse Pingora Ingress {listener_label}"),
@@ -486,8 +502,11 @@ impl ProxyHttp for PingoraIngressService {
 
     fn new_ctx(&self) -> Self::CTX {
         self.drain.active_requests.fetch_add(1, Ordering::AcqRel);
+        let (runtime, response_cache_namespace) =
+            self.runtime.current_with_response_cache_namespace();
         PingoraRequestContext {
-            runtime: self.runtime.current(),
+            runtime,
+            response_cache_namespace,
             route: None,
             policy: None,
             terminal_outcome: TerminalOutcomeGuard::default(),
@@ -504,6 +523,8 @@ impl ProxyHttp for PingoraIngressService {
             response_body_limit_exempt: false,
             response_content_length: None,
             response_compression_action: None,
+            response_cache_representation: None,
+            response_cache_bypass_recorded: false,
             request_body_replayable: false,
             retry_count: 0,
             retry_backend: None,
@@ -705,6 +726,148 @@ impl ProxyHttp for PingoraIngressService {
         ctx.policy = Some(pipeline.policy);
         ctx.request_body_replayable = session.is_body_empty();
         Ok(false)
+    }
+
+    fn request_cache_filter(&self, session: &mut Session, ctx: &mut Self::CTX) -> Result<()> {
+        let (Some(cache), Some(policy), Some(method)) = (
+            self.response_cache,
+            ctx.policy.as_ref(),
+            ctx.method.as_deref(),
+        ) else {
+            return Ok(());
+        };
+        let cache_policy = &policy.local_auth_policy.response_cache;
+        let is_tunnel = method.eq_ignore_ascii_case("CONNECT");
+        if CacheControl::from_req_headers(session.req_header())
+            .is_some_and(|cache_control| cache_control.no_cache() || cache_control.no_store())
+        {
+            ctx.runtime
+                .shared_state
+                .shared_services()
+                .metrics
+                .record_response_cache_outcome(ResponseCacheOutcome::Bypass);
+            ctx.response_cache_bypass_recorded = true;
+            return Ok(());
+        }
+        let representation =
+            evaluate_cache_request_eligibility(ResponseCacheRequestEligibilityInput {
+                policy: cache_policy,
+                method,
+                headers: &session.req_header().headers,
+                has_body: !session.is_body_empty(),
+                is_upgrade: ctx.body_limit_exempt && !is_tunnel,
+                is_tunnel,
+            });
+        let Ok(representation) = representation else {
+            ctx.runtime
+                .shared_state
+                .shared_services()
+                .metrics
+                .record_response_cache_outcome(ResponseCacheOutcome::Bypass);
+            ctx.response_cache_bypass_recorded = true;
+            return Ok(());
+        };
+        cache.enable(&mut session.cache, cache_policy.max_object_bytes);
+        ctx.response_cache_representation = Some(representation);
+        Ok(())
+    }
+
+    fn cache_key_callback(&self, session: &Session, ctx: &mut Self::CTX) -> Result<CacheKey> {
+        let representation = ctx.response_cache_representation.ok_or_else(|| {
+            Error::explain(InternalError, "response cache representation is missing")
+        })?;
+        let authority = ctx
+            .authority
+            .as_deref()
+            .ok_or_else(|| Error::explain(InternalError, "response cache authority is missing"))?;
+        let path = ctx.path.as_deref().ok_or_else(|| {
+            Error::explain(InternalError, "response cache request target is missing")
+        })?;
+        let accept_encoding = session
+            .req_header()
+            .headers
+            .get_all(http::header::ACCEPT_ENCODING)
+            .iter()
+            .map(|value| value.to_str())
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|error| {
+                Error::because(
+                    InternalError,
+                    "response cache Accept-Encoding is invalid",
+                    error,
+                )
+            })?
+            .join(",");
+        canonical_response_cache_key(ResponseCacheKeyInput {
+            scheme: "https",
+            authority,
+            path_and_query: path,
+            representation,
+            accept_encoding: (!accept_encoding.is_empty()).then_some(accept_encoding.as_str()),
+            namespace: ctx.response_cache_namespace,
+        })
+        .ok_or_else(|| Error::explain(InternalError, "response cache key is invalid"))
+    }
+
+    fn response_cache_filter(
+        &self,
+        _session: &Session,
+        response: &ResponseHeader,
+        ctx: &mut Self::CTX,
+    ) -> Result<RespCacheable> {
+        let Some(policy) = ctx.policy.as_ref() else {
+            ctx.runtime
+                .shared_state
+                .shared_services()
+                .metrics
+                .record_response_cache_outcome(ResponseCacheOutcome::Rejection);
+            return Ok(RespCacheable::Uncacheable(NoCacheReason::Custom(
+                "impulse_policy",
+            )));
+        };
+        if response.status != http::StatusCode::OK
+            || evaluate_cache_response_eligibility(ResponseCacheResponseEligibilityInput {
+                headers: &response.headers,
+            })
+            .is_err()
+        {
+            ctx.runtime
+                .shared_state
+                .shared_services()
+                .metrics
+                .record_response_cache_outcome(ResponseCacheOutcome::Rejection);
+            return Ok(RespCacheable::Uncacheable(NoCacheReason::Custom(
+                "impulse_policy",
+            )));
+        }
+        let now = SystemTime::now();
+        let Some(ttl) = response_cache_ttl(
+            response,
+            policy.local_auth_policy.response_cache.max_ttl_secs,
+            now,
+        ) else {
+            ctx.runtime
+                .shared_state
+                .shared_services()
+                .metrics
+                .record_response_cache_outcome(ResponseCacheOutcome::Rejection);
+            return Ok(RespCacheable::Uncacheable(NoCacheReason::OriginNotCache));
+        };
+        let Some(fresh_until) = now.checked_add(ttl) else {
+            ctx.runtime
+                .shared_state
+                .shared_services()
+                .metrics
+                .record_response_cache_outcome(ResponseCacheOutcome::Rejection);
+            return Ok(RespCacheable::Uncacheable(NoCacheReason::OriginNotCache));
+        };
+        Ok(RespCacheable::Cacheable(CacheMeta::new(
+            fresh_until,
+            now,
+            0,
+            0,
+            response.clone(),
+        )))
     }
 
     async fn request_body_filter(
@@ -1267,6 +1430,33 @@ impl ProxyHttp for PingoraIngressService {
                 backend_index: Some(selected.index),
             });
         let metrics = &ctx.runtime.shared_state.shared_services().metrics;
+        match session.cache.phase() {
+            CachePhase::Hit | CachePhase::Revalidated => {
+                metrics.record_response_cache_outcome(ResponseCacheOutcome::Hit);
+            }
+            CachePhase::Miss => {
+                metrics.record_response_cache_outcome(ResponseCacheOutcome::Miss);
+            }
+            CachePhase::Expired => {
+                metrics.record_response_cache_outcome(ResponseCacheOutcome::Expiry);
+                metrics.record_response_cache_outcome(ResponseCacheOutcome::Miss);
+            }
+            CachePhase::Stale | CachePhase::StaleUpdating => {
+                metrics.record_response_cache_outcome(ResponseCacheOutcome::Expiry);
+                metrics.record_response_cache_outcome(ResponseCacheOutcome::Hit);
+            }
+            CachePhase::Bypass if !ctx.response_cache_bypass_recorded => {
+                metrics.record_response_cache_outcome(ResponseCacheOutcome::Bypass);
+            }
+            CachePhase::Disabled(_)
+            | CachePhase::Uninit
+            | CachePhase::CacheKey
+            | CachePhase::Bypass
+            | CachePhase::RevalidatedNoCache(_) => {}
+        }
+        if session.cache.lock_duration().is_some() {
+            metrics.record_response_cache_outcome(ResponseCacheOutcome::LockWait);
+        }
         if let Some(action) = ctx.response_compression_action {
             metrics.record_response_compression_outcome(action);
         }

@@ -1,6 +1,9 @@
 use std::{
     collections::VecDeque,
-    sync::{Arc, RwLock},
+    sync::{
+        Arc, RwLock,
+        atomic::{AtomicU64, Ordering},
+    },
     time::Duration,
 };
 
@@ -10,6 +13,7 @@ use log::{info, warn};
 
 use crate::runtime::{
     activation::{GenerationChangeEvent, GenerationHistoryEntry},
+    cache::BoundedPingoraMemoryCache,
     generation::{
         RuntimeGenerationState, RuntimeGenerationView, RuntimeSharedServices,
         StartupOwnedRuntimeState,
@@ -49,6 +53,51 @@ impl RuntimeBundle {
     pub fn listener_runtime_config(&self, label: &str) -> Option<ListenerRuntimeConfig> {
         self.generation_view().listener_runtime_config(label)
     }
+}
+
+fn bounded_response_cache(runtime: &RuntimeBundle) -> Option<&'static BoundedPingoraMemoryCache> {
+    let state = runtime.shared_state.generation_state();
+    let mut policies = state
+        .upstream_policies
+        .values()
+        .map(|policy| policy.response_cache.clone());
+    let mut storage_policy = policies.next()?;
+    for policy in policies {
+        storage_policy.max_bytes = storage_policy.max_bytes.max(policy.max_bytes);
+        storage_policy.max_entries = storage_policy.max_entries.max(policy.max_entries);
+        storage_policy.max_object_bytes =
+            storage_policy.max_object_bytes.max(policy.max_object_bytes);
+    }
+    Some(Box::leak(Box::new(BoundedPingoraMemoryCache::new(
+        &storage_policy,
+        Arc::clone(&runtime.shared_state.shared_services().metrics),
+    ))))
+}
+
+fn response_cache_namespaces_compatible(current: &RuntimeBundle, next: &RuntimeBundle) -> bool {
+    let current = current
+        .runtime_config
+        .upstreams
+        .iter()
+        .filter(|(_, upstream)| upstream.policy.response_cache.enabled)
+        .collect::<Vec<_>>();
+    let next_count = next
+        .runtime_config
+        .upstreams
+        .values()
+        .filter(|upstream| upstream.policy.response_cache.enabled)
+        .count();
+
+    current.len() == next_count
+        && current.into_iter().all(|(name, upstream)| {
+            next.runtime_config
+                .upstreams
+                .get(name)
+                .filter(|candidate| candidate.policy.response_cache.enabled)
+                .is_some_and(|candidate| {
+                    upstream.route == candidate.route && upstream.policy == candidate.policy
+                })
+        })
 }
 
 /// Read-only view of the generation currently installed in the process.
@@ -196,6 +245,8 @@ impl RuntimeGenerationRecord {
 #[derive(Clone)]
 pub struct RuntimeBundleHandle {
     inner: Arc<RwLock<Arc<RuntimeBundle>>>,
+    response_cache: Option<&'static BoundedPingoraMemoryCache>,
+    response_cache_namespace: Arc<AtomicU64>,
     history: Arc<RwLock<VecDeque<RuntimeGenerationRecord>>>,
     generation_history: Arc<RwLock<VecDeque<GenerationHistoryEntry>>>,
     generation_events: Arc<RwLock<VecDeque<GenerationChangeEvent>>>,
@@ -210,8 +261,12 @@ impl RuntimeBundleHandle {
         // here (see `begin_drain`/`begin_shutdown`).
         let lifecycle = RuntimeLifecycleState::new();
         let _ = lifecycle.mark_running();
+        let response_cache = bounded_response_cache(&bundle);
+        let response_cache_namespace = bundle.generation;
         let handle = Self {
             inner: Arc::new(RwLock::new(Arc::new(bundle))),
+            response_cache,
+            response_cache_namespace: Arc::new(AtomicU64::new(response_cache_namespace)),
             history: Arc::new(RwLock::new(VecDeque::new())),
             generation_history: Arc::new(RwLock::new(VecDeque::new())),
             generation_events: Arc::new(RwLock::new(VecDeque::new())),
@@ -224,6 +279,28 @@ impl RuntimeBundleHandle {
             summarize_upstream_lb_policies(handle.current().as_ref())
         );
         handle
+    }
+
+    pub(crate) fn response_cache(&self) -> Option<&'static BoundedPingoraMemoryCache> {
+        self.response_cache
+    }
+
+    pub(crate) fn current_with_response_cache_namespace(&self) -> (Arc<RuntimeBundle>, u64) {
+        let guard = self
+            .inner
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        (
+            Arc::clone(&guard),
+            self.response_cache_namespace.load(Ordering::Acquire),
+        )
+    }
+
+    pub(crate) fn current_view_with_response_cache_namespace(
+        &self,
+    ) -> (ActiveRuntimeGeneration, u64) {
+        let (bundle, namespace) = self.current_with_response_cache_namespace();
+        (ActiveRuntimeGeneration { bundle }, namespace)
     }
 
     /// The shared process lifecycle state machine (Phase 6). All clones of this
@@ -465,6 +542,8 @@ impl RuntimeBundleHandle {
                     expected_generation, previous_generation
                 )));
             }
+            let rotate_response_cache_namespace =
+                !response_cache_namespaces_compatible(guard.as_ref(), &bundle);
             bundle
                 .shared_state
                 .shared_services()
@@ -473,7 +552,12 @@ impl RuntimeBundleHandle {
             // --- old-generation teardown boundary: BEGIN ---
             // The previous bundle's generation-owned state is now unreachable to
             // new readers; existing readers keep their clone until it drains.
-            std::mem::replace(&mut *guard, Arc::new(bundle))
+            let previous = std::mem::replace(&mut *guard, Arc::new(bundle));
+            if rotate_response_cache_namespace {
+                self.response_cache_namespace
+                    .store(generation, Ordering::Release);
+            }
+            previous
         };
         // Retire only the previous generation's generation-owned background tasks.
         // Startup-owned and process-shared resources are not torn down here.
@@ -653,6 +737,7 @@ mod tests {
                 host_policy: Default::default(),
                 forwarded_headers: Default::default(),
                 compression: Default::default(),
+                cache: Default::default(),
                 tls: None,
                 route: RouteMatch {
                     path_prefix: Some("/".to_string()),
@@ -1190,6 +1275,39 @@ mod tests {
                 .rollback_candidate(1)
                 .expect("previous known-good generation should stay rollbackable");
             assert_eq!(previous.generation, 1);
+        }
+
+        #[test]
+        fn cache_namespace_rotates_only_for_incompatible_activation() {
+            let dir = tempdir().expect("tempdir");
+            let (cert, key) = write_test_cert_for_name(dir.path(), "server", "api.example.com");
+            let mut config = test_config(cert, key, "127.0.0.1:7001");
+            config
+                .upstream
+                .get_mut("api")
+                .expect("api upstream")
+                .cache
+                .enabled = true;
+
+            let initial = runtime_bundle_from_config(1, "initial.yaml", &config);
+            let handle = RuntimeBundleHandle::new(initial);
+            assert_eq!(handle.current_with_response_cache_namespace().1, 1);
+
+            let compatible = runtime_bundle_from_config(2, "compatible.yaml", &config);
+            handle.replace(compatible).expect("compatible activation");
+            assert_eq!(handle.current_with_response_cache_namespace().1, 1);
+
+            config
+                .upstream
+                .get_mut("api")
+                .expect("api upstream")
+                .cache
+                .max_ttl_secs = 30;
+            let incompatible = runtime_bundle_from_config(3, "incompatible.yaml", &config);
+            handle
+                .replace(incompatible)
+                .expect("incompatible activation");
+            assert_eq!(handle.current_with_response_cache_namespace().1, 3);
         }
 
         #[test]

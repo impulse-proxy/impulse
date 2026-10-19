@@ -41,6 +41,7 @@ x509-parser = "0.16"
 core_affinity.workspace = true
 libc.workspace = true
 smallvec.workspace = true
+pingora-cache.workspace = true
 pingora-core.workspace = true
 pingora-http.workspace = true
 pingora-proxy.workspace = true

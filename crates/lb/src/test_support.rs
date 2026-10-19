@@ -23,6 +23,7 @@ pub(crate) fn runtime_upstream_from_addresses(
             host_policy: Default::default(),
             forwarded_headers: Default::default(),
             compression: Default::default(),
+            cache: Default::default(),
             route: RouteMatch {
                 host: None,
                 path_prefix: Some("/".to_string()),

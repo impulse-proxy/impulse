@@ -21,6 +21,7 @@ impl RuntimeUpstream {
             upstream_auth: RuntimeAuthPolicy::normalize(&upstream.auth, name)?,
             host: RuntimeHostPolicy(upstream.host_policy.clone()),
             forwarded_headers: RuntimeForwardedHeaderPolicy(upstream.forwarded_headers.clone()),
+            response_cache: RuntimeResponseCachePolicy::normalize(name, &upstream.cache)?,
             response_compression: RuntimeResponseCompressionPolicy::normalize(
                 name,
                 &upstream.compression,
@@ -71,6 +72,7 @@ impl RuntimeUpstream {
             host_policy: self.policy.host.0.clone(),
             forwarded_headers: self.policy.forwarded_headers.0.clone(),
             compression: self.policy.response_compression.as_config(),
+            cache: self.policy.response_cache.as_config(),
             tls: Some(self.effective_tls.clone()),
             route: self.route.as_config(),
             backends: self
@@ -829,6 +831,7 @@ mod tests {
             host_policy: UpstreamHostPolicy::default(),
             forwarded_headers: ForwardedHeaderPolicy::default(),
             compression: Default::default(),
+            cache: Default::default(),
             tls: None,
             route: RouteMatch {
                 host: host.map(str::to_string),

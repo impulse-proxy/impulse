@@ -27,6 +27,7 @@ pub(crate) fn runtime_upstream(strategy: &str, backends: Vec<Backend>) -> Runtim
             host_policy: Default::default(),
             forwarded_headers: Default::default(),
             compression: Default::default(),
+            cache: Default::default(),
             route: RouteMatch {
                 host: None,
                 path_prefix: Some("/".to_string()),

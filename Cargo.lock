@@ -1533,6 +1533,7 @@ dependencies = [
  "impulse-utils",
  "libc",
  "log",
+ "pingora-cache",
  "pingora-core",
  "pingora-http",
  "pingora-proxy",

@@ -142,6 +142,7 @@ impl Metrics {
             response_compression_outcomes: std::array::from_fn(|_| AtomicU64::new(0)),
             response_compression_input_bytes: AtomicU64::new(0),
             response_compression_output_bytes: AtomicU64::new(0),
+            response_cache_outcomes: std::array::from_fn(|_| AtomicU64::new(0)),
             scid_rotations: AtomicU64::new(0),
             control_api_connection_limit_drops: AtomicU64::new(0),
             control_api_audit_event_drops: AtomicU64::new(0),
@@ -913,6 +914,15 @@ impl Metrics {
             .fetch_add(u64::try_from(input).unwrap_or(u64::MAX), Ordering::Relaxed);
         self.response_compression_output_bytes
             .fetch_add(u64::try_from(output).unwrap_or(u64::MAX), Ordering::Relaxed);
+    }
+
+    pub(crate) fn record_response_cache_outcome(&self, outcome: ResponseCacheOutcome) {
+        self.response_cache_outcomes[outcome.index()].fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn add_response_cache_outcomes(&self, outcome: ResponseCacheOutcome, count: usize) {
+        self.response_cache_outcomes[outcome.index()]
+            .fetch_add(u64::try_from(count).unwrap_or(u64::MAX), Ordering::Relaxed);
     }
 
     fn observe_request_buffer_high_water(&self, candidate: u64) {

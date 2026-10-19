@@ -160,6 +160,10 @@ pub(super) fn validate_upstreams(config: &Config) -> bool {
             );
             return false;
         }
+        if let Err(error) = upstream.cache.validate() {
+            validation_error!("upstream['{}'].cache.{error}", upstream_name);
+            return false;
+        }
 
         if upstream.backends.is_empty() {
             validation_error!("Upstream '{}' has no backends configured", upstream_name);
