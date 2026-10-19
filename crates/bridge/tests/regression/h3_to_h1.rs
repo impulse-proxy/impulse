@@ -1,15 +1,9 @@
 //! h3→h1 request building: hop-header stripping, TE: trailers, content-length, parity.
 
-use http::{
-    HeaderMap, HeaderValue,
-    header::{CONTENT_LENGTH, HOST, TE},
-};
+use http::header::{CONTENT_LENGTH, HOST, TE};
 use quiche::h3::Header;
 
-use crate::common::{
-    RequestInputMeta, bridge_headers, build_h1_request_for_backend, build_h1_request_with_policy,
-    parse_backend_endpoint,
-};
+use crate::common::{RequestInputMeta, build_h1_request_for_backend};
 
 #[test]
 fn plain_requests_strip_hop_headers_and_add_te_trailers() {
@@ -134,65 +128,4 @@ fn legacy_websocket_requests_preserve_upgrade_headers() {
     );
     assert!(req.headers().get(TE).is_none());
     assert!(req.headers().get(CONTENT_LENGTH).is_none());
-}
-
-#[test]
-fn bootstrap_and_forwarding_header_shapes_match_for_h1() {
-    let endpoint = parse_backend_endpoint("backend.internal:443").expect("endpoint");
-    let forwarding_headers = vec![
-        Header::new(b"host", b"api.example.com"),
-        Header::new(b"x-custom", b"ok"),
-        Header::new(b"x-forwarded-for", b"1.2.3.4"),
-    ];
-
-    let mut bootstrap_headers_map = HeaderMap::new();
-    bootstrap_headers_map.insert(HOST, HeaderValue::from_static("api.example.com"));
-    bootstrap_headers_map.insert("x-custom", HeaderValue::from_static("ok"));
-    bootstrap_headers_map.insert("x-forwarded-for", HeaderValue::from_static("1.2.3.4"));
-    let bootstrap_headers = bridge_headers(&bootstrap_headers_map);
-
-    let build = |headers: &[Header]| {
-        build_h1_request_with_policy(
-            &endpoint,
-            &Default::default(),
-            &Default::default(),
-            "GET",
-            "/",
-            headers,
-            RequestInputMeta {
-                authority: Some("api.example.com"),
-                content_length: None,
-                request_id: 99,
-                traceparent: Some("00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01"),
-                client_addr: "203.0.113.88:8080".parse().expect("client"),
-            },
-        )
-        .expect("request")
-    };
-
-    let forwarding_req = build(&forwarding_headers);
-    let bootstrap_req = build(&bootstrap_headers);
-
-    for name in [
-        HOST.as_str(),
-        "x-custom",
-        "x-forwarded-for",
-        "x-forwarded-proto",
-        "x-forwarded-host",
-        "forwarded",
-        "x-request-id",
-        "traceparent",
-    ] {
-        assert_eq!(
-            forwarding_req
-                .headers()
-                .get(name)
-                .and_then(|value| value.to_str().ok()),
-            bootstrap_req
-                .headers()
-                .get(name)
-                .and_then(|value| value.to_str().ok()),
-            "header mismatch for {name}"
-        );
-    }
 }

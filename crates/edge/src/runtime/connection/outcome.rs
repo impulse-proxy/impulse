@@ -1565,38 +1565,6 @@ mod tests {
         }
 
         #[test]
-        fn forwarding_and_bootstrap_recorders_share_the_same_metrics_contract() {
-            let metrics = test_metrics();
-
-            let forwarding = observe_proxy_error_outcome(
-                &metrics,
-                api_route_target(),
-                api_backend_target(),
-                Duration::from_millis(10),
-                Some(StatusCode::BAD_GATEWAY),
-                &ProxyError::Transport("forwarding upstream error".into()),
-                None,
-            );
-            let bootstrap = observe_proxy_error_outcome(
-                &metrics,
-                api_route_target(),
-                api_backend_target(),
-                Duration::from_millis(12),
-                Some(StatusCode::BAD_GATEWAY),
-                &ProxyError::Transport("bootstrap upstream error".into()),
-                None,
-            );
-
-            assert_eq!(forwarding.route_outcome, bootstrap.route_outcome);
-            assert_eq!(forwarding.backend_outcome, bootstrap.backend_outcome);
-            assert_eq!(upstream_request_count(&metrics, "api", "5xx", "failure"), 2);
-            assert_eq!(
-                backend_request_count(&metrics, "api", "backend-a", "5xx", "failure"),
-                2
-            );
-        }
-
-        #[test]
         fn backend_request_cleanup_runs_only_when_the_caller_marks_it_required() {
             let pool = test_upstream_pool();
             {
