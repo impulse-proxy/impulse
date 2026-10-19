@@ -21,6 +21,7 @@ impl RuntimeUpstream {
             upstream_auth: RuntimeAuthPolicy::normalize(&upstream.auth, name)?,
             host: RuntimeHostPolicy(upstream.host_policy.clone()),
             forwarded_headers: RuntimeForwardedHeaderPolicy(upstream.forwarded_headers.clone()),
+            response_cache: RuntimeResponseCachePolicy::normalize(name, &upstream.cache)?,
             response_compression: RuntimeResponseCompressionPolicy::normalize(
                 name,
                 &upstream.compression,
@@ -71,7 +72,7 @@ impl RuntimeUpstream {
             host_policy: self.policy.host.0.clone(),
             forwarded_headers: self.policy.forwarded_headers.0.clone(),
             compression: self.policy.response_compression.as_config(),
-            cache: Default::default(),
+            cache: self.policy.response_cache.as_config(),
             tls: Some(self.effective_tls.clone()),
             route: self.route.as_config(),
             backends: self
@@ -331,10 +332,6 @@ fn validate_upstream_policy(
     upstream_name: &str,
     upstream: &Upstream,
 ) -> Result<(), RuntimeConfigError> {
-    upstream.cache.validate().map_err(|error| {
-        RuntimeConfigError::ConfigInvalid(format!("upstream '{upstream_name}' cache.{error}"))
-    })?;
-
     match upstream.host_policy.mode {
         UpstreamHostPolicyMode::PassThrough | UpstreamHostPolicyMode::Upstream => {
             if upstream.host_policy.host.is_some() {

@@ -7,6 +7,7 @@
 mod admission;
 mod auth;
 mod backend;
+mod cache;
 mod compression;
 mod lb;
 mod quota;
@@ -28,6 +29,7 @@ pub use self::{
         RuntimeBackendAddressKind, RuntimeBackendDnsPolicy, RuntimeBackendEndpoint,
         RuntimeBackendHealthCheck, RuntimeBackendTlsPolicy,
     },
+    cache::RuntimeResponseCachePolicy,
     compression::RuntimeResponseCompressionPolicy,
     lb::{
         RuntimeAlternateBackendPolicy, RuntimeBackendWeightPolicy, RuntimeLoadBalancingPolicy,
