@@ -4,7 +4,7 @@ use std::{
         Arc, Mutex, RwLock,
         atomic::{AtomicUsize, Ordering},
     },
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime},
 };
 
 use async_trait::async_trait;
@@ -22,6 +22,10 @@ use impulse_errors::{
 };
 use impulse_lb::{alternate_backend::AlternateBackendFailureReason, upstream_pool::UpstreamPool};
 use impulse_transport::{classify_pingora_h1_error, classify_pingora_h2_error};
+use pingora_cache::{
+    CacheKey, CacheMeta, NoCacheReason, RespCacheable, cache_control::CacheControl,
+    filters::calculate_expires_header_time,
+};
 use pingora_core::{
     Error, HTTPStatus, InternalError, Result,
     apps::HttpServerOptions,
@@ -53,6 +57,12 @@ use crate::{
     },
     runtime::{
         bundle::{RuntimeBundle, RuntimeBundleHandle},
+        cache::{
+            BoundedPingoraMemoryCache, ResponseCacheKeyInput, ResponseCacheRepresentation,
+            ResponseCacheRequestEligibilityInput, ResponseCacheResponseEligibilityInput,
+            canonical_response_cache_key, evaluate_cache_request_eligibility,
+            evaluate_cache_response_eligibility,
+        },
         connection::{
             PerSourceTokenBucket, TokenBucket,
             guardrails::{
@@ -95,6 +105,7 @@ pub(crate) struct PingoraRequestContext {
     response_body_limit_exempt: bool,
     response_content_length: Option<usize>,
     response_compression_action: Option<ResponseCompressionAction>,
+    response_cache_representation: Option<ResponseCacheRepresentation>,
     request_body_replayable: bool,
     retry_count: u8,
     retry_backend: Option<(String, usize)>,
@@ -134,6 +145,7 @@ impl Drop for PingoraSelectedBackend {
 
 pub(crate) struct PingoraIngressService {
     runtime: RuntimeBundleHandle,
+    response_cache: Option<&'static BoundedPingoraMemoryCache>,
     drain: Arc<PingoraDrainState>,
 }
 
@@ -405,6 +417,7 @@ fn pingora_ingress_service_for_listener(
         listener.listen.listen.address, listener.listen.listen.port
     );
     let current = runtime.current();
+    let response_cache = runtime.response_cache();
     let tls_store = Arc::clone(&current.shared_state.shared_services().listener_tls_store);
     let transport_policy = &listener.policies.transport;
     let connection_filter = Arc::new(PingoraConnectionFilter {
@@ -466,6 +479,7 @@ fn pingora_ingress_service_for_listener(
         configuration,
         PingoraIngressService {
             runtime,
+            response_cache,
             drain: Arc::clone(&drain),
         },
         &format!("Impulse Pingora Ingress {listener_label}"),
@@ -504,6 +518,7 @@ impl ProxyHttp for PingoraIngressService {
             response_body_limit_exempt: false,
             response_content_length: None,
             response_compression_action: None,
+            response_cache_representation: None,
             request_body_replayable: false,
             retry_count: 0,
             retry_backend: None,
@@ -705,6 +720,116 @@ impl ProxyHttp for PingoraIngressService {
         ctx.policy = Some(pipeline.policy);
         ctx.request_body_replayable = session.is_body_empty();
         Ok(false)
+    }
+
+    fn request_cache_filter(&self, session: &mut Session, ctx: &mut Self::CTX) -> Result<()> {
+        let (Some(cache), Some(policy), Some(method)) = (
+            self.response_cache,
+            ctx.policy.as_ref(),
+            ctx.method.as_deref(),
+        ) else {
+            return Ok(());
+        };
+        let cache_policy = &policy.local_auth_policy.response_cache;
+        let is_tunnel = method.eq_ignore_ascii_case("CONNECT");
+        if CacheControl::from_req_headers(session.req_header())
+            .is_some_and(|cache_control| cache_control.no_cache() || cache_control.no_store())
+        {
+            return Ok(());
+        }
+        let representation =
+            evaluate_cache_request_eligibility(ResponseCacheRequestEligibilityInput {
+                policy: cache_policy,
+                method,
+                headers: &session.req_header().headers,
+                has_body: !session.is_body_empty(),
+                is_upgrade: ctx.body_limit_exempt && !is_tunnel,
+                is_tunnel,
+            });
+        let Ok(representation) = representation else {
+            return Ok(());
+        };
+        cache.enable(&mut session.cache, cache_policy.max_object_bytes);
+        ctx.response_cache_representation = Some(representation);
+        Ok(())
+    }
+
+    fn cache_key_callback(&self, session: &Session, ctx: &mut Self::CTX) -> Result<CacheKey> {
+        let representation = ctx.response_cache_representation.ok_or_else(|| {
+            Error::explain(InternalError, "response cache representation is missing")
+        })?;
+        let authority = ctx
+            .authority
+            .as_deref()
+            .ok_or_else(|| Error::explain(InternalError, "response cache authority is missing"))?;
+        let path = ctx.path.as_deref().ok_or_else(|| {
+            Error::explain(InternalError, "response cache request target is missing")
+        })?;
+        let accept_encoding = session
+            .req_header()
+            .headers
+            .get_all(http::header::ACCEPT_ENCODING)
+            .iter()
+            .map(|value| value.to_str())
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|error| {
+                Error::because(
+                    InternalError,
+                    "response cache Accept-Encoding is invalid",
+                    error,
+                )
+            })?
+            .join(",");
+        canonical_response_cache_key(ResponseCacheKeyInput {
+            scheme: "https",
+            authority,
+            path_and_query: path,
+            representation,
+            accept_encoding: (!accept_encoding.is_empty()).then_some(accept_encoding.as_str()),
+            generation: ctx.runtime.generation,
+        })
+        .ok_or_else(|| Error::explain(InternalError, "response cache key is invalid"))
+    }
+
+    fn response_cache_filter(
+        &self,
+        _session: &Session,
+        response: &ResponseHeader,
+        ctx: &mut Self::CTX,
+    ) -> Result<RespCacheable> {
+        let Some(policy) = ctx.policy.as_ref() else {
+            return Ok(RespCacheable::Uncacheable(NoCacheReason::Custom(
+                "impulse_policy",
+            )));
+        };
+        if response.status != http::StatusCode::OK
+            || evaluate_cache_response_eligibility(ResponseCacheResponseEligibilityInput {
+                headers: &response.headers,
+            })
+            .is_err()
+        {
+            return Ok(RespCacheable::Uncacheable(NoCacheReason::Custom(
+                "impulse_policy",
+            )));
+        }
+        let now = SystemTime::now();
+        let Some(ttl) = response_cache_ttl(
+            response,
+            policy.local_auth_policy.response_cache.max_ttl_secs,
+            now,
+        ) else {
+            return Ok(RespCacheable::Uncacheable(NoCacheReason::OriginNotCache));
+        };
+        let Some(fresh_until) = now.checked_add(ttl) else {
+            return Ok(RespCacheable::Uncacheable(NoCacheReason::OriginNotCache));
+        };
+        Ok(RespCacheable::Cacheable(CacheMeta::new(
+            fresh_until,
+            now,
+            0,
+            0,
+            response.clone(),
+        )))
     }
 
     async fn request_body_filter(
@@ -1514,6 +1639,41 @@ fn pingora_response_constraints(preserve_upgrade: bool) -> ResponseProtocolConst
         protocol: ResponseNormalizationProtocol::Http1,
         preserve_upgrade,
     }
+}
+
+fn response_cache_ttl(
+    response: &ResponseHeader,
+    max_ttl_secs: u64,
+    now: SystemTime,
+) -> Option<Duration> {
+    let cache_control_ttl = match CacheControl::from_resp_headers(response) {
+        Some(cache_control)
+            if cache_control.no_cache()
+                || cache_control.no_store()
+                || cache_control.has_key("private") =>
+        {
+            return None;
+        }
+        Some(cache_control) => cache_control
+            .s_maxage()
+            .ok()?
+            .or(cache_control.max_age().ok()?)
+            .map(u64::from),
+        None => None,
+    };
+    let origin_ttl = match cache_control_ttl {
+        Some(seconds) => Some(Duration::from_secs(seconds)),
+        None if response.headers.contains_key(http::header::EXPIRES) => Some(
+            calculate_expires_header_time(response)?
+                .duration_since(now)
+                .ok()?,
+        ),
+        None => None,
+    };
+    let ttl = origin_ttl
+        .unwrap_or_else(|| Duration::from_secs(max_ttl_secs))
+        .min(Duration::from_secs(max_ttl_secs));
+    (!ttl.is_zero()).then_some(ttl)
 }
 
 fn bridge_headers(headers: &http::HeaderMap) -> Vec<quiche::h3::Header> {

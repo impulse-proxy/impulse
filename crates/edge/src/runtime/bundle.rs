@@ -10,6 +10,7 @@ use log::{info, warn};
 
 use crate::runtime::{
     activation::{GenerationChangeEvent, GenerationHistoryEntry},
+    cache::BoundedPingoraMemoryCache,
     generation::{
         RuntimeGenerationState, RuntimeGenerationView, RuntimeSharedServices,
         StartupOwnedRuntimeState,
@@ -49,6 +50,24 @@ impl RuntimeBundle {
     pub fn listener_runtime_config(&self, label: &str) -> Option<ListenerRuntimeConfig> {
         self.generation_view().listener_runtime_config(label)
     }
+}
+
+fn bounded_response_cache(runtime: &RuntimeBundle) -> Option<&'static BoundedPingoraMemoryCache> {
+    let state = runtime.shared_state.generation_state();
+    let mut policies = state
+        .upstream_policies
+        .values()
+        .map(|policy| policy.response_cache.clone());
+    let mut storage_policy = policies.next()?;
+    for policy in policies {
+        storage_policy.max_bytes = storage_policy.max_bytes.max(policy.max_bytes);
+        storage_policy.max_entries = storage_policy.max_entries.max(policy.max_entries);
+        storage_policy.max_object_bytes =
+            storage_policy.max_object_bytes.max(policy.max_object_bytes);
+    }
+    Some(Box::leak(Box::new(BoundedPingoraMemoryCache::new(
+        &storage_policy,
+    ))))
 }
 
 /// Read-only view of the generation currently installed in the process.
@@ -196,6 +215,7 @@ impl RuntimeGenerationRecord {
 #[derive(Clone)]
 pub struct RuntimeBundleHandle {
     inner: Arc<RwLock<Arc<RuntimeBundle>>>,
+    response_cache: Option<&'static BoundedPingoraMemoryCache>,
     history: Arc<RwLock<VecDeque<RuntimeGenerationRecord>>>,
     generation_history: Arc<RwLock<VecDeque<GenerationHistoryEntry>>>,
     generation_events: Arc<RwLock<VecDeque<GenerationChangeEvent>>>,
@@ -210,8 +230,10 @@ impl RuntimeBundleHandle {
         // here (see `begin_drain`/`begin_shutdown`).
         let lifecycle = RuntimeLifecycleState::new();
         let _ = lifecycle.mark_running();
+        let response_cache = bounded_response_cache(&bundle);
         let handle = Self {
             inner: Arc::new(RwLock::new(Arc::new(bundle))),
+            response_cache,
             history: Arc::new(RwLock::new(VecDeque::new())),
             generation_history: Arc::new(RwLock::new(VecDeque::new())),
             generation_events: Arc::new(RwLock::new(VecDeque::new())),
@@ -224,6 +246,10 @@ impl RuntimeBundleHandle {
             summarize_upstream_lb_policies(handle.current().as_ref())
         );
         handle
+    }
+
+    pub(crate) fn response_cache(&self) -> Option<&'static BoundedPingoraMemoryCache> {
+        self.response_cache
     }
 
     /// The shared process lifecycle state machine (Phase 6). All clones of this

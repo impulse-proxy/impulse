@@ -33,7 +33,7 @@ impl BoundedPingoraMemoryCache {
         }
     }
 
-    pub fn enable(&'static self, cache: &mut HttpCache) {
+    pub fn enable(&'static self, cache: &mut HttpCache, max_object_bytes: usize) {
         cache.enable(
             &self.storage,
             Some(&self.eviction),
@@ -41,7 +41,7 @@ impl BoundedPingoraMemoryCache {
             Some(&self.lock),
             None,
         );
-        cache.set_max_file_size_bytes(self.max_object_bytes);
+        cache.set_max_file_size_bytes(max_object_bytes.min(self.max_object_bytes));
     }
 }
 
@@ -255,7 +255,7 @@ fn header_contains_directive(
         let value = value
             .to_str()
             .map_err(|_| ResponseCacheBypassReason::MalformedHeader)?;
-        if value.split(',').map(str::trim).any(|directive| {
+        if value.split([',', ';']).map(str::trim).any(|directive| {
             directive
                 .split_once('=')
                 .map_or(directive, |(name, _)| name)
