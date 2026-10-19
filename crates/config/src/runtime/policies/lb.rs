@@ -1,31 +1,6 @@
 use super::{config_invalid, normalize_optional_string};
 use crate::{config::LoadBalancing, runtime::RuntimeConfigError};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum RuntimeBackendWeightPolicy {
-    Honored,
-    RejectedAsInvalid,
-    Unsupported,
-}
-
-impl RuntimeBackendWeightPolicy {
-    pub fn canonical_label(self) -> &'static str {
-        match self {
-            Self::Honored => "honored",
-            Self::RejectedAsInvalid => "rejected-as-invalid",
-            Self::Unsupported => "unsupported",
-        }
-    }
-
-    pub fn weighting_label(self) -> &'static str {
-        match self {
-            Self::Honored => "weighted",
-            Self::RejectedAsInvalid => "unweighted",
-            Self::Unsupported => "unsupported",
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimeLoadBalancingStrategy {
     RoundRobin,
@@ -66,30 +41,8 @@ impl RuntimeLoadBalancingStrategy {
         !matches!(self, Self::ConsistentHash | Self::StickyCid | Self::Other)
     }
 
-    pub fn backend_weight_policy(self) -> RuntimeBackendWeightPolicy {
-        match self {
-            Self::RoundRobin | Self::ConsistentHash | Self::Random | Self::StickyCid => {
-                RuntimeBackendWeightPolicy::Honored
-            }
-            Self::LeastConnections | Self::LatencyAware => {
-                RuntimeBackendWeightPolicy::RejectedAsInvalid
-            }
-            Self::Other => RuntimeBackendWeightPolicy::Unsupported,
-        }
-    }
-
-    pub fn honors_backend_weight(self) -> bool {
-        matches!(
-            self.backend_weight_policy(),
-            RuntimeBackendWeightPolicy::Honored
-        )
-    }
-
     pub fn rejects_custom_backend_weight(self) -> bool {
-        matches!(
-            self.backend_weight_policy(),
-            RuntimeBackendWeightPolicy::RejectedAsInvalid
-        )
+        matches!(self, Self::LeastConnections | Self::LatencyAware)
     }
 }
 
@@ -274,77 +227,6 @@ mod tests {
         .expect_err("unsupported strategy must fail");
 
         assert_config_invalid(err, "unsupported load balancing type 'maglev'");
-    }
-
-    #[test]
-    fn load_balancing_strategy_exposes_canonical_backend_weight_policy_matrix() {
-        let cases = [
-            (
-                RuntimeLoadBalancingStrategy::RoundRobin,
-                RuntimeBackendWeightPolicy::Honored,
-            ),
-            (
-                RuntimeLoadBalancingStrategy::ConsistentHash,
-                RuntimeBackendWeightPolicy::Honored,
-            ),
-            (
-                RuntimeLoadBalancingStrategy::Random,
-                RuntimeBackendWeightPolicy::Honored,
-            ),
-            (
-                RuntimeLoadBalancingStrategy::LeastConnections,
-                RuntimeBackendWeightPolicy::RejectedAsInvalid,
-            ),
-            (
-                RuntimeLoadBalancingStrategy::LatencyAware,
-                RuntimeBackendWeightPolicy::RejectedAsInvalid,
-            ),
-            (
-                RuntimeLoadBalancingStrategy::StickyCid,
-                RuntimeBackendWeightPolicy::Honored,
-            ),
-            (
-                RuntimeLoadBalancingStrategy::Other,
-                RuntimeBackendWeightPolicy::Unsupported,
-            ),
-        ];
-
-        for (strategy, expected_policy) in cases {
-            assert_eq!(strategy.backend_weight_policy(), expected_policy);
-            assert_eq!(
-                strategy.honors_backend_weight(),
-                expected_policy == RuntimeBackendWeightPolicy::Honored
-            );
-            assert_eq!(
-                strategy.rejects_custom_backend_weight(),
-                expected_policy == RuntimeBackendWeightPolicy::RejectedAsInvalid
-            );
-        }
-
-        assert_eq!(
-            RuntimeBackendWeightPolicy::Honored.canonical_label(),
-            "honored"
-        );
-        assert_eq!(
-            RuntimeBackendWeightPolicy::RejectedAsInvalid.canonical_label(),
-            "rejected-as-invalid"
-        );
-        assert_eq!(
-            RuntimeBackendWeightPolicy::Unsupported.canonical_label(),
-            "unsupported"
-        );
-        assert_eq!(
-            RuntimeBackendWeightPolicy::Honored.weighting_label(),
-            "weighted"
-        );
-        assert_eq!(
-            RuntimeBackendWeightPolicy::RejectedAsInvalid.weighting_label(),
-            "unweighted"
-        );
-        assert_eq!(
-            RuntimeBackendWeightPolicy::Unsupported.weighting_label(),
-            "unsupported"
-        );
     }
 
     #[test]

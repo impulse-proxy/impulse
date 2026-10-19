@@ -32,8 +32,8 @@ pub use self::{
     cache::RuntimeResponseCachePolicy,
     compression::RuntimeResponseCompressionPolicy,
     lb::{
-        RuntimeAlternateBackendPolicy, RuntimeBackendWeightPolicy, RuntimeLoadBalancingPolicy,
-        RuntimeLoadBalancingStrategy, RuntimeRequestKeySpec,
+        RuntimeAlternateBackendPolicy, RuntimeLoadBalancingPolicy, RuntimeLoadBalancingStrategy,
+        RuntimeRequestKeySpec,
     },
     quota::{
         RuntimeQuotaBackendFailurePolicy, RuntimeQuotaCounterBackend, RuntimeQuotaEnforcementMode,

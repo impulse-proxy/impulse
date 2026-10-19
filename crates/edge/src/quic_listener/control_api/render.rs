@@ -473,7 +473,6 @@ mod tests {
             assert_health_reason_token(HealthFailureReason::Timeout, "timeout");
             assert_health_reason_token(HealthFailureReason::Transport, "transport");
             assert_health_reason_token(HealthFailureReason::Tls, "tls");
-            assert_health_reason_token(HealthFailureReason::CircuitOpen, "circuit_open");
         }
 
         #[test]

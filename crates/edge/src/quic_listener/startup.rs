@@ -616,19 +616,6 @@ impl QUICListener {
         })
     }
 
-    pub fn new_with_socket_and_runtime_bundle(
-        listener_label: &str,
-        socket: UdpSocket,
-        runtime_bundle: Arc<RuntimeBundleHandle>,
-    ) -> Result<Self, ProxyError> {
-        Self::new_with_socket_and_runtime_bundle_and_shutdown(
-            listener_label,
-            socket,
-            runtime_bundle,
-            ShutdownSignal::new(),
-        )
-    }
-
     pub(crate) fn new_with_socket_and_runtime_bundle_and_shutdown(
         listener_label: &str,
         socket: UdpSocket,

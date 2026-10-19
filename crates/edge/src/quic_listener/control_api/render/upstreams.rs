@@ -6,7 +6,6 @@ pub(super) fn health_failure_reason_label(reason: HealthFailureReason) -> &'stat
         HealthFailureReason::Timeout => "timeout",
         HealthFailureReason::Transport => "transport",
         HealthFailureReason::Tls => "tls",
-        HealthFailureReason::CircuitOpen => "circuit_open",
     }
 }
 

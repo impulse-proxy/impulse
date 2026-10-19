@@ -1178,7 +1178,6 @@ impl Metrics {
             HealthFailureReason::Tls => {
                 self.health_failure_tls.fetch_add(1, Ordering::Relaxed);
             }
-            HealthFailureReason::CircuitOpen => {}
         }
     }
 

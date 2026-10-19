@@ -5,23 +5,22 @@
 //! should hand it a backend identity plus a canonical request and avoid
 //! reconstructing H1/H2 selection logic themselves.
 
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{collections::HashMap, sync::Arc};
 
-use hyper::Method;
 use impulse_config::runtime::{
     RuntimeBackendConnectionPolicy, RuntimeBackendTransportKind, RuntimeUpstream,
 };
 use impulse_errors::{PoolError, ProxyError};
 use pingora_core::upstreams::peer::HttpPeer;
-use tokio::sync::{Semaphore, TryAcquireError, mpsc};
+use tokio::sync::{Semaphore, TryAcquireError};
 
 use crate::{
     PingoraBackendHealthIdentity, PingoraUpstreamConnectionIdentity,
     client_rotation::BackendClientRotation,
     exchange::{
-        UpstreamCancellation, UpstreamConnectionReuse, UpstreamExchangeCompletion,
-        UpstreamExchangeLifecycle, UpstreamExchangeOutcome, UpstreamExchangeRequest,
-        UpstreamExchangeResponse, UpstreamInflightPermit,
+        UpstreamConnectionReuse, UpstreamExchangeCompletion, UpstreamExchangeLifecycle,
+        UpstreamExchangeOutcome, UpstreamExchangeRequest, UpstreamExchangeResponse,
+        UpstreamInflightPermit,
     },
     pingora_failure::{classify_pingora_h1_error, classify_pingora_h2_error},
     pingora_h1::PingoraH1UpstreamSession,
@@ -187,76 +186,6 @@ impl UpstreamTransportPool {
             )));
         }
         Ok(config)
-    }
-
-    pub async fn send_health_check(
-        &self,
-        backend: &str,
-        uri: hyper::Uri,
-        timeout: Duration,
-    ) -> Result<hyper::StatusCode, ProxyError> {
-        let version = match self.backend_entry(backend) {
-            Some(RuntimeBackendTransportKind::Http1) => hyper::Version::HTTP_11,
-            Some(RuntimeBackendTransportKind::H2) => hyper::Version::HTTP_2,
-            None => {
-                return Err(ProxyError::Pool(PoolError::UnknownBackend(
-                    backend.to_string(),
-                )));
-            }
-        };
-        let mut headers = hyper::HeaderMap::new();
-        if let Some(authority) = uri.authority() {
-            let host = hyper::header::HeaderValue::from_str(authority.as_str())
-                .map_err(|error| ProxyError::Protocol(error.to_string()))?;
-            headers.insert(hyper::header::HOST, host);
-        }
-        let (frames, body) = mpsc::channel(1);
-        drop(frames);
-        let (cancel, cancellation) = tokio::sync::oneshot::channel();
-        let (completed, completion) = tokio::sync::oneshot::channel();
-        let request = UpstreamExchangeRequest {
-            head: crate::UpstreamRequestHead {
-                method: Method::GET,
-                uri,
-                version,
-                headers,
-            },
-            body,
-            cancellation: UpstreamCancellation {
-                signal: cancellation,
-            },
-            completion: completed,
-        };
-        let exchange = async {
-            let mut response = self.send_exchange(backend, request).await?;
-            let status = response.head.status;
-            while let Some(frame) = response.body.recv().await {
-                frame?;
-            }
-            match completion.await {
-                Ok(UpstreamExchangeCompletion {
-                    outcome: UpstreamExchangeOutcome::Failed(error),
-                    ..
-                }) => Err(error),
-                Ok(UpstreamExchangeCompletion {
-                    outcome: UpstreamExchangeOutcome::Cancelled,
-                    ..
-                }) => Err(ProxyError::Transport(
-                    "upstream health check cancelled".to_string(),
-                )),
-                Ok(_) => Ok(status),
-                Err(_) => Err(ProxyError::Transport(
-                    "upstream health check ended without completion".to_string(),
-                )),
-            }
-        };
-        match tokio::time::timeout(timeout, exchange).await {
-            Ok(result) => result,
-            Err(_) => {
-                let _ = cancel.send(());
-                Err(ProxyError::Timeout)
-            }
-        }
     }
 
     /// Build the canonical transport façade directly from runtime upstream definitions.

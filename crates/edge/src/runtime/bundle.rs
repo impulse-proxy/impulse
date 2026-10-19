@@ -652,13 +652,10 @@ fn summarize_upstream_lb_policies(bundle: &RuntimeBundle) -> String {
         .upstreams
         .iter()
         .map(|(name, upstream)| {
-            let weight_policy = upstream.load_balancing.strategy.backend_weight_policy();
             format!(
-                "{}:{}:{}:{}",
+                "{}:{}",
                 name,
-                upstream.load_balancing.strategy.canonical_name(),
-                weight_policy.weighting_label(),
-                weight_policy.canonical_label()
+                upstream.load_balancing.strategy.canonical_name()
             )
         })
         .collect::<Vec<_>>();
@@ -822,7 +819,7 @@ mod tests {
     }
 
     #[test]
-    fn upstream_lb_policy_summary_exposes_canonical_weighting_contract() {
+    fn upstream_lb_policy_summary_exposes_canonical_strategy() {
         let dir = tempdir().expect("tempdir");
         let (cert, key) = write_test_cert_for_name(dir.path(), "server", "api.example.com");
 
@@ -836,7 +833,7 @@ mod tests {
         let weighted_bundle = runtime_bundle_from_config(1, "weighted.yaml", &weighted);
         assert_eq!(
             summarize_upstream_lb_policies(&weighted_bundle),
-            "api:random:weighted:honored"
+            "api:random"
         );
 
         let mut adaptive = test_config(cert, key, "127.0.0.1:7002");
@@ -849,7 +846,7 @@ mod tests {
         let adaptive_bundle = runtime_bundle_from_config(2, "adaptive.yaml", &adaptive);
         assert_eq!(
             summarize_upstream_lb_policies(&adaptive_bundle),
-            "api:least-connections:unweighted:rejected-as-invalid"
+            "api:least-connections"
         );
     }
 

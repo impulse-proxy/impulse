@@ -71,10 +71,6 @@ impl<P> BackendSelectionResult<P> {
     pub fn connection_policy(&self) -> &P {
         &self.connection_policy
     }
-
-    pub fn into_connection_policy(self) -> P {
-        self.connection_policy
-    }
 }
 
 fn synchronize_backend_readiness<T>(

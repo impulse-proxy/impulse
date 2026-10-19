@@ -4,7 +4,6 @@ pub enum HealthFailureReason {
     Timeout,
     Transport,
     Tls,
-    CircuitOpen,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
