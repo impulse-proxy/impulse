@@ -155,9 +155,7 @@ pub fn response_cache_ttl(
         ),
         None => None,
     };
-    let ttl = origin_ttl
-        .unwrap_or_else(|| Duration::from_secs(max_ttl_secs))
-        .min(Duration::from_secs(max_ttl_secs));
+    let ttl = origin_ttl?.min(Duration::from_secs(max_ttl_secs));
     (!ttl.is_zero()).then_some(ttl)
 }
 
@@ -401,7 +399,6 @@ fn push_component(key: &mut Vec<u8>, component: &[u8]) {
 #[cfg(test)]
 mod tests {
     use impulse_config::runtime::RuntimeApiKeyAuth;
-    use pingora_cache::CacheMeta;
 
     use super::*;
 
@@ -511,16 +508,7 @@ mod tests {
 
         let now = SystemTime::now();
         let response = ResponseHeader::build(http::StatusCode::OK, None).expect("response");
-        let ttl = response_cache_ttl(&response, 1, now).expect("bounded cache TTL");
-        let meta = CacheMeta::new(
-            now.checked_add(ttl).expect("fresh timestamp"),
-            now,
-            0,
-            0,
-            response,
-        );
-        assert!(meta.is_fresh(now));
-        assert!(!meta.is_fresh(now + Duration::from_secs(2)));
+        assert_eq!(response_cache_ttl(&response, 1, now), None);
     }
 
     #[test]
