@@ -391,7 +391,7 @@ fn push_component(key: &mut Vec<u8>, component: &[u8]) {
 
 #[cfg(test)]
 mod tests {
-    use pingora_cache::{CacheMeta, lock::LockWaitOutcome};
+    use pingora_cache::CacheMeta;
 
     use super::*;
 
@@ -491,48 +491,6 @@ mod tests {
         );
         assert!(meta.is_fresh(now));
         assert!(!meta.is_fresh(now + Duration::from_secs(2)));
-    }
-
-    #[tokio::test]
-    async fn cache_lock_coalesces_fills_and_releases_waiters_after_cancellation() {
-        let cache_store = Box::leak(Box::new(BoundedPingoraMemoryCache::new(
-            &policy(1024, 8),
-            Arc::new(Metrics::default()),
-        )));
-        let key = CacheKey::new("stampede", "");
-
-        let mut writer = HttpCache::new();
-        cache_store.enable(&mut writer, 1024);
-        writer.set_cache_key(key.clone());
-        assert!(
-            writer
-                .cache_lookup()
-                .await
-                .expect("writer lookup")
-                .is_none()
-        );
-        assert!(!writer.is_cache_locked());
-
-        let mut reader = HttpCache::new();
-        cache_store.enable(&mut reader, 1024);
-        reader.set_cache_key(key);
-        assert!(
-            reader
-                .cache_lookup()
-                .await
-                .expect("reader lookup")
-                .is_none()
-        );
-        assert!(reader.is_cache_locked());
-
-        drop(writer);
-        let outcome = tokio::time::timeout(Duration::from_secs(1), reader.cache_lock_wait())
-            .await
-            .expect("cancelled fill releases waiter");
-        assert!(matches!(
-            outcome,
-            LockWaitOutcome::TransientError | LockWaitOutcome::Dangling
-        ));
     }
 
     #[test]

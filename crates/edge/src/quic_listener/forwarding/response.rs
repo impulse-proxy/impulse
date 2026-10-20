@@ -558,7 +558,7 @@ impl QUICListener {
                 request_method: &req.method,
                 request_headers: &request_headers,
                 response_status: status,
-                response_headers: &response_headers,
+                response_headers: &resp_headers,
             });
             metrics.record_response_compression_outcome(compression.action);
             compress_response = matches!(compression.action, ResponseCompressionAction::Gzip);

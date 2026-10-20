@@ -23,14 +23,14 @@ use hyper::{
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use impulse_config::{
     config::{Backend, Config, LoadBalancing, RouteMatch, Upstream, UpstreamTls},
-    runtime::RuntimeBackendTlsPolicy,
+    runtime::{RuntimeBackendTlsPolicy, RuntimeConfig},
     validator::validate,
 };
 use impulse_edge::{
     MAX_DATAGRAM_SIZE_BYTES, MAX_UDP_PAYLOAD_BYTES, Metrics, QUIC_IDLE_TIMEOUT_MS,
     QUIC_INITIAL_MAX_DATA, QUIC_INITIAL_MAX_STREAMS_BIDI, QUIC_INITIAL_MAX_STREAMS_UNI,
     QUIC_INITIAL_STREAM_DATA, REQUEST_TIMEOUT_SECS, UDP_READ_TIMEOUT_MS,
-    runtime::listener::QUICListener,
+    runtime::{bundle::RuntimeBundleHandle, listener::QUICListener},
 };
 use impulse_lb::pingora_backend::SharedPingoraLoadBalancingRuntimeState;
 use impulse_transport::SharedDnsResolver;
@@ -162,7 +162,18 @@ impl QuicRequestPathHarness {
 
     pub(crate) fn start_listener(&mut self, config: Config) -> Result<SocketAddr, String> {
         validate(&config).map_err(|err| format!("config validation failed: {err}"))?;
-        let listener = QUICListener::new(config).map_err(|err| format!("listener: {err}"))?;
+        let runtime_config =
+            RuntimeConfig::from_config(&config).map_err(|err| format!("runtime config: {err}"))?;
+        let runtime_bundle = QUICListener::build_runtime_bundle(
+            "request-path-test".to_string(),
+            config.log.clone(),
+            &runtime_config,
+        )
+        .map_err(|err| format!("runtime bundle: {err}"))?;
+        let runtime_bundle = Arc::new(RuntimeBundleHandle::new(runtime_bundle));
+        let listener = QUICListener::new(config)
+            .map_err(|err| format!("listener: {err}"))?
+            .with_runtime_bundle(runtime_bundle);
         self.backend_dns_resolver = Some(listener.backend_dns_resolver.clone());
         self.pingora_load_balancing = Some(Arc::clone(&listener.pingora_load_balancing));
         self.metrics = Some(Arc::clone(&listener.metrics));

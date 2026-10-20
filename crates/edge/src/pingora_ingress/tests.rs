@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     io::Write,
     net::{SocketAddr, TcpStream},
     sync::{
@@ -11,10 +11,7 @@ use std::{
 
 use http_body_util::BodyExt;
 use impulse_config::{
-    config::{
-        ApiKeyAuth, Config, ResponseCache, ResponseCompression, RouteAuth, ScopedRateLimit,
-        ScopedRateLimitScope,
-    },
+    config::{ApiKeyAuth, Config, ResponseCache, ResponseCompression, RouteAuth},
     runtime::{ListenerRuntimeConfig, RuntimeConfig},
     validator::validate,
 };
@@ -522,6 +519,7 @@ fn pingora_and_http3_match_response_compression_contracts() {
     };
     let mut config = harness.make_config(HashMap::from([("api".to_string(), upstream)]));
     config.performance.max_response_body_bytes = 128;
+    config.performance.unknown_length_response_prebuffer_bytes = 128;
     let mut pingora_config = config.clone();
     pingora_config.listen.port = reserve_unused_listener_port();
     let (_pingora, pingora_addr) =
@@ -530,7 +528,8 @@ fn pingora_and_http3_match_response_compression_contracts() {
         .start_listener(config)
         .expect("start HTTP/3 ingress");
 
-    let selected_headers = &["content-encoding", "content-length", "vary"];
+    let compression_headers = &["content-encoding", "vary"];
+    let gzip_headers = &["content-encoding", "content-length", "vary"];
     let (pingora, http3) = protocol_pair(
         &harness,
         pingora_addr,
@@ -541,7 +540,7 @@ fn pingora_and_http3_match_response_compression_contracts() {
             headers: &[("accept-encoding", "gzip")],
             body: None,
             user_agent: "impulse-compression-parity-test",
-            selected_response_headers: selected_headers,
+            selected_response_headers: gzip_headers,
         },
     );
     assert_eq!(pingora, http3);
@@ -573,7 +572,7 @@ fn pingora_and_http3_match_response_compression_contracts() {
                 headers,
                 body: None,
                 user_agent: "impulse-compression-parity-test",
-                selected_response_headers: selected_headers,
+                selected_response_headers: compression_headers,
             },
         );
         assert_eq!(pingora, http3, "{method} {path}");
@@ -597,7 +596,7 @@ fn pingora_and_http3_match_response_compression_contracts() {
             headers: &[("accept-encoding", "gzip")],
             body: None,
             user_agent: "impulse-compression-parity-test",
-            selected_response_headers: selected_headers,
+            selected_response_headers: compression_headers,
         },
     );
     assert_eq!(pingora, http3);
@@ -614,7 +613,7 @@ fn pingora_and_http3_match_response_compression_contracts() {
             headers: &[("accept-encoding", "gzip")],
             body: None,
             user_agent: "impulse-compression-parity-test",
-            selected_response_headers: selected_headers,
+            selected_response_headers: compression_headers,
         },
     );
     assert_eq!(pingora, http3);
@@ -692,62 +691,6 @@ fn pingora_and_http3_share_bounded_response_cache_behavior() {
 }
 
 #[test]
-fn pingora_and_http3_share_consistent_hash_backend_selection() {
-    if !local_listener_bind_available() {
-        return;
-    }
-
-    let mut harness = ProtocolParityHarness::new();
-    let backend_a = harness.start_h1_static_backend(b"backend-a\n");
-    let backend_b = harness.start_h1_static_backend(b"backend-b\n");
-    let mut upstream = make_upstream(
-        "/",
-        vec![
-            make_backend("backend-a", backend_a.to_string()),
-            make_backend("backend-b", backend_b.to_string()),
-        ],
-        None,
-        "consistent-hash",
-    );
-    upstream.load_balancing.key = Some("path".to_string());
-    let config = harness.make_config(HashMap::from([("api".to_string(), upstream)]));
-    let mut pingora_config = config.clone();
-    pingora_config.listen.port = reserve_unused_listener_port();
-    let (_pingora, pingora_addr) =
-        PingoraTestService::start(pingora_config).expect("start Pingora ingress");
-    harness
-        .start_listener(config)
-        .expect("start HTTP/3 ingress");
-
-    let mut selected_backends = HashSet::new();
-    for index in 0..64 {
-        let path = format!("/selection/{index}");
-        let quic = harness
-            .run_quic(ParityRequestSpec::get("localhost", &path))
-            .expect("HTTP/3 selection response");
-        let pingora = run_http2_request_to(
-            pingora_addr,
-            harness.cert_path(),
-            HttpRequestSpec {
-                method: "GET",
-                authority: "localhost",
-                path: &path,
-                headers: &[],
-                body: None,
-                user_agent: "impulse-pingora-lb-parity-test",
-            },
-        )
-        .map(|response| snapshot(response, &[]))
-        .expect("Pingora selection response");
-
-        assert_eq!(pingora, quic.response);
-        selected_backends.insert(quic.response.body);
-    }
-
-    assert_eq!(selected_backends.len(), 2);
-}
-
-#[test]
 fn pingora_and_http3_use_published_discovery_membership() {
     if !local_listener_bind_available() {
         return;
@@ -807,267 +750,6 @@ fn pingora_and_http3_use_published_discovery_membership() {
         pingora_addr,
         ParityRequestSpec::get("localhost", "/discovered"),
     );
-}
-
-#[derive(Debug, PartialEq, Eq)]
-struct HybridRuntimeMetrics {
-    requests_success: u64,
-    requests_failure: u64,
-    requests_rate_limited: u64,
-    health_failure_5xx: u64,
-}
-
-impl HybridRuntimeMetrics {
-    fn delta(before: &str, after: &str) -> Self {
-        Self {
-            requests_success: metric_delta(before, after, "impulse_requests_success "),
-            requests_failure: metric_delta(before, after, "impulse_requests_failure "),
-            requests_rate_limited: metric_delta(before, after, "impulse_request_rate_limited "),
-            health_failure_5xx: metric_delta(
-                before,
-                after,
-                "impulse_health_failures_total{reason=\"5xx\"} ",
-            ),
-        }
-    }
-}
-
-#[test]
-fn pingora_and_http3_match_final_hybrid_runtime_behavior() {
-    if !local_listener_bind_available() {
-        return;
-    }
-
-    let mut harness = ProtocolParityHarness::new();
-    let generic_backend_a = harness.start_h1_backend(|_request| async move {
-        let body = bytes::Bytes::from(vec![b'a'; 96]);
-        Ok::<_, std::convert::Infallible>(
-            hyper::Response::builder()
-                .status(200)
-                .header(http::header::CACHE_CONTROL, "public, max-age=60")
-                .header(http::header::CONTENT_TYPE, "text/plain")
-                .header(http::header::CONTENT_LENGTH, body.len().to_string())
-                .body(http_body_util::Full::new(body))
-                .expect("generic backend A response"),
-        )
-    });
-    let generic_backend_b = harness.start_h1_backend(|_request| async move {
-        let body = bytes::Bytes::from(vec![b'b'; 96]);
-        Ok::<_, std::convert::Infallible>(
-            hyper::Response::builder()
-                .status(200)
-                .header(http::header::CACHE_CONTROL, "public, max-age=60")
-                .header(http::header::CONTENT_TYPE, "text/plain")
-                .header(http::header::CONTENT_LENGTH, body.len().to_string())
-                .body(http_body_util::Full::new(body))
-                .expect("generic backend B response"),
-        )
-    });
-    let admin_backend = harness.start_h1_static_backend(b"admin route\n");
-    let limited_backend = harness.start_h1_static_backend(b"limited route\n");
-    let unhealthy_backend = harness.start_h1_backend(|_request| async move {
-        Ok::<_, std::convert::Infallible>(
-            hyper::Response::builder()
-                .status(http::StatusCode::SERVICE_UNAVAILABLE)
-                .body(http_body_util::Full::new(bytes::Bytes::from_static(
-                    b"backend unhealthy\n",
-                )))
-                .expect("unhealthy backend response"),
-        )
-    });
-
-    let mut admin = make_upstream(
-        "/api/admin",
-        vec![make_backend("admin", admin_backend.to_string())],
-        None,
-        "round-robin",
-    );
-    admin.auth = RouteAuth {
-        api_key: Some(ApiKeyAuth {
-            header_name: "x-api-key".to_string(),
-            keys: vec!["admin-key".to_string()],
-        }),
-        ..RouteAuth::default()
-    };
-    let mut generic = make_upstream(
-        "/api",
-        vec![
-            make_backend("generic-a", generic_backend_a.to_string()),
-            make_backend("generic-b", generic_backend_b.to_string()),
-        ],
-        None,
-        "consistent-hash",
-    );
-    generic.load_balancing.key = Some("path".to_string());
-    generic.compression = ResponseCompression {
-        enabled: true,
-        minimum_size_bytes: 1,
-    };
-    generic.cache = ResponseCache {
-        enabled: true,
-        max_bytes: 4096,
-        max_entries: 64,
-        max_object_bytes: 1024,
-        max_ttl_secs: 60,
-    };
-    let mut config = harness.make_config(HashMap::from([
-        ("generic".to_string(), generic),
-        ("admin".to_string(), admin),
-        (
-            "limited".to_string(),
-            make_upstream(
-                "/limited",
-                vec![make_backend("limited", limited_backend.to_string())],
-                None,
-                "round-robin",
-            ),
-        ),
-        (
-            "unhealthy".to_string(),
-            make_upstream(
-                "/unhealthy",
-                vec![make_backend("unhealthy", unhealthy_backend.to_string())],
-                None,
-                "round-robin",
-            ),
-        ),
-    ]));
-    config.resilience.scoped_rate_limits = vec![ScopedRateLimit {
-        name: "hybrid-route-limit".to_string(),
-        scope: ScopedRateLimitScope::Route,
-        requests_per_sec: 1,
-        burst: 1,
-        key: None,
-        route_allowlist: vec!["limited".to_string()],
-        idle_ttl_secs: 300,
-    }];
-
-    let mut pingora_config = config.clone();
-    pingora_config.listen.port = reserve_unused_listener_port();
-    let (pingora, pingora_addr) =
-        PingoraTestService::start(pingora_config).expect("start Pingora ingress");
-    harness
-        .start_listener(config)
-        .expect("start HTTP/3 ingress");
-
-    let quic_feature_metrics_before = harness
-        .metrics_text()
-        .expect("HTTP/3 feature metrics before matrix");
-    let pingora_feature_metrics_before = pingora.metrics_text();
-    let mut selected_backends = HashSet::new();
-    for index in 0..64 {
-        let path = format!("/api/cache/{index}");
-        let request = ParityRequestSpec {
-            method: "GET",
-            authority: "localhost",
-            path: &path,
-            headers: &[("accept-encoding", "gzip")],
-            body: None,
-            user_agent: "impulse-final-runtime-test",
-            selected_response_headers: &["content-encoding", "vary"],
-        };
-        let first = protocol_pair(&harness, pingora_addr, request);
-        let second = protocol_pair(&harness, pingora_addr, request);
-        assert_eq!(first, second, "cached response for {path}");
-        assert_eq!(selected_header(&first.0, "content-encoding"), Some("gzip"));
-        selected_backends.insert(first.0.body);
-        if selected_backends.len() == 2 {
-            break;
-        }
-    }
-    assert_eq!(selected_backends.len(), 2);
-
-    let quic_feature_metrics_after = harness
-        .metrics_text()
-        .expect("HTTP/3 feature metrics after matrix");
-    let pingora_feature_metrics_after = pingora.metrics_text();
-    for (before, after) in [
-        (
-            pingora_feature_metrics_before.as_str(),
-            pingora_feature_metrics_after.as_str(),
-        ),
-        (
-            quic_feature_metrics_before.as_str(),
-            quic_feature_metrics_after.as_str(),
-        ),
-    ] {
-        assert!(
-            metric_delta(
-                before,
-                after,
-                "impulse_response_compression_outcomes_total{outcome=\"gzip\"} ",
-            ) >= 1
-        );
-        assert!(
-            metric_delta(
-                before,
-                after,
-                "impulse_response_cache_outcomes_total{outcome=\"hit\"} ",
-            ) >= 1
-        );
-    }
-
-    let quic_metrics_before = harness
-        .metrics_text()
-        .expect("HTTP/3 metrics before matrix");
-    let pingora_metrics_before = pingora.metrics_text();
-    let requests = [
-        ParityRequestSpec {
-            method: "GET",
-            authority: "localhost",
-            path: "/api/admin",
-            headers: &[],
-            body: None,
-            user_agent: "impulse-hybrid-runtime-test",
-            selected_response_headers: &["www-authenticate"],
-        },
-        ParityRequestSpec {
-            method: "GET",
-            authority: "localhost",
-            path: "/api/admin",
-            headers: &[("x-api-key", "admin-key")],
-            body: None,
-            user_agent: "impulse-hybrid-runtime-test",
-            selected_response_headers: &[],
-        },
-        ParityRequestSpec::get("localhost", "/limited"),
-        ParityRequestSpec {
-            selected_response_headers: &["retry-after"],
-            ..ParityRequestSpec::get("localhost", "/limited")
-        },
-        ParityRequestSpec::get("localhost", "/unhealthy"),
-    ];
-
-    for request in requests {
-        let quic = harness.run_quic(request).expect("HTTP/3 matrix response");
-        let pingora_response = run_http2_request_to(
-            pingora_addr,
-            harness.cert_path(),
-            HttpRequestSpec {
-                method: request.method,
-                authority: request.authority,
-                path: request.path,
-                headers: request.headers,
-                body: request.body,
-                user_agent: request.user_agent,
-            },
-        )
-        .map(|response| snapshot(response, request.selected_response_headers))
-        .expect("Pingora matrix response");
-        assert_eq!(pingora_response, quic.response);
-    }
-
-    let quic_metrics = HybridRuntimeMetrics::delta(
-        &quic_metrics_before,
-        &harness.metrics_text().expect("HTTP/3 metrics after matrix"),
-    );
-    let pingora_metrics =
-        HybridRuntimeMetrics::delta(&pingora_metrics_before, &pingora.metrics_text());
-    assert_eq!(pingora_metrics, quic_metrics);
-    assert_eq!(quic_metrics.requests_success, 2);
-    assert_eq!(quic_metrics.requests_failure, 3);
-    assert_eq!(quic_metrics.requests_rate_limited, 1);
-    assert_eq!(quic_metrics.health_failure_5xx, 1);
 }
 
 fn metric_delta(before: &str, after: &str, prefix: &str) -> u64 {

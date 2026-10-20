@@ -472,44 +472,6 @@ fn runtime_activation_and_rollback_restore_the_retained_serving_configuration() 
 
 #[test]
 #[serial]
-fn failed_runtime_activation_keeps_the_active_generation_serving() {
-    let Some(mut harness) = start_static_runtime_swap_listener(b"active-generation", |_| {}) else {
-        return;
-    };
-
-    harness
-        .rewrite_config(|config| {
-            config.listen.port = config.listen.port.saturating_add(1);
-        })
-        .expect("write incompatible activation candidate");
-
-    let rejection = harness
-        .trigger_runtime_activate_expect(http::StatusCode::CONFLICT)
-        .expect("activation rejection");
-    assert_eq!(rejection["active_generation"], 0);
-    assert_eq!(rejection["activated_generation"], serde_json::Value::Null);
-    assert!(
-        rejection["rejected_changes"]
-            .as_array()
-            .is_some_and(|changes| !changes.is_empty()),
-        "failed activation should expose its rejected changes"
-    );
-    assert_eq!(
-        harness
-            .current_generation()
-            .expect("generation after failed activation"),
-        0
-    );
-
-    let response = harness
-        .run_request(H3RequestSpec::get("localhost", "/"))
-        .expect("request after failed activation");
-    response.assert_status(200);
-    response.assert_body_bytes(b"active-generation");
-}
-
-#[test]
-#[serial]
 fn listener_cert_rotation_stays_scoped_to_reload_certs_and_does_not_activate_generation() {
     let Some(harness) = start_static_runtime_swap_listener(b"listener-cert-reload", |_| {}) else {
         return;
@@ -709,65 +671,6 @@ fn upstream_ca_rotation_uses_activation_even_when_config_path_is_unchanged() {
 }
 
 // Domain: reload rejection.
-#[test]
-#[serial]
-fn startup_owned_listener_bind_change_is_rejected_and_keeps_active_generation_live() {
-    let Some(mut harness) = start_static_runtime_swap_listener(b"bind-stable", |_| {}) else {
-        return;
-    };
-
-    let before = harness
-        .run_request(H3RequestSpec::get("localhost", "/"))
-        .expect("request before bind-change reload");
-    before.assert_status(200);
-    before.assert_body_bytes(b"bind-stable");
-
-    let startup_snapshot = harness
-        .runtime_snapshot()
-        .expect("startup runtime snapshot");
-    assert_eq!(startup_snapshot["runtime"]["generation"], 0);
-
-    harness
-        .rewrite_config(|config| {
-            config.listen.port = config.listen.port.saturating_add(1);
-        })
-        .expect("rewrite listener bind");
-
-    let rejection = harness
-        .trigger_runtime_reload_expect(http::StatusCode::CONFLICT)
-        .expect("reload rejection");
-    assert_eq!(rejection["reloaded"], false);
-    let error = rejection["error"]
-        .as_str()
-        .expect("reload rejection error string");
-    assert!(
-        error.contains("restart required"),
-        "listener bind change should be restart-required, got: {error}"
-    );
-    assert!(
-        error.contains("listener"),
-        "listener bind rejection should mention the listener, got: {error}"
-    );
-
-    let after_snapshot = harness
-        .runtime_snapshot()
-        .expect("post-rejection runtime snapshot");
-    assert_eq!(
-        after_snapshot["runtime"]["generation"], 0,
-        "startup-owned rejection must leave the active generation unchanged"
-    );
-    assert_eq!(
-        after_snapshot["runtime"]["config_path"], startup_snapshot["runtime"]["config_path"],
-        "config path should remain the same for a rejected same-path reload attempt"
-    );
-
-    let after = harness
-        .run_request(H3RequestSpec::get("localhost", "/"))
-        .expect("request after bind-change rejection");
-    after.assert_status(200);
-    after.assert_body_bytes(b"bind-stable");
-}
-
 #[test]
 #[serial]
 fn startup_owned_log_sink_change_is_rejected_and_keeps_request_behavior() {

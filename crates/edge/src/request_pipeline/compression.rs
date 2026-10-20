@@ -156,7 +156,7 @@ pub(crate) fn ensure_vary_accept_encoding(headers: &mut HeaderMap) {
     {
         return;
     }
-    headers.append(header::VARY, HeaderValue::from_static("Accept-Encoding"));
+    headers.append(header::VARY, HeaderValue::from_static("accept-encoding"));
 }
 
 fn response_status_forbids_body(status: StatusCode) -> bool {
