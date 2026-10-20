@@ -1,6 +1,11 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, hash_map::RandomState},
+    hash::BuildHasher,
     net::IpAddr,
+    sync::{
+        Mutex, RwLock,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -22,53 +27,124 @@ pub(crate) struct TokenBucket {
 const PER_SOURCE_RATE_DIVISOR: u32 = 10;
 const MAX_TRACKED_SOURCES: usize = 4_096;
 const SOURCE_IDLE_TTL: Duration = Duration::from_secs(300);
+const SOURCE_PRUNE_INTERVAL: Duration = Duration::from_secs(1);
+const SOURCE_BUCKET_SHARDS: usize = 16;
 
 pub(crate) struct PerSourceTokenBucket {
-    buckets: HashMap<IpAddr, (TokenBucket, Instant)>,
+    hash_builder: RandomState,
+    shards: Box<[Mutex<PerSourceTokenBucketShard>]>,
+    live_buckets: AtomicUsize,
+    prune_state: Mutex<PerSourcePruneState>,
+    config: RwLock<PerSourceTokenBucketConfig>,
+}
+
+#[derive(Clone, Copy)]
+struct PerSourceTokenBucketConfig {
     rate_per_sec: u32,
     burst: u32,
+}
+
+#[derive(Default)]
+struct PerSourceTokenBucketShard {
+    buckets: HashMap<IpAddr, (TokenBucket, Instant)>,
+}
+
+struct PerSourcePruneState {
+    last_pruned_at: Instant,
+    next_shard: usize,
 }
 
 impl PerSourceTokenBucket {
     pub(crate) fn new(rate_per_sec: u32, burst: u32) -> Self {
         Self {
-            buckets: HashMap::new(),
-            rate_per_sec: per_source_rate(rate_per_sec),
-            burst: per_source_burst(burst),
+            hash_builder: RandomState::new(),
+            shards: (0..SOURCE_BUCKET_SHARDS)
+                .map(|_| Mutex::new(PerSourceTokenBucketShard::default()))
+                .collect(),
+            live_buckets: AtomicUsize::new(0),
+            prune_state: Mutex::new(PerSourcePruneState {
+                last_pruned_at: Instant::now(),
+                next_shard: 0,
+            }),
+            config: RwLock::new(PerSourceTokenBucketConfig {
+                rate_per_sec: per_source_rate(rate_per_sec),
+                burst: per_source_burst(burst),
+            }),
         }
     }
 
-    pub(crate) fn reconfigure(&mut self, rate_per_sec: u32, burst: u32) {
-        self.rate_per_sec = per_source_rate(rate_per_sec);
-        self.burst = per_source_burst(burst);
-        for (bucket, _) in self.buckets.values_mut() {
-            bucket.reconfigure(self.rate_per_sec, self.burst);
+    pub(crate) fn reconfigure(&self, rate_per_sec: u32, burst: u32) {
+        let mut config = self
+            .config
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        config.rate_per_sec = per_source_rate(rate_per_sec);
+        config.burst = per_source_burst(burst);
+        for shard in &self.shards {
+            let mut shard = shard
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            for (bucket, _) in shard.buckets.values_mut() {
+                bucket.reconfigure(config.rate_per_sec, config.burst);
+            }
         }
     }
 
-    pub(crate) fn try_consume(&mut self, source: IpAddr) -> bool {
+    pub(crate) fn try_consume(&self, source: IpAddr) -> bool {
         let now = Instant::now();
-        self.buckets.retain(|_, (_, last_seen)| {
-            now.saturating_duration_since(*last_seen) < SOURCE_IDLE_TTL
-        });
-
-        if !self.buckets.contains_key(&source)
-            && self.buckets.len() >= MAX_TRACKED_SOURCES
-            && let Some(oldest) = self
-                .buckets
-                .iter()
-                .min_by_key(|(_, (_, last_seen))| *last_seen)
-                .map(|(source, _)| *source)
-        {
-            self.buckets.remove(&oldest);
+        self.prune_expired_if_due(now);
+        let config = *self
+            .config
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let shard_index = (self.hash_builder.hash_one(source) as usize) % self.shards.len();
+        let mut shard = self.shards[shard_index]
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some((bucket, last_seen)) = shard.buckets.get_mut(&source) {
+            *last_seen = now;
+            return bucket.try_consume();
         }
-
-        let (bucket, last_seen) = self
+        if self
+            .live_buckets
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                (count < MAX_TRACKED_SOURCES).then_some(count + 1)
+            })
+            .is_err()
+        {
+            return false;
+        }
+        let (bucket, _) = shard
             .buckets
             .entry(source)
-            .or_insert_with(|| (TokenBucket::new(self.rate_per_sec, self.burst), now));
-        *last_seen = now;
+            .or_insert_with(|| (TokenBucket::new(config.rate_per_sec, config.burst), now));
         bucket.try_consume()
+    }
+
+    fn prune_expired_if_due(&self, now: Instant) {
+        let shard_index = {
+            let Ok(mut state) = self.prune_state.try_lock() else {
+                return;
+            };
+            if now.saturating_duration_since(state.last_pruned_at) < SOURCE_PRUNE_INTERVAL {
+                return;
+            }
+            state.last_pruned_at = now;
+            let shard_index = state.next_shard;
+            state.next_shard = (state.next_shard + 1) % self.shards.len();
+            shard_index
+        };
+        let Ok(mut shard) = self.shards[shard_index].try_lock() else {
+            return;
+        };
+        let before = shard.buckets.len();
+        shard.buckets.retain(|_, (_, last_seen)| {
+            now.saturating_duration_since(*last_seen) < SOURCE_IDLE_TTL
+        });
+        self.live_buckets.fetch_sub(
+            before.saturating_sub(shard.buckets.len()),
+            Ordering::Relaxed,
+        );
     }
 }
 

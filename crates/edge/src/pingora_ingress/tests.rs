@@ -180,11 +180,11 @@ fn test_connection_filter(
             rate_per_sec: policy.new_connections_per_sec,
             burst: policy.new_connections_burst,
             global: TokenBucket::new(policy.new_connections_per_sec, policy.new_connections_burst),
-            per_source: PerSourceTokenBucket::new(
-                policy.new_connections_per_sec,
-                policy.new_connections_burst,
-            ),
         }),
+        per_source: PerSourceTokenBucket::new(
+            policy.new_connections_per_sec,
+            policy.new_connections_burst,
+        ),
     }
 }
 

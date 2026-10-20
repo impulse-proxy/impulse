@@ -177,6 +177,7 @@ struct PingoraConnectionFilter {
     runtime: RuntimeBundleHandle,
     listener_label: String,
     state: Mutex<PingoraConnectionAdmissionState>,
+    per_source: PerSourceTokenBucket,
 }
 
 struct PingoraConnectionAdmissionState {
@@ -184,7 +185,6 @@ struct PingoraConnectionAdmissionState {
     rate_per_sec: u32,
     burst: u32,
     global: TokenBucket,
-    per_source: PerSourceTokenBucket,
 }
 
 impl std::fmt::Debug for PingoraConnectionFilter {
@@ -216,8 +216,7 @@ impl ConnectionFilter for PingoraConnectionFilter {
                 state
                     .global
                     .reconfigure(policy.new_connections_per_sec, policy.new_connections_burst);
-                state
-                    .per_source
+                self.per_source
                     .reconfigure(policy.new_connections_per_sec, policy.new_connections_burst);
                 state.rate_per_sec = policy.new_connections_per_sec;
                 state.burst = policy.new_connections_burst;
@@ -228,7 +227,8 @@ impl ConnectionFilter for PingoraConnectionFilter {
             metrics.inc_ingress_rate_limited();
             return false;
         }
-        let source_allowed = addr.is_none_or(|addr| state.per_source.try_consume(addr.ip()));
+        drop(state);
+        let source_allowed = addr.is_none_or(|addr| self.per_source.try_consume(addr.ip()));
         if !source_allowed {
             metrics.inc_ingress_rate_limited();
         }
@@ -541,11 +541,11 @@ fn pingora_ingress_service_for_listener(
                 transport_policy.new_connections_per_sec,
                 transport_policy.new_connections_burst,
             ),
-            per_source: PerSourceTokenBucket::new(
-                transport_policy.new_connections_per_sec,
-                transport_policy.new_connections_burst,
-            ),
         }),
+        per_source: PerSourceTokenBucket::new(
+            transport_policy.new_connections_per_sec,
+            transport_policy.new_connections_burst,
+        ),
     });
     let tls_state = QUICListener::build_listener_tls_reload_state(&listener).map_err(|error| {
         Error::because(
