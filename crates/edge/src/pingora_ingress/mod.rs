@@ -27,9 +27,12 @@ use pingora_cache::{
 };
 use pingora_core::{
     Error, HTTPStatus, InternalError, Result,
-    apps::{HttpServerOptions, ServerApp},
+    apps::{HttpServerApp, HttpServerOptions, ReusedHttpStream, ServerApp},
     listeners::{ConnectionFilter, tls::TlsSettings},
-    protocols::{Stream, http::compression::Algorithm},
+    protocols::{
+        Stream,
+        http::{ServerSession, compression::Algorithm},
+    },
     server::{ShutdownWatch, configuration::ServerConf},
     services::{Service as PingoraServiceLifecycle, listening::Service},
     upstreams::peer::{ALPN, HttpPeer},
@@ -67,10 +70,12 @@ use crate::{
         connection::{
             PerSourceTokenBucket, TokenBucket,
             guardrails::{
-                REQUEST_BODY_TOO_LARGE_BODY, RESPONSE_BODY_TOO_LARGE_BODY,
-                RequestBodyGuardrailConfig, RequestBodyGuardrailInput, ResponseBodyGuardrailConfig,
-                ResponseBodyGuardrailInput, checked_request_body_ingress,
-                checked_response_body_guardrails,
+                BodyTimeoutKind, REQUEST_BODY_TOO_LARGE_BODY, RESPONSE_BODY_TOO_LARGE_BODY,
+                RequestBodyGuardrailConfig, RequestBodyGuardrailDecision,
+                RequestBodyGuardrailInput, ResponseBodyGuardrailConfig,
+                ResponseBodyGuardrailDecision, ResponseBodyGuardrailInput,
+                checked_request_body_ingress, checked_response_body_guardrails,
+                evaluate_request_body_timeouts,
             },
             outcome::{
                 AdmissionOutcomeClass, BackendHealthObservationInput, BackendOutcomeTarget,
@@ -101,8 +106,11 @@ pub(crate) struct PingoraRequestContext {
     authority: Option<String>,
     content_length: Option<usize>,
     body_bytes_received: usize,
+    request_body_last_progress_at: Instant,
     body_limit_exempt: bool,
     response_body_bytes_received: usize,
+    response_body_started_at: Option<Instant>,
+    response_body_last_progress_at: Option<Instant>,
     response_body_suppressed: bool,
     response_body_limit_exempt: bool,
     response_content_length: Option<usize>,
@@ -153,10 +161,16 @@ pub(crate) struct PingoraIngressService {
 }
 
 pub(crate) struct PingoraConnectionLimitedApp {
-    proxy: Arc<HttpProxy<PingoraIngressService>>,
+    proxy: Arc<PingoraRequestDeadlineApp>,
     runtime: RuntimeBundleHandle,
     listener_label: String,
     drain: Arc<PingoraDrainState>,
+}
+
+struct PingoraRequestDeadlineApp {
+    proxy: Arc<HttpProxy<PingoraIngressService>>,
+    runtime: RuntimeBundleHandle,
+    listener_label: String,
 }
 
 struct PingoraConnectionFilter {
@@ -249,6 +263,37 @@ impl PingoraConnectionPermit {
 impl Drop for PingoraConnectionPermit {
     fn drop(&mut self) {
         self.drain.active_connections.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+#[async_trait]
+impl HttpServerApp for PingoraRequestDeadlineApp {
+    async fn process_new_http(
+        self: &Arc<Self>,
+        session: ServerSession,
+        shutdown: &ShutdownWatch,
+    ) -> Option<ReusedHttpStream> {
+        let current = self.runtime.current();
+        let listener = current.listener_runtime_config(&self.listener_label)?;
+        tokio::time::timeout(
+            listener.policies.timeouts.backend_total_request,
+            self.proxy.process_new_http(session, shutdown),
+        )
+        .await
+        .ok()
+        .flatten()
+    }
+
+    fn server_options(&self) -> Option<&HttpServerOptions> {
+        self.proxy.server_options()
+    }
+
+    fn h2_options(&self) -> Option<pingora_core::protocols::http::v2::server::H2Options> {
+        self.proxy.h2_options()
+    }
+
+    async fn http_cleanup(&self) {
+        self.proxy.http_cleanup().await;
     }
 }
 
@@ -554,7 +599,11 @@ fn pingora_ingress_service_for_listener(
     let mut service = Service::new(
         format!("Impulse Pingora Ingress {listener_label}"),
         PingoraConnectionLimitedApp {
-            proxy: Arc::new(proxy),
+            proxy: Arc::new(PingoraRequestDeadlineApp {
+                proxy: Arc::new(proxy),
+                runtime: runtime.clone(),
+                listener_label: listener_label.clone(),
+            }),
             runtime,
             listener_label: listener_label.clone(),
             drain: Arc::clone(&drain),
@@ -586,8 +635,11 @@ impl ProxyHttp for PingoraIngressService {
             authority: None,
             content_length: None,
             body_bytes_received: 0,
+            request_body_last_progress_at: Instant::now(),
             body_limit_exempt: false,
             response_body_bytes_received: 0,
+            response_body_started_at: None,
+            response_body_last_progress_at: None,
             response_body_suppressed: false,
             response_body_limit_exempt: false,
             response_content_length: None,
@@ -608,6 +660,13 @@ impl ProxyHttp for PingoraIngressService {
         let runtime = Arc::clone(&ctx.runtime);
         let state = runtime.shared_state.generation_state();
         let shared = runtime.shared_state.shared_services();
+        let client_body_idle = runtime.runtime_config.policies.timeouts.client_body_idle;
+        session
+            .downstream_session
+            .set_read_timeout(Some(client_body_idle));
+        session
+            .downstream_session
+            .set_total_drain_timeout(Some(client_body_idle));
         let request = session.req_header();
         let validated = match validate_http_request_parts(
             &request.method,
@@ -758,8 +817,12 @@ impl ProxyHttp for PingoraIngressService {
             .max_request_body_bytes;
         if checked_request_body_ingress(
             RequestBodyGuardrailConfig {
-                idle_timeout: Duration::ZERO,
-                total_timeout: Duration::ZERO,
+                idle_timeout: client_body_idle,
+                total_timeout: runtime
+                    .runtime_config
+                    .policies
+                    .timeouts
+                    .backend_total_request,
                 max_body_bytes: max_request_body_bytes,
                 max_buffered_bytes: usize::MAX,
             },
@@ -950,6 +1013,40 @@ impl ProxyHttp for PingoraIngressService {
         _end_of_stream: bool,
         ctx: &mut Self::CTX,
     ) -> Result<()> {
+        let now = Instant::now();
+        let timeouts = &ctx.runtime.runtime_config.policies.timeouts;
+        let timeout = evaluate_request_body_timeouts(
+            RequestBodyGuardrailConfig {
+                idle_timeout: timeouts.client_body_idle,
+                total_timeout: timeouts.backend_total_request,
+                max_body_bytes: usize::MAX,
+                max_buffered_bytes: usize::MAX,
+            },
+            RequestBodyGuardrailInput {
+                elapsed: ctx.started_at.elapsed(),
+                idle_for: now.saturating_duration_since(ctx.request_body_last_progress_at),
+                bytes_received: ctx.body_bytes_received,
+                buffered_bytes: 0,
+                next_chunk_bytes: body.as_ref().map_or(0, Bytes::len),
+                declared_content_length: ctx.content_length,
+                exempt_from_body_size_cap: ctx.body_limit_exempt,
+            },
+        );
+        if let RequestBodyGuardrailDecision::Timeout { kind } = timeout {
+            ctx.terminal_classification =
+                Some(PingoraTerminalClassification::Error(ProxyError::Timeout));
+            let detail = match kind {
+                BodyTimeoutKind::Idle => "request body idle timeout",
+                BodyTimeoutKind::Total => "request body total timeout",
+            };
+            session
+                .respond_error_with_body(
+                    http::StatusCode::REQUEST_TIMEOUT.as_u16(),
+                    Bytes::from(format!("{detail}\n")),
+                )
+                .await?;
+            return Error::e_explain(HTTPStatus(408), detail);
+        }
         let max_request_body_bytes = ctx
             .runtime
             .runtime_config
@@ -958,8 +1055,8 @@ impl ProxyHttp for PingoraIngressService {
             .max_request_body_bytes;
         let next = checked_request_body_ingress(
             RequestBodyGuardrailConfig {
-                idle_timeout: Duration::ZERO,
-                total_timeout: Duration::ZERO,
+                idle_timeout: timeouts.client_body_idle,
+                total_timeout: timeouts.backend_total_request,
                 max_body_bytes: max_request_body_bytes,
                 max_buffered_bytes: usize::MAX,
             },
@@ -976,6 +1073,9 @@ impl ProxyHttp for PingoraIngressService {
         match next {
             Ok(next) => {
                 ctx.body_bytes_received = next.bytes_received;
+                if body.as_ref().is_some_and(|body| !body.is_empty()) {
+                    ctx.request_body_last_progress_at = now;
+                }
                 Ok(())
             }
             Err(_) => {
@@ -1111,6 +1211,17 @@ impl ProxyHttp for PingoraIngressService {
         if ctx.body_limit_exempt {
             peer.options.alpn = ALPN::H1;
         }
+        let body_idle = ctx
+            .runtime
+            .runtime_config
+            .policies
+            .timeouts
+            .backend_body_idle;
+        peer.options.read_timeout = Some(
+            peer.options
+                .read_timeout
+                .map_or(body_idle, |timeout| timeout.min(body_idle)),
+        );
         ctx.selected_backend = Some(selected_backend);
         Ok(Box::new(peer))
     }
@@ -1308,6 +1419,15 @@ impl ProxyHttp for PingoraIngressService {
         upstream_response: &mut ResponseHeader,
         ctx: &mut Self::CTX,
     ) -> Result<()> {
+        let now = Instant::now();
+        let timeouts = &ctx.runtime.runtime_config.policies.timeouts;
+        if ctx.selected_backend.as_ref().is_some_and(|selected| {
+            selected.selected_at.elapsed() >= timeouts.backend_total_request
+        }) {
+            ctx.terminal_classification =
+                Some(PingoraTerminalClassification::Error(ProxyError::Timeout));
+            return Error::e_explain(HTTPStatus(504), "upstream request total timeout");
+        }
         if let Some(selected) = ctx.selected_backend.as_ref() {
             if upstream_response.status.is_server_error() {
                 ctx.runtime
@@ -1374,8 +1494,8 @@ impl ProxyHttp for PingoraIngressService {
             .max_response_body_bytes;
         if checked_response_body_guardrails(
             ResponseBodyGuardrailConfig {
-                idle_timeout: Duration::MAX,
-                total_timeout: Duration::MAX,
+                idle_timeout: timeouts.backend_body_idle,
+                total_timeout: timeouts.backend_body_total,
                 max_body_bytes: max_response_body_bytes,
                 unknown_length_prebuffer_bytes: max_response_body_bytes,
                 chunk_bytes: usize::MAX,
@@ -1431,6 +1551,8 @@ impl ProxyHttp for PingoraIngressService {
             }
         }
         ctx.response_body_bytes_received = 0;
+        ctx.response_body_started_at = Some(now);
+        ctx.response_body_last_progress_at = Some(now);
         ctx.response_body_suppressed = body_suppressed;
         ctx.response_body_limit_exempt = tunnel_response;
         ctx.response_content_length = content_length;
@@ -1449,10 +1571,36 @@ impl ProxyHttp for PingoraIngressService {
             return Ok(None);
         }
 
+        let now = Instant::now();
+        let timeouts = &ctx.runtime.runtime_config.policies.timeouts;
+        if ctx.selected_backend.as_ref().is_some_and(|selected| {
+            selected.selected_at.elapsed() >= timeouts.backend_total_request
+        }) {
+            *body = None;
+            ctx.terminal_classification =
+                Some(PingoraTerminalClassification::Error(ProxyError::Timeout));
+            return Error::e_explain(HTTPStatus(504), "upstream request total timeout");
+        }
+        let response_started_at = ctx.response_body_started_at.ok_or_else(|| {
+            Error::explain(
+                InternalError,
+                "upstream response body started without headers",
+            )
+        })?;
+        let response_last_progress_at = ctx.response_body_last_progress_at.ok_or_else(|| {
+            Error::explain(InternalError, "upstream response body progress is missing")
+        })?;
+        let response_elapsed = now.saturating_duration_since(response_started_at);
+        if response_elapsed >= timeouts.backend_body_total {
+            *body = None;
+            ctx.terminal_classification =
+                Some(PingoraTerminalClassification::Error(ProxyError::Timeout));
+            return Error::e_explain(HTTPStatus(504), "upstream response body total timeout");
+        }
         let next = checked_response_body_guardrails(
             ResponseBodyGuardrailConfig {
-                idle_timeout: Duration::MAX,
-                total_timeout: Duration::MAX,
+                idle_timeout: timeouts.backend_body_idle,
+                total_timeout: timeouts.backend_body_total,
                 max_body_bytes: ctx
                     .runtime
                     .runtime_config
@@ -1463,8 +1611,8 @@ impl ProxyHttp for PingoraIngressService {
                 chunk_bytes: usize::MAX,
             },
             ResponseBodyGuardrailInput {
-                elapsed: Duration::ZERO,
-                idle_for: Duration::ZERO,
+                elapsed: response_elapsed,
+                idle_for: now.saturating_duration_since(response_last_progress_at),
                 bytes_received: ctx.response_body_bytes_received,
                 prebuffered_bytes: 0,
                 next_chunk_bytes: body.as_ref().map_or(0, Bytes::len),
@@ -1478,7 +1626,20 @@ impl ProxyHttp for PingoraIngressService {
         match next {
             Ok(next) => {
                 ctx.response_body_bytes_received = next.next_state.bytes_received;
+                if body.as_ref().is_some_and(|body| !body.is_empty()) {
+                    ctx.response_body_last_progress_at = Some(now);
+                }
                 Ok(None)
+            }
+            Err(ResponseBodyGuardrailDecision::Timeout { kind }) => {
+                *body = None;
+                ctx.terminal_classification =
+                    Some(PingoraTerminalClassification::Error(ProxyError::Timeout));
+                let detail = match kind {
+                    BodyTimeoutKind::Idle => "upstream response body idle timeout",
+                    BodyTimeoutKind::Total => "upstream response body total timeout",
+                };
+                Error::e_explain(HTTPStatus(504), detail)
             }
             Err(_) => {
                 *body = None;
