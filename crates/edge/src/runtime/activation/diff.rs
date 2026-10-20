@@ -181,14 +181,16 @@ fn summarize_routes_upstreams(bundle: &RuntimeBundle) -> String {
         .iter()
         .map(|(name, upstream)| {
             format!(
-                "{}:{}:{:?}:{:?}:{:?}:{}:{:?}",
+                "{}:{}:{:?}:{:?}:{:?}:{}:{:?}:cache(bytes={},entries={})",
                 name,
                 upstream.load_balancing.strategy.canonical_name(),
                 upstream.route.host,
                 upstream.route.path_prefix,
                 upstream.route.method,
                 upstream.policy.protocol.0.allow_connect,
-                upstream.load_balancing.key_spec
+                upstream.load_balancing.key_spec,
+                upstream.policy.response_cache.max_bytes,
+                upstream.policy.response_cache.max_entries,
             )
         })
         .collect::<Vec<_>>();
@@ -391,6 +393,8 @@ pub(super) fn rejected_startup_owned_domains(
                 || field_path == "performance.control_plane_threads"
             {
                 Some(ReloadDiffDomain::ObservabilityControlPlane)
+            } else if field_path.starts_with("upstreams[].cache.") {
+                Some(ReloadDiffDomain::RoutesUpstreams)
             } else {
                 None
             }

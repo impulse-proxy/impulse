@@ -781,6 +781,18 @@ pub static RESOURCE_DOMAINS: &[ResourceDomain] = &[
         ownership: OperationalOwnership::GenerationOwned,
         reload: ReloadCapability::LiveReloadable,
     },
+    ResourceDomain {
+        field_path: "upstreams[].cache.max_bytes",
+        description: "process-lifetime response cache byte capacity",
+        ownership: OperationalOwnership::StartupOwned,
+        reload: ReloadCapability::RestartRequired,
+    },
+    ResourceDomain {
+        field_path: "upstreams[].cache.max_entries",
+        description: "process-lifetime response cache entry capacity",
+        ownership: OperationalOwnership::StartupOwned,
+        reload: ReloadCapability::RestartRequired,
+    },
     // -- watchdog ownership and restart semantics -------------------------------
     ResourceDomain {
         field_path: "watchdog",
