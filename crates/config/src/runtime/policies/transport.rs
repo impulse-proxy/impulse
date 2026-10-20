@@ -33,16 +33,10 @@ pub struct RuntimeTransportPolicy {
     pub packet_shard_queue_max_bytes: usize,
     pub reuseport: bool,
     pub pin_workers: bool,
-    pub global_inflight_limit: usize,
-    pub per_upstream_inflight_limit: usize,
-    pub per_backend_inflight_limit: usize,
     pub udp_recv_buffer_bytes: usize,
     pub udp_send_buffer_bytes: usize,
-    pub h2_pool_max_idle_per_backend: usize,
-    pub backend_dns_refresh_enabled: bool,
     pub new_connections_per_sec: u32,
     pub new_connections_burst: u32,
-    pub max_active_connections: usize,
     pub quic_initial_max_data: u64,
     pub quic_initial_max_stream_data: u64,
     pub quic_initial_max_streams_bidi: u64,
@@ -219,16 +213,10 @@ impl RuntimeTransportPolicy {
             packet_shard_queue_max_bytes: performance.packet_shard_queue_max_bytes,
             reuseport: performance.reuseport,
             pin_workers: performance.pin_workers,
-            global_inflight_limit: performance.global_inflight_limit,
-            per_upstream_inflight_limit: performance.per_upstream_inflight_limit,
-            per_backend_inflight_limit: performance.per_backend_inflight_limit,
             udp_recv_buffer_bytes: performance.udp_recv_buffer_bytes,
             udp_send_buffer_bytes: performance.udp_send_buffer_bytes,
-            h2_pool_max_idle_per_backend: performance.h2_pool_max_idle_per_backend,
-            backend_dns_refresh_enabled: performance.backend_dns_refresh_enabled,
             new_connections_per_sec: performance.new_connections_per_sec,
             new_connections_burst: performance.new_connections_burst,
-            max_active_connections: performance.max_active_connections,
             quic_initial_max_data: performance.quic_initial_max_data,
             quic_initial_max_stream_data: performance.quic_initial_max_stream_data,
             quic_initial_max_streams_bidi: performance.quic_initial_max_streams_bidi,
@@ -315,9 +303,6 @@ mod tests {
         let policy =
             RuntimeTransportPolicy::normalize(&performance).expect("normalization must succeed");
 
-        assert_eq!(policy.global_inflight_limit, 1000);
-        assert_eq!(policy.per_upstream_inflight_limit, 250);
-        assert_eq!(policy.per_backend_inflight_limit, 32);
         assert_eq!(policy.connection_limits.global_inflight, 1000);
         assert_eq!(policy.connection_limits.per_upstream_inflight, 250);
         assert_eq!(policy.connection_limits.per_backend, 32);

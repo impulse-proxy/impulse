@@ -206,8 +206,10 @@ impl RuntimePolicySet {
         let timeouts = RuntimeTimeoutPolicy::normalize(&config.performance)?;
         let transport = RuntimeTransportPolicy::normalize(&config.performance)?;
         let rate_limits = RuntimeRateLimitPolicy::normalize(&config.resilience)?;
-        let admission =
-            RuntimeAdmissionPolicy::normalize(&config.resilience, transport.global_inflight_limit)?;
+        let admission = RuntimeAdmissionPolicy::normalize(
+            &config.resilience,
+            transport.connection_limits.global_inflight,
+        )?;
 
         Ok(Self {
             timeouts,
