@@ -25,6 +25,8 @@ use impulse_transport::{classify_pingora_h1_error, classify_pingora_h2_error};
 use pingora_cache::{
     CacheKey, CacheMeta, CachePhase, NoCacheReason, RespCacheable, cache_control::CacheControl,
 };
+#[cfg(unix)]
+use pingora_core::server::{Fds, ListenFds};
 use pingora_core::{
     Error, HTTPStatus, InternalError, Result,
     apps::{HttpServerApp, HttpServerOptions, ReusedHttpStream, ServerApp},
@@ -354,6 +356,8 @@ impl ResolvesServerCert for RotatingServerCertResolver {
 
 pub struct PingoraListenerTask {
     address: String,
+    #[cfg(unix)]
+    listen_fds: ListenFds,
     shutdown: tokio::sync::watch::Sender<bool>,
     task: Option<tokio::task::JoinHandle<()>>,
     drain: Arc<PingoraDrainState>,
@@ -377,6 +381,11 @@ impl PingoraListenerTask {
                     )),
                 };
             }
+            #[cfg(unix)]
+            if self.listen_fds.lock().get(&self.address).is_some() {
+                return Ok(());
+            }
+            #[cfg(not(unix))]
             if tokio::time::timeout(
                 Duration::from_millis(50),
                 tokio::net::TcpStream::connect(&self.address),
@@ -480,14 +489,22 @@ pub fn spawn_pingora_ingress_listener(
     )
     .map_err(|error| format!("Failed to create Pingora listener {address}: {error}"))?;
     let (shutdown, shutdown_watch) = tokio::sync::watch::channel(false);
+    #[cfg(unix)]
+    let listen_fds: ListenFds = Arc::new(Fds::new().into());
+    #[cfg(unix)]
+    let service_listen_fds = Arc::clone(&listen_fds);
     let task = tokio::spawn(async move {
         #[cfg(unix)]
-        service.start_service(None, shutdown_watch, 1).await;
+        service
+            .start_service(Some(service_listen_fds), shutdown_watch, 1)
+            .await;
         #[cfg(not(unix))]
         service.start_service(shutdown_watch, 1).await;
     });
     Ok(PingoraListenerTask {
         address,
+        #[cfg(unix)]
+        listen_fds,
         shutdown,
         task: Some(task),
         drain,
