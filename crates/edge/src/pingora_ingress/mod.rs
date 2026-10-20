@@ -1441,12 +1441,13 @@ impl ProxyHttp for PingoraIngressService {
                     .metrics
                     .inc_health_failure(impulse_lb::health::HealthFailureReason::HttpStatus5xx);
             }
-            let _ = observe_backend_response_status_and_log(BackendHealthObservationInput {
-                backend_addr: &selected.address,
-                backend_index: selected.index,
-                upstream_pool: Some(&selected.pool),
-                status: upstream_response.status,
-            });
+            let transition =
+                observe_backend_response_status_and_log(BackendHealthObservationInput {
+                    backend_addr: &selected.address,
+                    backend_index: selected.index,
+                    upstream_pool: Some(&selected.pool),
+                    status: upstream_response.status,
+                });
             apply_passive_readiness_to_pingora(
                 ctx.runtime
                     .shared_state
@@ -1454,8 +1455,7 @@ impl ProxyHttp for PingoraIngressService {
                     .pingora_load_balancing
                     .as_ref(),
                 &selected.address,
-                selected.index,
-                Some(&selected.pool),
+                transition,
             );
         }
         let method = ctx.method.as_deref().ok_or_else(|| {
@@ -1941,7 +1941,7 @@ fn record_pingora_backend_failure(ctx: &PingoraRequestContext, error: &ProxyErro
         return;
     };
     let shared = ctx.runtime.shared_state.shared_services();
-    let _ = observe_classified_backend_failure_and_log(ClassifiedBackendFailureInput {
+    let transition = observe_classified_backend_failure_and_log(ClassifiedBackendFailureInput {
         metrics_phase: "pingora_ingress",
         upstream_name: route.upstream_name.as_ref(),
         backend_addr: &selected.address,
@@ -1957,8 +1957,7 @@ fn record_pingora_backend_failure(ctx: &PingoraRequestContext, error: &ProxyErro
             .pingora_load_balancing
             .as_ref(),
         &selected.address,
-        selected.index,
-        Some(&selected.pool),
+        transition,
     );
 }
 

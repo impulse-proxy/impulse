@@ -4,7 +4,7 @@ use std::{
     collections::HashMap,
     future::Future,
     net::SocketAddr,
-    sync::Arc,
+    sync::{Arc, RwLock},
     task::{Context, Poll, Wake, Waker},
     time::{Duration, Instant},
 };
@@ -561,6 +561,7 @@ pub struct PingoraLoadBalancingRuntimeState<T> {
     generation: u64,
     selectors: HashMap<String, Arc<GenerationSelector<T>>>,
     discoveries: HashMap<String, ImpulseServiceDiscovery>,
+    backend_health: RwLock<HashMap<String, bool>>,
     health_registry: Arc<HealthRegistry>,
 }
 
@@ -569,6 +570,11 @@ where
     T: Clone + Send + Sync + 'static,
 {
     pub fn set_backend_health(&self, configured_address: &str, healthy: bool) {
+        let mut backend_health = self
+            .backend_health
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        backend_health.insert(configured_address.to_string(), healthy);
         for selector in self.selectors.values() {
             selector.set_backend_enabled(configured_address, healthy);
         }
@@ -615,6 +621,7 @@ where
             generation,
             selectors,
             discoveries,
+            backend_health: RwLock::new(HashMap::new()),
             health_registry,
         })
     }
@@ -656,11 +663,20 @@ where
         let publication =
             discovery.publish_dns_result(self.generation, backend_index, resolved_addrs)?;
         let started = Instant::now();
-        self.selectors
+        let selector = self
+            .selectors
             .get(upstream_name)
-            .expect("discovery and selector maps share upstream keys")
-            .rebuild()
-            .await?;
+            .expect("discovery and selector maps share upstream keys");
+        selector.rebuild().await?;
+        if let Some(healthy) = self
+            .backend_health
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(configured_address)
+            .copied()
+        {
+            selector.set_backend_enabled(configured_address, healthy);
+        }
         let rebuild_duration = started.elapsed();
         Ok(PingoraDiscoveryUpdate {
             upstream_name: upstream_name.clone(),

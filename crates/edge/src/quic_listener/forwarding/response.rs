@@ -866,7 +866,7 @@ impl QUICListener {
                     backend_addr,
                     &classified,
                 );
-                let _ =
+                let transition =
                     crate::runtime::connection::outcome::observe_classified_backend_failure_and_log(
                         crate::runtime::connection::outcome::ClassifiedBackendFailureInput {
                             metrics_phase: "data_plane",
@@ -881,8 +881,7 @@ impl QUICListener {
                 crate::runtime::connection::outcome::apply_passive_readiness_to_pingora(
                     shared_ctx.pingora_load_balancing,
                     backend_addr,
-                    backend_index,
-                    upstream_pool.as_ref(),
+                    transition,
                 );
 
                 match classified.kind {
@@ -1365,7 +1364,7 @@ impl QUICListener {
                             impulse_lb::health::HealthFailureReason::HttpStatus5xx,
                         );
                     }
-                    let _ = crate::runtime::connection::outcome::observe_backend_response_status_and_log(
+                    let transition = crate::runtime::connection::outcome::observe_backend_response_status_and_log(
                         crate::runtime::connection::outcome::BackendHealthObservationInput {
                             backend_addr: addr,
                             backend_index: idx,
@@ -1376,8 +1375,7 @@ impl QUICListener {
                     crate::runtime::connection::outcome::apply_passive_readiness_to_pingora(
                         shared_ctx.pingora_load_balancing,
                         addr,
-                        idx,
-                        req.upstream_pool.as_ref(),
+                        transition,
                     );
                 }
                 let _ = crate::runtime::connection::outcome::observe_status_outcome(
@@ -1746,7 +1744,7 @@ impl QUICListener {
                         req.backend_index,
                         classified.as_ref(),
                     ) {
-                        let _ = crate::runtime::connection::outcome::observe_classified_backend_failure_and_log(
+                        let transition = crate::runtime::connection::outcome::observe_classified_backend_failure_and_log(
                             crate::runtime::connection::outcome::ClassifiedBackendFailureInput {
                                 metrics_phase: "data_plane",
                                 upstream_name: upstream_name.unwrap_or("unknown"),
@@ -1760,12 +1758,12 @@ impl QUICListener {
                         crate::runtime::connection::outcome::apply_passive_readiness_to_pingora(
                             shared_ctx.pingora_load_balancing,
                             addr,
-                            idx,
-                            upstream_pool,
+                            transition,
                         );
                     } else if let (Some(addr), Some(idx)) =
                         (req.backend_addr.as_deref(), req.backend_index)
-                        && crate::runtime::connection::outcome::observe_backend_response_status_and_log(
+                    {
+                        let transition = crate::runtime::connection::outcome::observe_backend_response_status_and_log(
                             crate::runtime::connection::outcome::BackendHealthObservationInput {
                                 backend_addr: addr,
                                 backend_index: idx,
@@ -1775,13 +1773,11 @@ impl QUICListener {
                                     .and_then(|code| http::StatusCode::from_u16(code).ok())
                                     .unwrap_or(http::StatusCode::INTERNAL_SERVER_ERROR),
                             },
-                        ).is_some()
-                    {
+                        );
                         crate::runtime::connection::outcome::apply_passive_readiness_to_pingora(
                             shared_ctx.pingora_load_balancing,
                             addr,
-                            idx,
-                            upstream_pool,
+                            transition,
                         );
                     }
                     match err {

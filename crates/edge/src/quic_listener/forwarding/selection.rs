@@ -108,12 +108,6 @@ impl ForwardingSelectionService {
             metrics.inc_pingora_lb_selector_failure();
             ProxyError::Transport("upstream pool lock poisoned".into())
         })?;
-        selector
-            .synchronize_readiness(|index| pool.is_backend_healthy(index))
-            .map_err(|error| {
-                metrics.inc_pingora_lb_selector_failure();
-                ProxyError::Transport(error)
-            })?;
         let Some(selected) = selector.select_excluding(key, excluded_backend_indices) else {
             metrics.inc_pingora_lb_selector_failure();
             return Ok(None);
