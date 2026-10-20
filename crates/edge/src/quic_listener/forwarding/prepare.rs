@@ -178,6 +178,12 @@ impl PendingForward {
         self.headers.as_ref()
     }
 
+    pub(super) fn declares_request_trailers(&self) -> bool {
+        self.original_request_headers()
+            .iter()
+            .any(|header| header.name().eq_ignore_ascii_case(b"trailer"))
+    }
+
     fn request_headers_cow(&self) -> Cow<'_, [quiche::h3::Header]> {
         if self.auth_header_mutations.is_empty() {
             return Cow::Borrowed(self.original_request_headers());

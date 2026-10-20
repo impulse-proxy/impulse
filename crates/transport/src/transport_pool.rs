@@ -95,6 +95,14 @@ impl UpstreamTransportPool {
             cancellation,
             completion,
         } = request;
+        if self.backend_entry(backend) == Some(RuntimeBackendTransportKind::Http1)
+            && head.headers.contains_key(hyper::header::TRAILER)
+        {
+            let error =
+                ProxyError::Protocol("request trailers require an HTTP/2 upstream".to_string());
+            finish_pingora_dispatch_failure(completion, &error);
+            return Err(error);
+        }
         let config = match self.resolved_pingora_backend(backend) {
             Ok(config) => config,
             Err(error) => {

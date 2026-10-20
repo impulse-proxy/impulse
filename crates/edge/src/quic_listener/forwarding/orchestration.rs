@@ -303,6 +303,41 @@ impl QUICListener {
             return Ok(false);
         };
 
+        if backend_endpoint.scheme() == BackendScheme::Http
+            && pending_forward.declares_request_trailers()
+        {
+            let error =
+                ProxyError::Protocol("request trailers require an HTTP/2 upstream".to_string());
+            let _ = observe_proxy_error_outcome(
+                metrics,
+                RouteOutcomeTarget {
+                    route: &upstream_name,
+                },
+                Some(BackendOutcomeTarget {
+                    upstream: &upstream_name,
+                    backend_addr: Some(pending_forward.backend_addr.as_ref()),
+                    backend_index: Some(backend_index),
+                }),
+                req.start.elapsed(),
+                Some(http::StatusCode::NOT_IMPLEMENTED),
+                &error,
+                None,
+            );
+            Self::send_simple_response(
+                h3,
+                quic,
+                stream_id,
+                http::StatusCode::NOT_IMPLEMENTED,
+                b"request trailers require an HTTP/2 upstream\n",
+            )?;
+            terminalize_stream(
+                req,
+                TerminalReason::Rejected(RejectionReason::ValidationFailed),
+                metrics,
+            );
+            return Ok(false);
+        }
+
         let request_mode = req.request_mode();
         let websocket_h1_tunnel = req.tunnel_mode == TunnelMode::Websocket
             && backend_endpoint.scheme() == BackendScheme::Http;
