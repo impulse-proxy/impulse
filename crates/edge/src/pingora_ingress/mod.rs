@@ -28,7 +28,7 @@ use pingora_cache::{
 use pingora_core::{
     Error, HTTPStatus, InternalError, Result,
     apps::{HttpServerApp, HttpServerOptions, ReusedHttpStream, ServerApp},
-    listeners::{ConnectionFilter, tls::TlsSettings},
+    listeners::{ConnectionFilter, TcpSocketOptions, tls::TlsSettings},
     protocols::{
         Stream,
         http::{ServerSession, compression::Algorithm},
@@ -610,7 +610,12 @@ fn pingora_ingress_service_for_listener(
         },
     );
     service.set_connection_filter(connection_filter);
-    service.add_tls_with_settings(&listener_label, None, tls);
+    let socket_options = listener.performance.reuseport.then(|| {
+        let mut options = TcpSocketOptions::default();
+        options.so_reuseport = Some(true);
+        options
+    });
+    service.add_tls_with_settings(&listener_label, socket_options, tls);
     Ok((service, drain))
 }
 

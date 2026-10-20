@@ -262,19 +262,20 @@ pub(crate) async fn reconcile_listener_groups(
             continue;
         };
 
-        let mut previous = groups.swap_remove(group_index);
-        let previous_config = previous.listener_config.clone();
-        let worker_index_base = previous.worker_index_base;
+        if !cfg!(unix) || !groups[group_index].signature.reuseport || !signature.reuseport {
+            error!(
+                "Cannot replace listener group {} in place for activated runtime generation {} because safe same-bind handoff requires reuseport on both listener generations",
+                signature.label, runtime.generation
+            );
+            groups[group_index].failed_activation_generation = Some(runtime.generation);
+            continue;
+        }
+
+        let worker_index_base = groups[group_index].worker_index_base;
         info!(
-            "Replacing listener group {} for activated runtime generation {}",
+            "Staging replacement listener group {} for activated runtime generation {}",
             signature.label, runtime.generation
         );
-        previous.request_shutdown();
-        let mut replacement_failed = false;
-        previous.join_all(&mut replacement_failed).await;
-        if replacement_failed {
-            *worker_failed = true;
-        }
 
         match spawn_managed_listener_group(
             listener_config.clone(),
@@ -284,32 +285,20 @@ pub(crate) async fn reconcile_listener_groups(
         )
         .await
         {
-            Ok(group) => groups.push(group),
+            Ok(group) => {
+                groups[group_index].request_shutdown();
+                groups.push(group);
+                info!(
+                    "Activated replacement listener group {}; draining the previous group",
+                    signature.label
+                );
+            }
             Err(err) => {
                 error!(
-                    "Failed to activate replacement listener group {}: {}; restoring the active listener",
+                    "Failed to stage replacement listener group {}: {}; keeping the active listener",
                     signature.label, err
                 );
-                match spawn_managed_listener_group(
-                    previous_config,
-                    Arc::clone(&runtime.shared_state),
-                    Arc::clone(runtime_bundle),
-                    worker_index_base,
-                )
-                .await
-                {
-                    Ok(mut group) => {
-                        group.failed_activation_generation = Some(runtime.generation);
-                        groups.push(group);
-                    }
-                    Err(rollback_err) => {
-                        *worker_failed = true;
-                        error!(
-                            "Failed to restore listener group {} after activation failure: {}",
-                            signature.label, rollback_err
-                        );
-                    }
-                }
+                groups[group_index].failed_activation_generation = Some(runtime.generation);
             }
         }
     }
