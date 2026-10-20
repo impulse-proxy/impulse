@@ -37,7 +37,6 @@ pub(crate) struct ListenerGroupSignature {
 pub(crate) struct ListenerGroupRuntime {
     pub(crate) signature: ListenerGroupSignature,
     pub(crate) shutdown: ShutdownSignal,
-    listener_config: ListenerRuntimeConfig,
     worker_handles: Vec<thread::JoinHandle<Result<(), String>>>,
     pingora_listener: PingoraListenerTask,
     worker_index_base: usize,
@@ -200,7 +199,6 @@ pub(crate) async fn spawn_managed_listener_group(
     Ok(ListenerGroupRuntime {
         signature,
         shutdown,
-        listener_config,
         worker_handles,
         pingora_listener,
         worker_index_base,

@@ -1051,6 +1051,14 @@ fn resolve_backend_skips_unhealthy_backends() {
         guard.mark_backend_failure_from_active_check(0);
         guard.mark_backend_failure_from_active_check(0);
     }
+    {
+        let guard = pool.read().expect("pool read");
+        selectors
+            .selector("api_pool")
+            .expect("api selector")
+            .synchronize_readiness(|index| guard.is_backend_healthy(index))
+            .expect("synchronize selector readiness");
+    }
 
     let request =
         super::forwarding::TestTargetResolutionRequest::new("GET", "/api/items", None, None, None);

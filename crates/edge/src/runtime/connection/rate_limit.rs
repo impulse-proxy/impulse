@@ -240,7 +240,7 @@ mod tests {
 
     #[test]
     fn per_source_buckets_keep_clients_on_independent_budgets() {
-        let mut limiter = PerSourceTokenBucket::new(10, 2);
+        let limiter = PerSourceTokenBucket::new(10, 2);
         let first: IpAddr = "192.0.2.1".parse().expect("test address");
         let second: IpAddr = "192.0.2.2".parse().expect("test address");
 

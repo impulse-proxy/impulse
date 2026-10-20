@@ -195,7 +195,7 @@ fn pingora_connection_filter_matches_http3_global_and_per_source_admission() {
     let (runtime, listener) = pingora_listener_runtime(config);
     let filter = test_connection_filter(&runtime, &listener);
     let mut quic_global = TokenBucket::new(1, 20);
-    let mut quic_per_source = PerSourceTokenBucket::new(1, 20);
+    let quic_per_source = PerSourceTokenBucket::new(1, 20);
     let sources = [
         "192.0.2.1:1000".parse::<SocketAddr>().unwrap(),
         "192.0.2.1:1001".parse::<SocketAddr>().unwrap(),
