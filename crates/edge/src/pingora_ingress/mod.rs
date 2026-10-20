@@ -27,15 +27,15 @@ use pingora_cache::{
 };
 use pingora_core::{
     Error, HTTPStatus, InternalError, Result,
-    apps::HttpServerOptions,
+    apps::{HttpServerOptions, ServerApp},
     listeners::{ConnectionFilter, tls::TlsSettings},
-    protocols::http::compression::Algorithm,
-    server::configuration::ServerConf,
+    protocols::{Stream, http::compression::Algorithm},
+    server::{ShutdownWatch, configuration::ServerConf},
     services::{Service as PingoraServiceLifecycle, listening::Service},
     upstreams::peer::{ALPN, HttpPeer},
 };
 use pingora_http::{RequestHeader, ResponseHeader};
-use pingora_proxy::{HttpProxy, ProxyHttp, Session, http_proxy_service_with_name};
+use pingora_proxy::{HttpProxy, ProxyHttp, Session, http_proxy};
 use rustls::{
     server::{ClientHello, ResolvesServerCert},
     sign::CertifiedKey,
@@ -152,6 +152,13 @@ pub(crate) struct PingoraIngressService {
     drain: Arc<PingoraDrainState>,
 }
 
+pub(crate) struct PingoraConnectionLimitedApp {
+    proxy: Arc<HttpProxy<PingoraIngressService>>,
+    runtime: RuntimeBundleHandle,
+    listener_label: String,
+    drain: Arc<PingoraDrainState>,
+}
+
 struct PingoraConnectionFilter {
     runtime: RuntimeBundleHandle,
     listener_label: String,
@@ -218,6 +225,64 @@ impl ConnectionFilter for PingoraConnectionFilter {
 #[derive(Default)]
 struct PingoraDrainState {
     active_requests: AtomicUsize,
+    active_connections: AtomicUsize,
+}
+
+struct PingoraConnectionPermit {
+    drain: Arc<PingoraDrainState>,
+}
+
+impl PingoraConnectionPermit {
+    fn try_acquire(drain: &Arc<PingoraDrainState>, limit: usize) -> Option<Self> {
+        drain
+            .active_connections
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
+                (active < limit).then_some(active + 1)
+            })
+            .ok()?;
+        Some(Self {
+            drain: Arc::clone(drain),
+        })
+    }
+}
+
+impl Drop for PingoraConnectionPermit {
+    fn drop(&mut self) {
+        self.drain.active_connections.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+#[async_trait]
+impl ServerApp for PingoraConnectionLimitedApp {
+    async fn process_new(
+        self: &Arc<Self>,
+        stream: Stream,
+        shutdown: &ShutdownWatch,
+    ) -> Option<Stream> {
+        let current = self.runtime.current();
+        let listener = current.listener_runtime_config(&self.listener_label)?;
+        let permit = PingoraConnectionPermit::try_acquire(
+            &self.drain,
+            listener
+                .policies
+                .transport
+                .connection_limits
+                .max_active_connections,
+        );
+        let Some(_permit) = permit else {
+            current
+                .shared_state
+                .shared_services()
+                .metrics
+                .inc_connection_cap_reject();
+            return None;
+        };
+        self.proxy.process_new(stream, shutdown).await
+    }
+
+    async fn cleanup(&self) {
+        self.proxy.cleanup().await;
+    }
 }
 
 struct RotatingServerCertResolver {
@@ -389,7 +454,7 @@ pub fn spawn_pingora_ingress_listener(
 pub(crate) fn pingora_ingress_services(
     configuration: &Arc<ServerConf>,
     runtime: RuntimeBundleHandle,
-) -> Result<Vec<Service<HttpProxy<PingoraIngressService>>>> {
+) -> Result<Vec<Service<PingoraConnectionLimitedApp>>> {
     let current = runtime.current();
     let listeners = current.runtime_config.listener_runtime_configs();
     if listeners.is_empty() {
@@ -411,10 +476,7 @@ fn pingora_ingress_service_for_listener(
     configuration: &Arc<ServerConf>,
     runtime: RuntimeBundleHandle,
     listener: ListenerRuntimeConfig,
-) -> Result<(
-    Service<HttpProxy<PingoraIngressService>>,
-    Arc<PingoraDrainState>,
-)> {
+) -> Result<(Service<PingoraConnectionLimitedApp>, Arc<PingoraDrainState>)> {
     let listener_label = format!(
         "{}:{}",
         listener.listen.listen.address, listener.listen.listen.port
@@ -478,20 +540,26 @@ fn pingora_ingress_service_for_listener(
     tls.enable_h2();
 
     let drain = Arc::new(PingoraDrainState::default());
-    let mut service = http_proxy_service_with_name(
+    let mut proxy = http_proxy(
         configuration,
         PingoraIngressService {
-            runtime,
+            runtime: runtime.clone(),
             response_cache,
             drain: Arc::clone(&drain),
         },
-        &format!("Impulse Pingora Ingress {listener_label}"),
     );
-    if let Some(proxy) = service.app_logic_mut() {
-        let mut options = HttpServerOptions::default();
-        options.allow_connect_method_proxying = true;
-        proxy.server_options = Some(options);
-    }
+    let mut options = HttpServerOptions::default();
+    options.allow_connect_method_proxying = true;
+    proxy.server_options = Some(options);
+    let mut service = Service::new(
+        format!("Impulse Pingora Ingress {listener_label}"),
+        PingoraConnectionLimitedApp {
+            proxy: Arc::new(proxy),
+            runtime,
+            listener_label: listener_label.clone(),
+            drain: Arc::clone(&drain),
+        },
+    );
     service.set_connection_filter(connection_filter);
     service.add_tls_with_settings(&listener_label, None, tls);
     Ok((service, drain))
