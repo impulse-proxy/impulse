@@ -10,6 +10,8 @@ use log::{debug, error, info, warn};
 use super::*;
 use crate::metrics::PingoraDiscoveryRefreshOutcome;
 
+const DNS_REFRESH_CONCURRENCY: usize = 8;
+
 #[derive(Clone)]
 struct PingoraDnsRefreshTarget {
     configured_address: String,
@@ -55,6 +57,7 @@ impl QUICListener {
             .try_into()
             .unwrap_or(u64::MAX)
             .max(1);
+        let lookup_timeout = config.policies.timeouts.backend_connect;
         let handle = match runtime_handle() {
             Some(handle) => handle,
             None => {
@@ -74,16 +77,15 @@ impl QUICListener {
 
                 loop {
                     ticker.tick().await;
-                    for backend in &backends {
-                        refresh_pingora_backend(
-                            &backend,
-                            &transport_pool,
-                            &backend_dns_resolver,
-                            &pingora_load_balancing,
-                            task_metrics.as_ref(),
-                        )
-                        .await;
-                    }
+                    refresh_pingora_backends(
+                        &backends,
+                        lookup_timeout,
+                        Arc::clone(&transport_pool),
+                        backend_dns_resolver.clone(),
+                        Arc::clone(&pingora_load_balancing),
+                        Arc::clone(&task_metrics),
+                    )
+                    .await;
                 }
             },
         );
@@ -91,29 +93,89 @@ impl QUICListener {
     }
 }
 
+async fn refresh_pingora_backends(
+    backends: &[PingoraDnsRefreshTarget],
+    lookup_timeout: Duration,
+    transport_pool: Arc<UpstreamTransportPool>,
+    backend_dns_resolver: SharedDnsResolver,
+    pingora_load_balancing: SharedPingoraLoadBalancingRuntimeState<RuntimeBackendTlsPolicy>,
+    metrics: Arc<Metrics>,
+) {
+    let mut backends = backends.iter().cloned();
+    let mut refreshes = tokio::task::JoinSet::new();
+
+    loop {
+        while refreshes.len() < DNS_REFRESH_CONCURRENCY {
+            let Some(backend) = backends.next() else {
+                break;
+            };
+            let transport_pool = Arc::clone(&transport_pool);
+            let backend_dns_resolver = backend_dns_resolver.clone();
+            let pingora_load_balancing = Arc::clone(&pingora_load_balancing);
+            let metrics = Arc::clone(&metrics);
+            refreshes.spawn(async move {
+                refresh_pingora_backend(
+                    &backend,
+                    lookup_timeout,
+                    transport_pool.as_ref(),
+                    &backend_dns_resolver,
+                    &pingora_load_balancing,
+                    metrics.as_ref(),
+                )
+                .await;
+            });
+        }
+
+        let Some(result) = refreshes.join_next().await else {
+            break;
+        };
+        if let Err(error) = result {
+            error!("Pingora DNS refresh worker failed: {error}");
+        }
+    }
+}
+
 async fn refresh_pingora_backend(
     backend: &PingoraDnsRefreshTarget,
+    lookup_timeout: Duration,
     transport_pool: &UpstreamTransportPool,
     backend_dns_resolver: &SharedDnsResolver,
     pingora_load_balancing: &SharedPingoraLoadBalancingRuntimeState<RuntimeBackendTlsPolicy>,
     metrics: &Metrics,
 ) {
-    let mut resolved_addrs =
-        match tokio::net::lookup_host((backend.authority_host.as_str(), 0)).await {
-            Ok(addrs) => addrs
-                .map(|addr| SocketAddr::new(addr.ip(), backend.authority_port))
-                .collect::<Vec<_>>(),
-            Err(error) => {
-                record_pingora_discovery_failure(
-                    backend,
-                    error.to_string(),
-                    pingora_load_balancing,
-                    metrics,
-                )
-                .await;
-                return;
-            }
-        };
+    let lookup = tokio::time::timeout(
+        lookup_timeout,
+        tokio::net::lookup_host((backend.authority_host.as_str(), 0)),
+    )
+    .await;
+    let mut resolved_addrs = match lookup {
+        Ok(Ok(addrs)) => addrs
+            .map(|addr| SocketAddr::new(addr.ip(), backend.authority_port))
+            .collect::<Vec<_>>(),
+        Ok(Err(error)) => {
+            record_pingora_discovery_failure(
+                backend,
+                error.to_string(),
+                pingora_load_balancing,
+                metrics,
+            )
+            .await;
+            return;
+        }
+        Err(_) => {
+            record_pingora_discovery_failure(
+                backend,
+                format!(
+                    "DNS resolution timed out after {} ms",
+                    lookup_timeout.as_millis()
+                ),
+                pingora_load_balancing,
+                metrics,
+            )
+            .await;
+            return;
+        }
+    };
     resolved_addrs.sort_unstable();
     resolved_addrs.dedup();
     if resolved_addrs.is_empty() {
