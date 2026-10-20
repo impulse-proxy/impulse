@@ -5,7 +5,7 @@ use std::{
 
 use async_trait::async_trait;
 use http::{HeaderMap, header, uri::Authority};
-use impulse_config::runtime::RuntimeResponseCachePolicy;
+use impulse_config::runtime::{RuntimeAuthPolicy, RuntimeResponseCachePolicy};
 use pingora_cache::{
     HttpCache, MemCache,
     cache_control::CacheControl,
@@ -179,6 +179,7 @@ pub enum ResponseCacheBypassReason {
 
 pub struct ResponseCacheRequestEligibilityInput<'a> {
     pub policy: &'a RuntimeResponseCachePolicy,
+    pub route_auth_enabled: bool,
     pub method: &'a str,
     pub headers: &'a HeaderMap,
     pub has_body: bool,
@@ -196,7 +197,7 @@ pub fn evaluate_cache_request_eligibility(
     if !input.policy.enabled {
         return Err(ResponseCacheBypassReason::Disabled);
     }
-    if input.headers.contains_key(header::AUTHORIZATION) {
+    if input.route_auth_enabled || input.headers.contains_key(header::AUTHORIZATION) {
         return Err(ResponseCacheBypassReason::Authorization);
     }
     if input.headers.contains_key(header::COOKIE) {
@@ -219,6 +220,14 @@ pub fn evaluate_cache_request_eligibility(
         method if method.eq_ignore_ascii_case("HEAD") => Ok(ResponseCacheRepresentation::Head),
         _ => Err(ResponseCacheBypassReason::UnsupportedMethod),
     }
+}
+
+pub fn route_auth_requires_cache_bypass(policy: &RuntimeAuthPolicy) -> bool {
+    policy.api_key.is_some()
+        || policy.jwt.is_some()
+        || policy.external_auth.is_some()
+        || !policy.required_scopes.is_empty()
+        || !policy.required_roles.is_empty()
 }
 
 pub fn evaluate_cache_response_eligibility(
@@ -391,6 +400,7 @@ fn push_component(key: &mut Vec<u8>, component: &[u8]) {
 
 #[cfg(test)]
 mod tests {
+    use impulse_config::runtime::RuntimeApiKeyAuth;
     use pingora_cache::CacheMeta;
 
     use super::*;
@@ -411,6 +421,7 @@ mod tests {
     ) -> ResponseCacheRequestEligibilityInput<'a> {
         ResponseCacheRequestEligibilityInput {
             policy: Box::leak(Box::new(policy(1024, 8))),
+            route_auth_enabled: false,
             method,
             headers,
             has_body: false,
@@ -456,6 +467,25 @@ mod tests {
         })
         .expect("HEAD cache key");
         assert_ne!(get.primary_key_str(), head.primary_key_str());
+    }
+
+    #[test]
+    fn authenticated_routes_bypass_cache_without_standard_auth_headers() {
+        let auth_policy = RuntimeAuthPolicy {
+            api_key: Some(RuntimeApiKeyAuth {
+                header_name: "x-api-key".to_string(),
+                keys: vec!["tenant-key".to_string()],
+            }),
+            ..RuntimeAuthPolicy::default()
+        };
+        let headers = HeaderMap::new();
+        assert_eq!(
+            evaluate_cache_request_eligibility(ResponseCacheRequestEligibilityInput {
+                route_auth_enabled: route_auth_requires_cache_bypass(&auth_policy),
+                ..request_eligibility("GET", &headers)
+            }),
+            Err(ResponseCacheBypassReason::Authorization)
+        );
     }
 
     #[test]

@@ -25,6 +25,7 @@ use crate::{
         cache::{
             ResponseCacheKeyInput, ResponseCacheRequestEligibilityInput,
             canonical_response_cache_key, evaluate_cache_request_eligibility,
+            route_auth_requires_cache_bypass,
         },
         connection::{request::PendingForward, response::ForwardingPolicyTelemetry},
     },
@@ -127,6 +128,7 @@ impl QUICListener {
         cache_store: &'static crate::runtime::cache::BoundedPingoraMemoryCache,
         metrics: &Metrics,
         policy: impulse_config::runtime::RuntimeResponseCachePolicy,
+        route_auth_enabled: bool,
         pending_forward: &PendingForward,
         namespace: u64,
         has_body: bool,
@@ -169,6 +171,7 @@ impl QUICListener {
         let Ok(representation) =
             evaluate_cache_request_eligibility(ResponseCacheRequestEligibilityInput {
                 policy: &policy,
+                route_auth_enabled,
                 method: pending_forward.method.as_ref(),
                 headers: &headers,
                 has_body,
@@ -609,7 +612,12 @@ impl QUICListener {
         let response_cache_policy = shared_ctx
             .upstream_policies
             .get(pending_forward.upstream_name.as_ref())
-            .map(|policy| policy.response_cache.clone());
+            .map(|policy| {
+                (
+                    policy.response_cache.clone(),
+                    route_auth_requires_cache_bypass(&policy.upstream_auth),
+                )
+            });
         let trace_span_for_upstream = req.trace_span.clone();
         let (result_tx, result_rx) = oneshot::channel::<UpstreamResult>();
         let tunnel_mode = req.tunnel_mode;
@@ -658,13 +666,16 @@ impl QUICListener {
             let transport_pool = transport.as_ref();
             let mut policy_telemetry = ForwardingPolicyTelemetry::default();
             let result: ForwardResult = async {
-                let cache_miss = if let (Some(cache_store), Some(cache_policy)) =
-                    (response_cache_store, response_cache_policy)
+                let cache_miss = if let (
+                    Some(cache_store),
+                    Some((cache_policy, route_auth_enabled)),
+                ) = (response_cache_store, response_cache_policy)
                 {
                     match Self::lookup_h3_response_cache(
                         cache_store,
                         alternate_metrics.as_ref(),
                         cache_policy,
+                        route_auth_enabled,
                         pending_forward.as_ref(),
                         response_cache_namespace,
                         !bodyless_mode,

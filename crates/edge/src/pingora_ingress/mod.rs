@@ -62,6 +62,7 @@ use crate::{
             ResponseCacheRequestEligibilityInput, ResponseCacheResponseEligibilityInput,
             canonical_response_cache_key, evaluate_cache_request_eligibility,
             evaluate_cache_response_eligibility, response_cache_ttl,
+            route_auth_requires_cache_bypass,
         },
         connection::{
             PerSourceTokenBucket, TokenBucket,
@@ -753,6 +754,9 @@ impl ProxyHttp for PingoraIngressService {
         let representation =
             evaluate_cache_request_eligibility(ResponseCacheRequestEligibilityInput {
                 policy: cache_policy,
+                route_auth_enabled: route_auth_requires_cache_bypass(
+                    &policy.local_auth_policy.upstream_auth,
+                ),
                 method,
                 headers: &session.req_header().headers,
                 has_body,
