@@ -267,9 +267,12 @@ impl PingoraHealthCheck for ImpulsePingoraHealthCheck {
                 .schedules
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let schedule = schedules
-                .get_mut(configured_address)
-                .expect("configured health target has a probe schedule");
+            let Some(schedule) = schedules.get_mut(configured_address) else {
+                return Err(Error::explain(
+                    ErrorType::Custom("impulse health schedule"),
+                    "configured backend has no Pingora probe schedule",
+                ));
+            };
             if Instant::now() < schedule.next_due_at {
                 return Self::health_result(configured_address, Self::current_health(target));
             }
@@ -285,9 +288,12 @@ impl PingoraHealthCheck for ImpulsePingoraHealthCheck {
             .schedules
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let schedule = schedules
-            .get_mut(configured_address)
-            .expect("configured health target has a probe schedule");
+        let Some(schedule) = schedules.get_mut(configured_address) else {
+            return Err(Error::explain(
+                ErrorType::Custom("impulse health schedule"),
+                "configured backend has no Pingora probe schedule",
+            ));
+        };
         schedule.consecutive_failures = evaluation.next_consecutive_failures;
         schedule.next_due_at = Instant::now() + evaluation.next_delay;
         // Publish the post-policy state so Pingora does not bypass Impulse thresholds or cooldowns.

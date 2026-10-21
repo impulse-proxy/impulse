@@ -599,14 +599,11 @@ impl QUICListener {
                 let mut cache_fill = ResponseCacheFill::new(Some(cache));
                 let _ = spawn_async_task(
                     async move {
-                        if cache_fill
-                            .cache
-                            .as_mut()
-                            .expect("cache fill owns its cache state")
-                            .set_miss_handler()
-                            .await
-                            .is_ok()
-                        {
+                        let started = match cache_fill.cache.as_mut() {
+                            Some(cache) => cache.set_miss_handler().await.is_ok(),
+                            None => false,
+                        };
+                        if started {
                             finish_response_cache(&mut cache_fill).await;
                         } else {
                             cache_fill.disable(NoCacheReason::StorageError);

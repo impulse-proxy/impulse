@@ -107,7 +107,7 @@ impl PerSourceTokenBucket {
         }
         if self
             .live_buckets
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
                 (count < MAX_TRACKED_SOURCES).then_some(count + 1)
             })
             .is_err()

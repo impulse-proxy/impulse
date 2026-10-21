@@ -93,14 +93,18 @@ struct H3CacheMiss {
 impl H3CacheMiss {
     fn into_parts(
         mut self,
-    ) -> (
+    ) -> Option<(
         HttpCache,
         impulse_config::runtime::RuntimeResponseCachePolicy,
-    ) {
-        (
-            self.cache.take().expect("cache miss owns its cache state"),
-            self.policy.take().expect("cache miss owns its policy"),
-        )
+    )> {
+        match (self.cache.take(), self.policy.take()) {
+            (Some(cache), Some(policy)) => Some((cache, policy)),
+            (Some(mut cache), None) => {
+                cache.disable(NoCacheReason::UpstreamError);
+                None
+            }
+            (None, _) => None,
+        }
     }
 }
 
@@ -669,7 +673,7 @@ impl QUICListener {
                 })
             };
             let mut alternate_backend = needs_alternate_before_primary
-                .then(&resolve_alternate)
+                .then(resolve_alternate)
                 .flatten();
             let route_name = pending_forward.upstream_name.as_ref();
             let primary_backend = pending_forward.backend_addr.as_ref();
@@ -863,7 +867,7 @@ impl QUICListener {
                                 Ok(response) => response,
                                 Err(primary_err) => {
                                     alternate_backend =
-                                        alternate_backend.or_else(&resolve_alternate);
+                                        alternate_backend.or_else(resolve_alternate);
                                     Self::retry_primary_error(
                                         primary_err,
                                         RetryExecutionCtx {
@@ -902,7 +906,7 @@ impl QUICListener {
                                 Ok(response) => response,
                                 Err(primary_err) => {
                                     alternate_backend =
-                                        alternate_backend.or_else(&resolve_alternate);
+                                        alternate_backend.or_else(resolve_alternate);
                                     Self::retry_primary_error(
                                         primary_err,
                                         RetryExecutionCtx {
@@ -928,7 +932,7 @@ impl QUICListener {
                         status: response.head.status,
                         headers: response.head.headers,
                         body: response.body,
-                        cache_miss: cache_miss.map(H3CacheMiss::into_parts),
+                        cache_miss: cache_miss.and_then(H3CacheMiss::into_parts),
                         cache_hit: false,
                     }
                 };
