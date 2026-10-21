@@ -664,13 +664,13 @@ where
                     "no Pingora discovery backend matches configured address '{configured_address}'"
                 )
             })?;
-        let publication =
-            discovery.publish_dns_result(self.generation, backend_index, resolved_addrs)?;
-        let started = Instant::now();
         let selector = self
             .selectors
             .get(upstream_name)
-            .expect("discovery and selector maps share upstream keys");
+            .ok_or_else(|| format!("upstream '{upstream_name}' has no Pingora selector"))?;
+        let publication =
+            discovery.publish_dns_result(self.generation, backend_index, resolved_addrs)?;
+        let started = Instant::now();
         selector.rebuild().await?;
         if let Some(healthy) = self
             .backend_health

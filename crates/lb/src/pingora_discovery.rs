@@ -118,14 +118,21 @@ impl ImpulseServiceDiscovery {
                 self.upstream_name
             )
         })?;
-        let template = current
-            .iter()
-            .next()
-            .expect("backend membership is non-empty");
+        let template = current.iter().next().ok_or_else(|| {
+            format!(
+                "upstream '{}' backend {backend_index} has no current members",
+                self.upstream_name
+            )
+        })?;
         let port = template
             .addr
             .as_inet()
-            .expect("validated Pingora backend uses an IP socket address")
+            .ok_or_else(|| {
+                format!(
+                    "upstream '{}' backend {backend_index} does not use an IP socket address",
+                    self.upstream_name
+                )
+            })?
             .port();
         let resolved = resolved_addrs
             .into_iter()
