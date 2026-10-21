@@ -115,15 +115,17 @@ impl PingoraH1UpstreamSession {
     }
 
     pub fn session(&self) -> &HttpSession {
-        self.session
-            .as_ref()
-            .expect("Pingora H1 session ownership already released")
+        let Some(session) = self.session.as_ref() else {
+            unreachable!("Pingora H1 session ownership already released");
+        };
+        session
     }
 
     pub fn session_mut(&mut self) -> &mut HttpSession {
-        self.session
-            .as_mut()
-            .expect("Pingora H1 session ownership already released")
+        let Some(session) = self.session.as_mut() else {
+            unreachable!("Pingora H1 session ownership already released");
+        };
+        session
     }
 
     pub async fn write_request(
@@ -222,19 +224,34 @@ impl PingoraH1UpstreamSession {
                 );
                 return Err(return_error);
             }
-            let status = self
-                .session()
-                .get_status()
-                .expect("Pingora response status is available after reading its header");
+            let Some(status) = self.session().get_status() else {
+                let detail =
+                    "Pingora HTTP/1 response status is unavailable after reading its header"
+                        .to_string();
+                self.shutdown().await;
+                finish_pingora_h1_exchange(
+                    lifecycle,
+                    UpstreamExchangeOutcome::Failed(ProxyError::Protocol(detail.clone())),
+                    UpstreamConnectionReuse::Close,
+                );
+                return Err(ProxyError::Protocol(detail));
+            };
             if !status.is_informational() || status == hyper::StatusCode::SWITCHING_PROTOCOLS {
                 break;
             }
         }
 
-        let response = self
-            .session()
-            .resp_header()
-            .expect("Pingora response header is available after reading it");
+        let Some(response) = self.session().resp_header() else {
+            let detail =
+                "Pingora HTTP/1 response header is unavailable after reading it".to_string();
+            self.shutdown().await;
+            finish_pingora_h1_exchange(
+                lifecycle,
+                UpstreamExchangeOutcome::Failed(ProxyError::Protocol(detail.clone())),
+                UpstreamConnectionReuse::Close,
+            );
+            return Err(ProxyError::Protocol(detail));
+        };
         let head = UpstreamResponseHead {
             status: response.status,
             version: response.version,
@@ -280,15 +297,14 @@ impl PingoraH1UpstreamSession {
             self.close().await;
             return UpstreamConnectionReuse::Close;
         }
-        let connection_reuse = if self.session().will_keepalive() {
+        let Some(session) = self.session.take() else {
+            return UpstreamConnectionReuse::Close;
+        };
+        let connection_reuse = if session.will_keepalive() {
             UpstreamConnectionReuse::Reuse
         } else {
             UpstreamConnectionReuse::Close
         };
-        let session = self
-            .session
-            .take()
-            .expect("Pingora H1 session ownership already released");
         self.pool
             .connector()
             .release_http_session(
@@ -312,11 +328,10 @@ impl PingoraH1UpstreamSession {
     }
 
     fn into_tunnel(mut self) -> PingoraH1TunnelLease {
-        let stream = self
-            .session
-            .take()
-            .expect("Pingora H1 session ownership already released")
-            .into_inner();
+        let Some(session) = self.session.take() else {
+            unreachable!("Pingora H1 session ownership already released");
+        };
+        let stream = session.into_inner();
         PingoraH1TunnelLease {
             stream,
             _pool: self.pool,

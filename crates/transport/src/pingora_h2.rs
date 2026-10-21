@@ -115,15 +115,17 @@ impl PingoraH2UpstreamSession {
     }
 
     pub fn session(&self) -> &Http2Session {
-        self.session
-            .as_ref()
-            .expect("Pingora H2 session ownership already released")
+        let Some(session) = self.session.as_ref() else {
+            unreachable!("Pingora H2 session ownership already released");
+        };
+        session
     }
 
     pub fn session_mut(&mut self) -> &mut Http2Session {
-        self.session
-            .as_mut()
-            .expect("Pingora H2 session ownership already released")
+        let Some(session) = self.session.as_mut() else {
+            unreachable!("Pingora H2 session ownership already released");
+        };
+        session
     }
 
     pub async fn write_request(
@@ -237,10 +239,17 @@ impl PingoraH2UpstreamSession {
             return Err(return_error);
         }
 
-        let response = self
-            .session()
-            .response_header()
-            .expect("Pingora H2 response header is available after reading it");
+        let Some(response) = self.session().response_header() else {
+            let detail =
+                "Pingora HTTP/2 response header is unavailable after reading it".to_string();
+            self.close().await;
+            finish_pingora_h2_exchange(
+                lifecycle,
+                UpstreamExchangeOutcome::Failed(ProxyError::Protocol(detail.clone())),
+                UpstreamConnectionReuse::Close,
+            );
+            return Err(ProxyError::Protocol(detail));
+        };
         let head = UpstreamResponseHead {
             status: response.status,
             version: response.version,
@@ -260,10 +269,9 @@ impl PingoraH2UpstreamSession {
             self.close().await;
             return UpstreamConnectionReuse::Close;
         }
-        let session = self
-            .session
-            .take()
-            .expect("Pingora H2 session ownership already released");
+        let Some(session) = self.session.take() else {
+            return UpstreamConnectionReuse::Close;
+        };
         let reusable = !self.pool.is_draining()
             && !session.conn.is_closed()
             && !session.conn.is_shutting_down();
