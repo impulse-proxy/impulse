@@ -58,6 +58,18 @@ struct ImpulsePingoraHealthCheck {
     metrics: Arc<Metrics>,
 }
 
+pub(super) struct PingoraHealthServiceInput {
+    pub(super) generation: u64,
+    pub(super) upstream_pools: HashMap<String, Arc<RwLock<UpstreamPool>>>,
+    pub(super) transport_pool: Arc<UpstreamTransportPool>,
+    pub(super) backend_health_checks: Arc<HashMap<String, RuntimeBackendHealthCheck>>,
+    pub(super) pingora_load_balancing:
+        SharedPingoraLoadBalancingRuntimeState<RuntimeBackendTlsPolicy>,
+    pub(super) backend_lifecycle: Arc<BackendLifecycleCoordinator>,
+    pub(super) metrics: Arc<Metrics>,
+    pub(super) generation_tasks: Arc<RuntimeTaskRegistry>,
+}
+
 impl ImpulsePingoraHealthCheck {
     fn new(
         generation: u64,
@@ -298,16 +310,17 @@ impl PingoraHealthCheck for ImpulsePingoraHealthCheck {
 }
 
 impl QUICListener {
-    pub(super) fn spawn_pingora_health_service(
-        generation: u64,
-        upstream_pools: HashMap<String, Arc<RwLock<UpstreamPool>>>,
-        transport_pool: Arc<UpstreamTransportPool>,
-        backend_health_checks: Arc<HashMap<String, RuntimeBackendHealthCheck>>,
-        pingora_load_balancing: SharedPingoraLoadBalancingRuntimeState<RuntimeBackendTlsPolicy>,
-        backend_lifecycle: Arc<BackendLifecycleCoordinator>,
-        metrics: Arc<Metrics>,
-        generation_tasks: Arc<RuntimeTaskRegistry>,
-    ) {
+    pub(super) fn spawn_pingora_health_service(input: PingoraHealthServiceInput) {
+        let PingoraHealthServiceInput {
+            generation,
+            upstream_pools,
+            transport_pool,
+            backend_health_checks,
+            pingora_load_balancing,
+            backend_lifecycle,
+            metrics,
+            generation_tasks,
+        } = input;
         let Some(frequency) = backend_health_checks
             .values()
             .map(|health| health.interval)

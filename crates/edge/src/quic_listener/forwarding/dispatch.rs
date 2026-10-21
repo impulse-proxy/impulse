@@ -74,6 +74,17 @@ enum H3CacheLookup {
     Bypass,
 }
 
+struct H3CacheLookupInput<'a> {
+    cache_store: &'static crate::runtime::cache::BoundedPingoraMemoryCache,
+    metrics: &'a Metrics,
+    policy: impulse_config::runtime::RuntimeResponseCachePolicy,
+    route_auth_enabled: bool,
+    pending_forward: &'a PendingForward,
+    namespace: u64,
+    has_body: bool,
+    is_tunnel: bool,
+}
+
 struct H3CacheMiss {
     cache: Option<HttpCache>,
     policy: Option<impulse_config::runtime::RuntimeResponseCachePolicy>,
@@ -124,16 +135,17 @@ fn alternate_backend_policy_state(
 }
 
 impl QUICListener {
-    async fn lookup_h3_response_cache(
-        cache_store: &'static crate::runtime::cache::BoundedPingoraMemoryCache,
-        metrics: &Metrics,
-        policy: impulse_config::runtime::RuntimeResponseCachePolicy,
-        route_auth_enabled: bool,
-        pending_forward: &PendingForward,
-        namespace: u64,
-        has_body: bool,
-        is_tunnel: bool,
-    ) -> H3CacheLookup {
+    async fn lookup_h3_response_cache(input: H3CacheLookupInput<'_>) -> H3CacheLookup {
+        let H3CacheLookupInput {
+            cache_store,
+            metrics,
+            policy,
+            route_auth_enabled,
+            pending_forward,
+            namespace,
+            has_body,
+            is_tunnel,
+        } = input;
         let bypass = || {
             metrics.record_response_cache_outcome(ResponseCacheOutcome::Bypass);
             H3CacheLookup::Bypass
@@ -657,7 +669,7 @@ impl QUICListener {
                 })
             };
             let mut alternate_backend = needs_alternate_before_primary
-                .then(|| resolve_alternate())
+                .then(&resolve_alternate)
                 .flatten();
             let route_name = pending_forward.upstream_name.as_ref();
             let primary_backend = pending_forward.backend_addr.as_ref();
@@ -671,16 +683,16 @@ impl QUICListener {
                     Some((cache_policy, route_auth_enabled)),
                 ) = (response_cache_store, response_cache_policy)
                 {
-                    match Self::lookup_h3_response_cache(
+                    match Self::lookup_h3_response_cache(H3CacheLookupInput {
                         cache_store,
-                        alternate_metrics.as_ref(),
-                        cache_policy,
+                        metrics: alternate_metrics.as_ref(),
+                        policy: cache_policy,
                         route_auth_enabled,
-                        pending_forward.as_ref(),
-                        response_cache_namespace,
-                        !bodyless_mode,
-                        tunnel_mode != TunnelMode::None,
-                    )
+                        pending_forward: pending_forward.as_ref(),
+                        namespace: response_cache_namespace,
+                        has_body: !bodyless_mode,
+                        is_tunnel: tunnel_mode != TunnelMode::None,
+                    })
                     .await
                     {
                         H3CacheLookup::Hit(response) => return Ok(response),
@@ -851,7 +863,7 @@ impl QUICListener {
                                 Ok(response) => response,
                                 Err(primary_err) => {
                                     alternate_backend =
-                                        alternate_backend.or_else(|| resolve_alternate());
+                                        alternate_backend.or_else(&resolve_alternate);
                                     Self::retry_primary_error(
                                         primary_err,
                                         RetryExecutionCtx {
@@ -890,7 +902,7 @@ impl QUICListener {
                                 Ok(response) => response,
                                 Err(primary_err) => {
                                     alternate_backend =
-                                        alternate_backend.or_else(|| resolve_alternate());
+                                        alternate_backend.or_else(&resolve_alternate);
                                     Self::retry_primary_error(
                                         primary_err,
                                         RetryExecutionCtx {

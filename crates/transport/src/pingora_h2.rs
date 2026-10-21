@@ -185,11 +185,9 @@ impl PingoraH2UpstreamSession {
             }
         }
 
-        if !ended {
-            if let Err(error) = self.session_mut().finish_request_body() {
-                self.close().await;
-                return Err(classify_pingora_h2_error(&error, self.reused));
-            }
+        if !ended && let Err(error) = self.session_mut().finish_request_body() {
+            self.close().await;
+            return Err(classify_pingora_h2_error(&error, self.reused));
         }
         self.state = PingoraH2ExchangeState::RequestComplete;
         Ok(())

@@ -5,7 +5,7 @@ use std::{
     future::Future,
     net::SocketAddr,
     sync::{Arc, RwLock},
-    task::{Context, Poll, Wake, Waker},
+    task::{Context, Poll, Waker},
     time::{Duration, Instant},
 };
 
@@ -638,6 +638,10 @@ where
         self.selectors.len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.selectors.is_empty()
+    }
+
     pub fn health_registry(&self) -> Arc<HealthRegistry> {
         Arc::clone(&self.health_registry)
     }
@@ -708,8 +712,7 @@ impl GenerationBackendView {
         )?;
         let view =
             BackendView::new_with_health_registry(Box::new(discovery.clone()), health_registry);
-        let waker = Waker::from(Arc::new(NoopWake));
-        let mut context = Context::from_waker(&waker);
+        let mut context = Context::from_waker(Waker::noop());
         let mut update = Box::pin(view.update(|_| {}));
         match update.as_mut().poll(&mut context) {
             Poll::Ready(Ok(())) => {}
@@ -751,12 +754,6 @@ impl GenerationBackendView {
     {
         synchronize_backend_readiness::<T>(&self.view, is_healthy)
     }
-}
-
-struct NoopWake;
-
-impl Wake for NoopWake {
-    fn wake(self: Arc<Self>) {}
 }
 
 #[derive(Clone)]
@@ -833,8 +830,7 @@ mod tests {
     }
 
     fn poll_ready<F: Future>(future: F) -> F::Output {
-        let waker = Waker::from(Arc::new(NoopWake));
-        let mut context = Context::from_waker(&waker);
+        let mut context = Context::from_waker(Waker::noop());
         let mut future = Box::pin(future);
         match future.as_mut().poll(&mut context) {
             Poll::Ready(output) => output,
@@ -902,8 +898,7 @@ mod tests {
             .collect::<Result<BTreeSet<_>, _>>()
             .expect("map test backends");
         let view = BackendView::new(StaticDiscovery::new(backends));
-        let waker = Waker::from(Arc::new(NoopWake));
-        let mut context = Context::from_waker(&waker);
+        let mut context = Context::from_waker(Waker::noop());
         let mut update = Box::pin(view.update(|_| {}));
         assert!(matches!(
             update.as_mut().poll(&mut context),

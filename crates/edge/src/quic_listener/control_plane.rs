@@ -5,7 +5,9 @@ use impulse_errors::ProxyError;
 use log::error;
 
 use super::{
-    QUICListener, runtime_handle,
+    QUICListener,
+    pingora_health::PingoraHealthServiceInput,
+    runtime_handle,
     runtime_state::{ControlPlaneStartup, WatchdogServiceCtx},
     spawn_supervised_async_task,
 };
@@ -76,16 +78,16 @@ impl QUICListener {
             );
             Self::spawn_jwks_refresh(runtime.runtime_config(), Arc::clone(&task_registry));
             let pingora_load_balancing = runtime.pingora_load_balancing();
-            Self::spawn_pingora_health_service(
-                pingora_load_balancing.generation(),
-                runtime.upstream_pools().clone(),
-                runtime.transport_pool(),
-                runtime.backend_health_checks(),
+            Self::spawn_pingora_health_service(PingoraHealthServiceInput {
+                generation: pingora_load_balancing.generation(),
+                upstream_pools: runtime.upstream_pools().clone(),
+                transport_pool: runtime.transport_pool(),
+                backend_health_checks: runtime.backend_health_checks(),
                 pingora_load_balancing,
-                runtime.backend_lifecycle(),
-                runtime.metrics(),
-                Arc::clone(&task_registry),
-            );
+                backend_lifecycle: runtime.backend_lifecycle(),
+                metrics: runtime.metrics(),
+                generation_tasks: Arc::clone(&task_registry),
+            });
             Self::spawn_watchdog_service(WatchdogServiceCtx::new(runtime, task_registry));
         });
     }

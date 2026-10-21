@@ -33,8 +33,11 @@ pub(crate) fn build_pingora_http_peer(
     let mut peer = HttpPeer::new(
         address,
         tls,
-        tls.then(|| endpoint.authority_host.clone())
-            .unwrap_or_default(),
+        if tls {
+            endpoint.authority_host.clone()
+        } else {
+            String::new()
+        },
     );
     peer.options.connection_timeout = Some(connection_policy.connect_timeout);
     peer.options.total_connection_timeout = Some(connection_policy.connect_timeout);
