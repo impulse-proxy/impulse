@@ -150,6 +150,8 @@ fn single_backend_upstream_with_address(address: String, tls: Option<UpstreamTls
         auth: Default::default(),
         host_policy: Default::default(),
         forwarded_headers: Default::default(),
+        compression: Default::default(),
+        cache: Default::default(),
         tls,
         route: RouteMatch {
             path_prefix: Some("/".to_string()),
@@ -418,6 +420,58 @@ fn generation_owned_reload_swaps_backend_targets_without_changing_listener_ident
 
 #[test]
 #[serial]
+fn runtime_activation_and_rollback_restore_the_retained_serving_configuration() {
+    if !local_listener_bind_available() {
+        return;
+    }
+
+    let mut harness = RuntimeSwapHarness::new();
+    let original_backend = harness.start_h1_static_backend(b"generation-zero");
+    let activated_backend = harness.start_h1_static_backend(b"generation-one");
+    let config = harness.make_config(HashMap::from([(
+        "api".to_string(),
+        single_backend_upstream(original_backend),
+    )]));
+    harness
+        .start_listener(config)
+        .expect("start runtime activation listener");
+
+    harness
+        .rewrite_config(|config| {
+            config
+                .upstream
+                .get_mut("api")
+                .expect("runtime activation upstream")
+                .backends[0]
+                .address = format!("http://{activated_backend}");
+        })
+        .expect("write activation candidate");
+
+    let activation = harness
+        .trigger_runtime_activate()
+        .expect("activate runtime candidate");
+    assert_eq!(activation["active_generation"], 1);
+    assert_eq!(activation["activated_generation"], 1);
+    let activated = harness
+        .run_request(H3RequestSpec::get("localhost", "/"))
+        .expect("request after activation");
+    activated.assert_status(200);
+    activated.assert_body_bytes(b"generation-one");
+
+    let rollback = harness
+        .trigger_runtime_rollback(0)
+        .expect("rollback to retained generation");
+    assert_eq!(rollback["active_generation"], 2);
+    assert_eq!(rollback["rolled_back_to"], 0);
+    let restored = harness
+        .run_request(H3RequestSpec::get("localhost", "/"))
+        .expect("request after rollback");
+    restored.assert_status(200);
+    restored.assert_body_bytes(b"generation-zero");
+}
+
+#[test]
+#[serial]
 fn listener_cert_rotation_stays_scoped_to_reload_certs_and_does_not_activate_generation() {
     let Some(harness) = start_static_runtime_swap_listener(b"listener-cert-reload", |_| {}) else {
         return;
@@ -617,65 +671,6 @@ fn upstream_ca_rotation_uses_activation_even_when_config_path_is_unchanged() {
 }
 
 // Domain: reload rejection.
-#[test]
-#[serial]
-fn startup_owned_listener_bind_change_is_rejected_and_keeps_active_generation_live() {
-    let Some(mut harness) = start_static_runtime_swap_listener(b"bind-stable", |_| {}) else {
-        return;
-    };
-
-    let before = harness
-        .run_request(H3RequestSpec::get("localhost", "/"))
-        .expect("request before bind-change reload");
-    before.assert_status(200);
-    before.assert_body_bytes(b"bind-stable");
-
-    let startup_snapshot = harness
-        .runtime_snapshot()
-        .expect("startup runtime snapshot");
-    assert_eq!(startup_snapshot["runtime"]["generation"], 0);
-
-    harness
-        .rewrite_config(|config| {
-            config.listen.port = config.listen.port.saturating_add(1);
-        })
-        .expect("rewrite listener bind");
-
-    let rejection = harness
-        .trigger_runtime_reload_expect(http::StatusCode::CONFLICT)
-        .expect("reload rejection");
-    assert_eq!(rejection["reloaded"], false);
-    let error = rejection["error"]
-        .as_str()
-        .expect("reload rejection error string");
-    assert!(
-        error.contains("restart required"),
-        "listener bind change should be restart-required, got: {error}"
-    );
-    assert!(
-        error.contains("listener"),
-        "listener bind rejection should mention the listener, got: {error}"
-    );
-
-    let after_snapshot = harness
-        .runtime_snapshot()
-        .expect("post-rejection runtime snapshot");
-    assert_eq!(
-        after_snapshot["runtime"]["generation"], 0,
-        "startup-owned rejection must leave the active generation unchanged"
-    );
-    assert_eq!(
-        after_snapshot["runtime"]["config_path"], startup_snapshot["runtime"]["config_path"],
-        "config path should remain the same for a rejected same-path reload attempt"
-    );
-
-    let after = harness
-        .run_request(H3RequestSpec::get("localhost", "/"))
-        .expect("request after bind-change rejection");
-    after.assert_status(200);
-    after.assert_body_bytes(b"bind-stable");
-}
-
 #[test]
 #[serial]
 fn startup_owned_log_sink_change_is_rejected_and_keeps_request_behavior() {

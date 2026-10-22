@@ -139,6 +139,10 @@ impl Metrics {
             request_buffered_high_watermark_bytes: AtomicU64::new(0),
             request_buffer_limit_rejects: AtomicU64::new(0),
             response_prebuffer_limit_rejects: AtomicU64::new(0),
+            response_compression_outcomes: std::array::from_fn(|_| AtomicU64::new(0)),
+            response_compression_input_bytes: AtomicU64::new(0),
+            response_compression_output_bytes: AtomicU64::new(0),
+            response_cache_outcomes: std::array::from_fn(|_| AtomicU64::new(0)),
             scid_rotations: AtomicU64::new(0),
             control_api_connection_limit_drops: AtomicU64::new(0),
             control_api_audit_event_drops: AtomicU64::new(0),
@@ -158,6 +162,12 @@ impl Metrics {
             runtime_preview_attempts: AtomicU64::new(0),
             runtime_active_generation: AtomicU64::new(0),
             runtime_history_depth: AtomicU64::new(0),
+            pingora_lb_selector_generation: AtomicU64::new(0),
+            pingora_lb_selector_rebuilds: AtomicU64::new(0),
+            pingora_lb_selector_failures: AtomicU64::new(0),
+            pingora_lb_selections: AtomicU64::new(0),
+            pingora_discovery_refresh_outcomes: std::array::from_fn(|_| AtomicU64::new(0)),
+            pingora_discovery_state: RwLock::new(HashMap::new()),
             runtime_activation_outcomes: std::array::from_fn(|_| AtomicU64::new(0)),
             runtime_rollback_outcomes: std::array::from_fn(|_| AtomicU64::new(0)),
             retries_total: AtomicU64::new(0),
@@ -895,6 +905,26 @@ impl Metrics {
             .fetch_add(1, Ordering::Relaxed);
     }
 
+    pub(crate) fn record_response_compression_outcome(&self, outcome: ResponseCompressionAction) {
+        self.response_compression_outcomes[outcome.index()].fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn add_response_compression_bytes(&self, input: usize, output: usize) {
+        self.response_compression_input_bytes
+            .fetch_add(u64::try_from(input).unwrap_or(u64::MAX), Ordering::Relaxed);
+        self.response_compression_output_bytes
+            .fetch_add(u64::try_from(output).unwrap_or(u64::MAX), Ordering::Relaxed);
+    }
+
+    pub(crate) fn record_response_cache_outcome(&self, outcome: ResponseCacheOutcome) {
+        self.response_cache_outcomes[outcome.index()].fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn add_response_cache_outcomes(&self, outcome: ResponseCacheOutcome, count: usize) {
+        self.response_cache_outcomes[outcome.index()]
+            .fetch_add(u64::try_from(count).unwrap_or(u64::MAX), Ordering::Relaxed);
+    }
+
     fn observe_request_buffer_high_water(&self, candidate: u64) {
         loop {
             let current = self
@@ -1027,6 +1057,50 @@ impl Metrics {
         self.runtime_history_depth.store(depth, Ordering::Relaxed);
     }
 
+    pub fn record_pingora_lb_selector_rebuild(&self, generation: u64, selectors: usize) {
+        self.pingora_lb_selector_generation
+            .store(generation, Ordering::Relaxed);
+        self.pingora_lb_selector_rebuilds.fetch_add(
+            u64::try_from(selectors).unwrap_or(u64::MAX),
+            Ordering::Relaxed,
+        );
+    }
+
+    pub fn inc_pingora_lb_selector_failure(&self) {
+        self.pingora_lb_selector_failures
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn inc_pingora_lb_selection(&self) {
+        self.pingora_lb_selections.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn record_pingora_discovery_refresh(
+        &self,
+        outcome: PingoraDiscoveryRefreshOutcome,
+        update: Option<&impulse_lb::pingora_backend::PingoraDiscoveryUpdate>,
+    ) {
+        self.pingora_discovery_refresh_outcomes[outcome.index()].fetch_add(1, Ordering::Relaxed);
+        let Some(update) = update else {
+            return;
+        };
+        if !self.route_label_to_id.contains_key(update.upstream_name()) {
+            return;
+        }
+        let mut states = self
+            .pingora_discovery_state
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let state = states
+            .entry(update.upstream_name().to_string())
+            .or_default();
+        state.membership_generation = update.membership_generation();
+        if update.membership_changed() {
+            state.rebuild_duration_ns =
+                u64::try_from(update.rebuild_duration().as_nanos()).unwrap_or(u64::MAX);
+        }
+    }
+
     pub fn inc_watchdog_restart_request(&self) {
         self.watchdog_restart_requests
             .fetch_add(1, Ordering::Relaxed);
@@ -1104,7 +1178,6 @@ impl Metrics {
             HealthFailureReason::Tls => {
                 self.health_failure_tls.fetch_add(1, Ordering::Relaxed);
             }
-            HealthFailureReason::CircuitOpen => {}
         }
     }
 

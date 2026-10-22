@@ -627,16 +627,6 @@ pub(super) fn start_external_auth_task(
     })
 }
 
-pub(in crate::quic_listener) async fn evaluate_pending_forward_external_auth(
-    pending_forward: Arc<PendingForward>,
-    external_auth: RuntimeExternalAuth,
-) -> ExternalAuthStateTransition {
-    let task_config = ExternalAuthTaskConfig::from_external_auth(&external_auth);
-    let result =
-        run_external_auth_with_timeout(pending_forward, external_auth, task_config.timeout).await;
-    resolve_external_auth_state_transition(result, task_config.disposition)
-}
-
 impl QUICListener {
     pub(super) fn complete_auth_result(
         stream_id: u64,
@@ -928,52 +918,10 @@ mod tests {
 
     use crate::{
         quic_listener::admission::{
-            AdmissionPolicyDecision, UnauthorizedDecision, admission_rejection_response,
-            evaluate_forwarding_pre_admission_policy,
+            AdmissionPolicyDecision, UnauthorizedDecision, evaluate_forwarding_pre_admission_policy,
         },
         resilience::{brownout::BrownoutController, scoped_rate_limit::ScopedRateLimiters},
     };
-
-    fn decision_contract(
-        decision: &crate::runtime::connection::auth::ExternalAuthDecision,
-    ) -> (http::StatusCode, Vec<(String, String)>, Vec<u8>) {
-        match decision {
-            crate::runtime::connection::auth::ExternalAuthDecision::Allow {
-                request_header_mutations: _,
-            } => (http::StatusCode::OK, Vec::new(), Vec::new()),
-            crate::runtime::connection::auth::ExternalAuthDecision::Deny(response) => (
-                response.status,
-                response.headers.clone(),
-                response.body.clone(),
-            ),
-            crate::runtime::connection::auth::ExternalAuthDecision::Redirect(response) => (
-                response.status,
-                response
-                    .headers
-                    .iter()
-                    .cloned()
-                    .chain(std::iter::once((
-                        http::header::LOCATION.as_str().to_string(),
-                        response.location.clone(),
-                    )))
-                    .collect(),
-                Vec::new(),
-            ),
-            crate::runtime::connection::auth::ExternalAuthDecision::Challenge(response) => (
-                response.status,
-                response
-                    .headers
-                    .iter()
-                    .cloned()
-                    .chain(std::iter::once((
-                        http::header::WWW_AUTHENTICATE.as_str().to_string(),
-                        response.www_authenticate.clone(),
-                    )))
-                    .collect(),
-                response.body.clone(),
-            ),
-        }
-    }
 
     #[test]
     fn append_auth_request_headers_strips_unsafe_headers_and_overrides_with_configured_values() {
@@ -1124,6 +1072,8 @@ mod tests {
             },
             host: RuntimeHostPolicy::default(),
             forwarded_headers: RuntimeForwardedHeaderPolicy::default(),
+            response_cache: Default::default(),
+            response_compression: Default::default(),
             protocol: RuntimeProtocolPolicy::default(),
         };
         let brownout = BrownoutController::new(false, 100, 90, Vec::new());
@@ -1151,38 +1101,5 @@ mod tests {
                 ..
             })
         ));
-    }
-
-    #[test]
-    fn equivalent_quic_external_auth_challenge_and_bootstrap_auth_denial_share_contract() {
-        let quic = crate::runtime::connection::auth::ExternalAuthDecision::Challenge(
-            crate::runtime::connection::auth::ExternalAuthChallengeResponse {
-                status: http::StatusCode::UNAUTHORIZED,
-                headers: Vec::new(),
-                www_authenticate: "Bearer".to_string(),
-                body: b"unauthorized\n".to_vec(),
-            },
-        );
-        let bootstrap = admission_rejection_response(&AdmissionPolicyDecision::Unauthorized(
-            UnauthorizedDecision {
-                challenge: crate::quic_listener::admission::AuthChallengeKind::Bearer,
-                status: http::StatusCode::UNAUTHORIZED,
-                body: b"unauthorized\n",
-            },
-        ))
-        .expect("bootstrap auth rejection");
-
-        let (quic_status, quic_headers, quic_body) = decision_contract(&quic);
-        let bootstrap_headers = vec![(
-            http::header::WWW_AUTHENTICATE.as_str().to_string(),
-            bootstrap
-                .www_authenticate
-                .expect("bootstrap challenge")
-                .to_string(),
-        )];
-
-        assert_eq!(quic_status, bootstrap.status);
-        assert_eq!(quic_body, bootstrap.body.to_vec());
-        assert_eq!(quic_headers, bootstrap_headers);
     }
 }

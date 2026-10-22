@@ -4,27 +4,31 @@ mod lb_key;
 mod orchestration;
 mod orchestration_service;
 mod outcome;
-pub(in crate::quic_listener) mod pipeline;
 mod prepare;
 mod resolve;
 mod response;
 mod selection;
 mod stream_progress;
 
+use impulse_config::runtime::RuntimeBackendTlsPolicy;
+use impulse_lb::pingora_backend::PingoraLoadBalancingRuntimeState;
+
+pub(in crate::quic_listener) use self::outcome::{
+    backend_failure_reason_for_proxy_error, rejection_reason_for_status, terminalize_stream,
+};
 use self::prepare::RequestFinalizationConfig;
 #[cfg(test)]
-pub(in crate::quic_listener) use self::resolve::TargetResolutionRequest as TestTargetResolutionRequest;
-pub(in crate::quic_listener) use self::{
-    auth::evaluate_pending_forward_external_auth,
-    outcome::{
-        backend_failure_reason_for_proxy_error, rejection_reason_for_status, terminalize_stream,
-    },
-    resolve::{
-        BootstrapTargetResolutionInput, ResolutionContext, ResolutionObservation,
-        TargetResolutionRequest,
+pub(in crate::quic_listener) use self::resolve::{
+    TargetResolutionRequest as TestTargetResolutionRequest, selectors_for_test as test_selectors,
+};
+pub(crate) use self::{
+    resolve::TargetResolutionRequest,
+    selection::{
+        BackendCandidate, ForwardingSelectionService, MAX_UPSTREAM_RETRY_ATTEMPTS, RetryCoordinator,
     },
 };
 use super::*;
+use crate::runtime::cache::BoundedPingoraMemoryCache;
 
 // Shared forwarding dependencies passed through extracted submodules.
 pub(in crate::quic_listener) struct ForwardingSharedCtx<'a> {
@@ -33,6 +37,9 @@ pub(in crate::quic_listener) struct ForwardingSharedCtx<'a> {
     pub(in crate::quic_listener) routing_index: &'a RouteIndex,
     pub(in crate::quic_listener) upstream_pools: &'a HashMap<String, Arc<RwLock<UpstreamPool>>>,
     pub(in crate::quic_listener) upstream_policies: &'a HashMap<String, RuntimeUpstreamPolicy>,
+    pub(in crate::quic_listener) pingora_load_balancing:
+        &'a PingoraLoadBalancingRuntimeState<RuntimeBackendTlsPolicy>,
+    pub(in crate::quic_listener) generation: u64,
 }
 
 pub(in crate::quic_listener) struct ForwardingExecutionCtx<'a> {
@@ -41,6 +48,8 @@ pub(in crate::quic_listener) struct ForwardingExecutionCtx<'a> {
     pub(in crate::quic_listener) upstream_inflight: &'a HashMap<String, Arc<Semaphore>>,
     pub(in crate::quic_listener) global_inflight: Arc<Semaphore>,
     pub(in crate::quic_listener) inflight_acquire_wait: Duration,
+    pub(in crate::quic_listener) response_cache: Option<&'static BoundedPingoraMemoryCache>,
+    pub(in crate::quic_listener) response_cache_namespace: u64,
 }
 
 pub(in crate::quic_listener) struct StreamProgressConfig {
@@ -338,6 +347,8 @@ mod tests {
             },
             host: Default::default(),
             forwarded_headers: Default::default(),
+            response_cache: Default::default(),
+            response_compression: Default::default(),
             protocol: Default::default(),
         };
         let headers = [("x-api-key".to_string(), "secret-key".to_string())]
@@ -389,6 +400,8 @@ mod tests {
             },
             host: Default::default(),
             forwarded_headers: Default::default(),
+            response_cache: Default::default(),
+            response_compression: Default::default(),
             protocol: Default::default(),
         };
         let headers = [("authorization".to_string(), format!("Bearer {token}"))]
@@ -1186,6 +1199,8 @@ mod tests {
             },
             host: Default::default(),
             forwarded_headers: Default::default(),
+            response_cache: Default::default(),
+            response_compression: Default::default(),
             protocol: Default::default(),
         };
         let allowed_claims = serde_json::json!({

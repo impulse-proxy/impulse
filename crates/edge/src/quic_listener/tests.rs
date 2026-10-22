@@ -23,17 +23,16 @@ use rcgen::{Certificate, CertificateParams, SanType};
 use tempfile::tempdir;
 
 use super::{
-    ConnectionRoutes, TokenBucket, can_poll_upstream_result, classify_active_health_check_response,
-    collect_h3_trailers, connection_header_tokens, is_bodyless_request_mode,
-    is_connect_tunnel_response, purge_connection_routes, resolve_primary_from_radix_prefix,
-    should_strip_bootstrap_request_header, should_strip_bootstrap_response_header,
-    should_strip_h3_response_header, sweep_closed_connections,
+    ConnectionRoutes, can_poll_upstream_result, collect_h3_trailers, connection_header_tokens,
+    is_bodyless_request_mode, is_connect_tunnel_response, purge_connection_routes,
+    resolve_primary_from_radix_prefix, should_strip_h3_response_header, sweep_closed_connections,
 };
 use crate::{
     REQUEST_ID_COUNTER,
     cid_radix::CidRadix,
     quic_listener::forwarding::terminalize_stream,
     runtime::connection::{
+        TokenBucket,
         guardrails::{
             BodyLimitKind, ResponseBodyGuardrailConfig, ResponseBodyGuardrailDecision,
             ResponseBodyGuardrailInput, checked_response_body_guardrails,
@@ -71,6 +70,8 @@ fn test_upstream_with(lb_type: &str, lb_key: Option<&str>, method: Option<&str>)
         auth: Default::default(),
         host_policy: Default::default(),
         forwarded_headers: Default::default(),
+        compression: Default::default(),
+        cache: Default::default(),
         tls: None,
         route: RouteMatch {
             host: None,
@@ -193,6 +194,8 @@ fn dns_resolution_test_config(cert: String, key: String) -> ImpulseConfigConfig 
             auth: Default::default(),
             host_policy: Default::default(),
             forwarded_headers: Default::default(),
+            compression: Default::default(),
+            cache: Default::default(),
             tls: None,
             route: RouteMatch {
                 host: Some("api.example.com".to_string()),
@@ -274,7 +277,7 @@ fn runtime_listener_tls_uses_first_sni_entry_when_legacy_pair_is_missing() {
 }
 
 #[test]
-fn build_server_tls_acceptor_accepts_sni_certs_without_legacy_pair() {
+fn listener_tls_reload_state_accepts_sni_certs_without_legacy_pair() {
     let dir = tempdir().expect("tempdir");
     let (api_cert, api_key) = write_test_cert_for_name(dir.path(), "api", "api.example.com");
     let config = tls_test_config(
@@ -287,12 +290,9 @@ fn build_server_tls_acceptor_accepts_sni_certs_without_legacy_pair() {
         }],
     );
 
-    let acceptor = super::QUICListener::build_server_tls_acceptor(
-        &tls_test_listener_config(&config),
-        false,
-        vec![b"h2".to_vec()],
-    );
-    assert!(acceptor.is_ok());
+    let reload_state =
+        super::QUICListener::build_listener_tls_reload_state(&tls_test_listener_config(&config));
+    assert!(reload_state.is_ok());
 }
 
 #[test]
@@ -395,7 +395,7 @@ fn listener_tls_reload_store_refreshes_inventory_and_generation() {
         .replace_listener(
             listener_label,
             reloaded_state.inventory,
-            reloaded_state.bootstrap_server_config,
+            reloaded_state.certificate_resolver,
         )
         .expect("replace listener");
     assert_eq!(generation, 1);
@@ -444,7 +444,7 @@ fn quic_listener_syncs_tls_generation_after_reload() {
         .replace_listener(
             &listener_label,
             reloaded_state.inventory,
-            reloaded_state.bootstrap_server_config,
+            reloaded_state.certificate_resolver,
         )
         .expect("replace listener");
 
@@ -457,66 +457,6 @@ fn quic_listener_syncs_tls_generation_after_reload() {
         .expect("reloaded generation"),
         Some(1)
     );
-}
-
-#[test]
-fn bootstrap_connection_state_prefers_reloaded_runtime_settings() {
-    let dir = tempdir().expect("tempdir");
-    let (cert, key) = write_test_cert_for_name(dir.path(), "server", "api.example.com");
-    let startup = tls_test_config(cert.clone(), key.clone(), Vec::new());
-    let startup_runtime = RuntimeConfig::from_config(&startup).expect("startup runtime");
-    let startup_listener_config = startup_runtime
-        .primary_listener_runtime_config()
-        .expect("startup listener config");
-    let startup_shared =
-        Arc::new(super::QUICListener::build_shared_state(&startup_runtime).expect("shared"));
-    let startup_services = startup_shared.shared_services();
-    let startup_generation = startup_shared.generation_state();
-    let listener_label = super::QUICListener::listener_label(&startup_listener_config);
-    let startup_state = super::BootstrapStartupState {
-        listener_config: startup_listener_config.clone(),
-        listener_tls_store: Arc::clone(&startup_services.listener_tls_store),
-        transport_pool: Arc::clone(&startup_services.transport_pool),
-        backend_endpoints: Arc::clone(&startup_generation.backend_endpoints),
-        upstream_policies: Arc::clone(&startup_generation.upstream_policies),
-        metrics: Arc::clone(&startup_services.metrics),
-        resilience: Arc::clone(&startup_generation.resilience),
-        upstream_pools: startup_generation.upstream_pools.clone(),
-        routing_index: Arc::clone(&startup_generation.routing_index),
-    };
-
-    let mut reloaded = startup.clone();
-    reloaded.performance.backend_timeout_ms = 4321;
-    reloaded.performance.backend_body_idle_timeout_ms = 5321;
-    reloaded.performance.backend_body_total_timeout_ms = 6321;
-    reloaded.performance.backend_total_request_timeout_ms = 7321;
-    reloaded.performance.max_request_body_bytes = 65_537;
-    reloaded.performance.max_response_body_bytes = 98_765;
-    reloaded.performance.unknown_length_response_prebuffer_bytes = 98_765;
-    reloaded.performance.max_active_connections = 37;
-    reloaded.performance.client_body_idle_timeout_ms = 7654;
-
-    let reloaded_runtime = RuntimeConfig::from_config(&reloaded).expect("reloaded runtime");
-    let reloaded_bundle = super::QUICListener::build_runtime_bundle(
-        "reloaded.yaml".to_string(),
-        reloaded.log.clone(),
-        &reloaded_runtime,
-    )
-    .expect("reloaded bundle");
-    let runtime_handle = Arc::new(super::RuntimeBundleHandle::new(reloaded_bundle));
-
-    let state = super::bootstrap::bootstrap_connection_state(
-        &listener_label,
-        Some(&runtime_handle),
-        &startup_state,
-    )
-    .expect("bootstrap state");
-
-    assert_eq!(state.backend_timeout, Duration::from_millis(4321));
-    assert_eq!(state.max_request_body_bytes, 65_537);
-    assert_eq!(state.max_response_body_bytes, 98_765);
-    assert_eq!(state.max_connections, 37);
-    assert_eq!(state.connection_timeout, Duration::from_millis(7654));
 }
 
 #[test]
@@ -857,7 +797,7 @@ fn watchdog_restart_transitions_listener_into_draining_and_counts_worker_drain_o
 }
 
 #[test]
-fn build_server_tls_acceptor_rejects_mismatched_sni_certificate_mapping() {
+fn listener_tls_reload_state_rejects_mismatched_sni_certificate_mapping() {
     let dir = tempdir().expect("tempdir");
     let (api_cert, api_key) = write_test_cert_for_name(dir.path(), "api", "api.example.com");
     let config = tls_test_config(
@@ -870,13 +810,10 @@ fn build_server_tls_acceptor_rejects_mismatched_sni_certificate_mapping() {
         }],
     );
 
-    let err = super::QUICListener::build_server_tls_acceptor(
-        &tls_test_listener_config(&config),
-        false,
-        vec![b"h2".to_vec()],
-    )
-    .err()
-    .expect("mismatched SNI cert mapping should fail");
+    let err =
+        super::QUICListener::build_listener_tls_reload_state(&tls_test_listener_config(&config))
+            .err()
+            .expect("mismatched SNI cert mapping should fail");
     assert!(
         err.to_string()
             .contains("failed to add SNI certificate mapping"),
@@ -1031,12 +968,16 @@ type TestRoutingContext = (
     HashMap<String, impulse_config::runtime::RuntimeUpstreamPolicy>,
     super::RouteIndex,
     Arc<RwLock<super::UpstreamPool>>,
+    impulse_lb::pingora_backend::PingoraLoadBalancingRuntimeState<
+        impulse_config::runtime::RuntimeBackendTlsPolicy,
+    >,
 );
 
 fn test_routing_context(lb_type: &str) -> TestRoutingContext {
     let mut upstreams = HashMap::new();
     upstreams.insert("api_pool".to_string(), test_upstream(lb_type));
     let runtime = runtime_config_with_upstreams(upstreams);
+    let selectors = super::forwarding::test_selectors(&runtime);
     let routing_index = super::RouteIndex::from_runtime_upstreams(&runtime.upstreams);
     let pool = super::UpstreamPool::from_runtime_upstream(
         runtime.upstreams.get("api_pool").expect("upstream"),
@@ -1055,13 +996,20 @@ fn test_routing_context(lb_type: &str) -> TestRoutingContext {
             .policy
             .clone(),
     );
-    (upstream_pools, upstream_policies, routing_index, pool)
+    (
+        upstream_pools,
+        upstream_policies,
+        routing_index,
+        pool,
+        selectors,
+    )
 }
 
 #[test]
 fn resolve_backend_round_robin_is_not_pinned_to_first_backend() {
-    let (upstream_pools, upstream_policies, routing_index, _pool) =
+    let (upstream_pools, upstream_policies, routing_index, _pool, selectors) =
         test_routing_context("round-robin");
+    let metrics = super::Metrics::new(1, vec!["route".to_string()]);
 
     let mut picks = Vec::new();
     for _ in 0..4 {
@@ -1077,6 +1025,8 @@ fn resolve_backend_round_robin_is_not_pinned_to_first_backend() {
             &upstream_pools,
             &upstream_policies,
             &routing_index,
+            &selectors,
+            &metrics,
         )
         .expect("resolve backend");
         picks.push(resolved.backend.backend_addr);
@@ -1092,13 +1042,22 @@ fn resolve_backend_round_robin_is_not_pinned_to_first_backend() {
 
 #[test]
 fn resolve_backend_skips_unhealthy_backends() {
-    let (upstream_pools, upstream_policies, routing_index, pool) =
+    let (upstream_pools, upstream_policies, routing_index, pool, selectors) =
         test_routing_context("round-robin");
+    let metrics = super::Metrics::new(1, vec!["route".to_string()]);
     {
         let mut guard = pool.write().expect("pool write");
         guard.mark_backend_failure_from_active_check(0);
         guard.mark_backend_failure_from_active_check(0);
         guard.mark_backend_failure_from_active_check(0);
+    }
+    {
+        let guard = pool.read().expect("pool read");
+        selectors
+            .selector("api_pool")
+            .expect("api selector")
+            .synchronize_readiness(|index| guard.is_backend_healthy(index))
+            .expect("synchronize selector readiness");
     }
 
     let request =
@@ -1108,6 +1067,8 @@ fn resolve_backend_skips_unhealthy_backends() {
         &upstream_pools,
         &upstream_policies,
         &routing_index,
+        &selectors,
+        &metrics,
     )
     .expect("resolve backend");
 
@@ -1119,8 +1080,9 @@ fn resolve_backend_skips_unhealthy_backends() {
 
 #[test]
 fn resolve_backend_respects_least_connections_strategy() {
-    let (upstream_pools, upstream_policies, routing_index, pool) =
+    let (upstream_pools, upstream_policies, routing_index, pool, selectors) =
         test_routing_context("least-connections");
+    let metrics = super::Metrics::new(1, vec!["route".to_string()]);
     {
         let guard = pool.read().expect("pool read");
         guard.begin_request_for_accounting(0);
@@ -1134,6 +1096,8 @@ fn resolve_backend_respects_least_connections_strategy() {
         &upstream_pools,
         &upstream_policies,
         &routing_index,
+        &selectors,
+        &metrics,
     )
     .expect("resolve backend");
 
@@ -1160,6 +1124,8 @@ fn resolve_backend_prefers_method_specific_route() {
     upstreams.insert("post_only".to_string(), post_only);
 
     let runtime = runtime_config_with_upstreams(upstreams);
+    let selectors = super::forwarding::test_selectors(&runtime);
+    let metrics = super::Metrics::new(1, vec!["route".to_string()]);
     let routing_index = super::RouteIndex::from_runtime_upstreams(&runtime.upstreams);
     let mut upstream_pools = HashMap::new();
     let mut upstream_policies = HashMap::new();
@@ -1176,6 +1142,8 @@ fn resolve_backend_prefers_method_specific_route() {
         &upstream_pools,
         &upstream_policies,
         &routing_index,
+        &selectors,
+        &metrics,
     )
     .expect("GET resolve");
     assert_eq!(resolved.route.upstream_name, "all_methods");
@@ -1187,6 +1155,8 @@ fn resolve_backend_prefers_method_specific_route() {
         &upstream_pools,
         &upstream_policies,
         &routing_index,
+        &selectors,
+        &metrics,
     )
     .expect("POST resolve");
     assert_eq!(resolved.route.upstream_name, "post_only");
@@ -1195,13 +1165,14 @@ fn resolve_backend_prefers_method_specific_route() {
 
 #[test]
 fn resolve_backend_uses_configured_header_lb_key() {
-    let (upstream_pools, upstream_policies, routing_index, _pool) = {
+    let (upstream_pools, upstream_policies, routing_index, _pool, selectors) = {
         let mut upstreams = HashMap::new();
         upstreams.insert(
             "api_pool".to_string(),
             test_upstream_with("consistent-hash", Some("header:x-user-id"), None),
         );
         let runtime = runtime_config_with_upstreams(upstreams);
+        let selectors = super::forwarding::test_selectors(&runtime);
         let routing_index = super::RouteIndex::from_runtime_upstreams(&runtime.upstreams);
         let pool = super::UpstreamPool::from_runtime_upstream(
             runtime.upstreams.get("api_pool").expect("upstream"),
@@ -1220,8 +1191,15 @@ fn resolve_backend_uses_configured_header_lb_key() {
                 .policy
                 .clone(),
         );
-        (upstream_pools, upstream_policies, routing_index, pool)
+        (
+            upstream_pools,
+            upstream_policies,
+            routing_index,
+            pool,
+            selectors,
+        )
     };
+    let metrics = super::Metrics::new(1, vec!["route".to_string()]);
 
     let header_lookup = |name: &str| {
         if name.eq_ignore_ascii_case("x-user-id") {
@@ -1243,6 +1221,8 @@ fn resolve_backend_uses_configured_header_lb_key() {
         &upstream_pools,
         &upstream_policies,
         &routing_index,
+        &selectors,
+        &metrics,
     )
     .expect("first resolve");
     let second_request = super::forwarding::TestTargetResolutionRequest::new(
@@ -1257,6 +1237,8 @@ fn resolve_backend_uses_configured_header_lb_key() {
         &upstream_pools,
         &upstream_policies,
         &routing_index,
+        &selectors,
+        &metrics,
     )
     .expect("second resolve");
 
@@ -1267,23 +1249,7 @@ fn resolve_backend_uses_configured_header_lb_key() {
 }
 
 #[test]
-fn active_health_check_classification_matches_shared_policy() {
-    assert!(matches!(
-        classify_active_health_check_response(StatusCode::MOVED_PERMANENTLY),
-        crate::runtime::health::HealthClassification::Success
-    ));
-    assert!(matches!(
-        classify_active_health_check_response(StatusCode::BAD_REQUEST),
-        crate::runtime::health::HealthClassification::Neutral
-    ));
-    assert!(matches!(
-        classify_active_health_check_response(StatusCode::BAD_GATEWAY),
-        crate::runtime::health::HealthClassification::Failure
-    ));
-}
-
-#[test]
-fn bootstrap_connection_header_tokens_are_parsed_case_insensitively() {
+fn connection_header_tokens_are_parsed_case_insensitively() {
     let mut headers = HeaderMap::new();
     headers.insert(
         http::header::CONNECTION,
@@ -1298,32 +1264,6 @@ fn bootstrap_connection_header_tokens_are_parsed_case_insensitively() {
     assert!(tokens.contains("keep-alive"));
     assert!(tokens.contains("x-secret"));
     assert!(tokens.contains("x-another"));
-}
-
-#[test]
-fn bootstrap_header_filter_strips_connection_nominated_headers() {
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        http::header::CONNECTION,
-        HeaderValue::from_static("keep-alive, x-secret"),
-    );
-    let tokens = connection_header_tokens(&headers);
-
-    let header = http::HeaderName::from_static("x-secret");
-    assert!(should_strip_bootstrap_request_header(&header, &tokens));
-}
-
-#[test]
-fn bootstrap_header_filter_keeps_non_nominated_custom_headers() {
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        http::header::CONNECTION,
-        HeaderValue::from_static("keep-alive"),
-    );
-    let tokens = connection_header_tokens(&headers);
-
-    let header = http::HeaderName::from_static("x-custom-keep");
-    assert!(!should_strip_bootstrap_request_header(&header, &tokens));
 }
 
 #[test]
@@ -1398,64 +1338,6 @@ fn h3_response_filter_strips_connection_nominated_headers() {
     let tokens = connection_header_tokens(&headers);
     let nominated = http::HeaderName::from_static("x-internal-hop");
     assert!(should_strip_h3_response_header(&nominated, &tokens));
-}
-
-#[test]
-fn bootstrap_response_filter_strips_standard_hop_by_hop_headers() {
-    let tokens = HashSet::new();
-    assert!(should_strip_bootstrap_response_header(
-        &http::header::CONNECTION,
-        &tokens
-    ));
-    assert!(should_strip_bootstrap_response_header(
-        &http::header::TE,
-        &tokens
-    ));
-    assert!(should_strip_bootstrap_response_header(
-        &http::header::TRAILER,
-        &tokens
-    ));
-    assert!(should_strip_bootstrap_response_header(
-        &http::header::TRANSFER_ENCODING,
-        &tokens
-    ));
-    assert!(should_strip_bootstrap_response_header(
-        &http::header::UPGRADE,
-        &tokens
-    ));
-    assert!(should_strip_bootstrap_response_header(
-        &http::header::PROXY_AUTHENTICATE,
-        &tokens
-    ));
-    assert!(should_strip_bootstrap_response_header(
-        &http::header::PROXY_AUTHORIZATION,
-        &tokens
-    ));
-    let alt_svc = http::HeaderName::from_static("alt-svc");
-    assert!(should_strip_bootstrap_response_header(&alt_svc, &tokens));
-    let keep_alive = http::HeaderName::from_static("keep-alive");
-    assert!(should_strip_bootstrap_response_header(&keep_alive, &tokens));
-}
-
-#[test]
-fn bootstrap_response_filter_strips_connection_nominated_headers() {
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        http::header::CONNECTION,
-        HeaderValue::from_static("x-hop-token, x-alt"),
-    );
-    let tokens = connection_header_tokens(&headers);
-    let nominated = http::HeaderName::from_static("x-hop-token");
-    assert!(should_strip_bootstrap_response_header(&nominated, &tokens));
-}
-
-#[test]
-fn bootstrap_response_filter_keeps_end_to_end_headers() {
-    let tokens = HashSet::new();
-    assert!(!should_strip_bootstrap_response_header(
-        &http::header::CACHE_CONTROL,
-        &tokens
-    ));
 }
 
 #[test]
@@ -2228,6 +2110,7 @@ fn make_request_context(start: Instant, method: &str) -> RequestContext {
         authority: None,
         start,
         total_request_deadline: start + std::time::Duration::from_secs(30),
+        terminal_outcome: crate::request_pipeline::TerminalOutcomeGuard::default(),
     }
 }
 
@@ -2325,7 +2208,7 @@ fn make_dispatch_ready_envelope(
         retry_count: 0,
         error_kind: None,
         terminal_overload_reason: None,
-        terminal_outcome_recorded: false,
+        terminal_outcome: context.terminal_outcome.clone(),
         empty_request_body_runtime: RequestBodyRuntime::empty(start),
         execution: RequestExecutionState::DispatchReady(DispatchReadyState {
             context,
@@ -2460,6 +2343,7 @@ fn abort_stream_waiting_for_auth_clears_async_auth_state() {
             authority: req.authority.clone(),
             start: req.start,
             total_request_deadline: req.total_request_deadline,
+            terminal_outcome: req.terminal_outcome.clone(),
         },
         routing: RoutingSnapshot {
             backend_addr: "http://127.0.0.1:8080".into(),

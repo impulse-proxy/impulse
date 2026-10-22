@@ -5,8 +5,6 @@ use impulse_config::{
     runtime::{RuntimeConfig, RuntimeUpstream},
 };
 
-use crate::{backend::BackendState, backend_pool::BackendPool};
-
 pub(crate) fn runtime_upstream_from_addresses(
     lb_type: &str,
     key: Option<&str>,
@@ -24,6 +22,8 @@ pub(crate) fn runtime_upstream_from_addresses(
             auth: Default::default(),
             host_policy: Default::default(),
             forwarded_headers: Default::default(),
+            compression: Default::default(),
+            cache: Default::default(),
             route: RouteMatch {
                 host: None,
                 path_prefix: Some("/".to_string()),
@@ -68,33 +68,6 @@ pub(crate) fn runtime_upstream_from_addresses(
     .upstreams
     .remove("api")
     .expect("runtime upstream fixture should exist")
-}
-
-pub(crate) fn backend_pool_from_addresses(addresses: &[&str]) -> BackendPool {
-    BackendPool::new_from_states(
-        addresses
-            .iter()
-            .enumerate()
-            .map(|(index, address)| backend_state(&format!("backend-{index}"), address, None))
-            .collect(),
-    )
-}
-
-pub(crate) fn health_checked_backend_state(address: &str) -> BackendState {
-    backend_state(
-        &format!("backend-{address}"),
-        address,
-        Some(default_health_check(0)),
-    )
-}
-
-fn backend_state(id: &str, address: &str, health_check: Option<HealthCheck>) -> BackendState {
-    BackendState::new(&Backend {
-        id: id.to_string(),
-        address: address.to_string(),
-        weight: 1,
-        health_check,
-    })
 }
 
 fn default_health_check(cooldown_ms: u64) -> HealthCheck {

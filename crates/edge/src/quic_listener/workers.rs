@@ -57,7 +57,7 @@ pub fn spawn_listener_worker_group(
     config: &ListenerWorkerGroupConfig,
     runtime: ListenerWorkerRuntimeState,
 ) -> Result<Vec<thread::JoinHandle<Result<(), String>>>, String> {
-    let sockets = if config.worker_count > 1 {
+    let sockets = if config.worker_count > 1 || runtime.listener_config.performance.reuseport {
         match QUICListener::bind_reuseport_sockets(&runtime.listener_config, config.worker_count) {
             Ok(sockets) => sockets,
             Err(e) => return Err(format!("Failed to bind SO_REUSEPORT sockets: {}", e)),

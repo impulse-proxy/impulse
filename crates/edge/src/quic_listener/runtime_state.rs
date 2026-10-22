@@ -5,9 +5,11 @@ use std::{
     time::Instant,
 };
 
-use impulse_config::runtime::{ListenerRuntimeConfig, RuntimeConfig};
+use impulse_config::runtime::{ListenerRuntimeConfig, RuntimeBackendTlsPolicy, RuntimeConfig};
 use impulse_errors::ProxyError;
-use impulse_lb::upstream_pool::UpstreamPool;
+use impulse_lb::{
+    pingora_backend::SharedPingoraLoadBalancingRuntimeState, upstream_pool::UpstreamPool,
+};
 use impulse_transport::{SharedDnsResolver, UpstreamTransportPool};
 
 use crate::{
@@ -35,8 +37,8 @@ pub(super) struct ControlPlaneRuntimeView {
     transport_pool: Arc<UpstreamTransportPool>,
     backend_dns_resolver: SharedDnsResolver,
     upstream_pools: HashMap<String, Arc<RwLock<UpstreamPool>>>,
+    pingora_load_balancing: SharedPingoraLoadBalancingRuntimeState<RuntimeBackendTlsPolicy>,
     listener_runtime_configs: Arc<HashMap<String, ListenerRuntimeConfig>>,
-    backend_endpoints: Arc<HashMap<String, impulse_config::backend_endpoint::BackendEndpoint>>,
     backend_health_checks: Arc<HashMap<String, impulse_config::runtime::RuntimeBackendHealthCheck>>,
     generation_tasks: Arc<RuntimeTaskRegistry>,
     listener_tls_store: Arc<ListenerTlsReloadStore>,
@@ -61,8 +63,8 @@ impl ControlPlaneRuntimeView {
             transport_pool: Arc::clone(&shared.transport_pool),
             backend_dns_resolver: shared.backend_dns_resolver.clone(),
             upstream_pools: generation.upstream_pools.clone(),
+            pingora_load_balancing: Arc::clone(&generation.pingora_load_balancing),
             listener_runtime_configs: Arc::clone(&generation.listener_runtime_configs),
-            backend_endpoints: Arc::clone(&generation.backend_endpoints),
             backend_health_checks: Arc::clone(&generation.backend_health_checks),
             generation_tasks: Arc::clone(&generation.generation_tasks),
             listener_tls_store: Arc::clone(&shared.listener_tls_store),
@@ -86,8 +88,8 @@ impl ControlPlaneRuntimeView {
             transport_pool: Arc::clone(&view.shared.transport_pool),
             backend_dns_resolver: view.shared.backend_dns_resolver.clone(),
             upstream_pools: view.state.upstream_pools.clone(),
+            pingora_load_balancing: Arc::clone(&view.state.pingora_load_balancing),
             listener_runtime_configs: Arc::clone(&view.state.listener_runtime_configs),
-            backend_endpoints: Arc::clone(&view.state.backend_endpoints),
             backend_health_checks: Arc::clone(&view.state.backend_health_checks),
             generation_tasks: Arc::clone(&view.state.generation_tasks),
             listener_tls_store: Arc::clone(&view.shared.listener_tls_store),
@@ -134,14 +136,14 @@ impl ControlPlaneRuntimeView {
         &self.upstream_pools
     }
 
-    pub(super) fn listener_runtime_configs(&self) -> Arc<HashMap<String, ListenerRuntimeConfig>> {
-        Arc::clone(&self.listener_runtime_configs)
+    pub(super) fn pingora_load_balancing(
+        &self,
+    ) -> SharedPingoraLoadBalancingRuntimeState<RuntimeBackendTlsPolicy> {
+        Arc::clone(&self.pingora_load_balancing)
     }
 
-    pub(super) fn backend_endpoints(
-        &self,
-    ) -> Arc<HashMap<String, impulse_config::backend_endpoint::BackendEndpoint>> {
-        Arc::clone(&self.backend_endpoints)
+    pub(super) fn listener_runtime_configs(&self) -> Arc<HashMap<String, ListenerRuntimeConfig>> {
+        Arc::clone(&self.listener_runtime_configs)
     }
 
     pub(super) fn backend_health_checks(
@@ -274,14 +276,14 @@ pub(super) struct PreparedListenerStartup {
     pub(super) socket: UdpSocket,
 }
 
-pub(super) struct ControlPlaneBootstrap<'a> {
+pub(super) struct ControlPlaneStartup<'a> {
     pub(super) runtime_config: &'a RuntimeConfig,
     pub(super) shared_state: &'a SharedRuntimeState,
     pub(super) runtime_bundle: Option<Arc<RuntimeBundleHandle>>,
     pub(super) worker_count: usize,
 }
 
-impl<'a> ControlPlaneBootstrap<'a> {
+impl<'a> ControlPlaneStartup<'a> {
     pub(super) fn runtime_view(&self) -> ControlPlaneRuntimeView {
         self.runtime_bundle
             .as_ref()

@@ -68,6 +68,8 @@ fn make_config(port: u32, cert: String, key: String, backend_address: String) ->
             auth: Default::default(),
             host_policy: Default::default(),
             forwarded_headers: Default::default(),
+            compression: Default::default(),
+            cache: Default::default(),
             tls: None,
             route: RouteMatch {
                 path_prefix: Some("/".to_string()),
@@ -611,6 +613,8 @@ fn make_config_with_rate_limit(
             auth: Default::default(),
             host_policy: Default::default(),
             forwarded_headers: Default::default(),
+            compression: Default::default(),
+            cache: Default::default(),
             tls: None,
             route: RouteMatch {
                 path_prefix: Some("/".to_string()),

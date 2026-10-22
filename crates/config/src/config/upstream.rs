@@ -14,9 +14,74 @@ pub struct Upstream {
     #[serde(default)]
     pub forwarded_headers: ForwardedHeaderPolicy,
     #[serde(default)]
+    pub compression: ResponseCompression,
+    #[serde(default)]
+    pub cache: ResponseCache,
+    #[serde(default)]
     pub tls: Option<UpstreamTls>,
     pub route: RouteMatch,
     pub backends: Vec<Backend>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
+#[serde(default)]
+#[serde(deny_unknown_fields)]
+pub struct ResponseCompression {
+    pub enabled: bool,
+    pub minimum_size_bytes: usize,
+}
+
+impl Default for ResponseCompression {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            minimum_size_bytes: 1_024,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
+#[serde(default)]
+#[serde(deny_unknown_fields)]
+pub struct ResponseCache {
+    pub enabled: bool,
+    pub max_bytes: usize,
+    pub max_entries: usize,
+    pub max_object_bytes: usize,
+    pub max_ttl_secs: u64,
+}
+
+impl Default for ResponseCache {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            max_bytes: 64 * 1024 * 1024,
+            max_entries: 10_000,
+            max_object_bytes: 1024 * 1024,
+            max_ttl_secs: 300,
+        }
+    }
+}
+
+impl ResponseCache {
+    pub(crate) fn validate(&self) -> Result<(), &'static str> {
+        if self.max_bytes == 0 {
+            return Err("max_bytes must be greater than 0");
+        }
+        if self.max_entries == 0 {
+            return Err("max_entries must be greater than 0");
+        }
+        if self.max_object_bytes == 0 {
+            return Err("max_object_bytes must be greater than 0");
+        }
+        if self.max_object_bytes > self.max_bytes {
+            return Err("max_object_bytes must not exceed max_bytes");
+        }
+        if self.max_ttl_secs == 0 {
+            return Err("max_ttl_secs must be greater than 0");
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, Default)]

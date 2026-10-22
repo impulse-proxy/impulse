@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap,
     convert::Infallible,
+    future::Future,
     net::{IpAddr, SocketAddr},
     pin::Pin,
     sync::{
@@ -37,8 +38,8 @@ use rustls_pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
 use tempfile::{TempDir, tempdir};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::{
-    TlsConnector,
-    rustls::{ClientConfig, RootCertStore, pki_types::ServerName},
+    TlsAcceptor, TlsConnector,
+    rustls::{ClientConfig, RootCertStore, ServerConfig, pki_types::ServerName},
 };
 
 mod support;
@@ -52,15 +53,17 @@ use impulse_config::{
 };
 use impulse_edge::{
     BACKEND_TIMEOUT_SECS, MAX_DATAGRAM_SIZE_BYTES, MAX_STREAMS_PER_CONNECTION,
-    MAX_UDP_PAYLOAD_BYTES, QUIC_IDLE_TIMEOUT_MS, QUIC_INITIAL_MAX_DATA,
+    MAX_UDP_PAYLOAD_BYTES, PingoraListenerTask, QUIC_IDLE_TIMEOUT_MS, QUIC_INITIAL_MAX_DATA,
     QUIC_INITIAL_MAX_STREAMS_BIDI, QUIC_INITIAL_MAX_STREAMS_UNI, QUIC_INITIAL_STREAM_DATA,
-    REQUEST_TIMEOUT_SECS, runtime::listener::QUICListener,
+    REQUEST_TIMEOUT_SECS,
+    runtime::{bundle::RuntimeBundleHandle, listener::QUICListener},
+    spawn_pingora_ingress_listener,
 };
 use support::{net::local_listener_bind_available, request_path as request_support};
 
 type TrailerPairs = Vec<(String, String)>;
 type H3TrailerResponse = (String, Vec<u8>, TrailerPairs);
-type BootstrapResponse = (StatusCode, Vec<u8>, TrailerPairs);
+type HttpResponse = (StatusCode, Vec<u8>, TrailerPairs);
 
 fn write_test_certs(dir: &TempDir) -> (String, String) {
     write_named_test_cert(dir, "cert", &["localhost"], &[IpAddr::from([127, 0, 0, 1])])
@@ -163,6 +166,8 @@ fn make_config(port: u32, backend_addr: String, cert: String, key: String) -> Co
             auth: Default::default(),
             host_policy: Default::default(),
             forwarded_headers: Default::default(),
+            compression: Default::default(),
+            cache: Default::default(),
             tls: None,
             route: RouteMatch {
                 path_prefix: Some("/".to_string()),
@@ -185,6 +190,13 @@ fn make_config(port: u32, backend_addr: String, cert: String, key: String) -> Co
     );
 
     make_config_with_upstreams(port, upstream, cert, key)
+}
+
+fn make_h2_config(port: u32, backend_addr: SocketAddr, cert: String, key: String) -> Config {
+    let mut config = make_config(port, format!("https://{backend_addr}"), cert, key);
+    config.upstream_tls.verify_certificates = false;
+    config.upstream_tls.strict_sni = false;
+    config
 }
 
 fn make_config_with_upstreams(
@@ -253,22 +265,35 @@ fn quic_read_timeout(conn: &quiche::Connection) -> Duration {
 
 type ListenerTaskGuard = request_support::ListenerTaskGuard;
 
-fn make_listener_with_bootstrap(config: Config) -> QUICListener {
+fn make_listener_with_pingora(
+    rt: &tokio::runtime::Runtime,
+    config: Config,
+) -> (QUICListener, PingoraListenerTask) {
     let runtime_config = RuntimeConfig::from_config(&config).expect("runtime config");
     let listener_config = runtime_config
         .listener_runtime_configs()
         .into_iter()
         .next()
         .expect("listener runtime config");
-    let shared_state =
-        Arc::new(QUICListener::build_shared_state(&runtime_config).expect("shared runtime state"));
+    let bundle = QUICListener::build_runtime_bundle(
+        "h3-bridge-test".to_string(),
+        config.log.clone(),
+        &runtime_config,
+    )
+    .expect("runtime bundle");
+    let shared_state = Arc::clone(&bundle.shared_state);
     QUICListener::spawn_control_plane_tasks(&runtime_config, &shared_state, 1)
         .expect("control plane tasks");
-    QUICListener::spawn_bootstrap_tls_listener(&listener_config, &shared_state, None, None)
-        .expect("bootstrap tls listener");
+    let runtime_bundle = Arc::new(RuntimeBundleHandle::new(bundle));
+    let runtime_guard = rt.enter();
+    let pingora_listener = spawn_pingora_ingress_listener(runtime_bundle, listener_config.clone())
+        .expect("Pingora listener");
+    drop(runtime_guard);
     let socket = QUICListener::bind_socket(&listener_config, false).expect("bind socket");
-    QUICListener::new_with_socket_and_shared_state(listener_config, socket, shared_state)
-        .expect("listener with shared state")
+    let listener =
+        QUICListener::new_with_socket_and_shared_state(listener_config, socket, shared_state)
+            .expect("listener with shared state");
+    (listener, pingora_listener)
 }
 
 async fn start_h2_backend() -> SocketAddr {
@@ -286,11 +311,6 @@ async fn start_h1_backend_with_websocket_upgrade() -> SocketAddr {
     let addr = fixture.addr;
     std::mem::forget(fixture);
     addr
-}
-
-fn run_h3_client(addr: SocketAddr) -> Result<String, String> {
-    request_support::run_h3_get_to(addr, "localhost", "/", &[])
-        .map(|response| String::from_utf8_lossy(&response.body).into_owned())
 }
 
 fn run_h3_client_chunked_post(
@@ -897,7 +917,20 @@ impl Body for TrailerThenEndBody {
     }
 }
 
-async fn start_h2_backend_with_trailers() -> SocketAddr {
+async fn start_h2_test_backend<F, Fut>(cert_path: &str, key_path: &str, handler: F) -> SocketAddr
+where
+    F: Fn(Request<Incoming>) -> Fut + Clone + Send + Sync + 'static,
+    Fut: Future<Output = Result<Response<TestBody>, hyper::Error>> + Send + 'static,
+{
+    let mut tls_config = ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(
+            read_test_certificate_chain(cert_path).expect("backend certificate"),
+            read_test_private_key(key_path).expect("backend private key"),
+        )
+        .expect("backend TLS config");
+    tls_config.alpn_protocols = vec![b"h2".to_vec()];
+    let acceptor = TlsAcceptor::from(Arc::new(tls_config));
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
 
@@ -907,32 +940,15 @@ async fn start_h2_backend_with_trailers() -> SocketAddr {
                 Ok(v) => v,
                 Err(_) => break,
             };
+            let acceptor = acceptor.clone();
+            let handler = handler.clone();
             tokio::spawn(async move {
-                let io = TokioIo::new(stream);
-                let service = service_fn(|_req: Request<Incoming>| async move {
-                    let mut trailers = HeaderMap::new();
-                    trailers.insert(
-                        http::HeaderName::from_static("grpc-status"),
-                        HeaderValue::from_static("0"),
-                    );
-                    trailers.insert(
-                        http::HeaderName::from_static("grpc-message"),
-                        HeaderValue::from_static("ok"),
-                    );
-
-                    let body =
-                        TrailerThenEndBody::new(Bytes::from_static(b"hello\n"), trailers).boxed();
-                    Ok::<_, hyper::Error>(
-                        Response::builder()
-                            .header("content-type", "application/grpc")
-                            .header(http::header::TRAILER, "grpc-status, grpc-message")
-                            .body(body)
-                            .expect("response"),
-                    )
-                });
-
-                let _ = hyper::server::conn::http1::Builder::new()
-                    .serve_connection(io, service)
+                let Ok(stream) = acceptor.accept(stream).await else {
+                    return;
+                };
+                let service = service_fn(handler);
+                let _ = hyper::server::conn::http2::Builder::new(TokioExecutor::new())
+                    .serve_connection(TokioIo::new(stream), service)
                     .await;
             });
         }
@@ -941,86 +957,88 @@ async fn start_h2_backend_with_trailers() -> SocketAddr {
     addr
 }
 
-async fn start_h2_backend_with_grpc_routes() -> SocketAddr {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
+async fn start_h2_backend_with_trailers(cert_path: &str, key_path: &str) -> SocketAddr {
+    start_h2_test_backend(cert_path, key_path, |_req| async move {
+        let mut trailers = HeaderMap::new();
+        trailers.insert(
+            http::HeaderName::from_static("grpc-status"),
+            HeaderValue::from_static("0"),
+        );
+        trailers.insert(
+            http::HeaderName::from_static("grpc-message"),
+            HeaderValue::from_static("ok"),
+        );
 
-    tokio::spawn(async move {
-        loop {
-            let (stream, _) = match listener.accept().await {
-                Ok(v) => v,
-                Err(_) => break,
-            };
-            tokio::spawn(async move {
-                let io = TokioIo::new(stream);
-                let service = service_fn(|req: Request<Incoming>| async move {
-                    let response: Response<TestBody> = match req.uri().path() {
-                        "/grpc-ok" => {
-                            let mut trailers = HeaderMap::new();
-                            trailers.insert(
-                                http::HeaderName::from_static("grpc-status"),
-                                HeaderValue::from_static("0"),
-                            );
-                            trailers.insert(
-                                http::HeaderName::from_static("grpc-message"),
-                                HeaderValue::from_static("ok"),
-                            );
-                            Response::builder()
-                                .header("content-type", "application/grpc")
-                                .header(http::header::TRAILER, "grpc-status, grpc-message")
-                                .body(
-                                    TrailerThenEndBody::new(
-                                        Bytes::from_static(b"\x00\x00\x00\x00\x00"),
-                                        trailers,
-                                    )
-                                    .boxed(),
-                                )
-                                .expect("grpc ok response")
-                        }
-                        "/grpc-error" => {
-                            let mut trailers = HeaderMap::new();
-                            trailers.insert(
-                                http::HeaderName::from_static("grpc-status"),
-                                HeaderValue::from_static("14"),
-                            );
-                            trailers.insert(
-                                http::HeaderName::from_static("grpc-message"),
-                                HeaderValue::from_static("unavailable"),
-                            );
-                            Response::builder()
-                                .header("content-type", "application/grpc")
-                                .header(http::header::TRAILER, "grpc-status, grpc-message")
-                                .body(TrailerThenEndBody::new(Bytes::new(), trailers).boxed())
-                                .expect("grpc error response")
-                        }
-                        "/grpc-timeout" => {
-                            tokio::time::sleep(Duration::from_secs(BACKEND_TIMEOUT_SECS + 1)).await;
-                            Response::new(Full::new(Bytes::from_static(b"late\n")).boxed())
-                        }
-                        "/health" => Response::new(Full::new(Bytes::from_static(b"ok\n")).boxed()),
-                        _ => Response::builder()
-                            .status(StatusCode::NOT_FOUND)
-                            .body(Full::new(Bytes::from_static(b"missing\n")).boxed())
-                            .expect("not found response"),
-                    };
-                    Ok::<_, hyper::Error>(response)
-                });
+        let body = TrailerThenEndBody::new(Bytes::from_static(b"hello\n"), trailers).boxed();
+        Ok::<_, hyper::Error>(
+            Response::builder()
+                .header("content-type", "application/grpc")
+                .header(http::header::TRAILER, "grpc-status, grpc-message")
+                .body(body)
+                .expect("response"),
+        )
+    })
+    .await
+}
 
-                let _ = hyper::server::conn::http1::Builder::new()
-                    .serve_connection(io, service)
-                    .await;
-            });
-        }
-    });
-
-    addr
+async fn start_h2_backend_with_grpc_routes(cert_path: &str, key_path: &str) -> SocketAddr {
+    start_h2_test_backend(cert_path, key_path, |req| async move {
+        let response: Response<TestBody> = match req.uri().path() {
+            "/grpc-ok" => {
+                let mut trailers = HeaderMap::new();
+                trailers.insert(
+                    http::HeaderName::from_static("grpc-status"),
+                    HeaderValue::from_static("0"),
+                );
+                trailers.insert(
+                    http::HeaderName::from_static("grpc-message"),
+                    HeaderValue::from_static("ok"),
+                );
+                Response::builder()
+                    .header("content-type", "application/grpc")
+                    .header(http::header::TRAILER, "grpc-status, grpc-message")
+                    .body(
+                        TrailerThenEndBody::new(
+                            Bytes::from_static(b"\x00\x00\x00\x00\x00"),
+                            trailers,
+                        )
+                        .boxed(),
+                    )
+                    .expect("grpc ok response")
+            }
+            "/grpc-error" => {
+                let mut trailers = HeaderMap::new();
+                trailers.insert(
+                    http::HeaderName::from_static("grpc-status"),
+                    HeaderValue::from_static("14"),
+                );
+                trailers.insert(
+                    http::HeaderName::from_static("grpc-message"),
+                    HeaderValue::from_static("unavailable"),
+                );
+                Response::builder()
+                    .header("content-type", "application/grpc")
+                    .header(http::header::TRAILER, "grpc-status, grpc-message")
+                    .body(TrailerThenEndBody::new(Bytes::new(), trailers).boxed())
+                    .expect("grpc error response")
+            }
+            "/grpc-timeout" => {
+                tokio::time::sleep(Duration::from_secs(BACKEND_TIMEOUT_SECS + 1)).await;
+                Response::new(Full::new(Bytes::from_static(b"late\n")).boxed())
+            }
+            "/health" => Response::new(Full::new(Bytes::from_static(b"ok\n")).boxed()),
+            _ => Response::builder()
+                .status(StatusCode::NOT_FOUND)
+                .body(Full::new(Bytes::from_static(b"missing\n")).boxed())
+                .expect("not found response"),
+        };
+        Ok::<_, hyper::Error>(response)
+    })
+    .await
 }
 
 fn read_test_root_store(cert_path: &str) -> Result<RootCertStore, String> {
-    let certs = CertificateDer::pem_file_iter(cert_path)
-        .map_err(|err| format!("open cert file: {err}"))?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|err| format!("parse certs: {err}"))?;
+    let certs = read_test_certificate_chain(cert_path)?;
     let mut roots = RootCertStore::empty();
     for cert in certs {
         roots
@@ -1028,6 +1046,13 @@ fn read_test_root_store(cert_path: &str) -> Result<RootCertStore, String> {
             .map_err(|err| format!("add root cert: {err}"))?;
     }
     Ok(roots)
+}
+
+fn read_test_certificate_chain(cert_path: &str) -> Result<Vec<CertificateDer<'static>>, String> {
+    CertificateDer::pem_file_iter(cert_path)
+        .map_err(|err| format!("open cert file: {err}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|err| format!("parse certs: {err}"))
 }
 
 fn read_test_leaf_der(cert_path: &str) -> Result<Vec<u8>, String> {
@@ -1066,7 +1091,7 @@ struct H3TlsObservation {
     alpn: Vec<u8>,
 }
 
-async fn connect_bootstrap_h2(
+async fn connect_http2(
     addr: SocketAddr,
     cert_path: &str,
 ) -> Result<
@@ -1113,7 +1138,7 @@ async fn connect_bootstrap_h2(
     }
 }
 
-async fn connect_bootstrap_h2_with_client_auth(
+async fn connect_http2_with_client_auth(
     addr: SocketAddr,
     cert_path: &str,
     client_identity: Option<(&str, &str)>,
@@ -1337,12 +1362,12 @@ fn run_h3_client_with_tls(
     }
 }
 
-async fn run_bootstrap_h2_client_collect_trailers(
+async fn run_http2_client_collect_trailers(
     addr: SocketAddr,
     cert_path: &str,
     path: &str,
-) -> Result<BootstrapResponse, String> {
-    let (mut sender, _conn_task) = connect_bootstrap_h2(addr, cert_path).await?;
+) -> Result<HttpResponse, String> {
+    let (mut sender, _conn_task) = connect_http2(addr, cert_path).await?;
     sender
         .ready()
         .await
@@ -1391,7 +1416,7 @@ async fn run_bootstrap_h2_client_collect_trailers(
     Ok((status, body, trailers))
 }
 
-async fn run_bootstrap_h1_websocket_handshake(
+async fn run_http1_websocket_handshake(
     addr: SocketAddr,
     cert_path: &str,
     path: &str,
@@ -1456,14 +1481,14 @@ async fn run_bootstrap_h1_websocket_handshake(
     }
 }
 
-async fn run_bootstrap_h2_client_request(
+async fn run_http2_client_request(
     addr: SocketAddr,
     cert_path: &str,
     method: &str,
     path: &str,
     extra_headers: &[(&str, &str)],
-) -> Result<BootstrapResponse, String> {
-    let (mut sender, _conn_task) = connect_bootstrap_h2(addr, cert_path).await?;
+) -> Result<HttpResponse, String> {
+    let (mut sender, _conn_task) = connect_http2(addr, cert_path).await?;
     sender
         .ready()
         .await
@@ -1516,16 +1541,16 @@ async fn run_bootstrap_h2_client_request(
     Ok((status, body, trailers))
 }
 
-async fn run_bootstrap_h2_client_request_with_client_auth(
+async fn run_http2_client_request_with_client_auth(
     addr: SocketAddr,
     cert_path: &str,
     method: &str,
     path: &str,
     extra_headers: &[(&str, &str)],
     client_identity: Option<(&str, &str)>,
-) -> Result<BootstrapResponse, String> {
+) -> Result<HttpResponse, String> {
     let (mut sender, _conn_task) =
-        connect_bootstrap_h2_with_client_auth(addr, cert_path, client_identity).await?;
+        connect_http2_with_client_auth(addr, cert_path, client_identity).await?;
     sender
         .ready()
         .await

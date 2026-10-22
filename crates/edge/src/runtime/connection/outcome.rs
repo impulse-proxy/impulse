@@ -4,10 +4,14 @@ use std::{
 };
 
 use http::StatusCode;
+use impulse_config::runtime::RuntimeBackendTlsPolicy;
 use impulse_errors::{
     ClassifiedUpstreamProxyError, PoolError, ProxyError, UpstreamErrorCategory, UpstreamTlsReason,
 };
-use impulse_lb::{HealthTransition, health::HealthFailureReason, upstream_pool::UpstreamPool};
+use impulse_lb::{
+    HealthTransition, health::HealthFailureReason,
+    pingora_backend::PingoraLoadBalancingRuntimeState, upstream_pool::UpstreamPool,
+};
 use log::{error, info};
 
 use crate::{
@@ -276,12 +280,6 @@ pub(crate) fn classify_proxy_error_outcome(
         | ProxyError::Pool(PoolError::UnknownBackend(_)) => (
             CanonicalRouteOutcome::UpstreamFailure,
             HealthEffectHint::None,
-        ),
-        ProxyError::Pool(PoolError::Send(_)) => (
-            CanonicalRouteOutcome::UpstreamFailure,
-            HealthEffectHint::Failure {
-                reason: HealthFailureReason::Transport,
-            },
         ),
         ProxyError::Transport(_) | ProxyError::Protocol(_) => (
             CanonicalRouteOutcome::UpstreamFailure,
@@ -770,6 +768,20 @@ pub(crate) fn observe_backend_response_status_and_log(
     emit_backend_health_transition(input.backend_addr, observe_backend_response_status(input))
 }
 
+pub(crate) fn apply_passive_readiness_to_pingora(
+    pingora_load_balancing: &PingoraLoadBalancingRuntimeState<RuntimeBackendTlsPolicy>,
+    backend_addr: &str,
+    transition: Option<HealthTransition>,
+) {
+    let Some(transition) = transition else {
+        return;
+    };
+    pingora_load_balancing.set_backend_health(
+        backend_addr,
+        matches!(transition, HealthTransition::BecameHealthy),
+    );
+}
+
 pub(crate) fn record_classified_backend_failure_metrics(
     metrics_phase: &str,
     upstream_name: &str,
@@ -891,6 +903,8 @@ mod tests {
                 auth: RouteAuth::default(),
                 host_policy: UpstreamHostPolicy::default(),
                 forwarded_headers: ForwardedHeaderPolicy::default(),
+                compression: Default::default(),
+                cache: Default::default(),
                 tls: None,
                 route: RouteMatch {
                     host: None,
@@ -1017,6 +1031,7 @@ mod tests {
                 authority: None,
                 start: now,
                 total_request_deadline: now,
+                terminal_outcome: crate::request_pipeline::TerminalOutcomeGuard::default(),
             },
             routing: None,
             request_mode: RequestMode::Normal,
@@ -1542,38 +1557,6 @@ mod tests {
                     .health_failure_timeout
                     .load(std::sync::atomic::Ordering::Relaxed),
                 1
-            );
-        }
-
-        #[test]
-        fn forwarding_and_bootstrap_recorders_share_the_same_metrics_contract() {
-            let metrics = test_metrics();
-
-            let forwarding = observe_proxy_error_outcome(
-                &metrics,
-                api_route_target(),
-                api_backend_target(),
-                Duration::from_millis(10),
-                Some(StatusCode::BAD_GATEWAY),
-                &ProxyError::Transport("forwarding upstream error".into()),
-                None,
-            );
-            let bootstrap = observe_proxy_error_outcome(
-                &metrics,
-                api_route_target(),
-                api_backend_target(),
-                Duration::from_millis(12),
-                Some(StatusCode::BAD_GATEWAY),
-                &ProxyError::Transport("bootstrap upstream error".into()),
-                None,
-            );
-
-            assert_eq!(forwarding.route_outcome, bootstrap.route_outcome);
-            assert_eq!(forwarding.backend_outcome, bootstrap.backend_outcome);
-            assert_eq!(upstream_request_count(&metrics, "api", "5xx", "failure"), 2);
-            assert_eq!(
-                backend_request_count(&metrics, "api", "backend-a", "5xx", "failure"),
-                2
             );
         }
 

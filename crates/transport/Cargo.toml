@@ -6,20 +6,16 @@ license.workspace = true
 
 [dependencies]
 bytes.workspace = true
-http-body-util.workspace = true
 hyper.workspace = true
-hyper-util.workspace = true
-hyper-rustls.workspace = true
-log.workspace = true
-rustls.workspace = true
-rustls-pki-types.workspace = true
+h2 = "0.4"
 tokio.workspace = true
-tower-service = "0.3"
-webpki-roots.workspace = true
+pingora-core = { workspace = true, features = ["rustls"] }
+pingora-http.workspace = true
+rustls-pki-types.workspace = true
 impulse-errors = { path = "../errors" }
 impulse-config = { path = "../config" }
 
 [dev-dependencies]
-rcgen = "0.12"
-tempfile = "3"
-tokio-rustls.workspace = true
+http-body-util.workspace = true
+hyper = { workspace = true, features = ["http1", "server"] }
+hyper-util = { workspace = true, features = ["tokio"] }

@@ -384,7 +384,6 @@ impl QUICListener {
                 );
 
                 if let Some(req) = streams.get_mut(&stream_id) {
-                    req.clear_upstream_result_rx();
                     req.retry_count = forward_result.policy.retry.count;
                     req.error_kind = match &forward_result.forward {
                         Err(ProxyError::Timeout) => Some("timeout"),
@@ -399,7 +398,12 @@ impl QUICListener {
                 match forward_result.forward {
                     Ok(success) => {
                         let decision = if let Some(req) = streams.get(&stream_id) {
-                            Self::prepare_response_start_decision(req, success, progress_config)
+                            Self::prepare_response_start_decision(
+                                req,
+                                success,
+                                progress_config,
+                                metrics,
+                            )
                         } else {
                             continue;
                         };

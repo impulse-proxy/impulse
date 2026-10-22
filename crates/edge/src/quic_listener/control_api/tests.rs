@@ -66,6 +66,8 @@ fn test_config(cert: String, key: String) -> ImpulseConfigConfig {
             auth: Default::default(),
             host_policy: Default::default(),
             forwarded_headers: Default::default(),
+            compression: Default::default(),
+            cache: Default::default(),
             tls: None,
             route: RouteMatch {
                 path_prefix: Some("/".to_string()),
@@ -570,6 +572,14 @@ fn activation_service_commits_reloadable_candidate_and_advances_generation() {
         runtime_bundle_from_config(config_path.to_string_lossy().as_ref(), &current_config);
     let handle = RuntimeBundleHandle::new(bundle);
     let generation_before = handle.current_generation();
+    let selector_before = Arc::clone(
+        handle
+            .current_view()
+            .state()
+            .pingora_load_balancing
+            .selector("api")
+            .expect("active Pingora selector"),
+    );
 
     let mut next_config = test_config(cert, key);
     next_config.log.level = "debug".to_string();
@@ -591,6 +601,14 @@ fn activation_service_commits_reloadable_candidate_and_advances_generation() {
     assert_eq!(activation.active_generation, generation_before + 1);
     assert_eq!(activation.activated_generation, Some(generation_before + 1));
     assert_eq!(handle.current_generation(), generation_before + 1);
+    let active = handle.current_view();
+    let selector_after = active
+        .state()
+        .pingora_load_balancing
+        .selector("api")
+        .expect("activated Pingora selector");
+    assert_eq!(selector_after.generation(), generation_before + 1);
+    assert!(!Arc::ptr_eq(&selector_before, selector_after));
     assert_eq!(
         activation.history_entry.operation,
         GenerationOperation::Activate
@@ -782,6 +800,14 @@ fn rollback_service_restores_retained_generation_by_id_and_records_rollback_stat
     let handle = RuntimeBundleHandle::new(bundle_one);
     handle.replace(bundle_two).expect("install generation 2");
     handle.replace(bundle_three).expect("install generation 3");
+    let selector_before = Arc::clone(
+        handle
+            .current_view()
+            .state()
+            .pingora_load_balancing
+            .selector("api")
+            .expect("pre-rollback Pingora selector"),
+    );
 
     let rollback = RuntimeActivationService::rollback_generation(
         &handle,
@@ -796,6 +822,14 @@ fn rollback_service_restores_retained_generation_by_id_and_records_rollback_stat
     assert_eq!(rollback.rolled_back_to, Some(1));
     assert_eq!(rollback.active_generation, 4);
     assert_eq!(handle.current_generation(), 4);
+    let active = handle.current_view();
+    let selector_after = active
+        .state()
+        .pingora_load_balancing
+        .selector("api")
+        .expect("rolled-back Pingora selector");
+    assert_eq!(selector_after.generation(), 4);
+    assert!(!Arc::ptr_eq(&selector_before, selector_after));
     assert_eq!(log::max_level(), LevelFilter::Info);
     assert_eq!(
         rollback.history_entry.operation,
@@ -2058,7 +2092,7 @@ async fn control_api_runtime_snapshot_endpoint_allows_viewer() {
 async fn control_api_runtime_snapshot_includes_jwks_cache_visibility() {
     let dir = tempdir().expect("tempdir");
     let (cert, key) = write_test_cert_for_name(dir.path(), "server", "api.example.com");
-    let jwks_url = "https://issuer.example.com/.well-known/jwks.json";
+    let jwks_url = "https://control-api-cache.example.com/.well-known/jwks.json";
     let jwks_source_id = crate::quic_listener::admission::jwks_source_identity_for_test(jwks_url);
     let mut startup = test_config(cert, key);
     startup.upstream.get_mut("api").expect("api upstream").auth = RouteAuth {
@@ -2077,6 +2111,7 @@ async fn control_api_runtime_snapshot_includes_jwks_cache_visibility() {
         required_scopes: vec!["payments:read".to_string()],
         required_roles: vec!["operator".to_string()],
     };
+    let state = control_api_state_with_runtime_bundle(&startup, &startup);
     crate::quic_listener::admission::prime_jwks_cache_for_test(
         jwks_url,
         false,
@@ -2087,7 +2122,6 @@ async fn control_api_runtime_snapshot_includes_jwks_cache_visibility() {
                 "-----BEGIN PUBLIC KEY-----\nMIIBCgKCAQEAtest\n-----END PUBLIC KEY-----".to_string(),
         }],
     );
-    let state = control_api_state_with_runtime_bundle(&startup, &startup);
     let metrics = state.current_service_state().metrics();
     metrics.record_jwt_validation_failure("issuer_mismatch");
     metrics.record_jwt_algorithm_rejection("RS256");
@@ -4049,7 +4083,7 @@ fn validate_runtime_reload_compatibility_classifies_listener_bind_conflict_as_pr
 }
 
 #[test]
-fn validate_runtime_reload_compatibility_rejects_listener_removal() {
+fn validate_runtime_reload_compatibility_allows_explicit_listener_replacement() {
     let dir = tempdir().expect("tempdir");
     let (cert, key) = write_test_cert_for_name(dir.path(), "server", "api.example.com");
     let current = test_config(cert.clone(), key.clone());
@@ -4064,18 +4098,16 @@ fn validate_runtime_reload_compatibility_rejects_listener_removal() {
     let current_bundle = runtime_bundle_from_config("current.yaml", &current);
     let next_bundle = runtime_bundle_from_config("next.yaml", &next);
 
-    let err = QUICListener::validate_runtime_reload_compatibility(&current_bundle, &next_bundle)
+    let result = QUICListener::validate_runtime_reload_compatibility(&current_bundle, &next_bundle)
         .map(|rejection| rejection.to_string());
     assert!(
-        err.as_deref()
-            .is_some_and(|e| e.contains("restart required")),
-        "expected rejection, got: {:?}",
-        err
+        result.is_none(),
+        "expected compatible listener replacement, got: {result:?}"
     );
 }
 
 #[test]
-fn validate_runtime_reload_compatibility_rejects_listener_bind_change() {
+fn validate_runtime_reload_compatibility_allows_listener_bind_replacement() {
     let dir = tempdir().expect("tempdir");
     let (cert, key) = write_test_cert_for_name(dir.path(), "server", "api.example.com");
     let current = test_config(cert.clone(), key.clone());
@@ -4086,13 +4118,11 @@ fn validate_runtime_reload_compatibility_rejects_listener_bind_change() {
     let current_bundle = runtime_bundle_from_config("current.yaml", &current);
     let next_bundle = runtime_bundle_from_config("next.yaml", &next);
 
-    let err = QUICListener::validate_runtime_reload_compatibility(&current_bundle, &next_bundle)
+    let result = QUICListener::validate_runtime_reload_compatibility(&current_bundle, &next_bundle)
         .map(|rejection| rejection.to_string());
     assert!(
-        err.as_deref()
-            .is_some_and(|e| e.contains("restart required")),
-        "expected rejection, got: {:?}",
-        err
+        result.is_none(),
+        "expected compatible listener replacement, got: {result:?}"
     );
 }
 

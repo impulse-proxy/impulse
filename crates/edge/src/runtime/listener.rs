@@ -7,9 +7,11 @@ use std::{
 
 use impulse_config::{
     backend_endpoint::BackendEndpoint,
-    runtime::{ListenerRuntimeConfig, RuntimeUpstreamPolicy},
+    runtime::{ListenerRuntimeConfig, RuntimeBackendTlsPolicy, RuntimeUpstreamPolicy},
 };
-use impulse_lb::upstream_pool::UpstreamPool;
+use impulse_lb::{
+    pingora_backend::SharedPingoraLoadBalancingRuntimeState, upstream_pool::UpstreamPool,
+};
 use impulse_transport::{SharedDnsResolver, UpstreamTransportPool};
 use tokio::sync::Semaphore;
 
@@ -26,8 +28,7 @@ use crate::{
     watchdog::coordinator::WatchdogCoordinator,
 };
 
-/// Shared cancellation signal used by both the QUIC worker and bootstrap
-/// listener for a listener group.
+/// Shared cancellation signal for the QUIC workers in a listener group.
 #[derive(Clone, Debug)]
 pub struct ShutdownSignal(Arc<AtomicBool>);
 
@@ -66,6 +67,7 @@ pub struct QUICListener {
     pub tls_reload_generation: u64,
     pub runtime_bundle: Option<Arc<RuntimeBundleHandle>>,
     pub runtime_generation: u64,
+    pub response_cache_namespace: u64,
     pub quic_config: quiche::Config,
     pub h3_config: Arc<quiche::h3::Config>,
     pub transport_pool: Arc<UpstreamTransportPool>,
@@ -73,6 +75,7 @@ pub struct QUICListener {
     pub backend_dns_resolver: SharedDnsResolver,
     pub upstream_policies: Arc<HashMap<String, RuntimeUpstreamPolicy>>,
     pub upstream_pools: HashMap<String, Arc<RwLock<UpstreamPool>>>,
+    pub pingora_load_balancing: SharedPingoraLoadBalancingRuntimeState<RuntimeBackendTlsPolicy>,
     pub upstream_inflight: HashMap<String, Arc<Semaphore>>,
     pub global_inflight: Arc<Semaphore>,
     pub(crate) routing_index: Arc<RouteIndex>,
@@ -105,8 +108,8 @@ pub struct QUICListener {
     pub(crate) cid_routes: HashMap<Arc<[u8]>, Arc<[u8]>>, // KEY: alias SCID, VALUE: primary SCID
     pub(crate) peer_routes: HashMap<SocketAddr, Arc<[u8]>>, // KEY: peer address, VALUE: primary SCID
     pub(crate) cid_radix: CidRadix,
-    pub(crate) conn_rate_limiter: crate::quic_listener::TokenBucket,
-    pub(crate) source_conn_rate_limiter: crate::quic_listener::PerSourceTokenBucket,
+    pub(crate) conn_rate_limiter: crate::runtime::connection::TokenBucket,
+    pub(crate) source_conn_rate_limiter: crate::runtime::connection::PerSourceTokenBucket,
 }
 
 impl QUICListener {

@@ -7,6 +7,8 @@
 mod admission;
 mod auth;
 mod backend;
+mod cache;
+mod compression;
 mod lb;
 mod quota;
 mod resilience;
@@ -27,9 +29,11 @@ pub use self::{
         RuntimeBackendAddressKind, RuntimeBackendDnsPolicy, RuntimeBackendEndpoint,
         RuntimeBackendHealthCheck, RuntimeBackendTlsPolicy,
     },
+    cache::RuntimeResponseCachePolicy,
+    compression::RuntimeResponseCompressionPolicy,
     lb::{
-        RuntimeAlternateBackendPolicy, RuntimeBackendWeightPolicy, RuntimeLoadBalancingPolicy,
-        RuntimeLoadBalancingStrategy, RuntimeRequestKeySpec,
+        RuntimeAlternateBackendPolicy, RuntimeLoadBalancingPolicy, RuntimeLoadBalancingStrategy,
+        RuntimeRequestKeySpec,
     },
     quota::{
         RuntimeQuotaBackendFailurePolicy, RuntimeQuotaCounterBackend, RuntimeQuotaEnforcementMode,
@@ -41,7 +45,7 @@ pub use self::{
     transport::{RuntimeBackendConnectionPolicy, RuntimeConnectionLimits, RuntimeTransportPolicy},
     watchdog::RuntimeWatchdogPolicy,
 };
-use super::{Config, ListenerRuntimeConfig, RuntimeConfigError, RuntimeListenerTls};
+use super::{Config, RuntimeConfigError, RuntimeListenerTls};
 fn config_invalid(message: impl Into<String>) -> RuntimeConfigError {
     RuntimeConfigError::ConfigInvalid(message.into())
 }
@@ -183,7 +187,7 @@ impl RuntimeRouteMatchPolicy {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RuntimeBackendTransportKind {
     Http1,
     H2,
@@ -202,8 +206,10 @@ impl RuntimePolicySet {
         let timeouts = RuntimeTimeoutPolicy::normalize(&config.performance)?;
         let transport = RuntimeTransportPolicy::normalize(&config.performance)?;
         let rate_limits = RuntimeRateLimitPolicy::normalize(&config.resilience)?;
-        let admission =
-            RuntimeAdmissionPolicy::normalize(&config.resilience, transport.global_inflight_limit)?;
+        let admission = RuntimeAdmissionPolicy::normalize(
+            &config.resilience,
+            transport.connection_limits.global_inflight,
+        )?;
 
         Ok(Self {
             timeouts,
@@ -219,14 +225,4 @@ pub struct RuntimeListenerPolicySet {
     pub timeouts: RuntimeTimeoutPolicy,
     pub transport: RuntimeTransportPolicy,
     pub tls: RuntimeListenerTls,
-}
-
-impl RuntimeListenerPolicySet {
-    pub(crate) fn from_listener_runtime_config(config: &ListenerRuntimeConfig) -> Self {
-        Self {
-            timeouts: config.policies.timeouts.clone(),
-            transport: config.policies.transport.clone(),
-            tls: config.listen.tls.clone(),
-        }
-    }
 }

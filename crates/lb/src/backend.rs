@@ -13,7 +13,6 @@ use crate::health::{HealthFailureReason, HealthTransition};
 #[derive(Clone)]
 pub struct BackendState {
     pub address: String,
-    pub weight: u32,
     pub health_check: Option<HealthCheck>,
     pub consecutive_failures: u32,
     health_state: HealthState,
@@ -25,7 +24,6 @@ impl BackendState {
     pub fn new(backend: &Backend) -> Self {
         Self {
             address: backend.address.clone(),
-            weight: backend.weight.max(1),
             health_check: backend.health_check.clone(),
             consecutive_failures: 0,
             health_state: HealthState::Healthy,
@@ -53,15 +51,6 @@ impl BackendState {
 
     pub fn address(&self) -> &str {
         &self.address
-    }
-
-    pub fn health_check(&self) -> Option<&HealthCheck> {
-        self.health_check.as_ref()
-    }
-
-    #[must_use]
-    pub fn weight(&self) -> u32 {
-        self.weight
     }
 
     pub fn active_requests(&self) -> usize {

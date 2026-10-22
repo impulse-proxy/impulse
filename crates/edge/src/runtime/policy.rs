@@ -681,9 +681,9 @@ pub static RESOURCE_DOMAINS: &[ResourceDomain] = &[
     // -- listener bind and protocol settings ------------------------------------
     ResourceDomain {
         field_path: "listeners[].listen",
-        description: "UDP listener bind address/port and reuseport sockets",
-        ownership: OperationalOwnership::StartupOwned,
-        reload: ReloadCapability::RestartRequired,
+        description: "UDP and Pingora listener bind address/port",
+        ownership: OperationalOwnership::GenerationOwned,
+        reload: ReloadCapability::LiveReloadable,
     },
     // -- control API settings ---------------------------------------------------
     ResourceDomain {
@@ -780,6 +780,18 @@ pub static RESOURCE_DOMAINS: &[ResourceDomain] = &[
         description: "backend resolution store and DNS refresh (per generation)",
         ownership: OperationalOwnership::GenerationOwned,
         reload: ReloadCapability::LiveReloadable,
+    },
+    ResourceDomain {
+        field_path: "upstreams[].cache.max_bytes",
+        description: "process-lifetime response cache byte capacity",
+        ownership: OperationalOwnership::StartupOwned,
+        reload: ReloadCapability::RestartRequired,
+    },
+    ResourceDomain {
+        field_path: "upstreams[].cache.max_entries",
+        description: "process-lifetime response cache entry capacity",
+        ownership: OperationalOwnership::StartupOwned,
+        reload: ReloadCapability::RestartRequired,
     },
     // -- watchdog ownership and restart semantics -------------------------------
     ResourceDomain {

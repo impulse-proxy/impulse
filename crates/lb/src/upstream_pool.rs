@@ -34,7 +34,7 @@ pub struct UpstreamBackendRuntimeState {
 
 pub struct UpstreamPool {
     pool: BackendPool,
-    load_balancer: LoadBalancing,
+    load_balancer: Option<LoadBalancing>,
     lb_policy: RuntimeLoadBalancingPolicy,
 }
 
@@ -56,26 +56,26 @@ impl UpstreamPool {
         })
     }
 
-    pub fn pick(&mut self, key: &str) -> Option<usize> {
+    pub fn pick(&mut self, _key: &str) -> Option<usize> {
         self.pool.reconcile_readmit();
         if let Some(selected) = self.pool.pick_probing_backend(true) {
             return Some(selected);
         }
-        let selected = self.load_balancer.pick(key, &self.pool)?;
+        let selected = self.load_balancer.as_mut()?.pick(&self.pool)?;
         self.pool.begin_request(selected);
         Some(selected)
     }
 
-    pub fn pick_readonly(&self, key: &str) -> Option<usize> {
-        self.load_balancer.pick_readonly(key, &self.pool)
+    pub fn pick_readonly(&self, _key: &str) -> Option<usize> {
+        self.load_balancer.as_ref()?.pick_readonly(&self.pool)
     }
 
-    pub fn pick_without_begin(&mut self, key: &str) -> Option<usize> {
+    pub fn pick_without_begin(&mut self, _key: &str) -> Option<usize> {
         self.pool.reconcile_readmit();
         if let Some(selected) = self.pool.pick_probing_backend(false) {
             return Some(selected);
         }
-        self.load_balancer.pick(key, &self.pool)
+        self.load_balancer.as_mut()?.pick(&self.pool)
     }
 
     pub fn begin_request_if_healthy(&self, index: usize) -> bool {
@@ -127,14 +127,6 @@ impl UpstreamPool {
         self.pool.address(index)
     }
 
-    pub fn backend_count(&self) -> usize {
-        self.pool.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.pool.is_empty()
-    }
-
     pub fn backend_indices(&self) -> Vec<usize> {
         self.pool.all_indices()
     }
@@ -174,10 +166,6 @@ impl UpstreamPool {
 
     pub fn lb_strategy(&self) -> RuntimeLoadBalancingStrategy {
         self.lb_policy.strategy
-    }
-
-    pub fn load_balancer_name(&self) -> &'static str {
-        self.load_balancer.name()
     }
 
     pub fn lb_key_spec(&self) -> Option<&RuntimeRequestKeySpec> {
@@ -222,6 +210,8 @@ mod tests {
                 auth: Default::default(),
                 host_policy: Default::default(),
                 forwarded_headers: Default::default(),
+                compression: Default::default(),
+                cache: Default::default(),
                 route: RouteMatch {
                     host: None,
                     path_prefix: Some("/".to_string()),
@@ -262,7 +252,7 @@ mod tests {
     #[test]
     fn readonly_pick_preserves_request_count_until_mutating_pick_runs() {
         let runtime_upstream = runtime_upstream_from_addresses(
-            "round-robin",
+            "least-connections",
             None,
             &["http://127.0.0.1:7001", "http://127.0.0.1:7002"],
         );
@@ -326,7 +316,7 @@ mod tests {
     #[test]
     fn membership_summary_and_runtime_state_stay_coherent_after_health_updates() {
         let runtime_upstream = runtime_upstream_from_addresses(
-            "round-robin",
+            "least-connections",
             None,
             &["http://127.0.0.1:7001", "http://127.0.0.1:7002"],
         );
@@ -367,7 +357,7 @@ mod tests {
     #[test]
     fn observed_request_failure_records_penalty_without_forcing_health_transition() {
         let runtime_upstream =
-            runtime_upstream_from_addresses("round-robin", None, &["http://127.0.0.1:7001"]);
+            runtime_upstream_from_addresses("least-connections", None, &["http://127.0.0.1:7001"]);
         let mut pool = UpstreamPool::from_runtime_upstream(&runtime_upstream)
             .expect("runtime pool should build");
 
@@ -387,7 +377,7 @@ mod tests {
     #[test]
     fn probing_backend_is_selected_with_bounded_budget_before_general_lb() {
         let runtime_upstream = runtime_upstream_from_addresses(
-            "round-robin",
+            "least-connections",
             None,
             &["http://127.0.0.1:7001", "http://127.0.0.1:7002"],
         );
@@ -430,7 +420,7 @@ mod tests {
     #[test]
     fn active_health_check_backends_ignore_passive_success_recovery() {
         let runtime_upstream = runtime_upstream_from_backends(
-            "round-robin",
+            "least-connections",
             vec![Backend {
                 id: "backend-0".to_string(),
                 address: "http://127.0.0.1:7001".to_string(),
@@ -466,7 +456,7 @@ mod tests {
     #[test]
     fn passive_request_success_requires_verified_probe_threshold() {
         let runtime_upstream =
-            runtime_upstream_from_addresses("round-robin", None, &["http://127.0.0.1:7001"]);
+            runtime_upstream_from_addresses("least-connections", None, &["http://127.0.0.1:7001"]);
         let mut pool = UpstreamPool::from_runtime_upstream(&runtime_upstream)
             .expect("runtime pool should build");
         pool.pool.backends[0].health_check = Some(HealthCheck {

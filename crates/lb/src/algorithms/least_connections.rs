@@ -41,11 +41,11 @@ mod tests {
     use super::LeastConnections;
     use crate::{backend::BackendState, backend_pool::BackendPool};
 
-    fn create_backend_state(address: &str, weight: u32) -> BackendState {
+    fn create_backend_state(address: &str) -> BackendState {
         BackendState::new(&Backend {
             id: format!("backend-{address}"),
             address: address.to_string(),
-            weight,
+            weight: 1,
             health_check: Some(HealthCheck {
                 path: "/health".to_string(),
                 interval: 1000,
@@ -60,9 +60,9 @@ mod tests {
     #[test]
     fn least_connections_picks_lowest_active() {
         let pool = BackendPool::new_from_states(vec![
-            create_backend_state("10.0.0.1:1", 1),
-            create_backend_state("10.0.0.2:1", 1),
-            create_backend_state("10.0.0.3:1", 1),
+            create_backend_state("10.0.0.1:1"),
+            create_backend_state("10.0.0.2:1"),
+            create_backend_state("10.0.0.3:1"),
         ]);
         pool.begin_request(0);
         pool.begin_request(0);

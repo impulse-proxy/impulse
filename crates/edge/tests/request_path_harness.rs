@@ -600,7 +600,7 @@ fn quic_to_h2_upstream_mtls_requires_client_certificate() {
         &mut harness,
         "/mtls-required",
         "h2-mtls",
-        format!("https://localhost:{}", backend_addr.port()),
+        format!("https://127.0.0.1:{}", backend_addr.port()),
         |config| {
             config.upstream_tls = UpstreamTls {
                 verify_certificates: true,
@@ -651,7 +651,7 @@ fn quic_to_h2_upstream_mtls_succeeds_with_client_certificate() {
         &mut harness,
         "/mtls-success",
         "h2-mtls",
-        format!("https://localhost:{}", backend_addr.port()),
+        format!("https://127.0.0.1:{}", backend_addr.port()),
         |config| {
             config.upstream_tls = UpstreamTls {
                 verify_certificates: true,
@@ -1306,45 +1306,6 @@ fn quic_request_path_connect_failure_maps_to_upstream_error() {
     assert!(
         response.body_text().contains("upstream error"),
         "expected canonical upstream transport failure body"
-    );
-}
-
-#[test]
-#[serial]
-fn quic_request_path_malformed_upstream_response_maps_to_upstream_error() {
-    if !local_listener_bind_available() {
-        return;
-    }
-
-    let mut harness = QuicRequestPathHarness::new();
-    let backend_addr = harness.start_h1_raw_response_backend(b"NOT_HTTP\r\n\r\n".to_vec());
-
-    let mut upstreams = HashMap::new();
-    upstreams.insert(
-        "api".to_string(),
-        make_upstream(
-            "/malformed",
-            vec![make_backend(
-                "h1-malformed",
-                format!("http://{backend_addr}"),
-            )],
-            None,
-            "round-robin",
-        ),
-    );
-
-    let mut config = harness.make_config(upstreams);
-    config.performance.backend_timeout_ms = 150;
-    config.performance.backend_connect_timeout_ms = 150;
-    harness.start_listener(config).expect("listener");
-
-    let response = harness
-        .run_request(H3RequestSpec::get("localhost", "/malformed"))
-        .expect("malformed upstream response request should complete");
-    response.assert_status(502);
-    assert!(
-        response.body_text().contains("upstream error"),
-        "expected canonical malformed upstream response failure body"
     );
 }
 

@@ -1,22 +1,189 @@
+use std::{sync::Arc, time::SystemTime};
+
 use bytes::Bytes;
 use impulse_errors::{UpstreamProxyErrorKind, classify_upstream_proxy_error};
+use impulse_transport::{UpstreamBody, UpstreamBodyFrame};
+use pingora_cache::{CacheMeta, HttpCache, NoCacheReason};
+use pingora_core::protocols::http::compression::Algorithm;
+use pingora_http::ResponseHeader;
 use tokio::sync::mpsc::error::TryRecvError;
 
 use super::*;
-use crate::runtime::connection::{
-    auth::ExternalAuthDecision,
-    guardrails::{
-        BodyLimitKind, BodyTimeoutKind, ProgressiveEmissionPolicy, RESPONSE_BODY_TOO_LARGE_BODY,
-        ResponseBodyGuardrailConfig, ResponseBodyGuardrailDecision, ResponseBodyGuardrailInput,
-        checked_response_body_guardrails, is_unknown_length_response_prebuffer_reason,
-        response_body_limit_reason, response_chunk_ranges,
+use crate::{
+    metrics::ResponseCacheOutcome,
+    request_pipeline::{
+        ResponseCompressionAction, ResponseCompressionInput, ensure_vary_accept_encoding,
+        evaluate_response_compression,
     },
-    response::{
-        ImmediateResponseStart, ResponseBodyPumpPlan, ResponseChunk, ResponseStartDecision,
-        ResponseStartMetadata, ResponseStartObservation,
+    runtime::{
+        cache::{
+            ResponseCacheResponseEligibilityInput, evaluate_cache_response_eligibility,
+            response_cache_ttl,
+        },
+        connection::{
+            auth::ExternalAuthDecision,
+            guardrails::{
+                BodyLimitKind, BodyTimeoutKind, ProgressiveEmissionPolicy,
+                RESPONSE_BODY_TOO_LARGE_BODY, ResponseBodyGuardrailConfig,
+                ResponseBodyGuardrailDecision, ResponseBodyGuardrailInput,
+                checked_response_body_guardrails, is_unknown_length_response_prebuffer_reason,
+                response_body_limit_reason, response_chunk_ranges,
+            },
+            response::{
+                ImmediateResponseStart, ResponseBodyPumpPlan, ResponseChunk, ResponseStartDecision,
+                ResponseStartMetadata, ResponseStartObservation,
+            },
+            stream::{
+                BackendFailureReason, CompletionReason, ResponseEmissionState, TimeoutReason,
+            },
+        },
     },
-    stream::{BackendFailureReason, CompletionReason, ResponseEmissionState, TimeoutReason},
 };
+
+const RESPONSE_GZIP_LEVEL: u32 = 6;
+
+struct ResponseCompressionByteMetrics {
+    metrics: Arc<Metrics>,
+    input: usize,
+    output: usize,
+}
+
+impl Drop for ResponseCompressionByteMetrics {
+    fn drop(&mut self) {
+        self.metrics
+            .add_response_compression_bytes(self.input, self.output);
+    }
+}
+
+fn apply_gzip_response_headers(headers: &mut http::HeaderMap) {
+    headers.insert(
+        http::header::CONTENT_ENCODING,
+        http::HeaderValue::from_static("gzip"),
+    );
+    headers.remove(http::header::CONTENT_LENGTH);
+    headers.remove(http::header::ACCEPT_RANGES);
+    ensure_vary_accept_encoding(headers);
+
+    let Some(etag) = headers.get(http::header::ETAG).cloned() else {
+        return;
+    };
+    if etag.as_bytes().starts_with(b"W/") {
+        return;
+    }
+    if etag.as_bytes().starts_with(b"\"") {
+        let mut weak = Vec::with_capacity(etag.as_bytes().len() + 2);
+        weak.extend_from_slice(b"W/");
+        weak.extend_from_slice(etag.as_bytes());
+        if let Ok(weak) = http::HeaderValue::from_bytes(&weak) {
+            headers.insert(http::header::ETAG, weak);
+            return;
+        }
+    }
+    headers.remove(http::header::ETAG);
+}
+
+fn prepare_response_cache(
+    cache_miss: Option<(
+        HttpCache,
+        impulse_config::runtime::RuntimeResponseCachePolicy,
+    )>,
+    status: http::StatusCode,
+    headers: &http::HeaderMap,
+    metrics: &Metrics,
+) -> Option<HttpCache> {
+    let (mut cache, policy) = cache_miss?;
+    if status != http::StatusCode::OK
+        || evaluate_cache_response_eligibility(ResponseCacheResponseEligibilityInput { headers })
+            .is_err()
+    {
+        metrics.record_response_cache_outcome(ResponseCacheOutcome::Rejection);
+        cache.disable(NoCacheReason::OriginNotCache);
+        return None;
+    }
+    let Ok(mut response) = ResponseHeader::build(status, Some(headers.len())) else {
+        metrics.record_response_cache_outcome(ResponseCacheOutcome::Rejection);
+        cache.disable(NoCacheReason::StorageError);
+        return None;
+    };
+    for (name, value) in headers {
+        if response.append_header(name.clone(), value.clone()).is_err() {
+            metrics.record_response_cache_outcome(ResponseCacheOutcome::Rejection);
+            cache.disable(NoCacheReason::StorageError);
+            return None;
+        }
+    }
+    let now = SystemTime::now();
+    let Some(ttl) = response_cache_ttl(&response, policy.max_ttl_secs, now) else {
+        metrics.record_response_cache_outcome(ResponseCacheOutcome::Rejection);
+        cache.disable(NoCacheReason::OriginNotCache);
+        return None;
+    };
+    let Some(fresh_until) = now.checked_add(ttl) else {
+        metrics.record_response_cache_outcome(ResponseCacheOutcome::Rejection);
+        cache.disable(NoCacheReason::StorageError);
+        return None;
+    };
+    cache.set_cache_meta(CacheMeta::new(fresh_until, now, 0, 0, response));
+    Some(cache)
+}
+
+struct ResponseCacheFill {
+    cache: Option<HttpCache>,
+}
+
+impl ResponseCacheFill {
+    fn new(cache: Option<HttpCache>) -> Self {
+        Self { cache }
+    }
+
+    fn disable(&mut self, reason: NoCacheReason) {
+        if let Some(mut cache) = self.cache.take() {
+            cache.disable(reason);
+        }
+    }
+}
+
+impl Drop for ResponseCacheFill {
+    fn drop(&mut self) {
+        self.disable(NoCacheReason::UpstreamError);
+    }
+}
+
+async fn write_response_cache_chunk(cache_fill: &mut ResponseCacheFill, chunk: &Bytes) {
+    let failure = if let Some(cache) = cache_fill.cache.as_mut() {
+        if !cache.track_body_bytes_for_max_file_size(chunk.len()) {
+            Some(NoCacheReason::ResponseTooLarge)
+        } else if let Some(writer) = cache.miss_handler() {
+            writer
+                .write_body(chunk.clone(), false)
+                .await
+                .err()
+                .map(|_| NoCacheReason::StorageError)
+        } else {
+            Some(NoCacheReason::StorageError)
+        }
+    } else {
+        None
+    };
+    if let Some(reason) = failure {
+        cache_fill.disable(reason);
+    }
+}
+
+async fn finish_response_cache(cache_fill: &mut ResponseCacheFill) {
+    let Some(mut cache) = cache_fill.cache.take() else {
+        return;
+    };
+    let Some(writer) = cache.miss_handler() else {
+        cache.disable(NoCacheReason::StorageError);
+        return;
+    };
+    if writer.write_body(Bytes::new(), true).await.is_ok() {
+        let _ = cache.finish_miss_handler().await;
+    } else {
+        cache.disable(NoCacheReason::StorageError);
+    }
+}
 
 fn response_body_guardrail_chunk(decision: ResponseBodyGuardrailDecision) -> Option<ResponseChunk> {
     match decision {
@@ -270,18 +437,28 @@ impl QUICListener {
         req: &RequestEnvelope,
         success: ForwardSuccess,
         progress_config: &StreamProgressConfig,
+        metrics: &Metrics,
     ) -> ResponseStartDecision {
-        let (status, resp_headers, response_body, prebuilt_response_chunk_rx) = match success {
+        let (
+            status,
+            resp_headers,
+            response_body,
+            prebuilt_response_chunk_rx,
+            mut cache_miss,
+            cache_hit,
+        ) = match success {
             ForwardSuccess::Response {
                 status,
                 headers,
                 body,
-            } => (status, headers, Some(body), None),
+                cache_miss,
+                cache_hit,
+            } => (status, headers, Some(body), None, cache_miss, cache_hit),
             ForwardSuccess::Tunnel {
                 status,
                 headers,
                 response_chunk_rx,
-            } => (status, headers, None, Some(response_chunk_rx)),
+            } => (status, headers, None, Some(response_chunk_rx), None, false),
         };
         let request_mode = req.request_mode();
         let tunnel_response = is_tunnel_response(req.tunnel_mode, status);
@@ -300,13 +477,10 @@ impl QUICListener {
             upstream: impulse_bridge::response::UpstreamResponseView {
                 status,
                 headers: &resp_headers,
-                trailers: None,
             },
             body_mode: response_body_mode,
             constraints: ResponseProtocolConstraints {
                 protocol: ResponseNormalizationProtocol::Http3,
-                strip_connection_headers: true,
-                allow_trailers: true,
                 preserve_upgrade: false,
             },
         });
@@ -344,6 +518,9 @@ impl QUICListener {
                 kind: BodyLimitKind::BodySize,
             })
         ) {
+            if let Some((mut cache, _)) = cache_miss.take() {
+                cache.disable(NoCacheReason::ResponseTooLarge);
+            }
             return ResponseStartDecision::ImmediateTerminal {
                 metadata: ResponseStartMetadata {
                     status: http::StatusCode::SERVICE_UNAVAILABLE,
@@ -361,16 +538,41 @@ impl QUICListener {
             };
         }
 
-        let mut headers: Vec<(Vec<u8>, Vec<u8>)> = normalized_response
-            .head
-            .headers
+        let mut response_headers = http::HeaderMap::new();
+        for header in normalized_response.headers {
+            response_headers.append(header.name, header.value);
+        }
+        let mut compress_response = false;
+        if let Some(pending_forward) = req.pending_forward() {
+            let mut request_headers = http::HeaderMap::new();
+            for header in pending_forward.original_request_headers() {
+                if let (Ok(name), Ok(value)) = (
+                    http::header::HeaderName::from_bytes(header.name()),
+                    http::HeaderValue::from_bytes(header.value()),
+                ) {
+                    request_headers.append(name, value);
+                }
+            }
+            let compression = evaluate_response_compression(ResponseCompressionInput {
+                policy: &pending_forward.response_compression,
+                request_method: &req.method,
+                request_headers: &request_headers,
+                response_status: status,
+                response_headers: &resp_headers,
+            });
+            metrics.record_response_compression_outcome(compression.action);
+            compress_response = matches!(compression.action, ResponseCompressionAction::Gzip);
+            if compress_response {
+                apply_gzip_response_headers(&mut response_headers);
+            } else if compression.vary_accept_encoding {
+                ensure_vary_accept_encoding(&mut response_headers);
+            }
+        }
+        let mut response_cache =
+            prepare_response_cache(cache_miss, status, &response_headers, metrics);
+        let mut headers: Vec<(Vec<u8>, Vec<u8>)> = response_headers
             .iter()
-            .map(|header| {
-                (
-                    header.name.as_str().as_bytes().to_vec(),
-                    header.value.as_bytes().to_vec(),
-                )
-            })
+            .map(|(name, value)| (name.as_str().as_bytes().to_vec(), value.as_bytes().to_vec()))
             .collect();
         headers.push((
             b"alt-svc".to_vec(),
@@ -387,9 +589,29 @@ impl QUICListener {
                 ProgressiveEmissionPolicy::PrebufferUntilValidated
             )
         );
-        let observation = ResponseStartObservation::Status { status };
+        let observation = ResponseStartObservation::Status {
+            status,
+            backend_used: !cache_hit,
+        };
 
         if normalized_response.emission.emit_end_stream_on_headers {
+            if let Some(cache) = response_cache.take() {
+                let mut cache_fill = ResponseCacheFill::new(Some(cache));
+                let _ = spawn_async_task(
+                    async move {
+                        let started = match cache_fill.cache.as_mut() {
+                            Some(cache) => cache.set_miss_handler().await.is_ok(),
+                            None => false,
+                        };
+                        if started {
+                            finish_response_cache(&mut cache_fill).await;
+                        } else {
+                            cache_fill.disable(NoCacheReason::StorageError);
+                        }
+                    },
+                    "h3-cache-empty-fill",
+                );
+            }
             return ResponseStartDecision::ImmediateTerminal {
                 metadata: ResponseStartMetadata {
                     status,
@@ -402,6 +624,9 @@ impl QUICListener {
         }
 
         if let Some(response_chunk_rx) = prebuilt_response_chunk_rx {
+            if let Some(mut cache) = response_cache.take() {
+                cache.disable(NoCacheReason::OriginNotCache);
+            }
             return ResponseStartDecision::StreamingPrebuilt {
                 metadata: ResponseStartMetadata {
                     status,
@@ -414,6 +639,9 @@ impl QUICListener {
         }
 
         let Some(response_body) = response_body else {
+            if let Some(mut cache) = response_cache.take() {
+                cache.disable(NoCacheReason::UpstreamError);
+            }
             return ResponseStartDecision::BackendFailure(ProxyError::Transport(
                 "non-tunnel responses must carry an HTTP body stream".into(),
             ));
@@ -433,6 +661,8 @@ impl QUICListener {
                 progressive_emission_allowed: progressive_body_emission_allowed,
                 defer_headers_until_body_validated,
                 tunnel_response,
+                compress_response,
+                response_cache,
             },
             observation,
         }
@@ -633,7 +863,7 @@ impl QUICListener {
                     backend_addr,
                     &classified,
                 );
-                let _ =
+                let transition =
                     crate::runtime::connection::outcome::observe_classified_backend_failure_and_log(
                         crate::runtime::connection::outcome::ClassifiedBackendFailureInput {
                             metrics_phase: "data_plane",
@@ -645,6 +875,11 @@ impl QUICListener {
                             classified: &classified,
                         },
                     );
+                crate::runtime::connection::outcome::apply_passive_readiness_to_pingora(
+                    shared_ctx.pingora_load_balancing,
+                    backend_addr,
+                    transition,
+                );
 
                 match classified.kind {
                     UpstreamProxyErrorKind::Timeout => {
@@ -702,7 +937,7 @@ impl QUICListener {
                             b"upstream protocol error\n",
                         )
                     }
-                    UpstreamProxyErrorKind::Send | UpstreamProxyErrorKind::Transport => {
+                    UpstreamProxyErrorKind::Transport => {
                         metrics.inc_backend_error();
                         let _ = crate::runtime::connection::outcome::observe_status_outcome(
                             metrics,
@@ -847,16 +1082,21 @@ impl QUICListener {
 
     fn spawn_response_body_pump(
         req: &RequestEnvelope,
-        response_body: hyper::body::Incoming,
+        response_body: UpstreamBody,
         deferred_start: Option<ResponseChunk>,
         pump: ResponseBodyPumpPlan,
+        metrics: Arc<Metrics>,
     ) -> mpsc::Receiver<ResponseChunk> {
         let (chunk_tx, chunk_rx) = mpsc::channel::<ResponseChunk>(RESPONSE_CHUNK_CHANNEL_CAPACITY);
         let fail_tx = chunk_tx.clone();
         let fut = async move {
-            use http_body_util::BodyExt;
-
             let mut body = response_body;
+            let mut response_cache = ResponseCacheFill::new(pump.response_cache);
+            if let Some(cache) = response_cache.cache.as_mut()
+                && cache.set_miss_handler().await.is_err()
+            {
+                response_cache.disable(NoCacheReason::StorageError);
+            }
             let mut deferred_start = deferred_start;
             let body_started_at = tokio::time::Instant::now();
             let mut last_body_progress_at = body_started_at;
@@ -864,6 +1104,16 @@ impl QUICListener {
             let mut prebuffered_bytes: usize = 0;
             let mut buffered_chunks: Vec<Bytes> = Vec::new();
             let mut buffered_trailers: Option<Vec<(Vec<u8>, Vec<u8>)>> = None;
+            let mut compressor = pump
+                .compress_response
+                .then(|| Algorithm::Gzip.compressor(RESPONSE_GZIP_LEVEL))
+                .flatten();
+            let mut compression_metrics =
+                compressor.as_ref().map(|_| ResponseCompressionByteMetrics {
+                    metrics,
+                    input: 0,
+                    output: 0,
+                });
             loop {
                 let wait_decision = checked_response_body_guardrails(
                     pump.guardrails,
@@ -891,7 +1141,7 @@ impl QUICListener {
                         return;
                     }
                 };
-                let frame_fut = BodyExt::frame(&mut body);
+                let frame_fut = body.recv();
                 let result = tokio::time::timeout(streaming.wait_timeout, frame_fut).await;
                 match result {
                     Err(_elapsed) => {
@@ -904,8 +1154,8 @@ impl QUICListener {
                             .await;
                         return;
                     }
-                    Ok(Some(Ok(f))) => match f.into_data() {
-                        Ok(data) => {
+                    Ok(Some(Ok(frame))) => match frame {
+                        UpstreamBodyFrame::Data(data) => {
                             if !data.is_empty() {
                                 last_body_progress_at = tokio::time::Instant::now();
                             }
@@ -941,49 +1191,112 @@ impl QUICListener {
                             for (start, end) in
                                 response_chunk_ranges(data.len(), streaming.chunk_emission)
                             {
-                                let chunk = data.slice(start..end);
-                                match streaming.emission {
-                                    ProgressiveEmissionPolicy::PrebufferUntilValidated => {
-                                        buffered_chunks.push(chunk);
+                                let mut chunk = data.slice(start..end);
+                                if let Some(compressor) = compressor.as_mut() {
+                                    if let Some(metrics) = compression_metrics.as_mut() {
+                                        metrics.input = metrics.input.saturating_add(chunk.len());
                                     }
-                                    ProgressiveEmissionPolicy::StreamProgressively => {
-                                        if chunk_tx.send(ResponseChunk::Data(chunk)).await.is_err()
-                                        {
+                                    chunk = match compressor.encode(&chunk, false) {
+                                        Ok(chunk) => chunk,
+                                        Err(error) => {
+                                            let _ = chunk_tx
+                                                .send(ResponseChunk::Error(ProxyError::Transport(
+                                                    format!("response compression failed: {error}"),
+                                                )))
+                                                .await;
                                             return;
                                         }
+                                    };
+                                    if let Some(metrics) = compression_metrics.as_mut() {
+                                        metrics.output = metrics.output.saturating_add(chunk.len());
                                     }
-                                    ProgressiveEmissionPolicy::SuppressBody => {}
+                                }
+                                if chunk.is_empty() {
+                                    continue;
+                                }
+                                if !matches!(
+                                    streaming.emission,
+                                    ProgressiveEmissionPolicy::SuppressBody
+                                ) {
+                                    write_response_cache_chunk(&mut response_cache, &chunk).await;
+                                }
+                                for (start, end) in
+                                    response_chunk_ranges(chunk.len(), streaming.chunk_emission)
+                                {
+                                    let chunk = chunk.slice(start..end);
+                                    match streaming.emission {
+                                        ProgressiveEmissionPolicy::PrebufferUntilValidated => {
+                                            buffered_chunks.push(chunk);
+                                        }
+                                        ProgressiveEmissionPolicy::StreamProgressively => {
+                                            if chunk_tx
+                                                .send(ResponseChunk::Data(chunk))
+                                                .await
+                                                .is_err()
+                                            {
+                                                return;
+                                            }
+                                        }
+                                        ProgressiveEmissionPolicy::SuppressBody => {}
+                                    }
                                 }
                             }
                         }
-                        Err(frame) => {
-                            if let Ok(trailers) = frame.into_trailers() {
-                                let trailer_headers = collect_h3_trailers(&trailers);
-                                if !trailer_headers.is_empty() {
-                                    if pump.defer_headers_until_body_validated {
-                                        buffered_trailers = Some(trailer_headers);
-                                    } else if chunk_tx
-                                        .send(ResponseChunk::Trailers {
-                                            headers: trailer_headers,
-                                        })
-                                        .await
-                                        .is_err()
-                                    {
-                                        return;
-                                    }
+                        UpstreamBodyFrame::Trailers(trailers) => {
+                            let trailer_headers = collect_h3_trailers(&trailers);
+                            if !trailer_headers.is_empty() {
+                                if pump.defer_headers_until_body_validated || pump.compress_response
+                                {
+                                    buffered_trailers = Some(trailer_headers);
+                                } else if chunk_tx
+                                    .send(ResponseChunk::Trailers {
+                                        headers: trailer_headers,
+                                    })
+                                    .await
+                                    .is_err()
+                                {
+                                    return;
                                 }
                             }
                         }
                     },
-                    Ok(Some(Err(_))) => {
-                        let _ = chunk_tx
-                            .send(ResponseChunk::Error(ProxyError::Transport(
-                                "upstream body error".into(),
-                            )))
-                            .await;
+                    Ok(Some(Err(error))) => {
+                        let _ = chunk_tx.send(ResponseChunk::Error(error)).await;
                         return;
                     }
                     Ok(None) => {
+                        let final_chunk = if let Some(compressor) = compressor.as_mut() {
+                            match compressor.encode(&[], true) {
+                                Ok(chunk) => Some(chunk),
+                                Err(error) => {
+                                    let _ = chunk_tx
+                                        .send(ResponseChunk::Error(ProxyError::Transport(format!(
+                                            "response compression failed: {error}"
+                                        ))))
+                                        .await;
+                                    return;
+                                }
+                            }
+                        } else {
+                            None
+                        };
+                        if let (Some(metrics), Some(chunk)) =
+                            (compression_metrics.as_mut(), final_chunk.as_ref())
+                        {
+                            metrics.output = metrics.output.saturating_add(chunk.len());
+                        }
+                        if let Some(chunk) = final_chunk.as_ref()
+                            && !chunk.is_empty()
+                            && pump.body_forwarding_enabled
+                        {
+                            write_response_cache_chunk(&mut response_cache, chunk).await;
+                        }
+                        if pump.defer_headers_until_body_validated
+                            && let Some(chunk) = final_chunk.as_ref()
+                            && !chunk.is_empty()
+                        {
+                            buffered_chunks.push(chunk.clone());
+                        }
                         if let Some(start) = deferred_start.take()
                             && chunk_tx.send(start).await.is_err()
                         {
@@ -995,6 +1308,11 @@ impl QUICListener {
                                     return;
                                 }
                             }
+                        } else if let Some(chunk) = final_chunk
+                            && !chunk.is_empty()
+                            && chunk_tx.send(ResponseChunk::Data(chunk)).await.is_err()
+                        {
+                            return;
                         }
                         if let Some(headers) = buffered_trailers
                             && chunk_tx
@@ -1004,6 +1322,7 @@ impl QUICListener {
                         {
                             return;
                         }
+                        finish_response_cache(&mut response_cache).await;
                         let _ = chunk_tx.send(ResponseChunk::End).await;
                         return;
                     }
@@ -1030,15 +1349,30 @@ impl QUICListener {
         let metrics = shared_ctx.metrics.as_ref();
         let resilience = shared_ctx.resilience;
         match observation {
-            ResponseStartObservation::Status { status } => {
-                if let (Some(addr), Some(idx)) = (&req.backend_addr, req.backend_index) {
-                    let _ = crate::runtime::connection::outcome::observe_backend_response_status_and_log(
+            ResponseStartObservation::Status {
+                status,
+                backend_used,
+            } => {
+                if *backend_used
+                    && let (Some(addr), Some(idx)) = (&req.backend_addr, req.backend_index)
+                {
+                    if status.is_server_error() {
+                        metrics.inc_health_failure(
+                            impulse_lb::health::HealthFailureReason::HttpStatus5xx,
+                        );
+                    }
+                    let transition = crate::runtime::connection::outcome::observe_backend_response_status_and_log(
                         crate::runtime::connection::outcome::BackendHealthObservationInput {
                             backend_addr: addr,
                             backend_index: idx,
                             upstream_pool: req.upstream_pool.as_ref(),
                             status: *status,
                         },
+                    );
+                    crate::runtime::connection::outcome::apply_passive_readiness_to_pingora(
+                        shared_ctx.pingora_load_balancing,
+                        addr,
+                        transition,
                     );
                 }
                 let _ = crate::runtime::connection::outcome::observe_status_outcome(
@@ -1140,6 +1474,7 @@ impl QUICListener {
                     );
                 }
                 Self::observe_response_start_transition(req, &observation, shared_ctx);
+                req.mark_terminal_outcome_recorded();
                 Ok(false)
             }
             ResponseStartDecision::StreamingBodyPump {
@@ -1154,8 +1489,13 @@ impl QUICListener {
                     Self::send_response_start_headers(h3, quic, stream_id, &metadata, false)?;
                 }
                 let deferred_start = Self::into_deferred_response_start_chunk(metadata);
-                let chunk_rx =
-                    Self::spawn_response_body_pump(req, response_body, deferred_start, pump);
+                let chunk_rx = Self::spawn_response_body_pump(
+                    req,
+                    response_body,
+                    deferred_start,
+                    pump,
+                    Arc::clone(&shared_ctx.metrics),
+                );
                 req.response_status = Some(response_status.as_u16());
                 if let Err(state_err) = req.transition_to_streaming_response(
                     chunk_rx,
@@ -1178,6 +1518,7 @@ impl QUICListener {
                     );
                 }
                 Self::observe_response_start_transition(req, &observation, shared_ctx);
+                req.mark_terminal_outcome_recorded();
                 Ok(false)
             }
             ResponseStartDecision::BackendFailure(err) => Err(err),
@@ -1385,7 +1726,13 @@ impl QUICListener {
                             };
                         let _ = Self::send_simple_response(h3, quic, stream_id, status, body);
                     } else {
-                        let _ = h3.send_body(quic, stream_id, b"", true);
+                        // The advertised response is incomplete, so a clean FIN would
+                        // incorrectly present truncated bytes as a successful response.
+                        let _ = quic.stream_shutdown(
+                            stream_id,
+                            quiche::Shutdown::Write,
+                            0x102, // H3_INTERNAL_ERROR
+                        );
                     }
                     let upstream_name = routing_index.lookup(&req.path, req.authority.as_deref());
                     let upstream_pool = upstream_name.and_then(|n| upstream_pools.get(n));
@@ -1394,7 +1741,7 @@ impl QUICListener {
                         req.backend_index,
                         classified.as_ref(),
                     ) {
-                        let _ = crate::runtime::connection::outcome::observe_classified_backend_failure_and_log(
+                        let transition = crate::runtime::connection::outcome::observe_classified_backend_failure_and_log(
                             crate::runtime::connection::outcome::ClassifiedBackendFailureInput {
                                 metrics_phase: "data_plane",
                                 upstream_name: upstream_name.unwrap_or("unknown"),
@@ -1405,9 +1752,15 @@ impl QUICListener {
                                 classified,
                             },
                         );
+                        crate::runtime::connection::outcome::apply_passive_readiness_to_pingora(
+                            shared_ctx.pingora_load_balancing,
+                            addr,
+                            transition,
+                        );
                     } else if let (Some(addr), Some(idx)) =
                         (req.backend_addr.as_deref(), req.backend_index)
-                        && crate::runtime::connection::outcome::observe_backend_response_status_and_log(
+                    {
+                        let transition = crate::runtime::connection::outcome::observe_backend_response_status_and_log(
                             crate::runtime::connection::outcome::BackendHealthObservationInput {
                                 backend_addr: addr,
                                 backend_index: idx,
@@ -1417,8 +1770,12 @@ impl QUICListener {
                                     .and_then(|code| http::StatusCode::from_u16(code).ok())
                                     .unwrap_or(http::StatusCode::INTERNAL_SERVER_ERROR),
                             },
-                        ).is_some()
-                    {
+                        );
+                        crate::runtime::connection::outcome::apply_passive_readiness_to_pingora(
+                            shared_ctx.pingora_load_balancing,
+                            addr,
+                            transition,
+                        );
                     }
                     match err {
                         ProxyError::Timeout => {
@@ -1794,5 +2151,23 @@ mod tests {
             _ => panic!("deferred metadata must produce a start chunk"),
         }
         assert!(immediate.is_none());
+    }
+
+    #[test]
+    fn cancelled_compression_scope_records_partial_stream_bytes() {
+        let metrics = Arc::new(Metrics::default());
+        {
+            let mut accounting = ResponseCompressionByteMetrics {
+                metrics: Arc::clone(&metrics),
+                input: 0,
+                output: 0,
+            };
+            accounting.input = 4_096;
+            accounting.output = 512;
+        }
+
+        let rendered = metrics.render_prometheus();
+        assert!(rendered.contains("impulse_response_compression_input_bytes_total 4096\n"));
+        assert!(rendered.contains("impulse_response_compression_output_bytes_total 512\n"));
     }
 }

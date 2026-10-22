@@ -8,7 +8,7 @@ use super::{
     state::ControlApiState,
     *,
 };
-use crate::quic_listener::runtime_state::ControlPlaneBootstrap;
+use crate::quic_listener::runtime_state::ControlPlaneStartup;
 
 struct ControlApiTlsState {
     primary_listener_label: String,
@@ -24,11 +24,11 @@ enum ControlApiTlsAcceptError {
 
 impl QUICListener {
     pub(in crate::quic_listener) fn spawn_control_api_endpoint(
-        bootstrap: &ControlPlaneBootstrap<'_>,
+        startup: &ControlPlaneStartup<'_>,
     ) -> Result<(), ProxyError> {
-        let state = bootstrap.control_api_service_ctx();
+        let state = startup.control_api_service_ctx();
         let startup_state = state.current_service_state();
-        if bootstrap.runtime_bundle.is_none() && !startup_state.endpoint.enabled {
+        if startup.runtime_bundle.is_none() && !startup_state.endpoint.enabled {
             return Ok(());
         }
         let required = startup_state.endpoint.required;

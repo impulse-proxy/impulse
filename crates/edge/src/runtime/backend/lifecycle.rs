@@ -1,13 +1,8 @@
 mod coordinator;
-mod dns;
 mod health;
 
 pub(crate) use self::{
     coordinator::{BackendLifecycleCoordinator, RuntimeBackendLifecycleState},
-    dns::{
-        BackendDnsRefreshApplication, BackendRefreshClassification, log_backend_dns_refresh,
-        observe_backend_dns_refresh,
-    },
     health::{
         ActiveHealthCheckEvaluation, apply_backend_health_observation,
         apply_backend_request_accounting, apply_backend_request_feedback,
@@ -20,17 +15,15 @@ mod test_support {
     use std::{
         collections::HashMap,
         sync::{Arc, RwLock},
-        time::Duration,
     };
 
     use impulse_config::{
         config::{Backend, Config, HealthCheck, Listen, LoadBalancing, RouteMatch, Tls, Upstream},
-        runtime::{RuntimeBackendTransportKind, RuntimeConfig},
+        runtime::RuntimeConfig,
     };
     use impulse_lb::upstream_pool::UpstreamPool;
-    use impulse_transport::{SharedDnsResolver, UpstreamTransportPool};
 
-    pub(crate) fn test_upstream_pool_with_interval(interval: u64) -> Arc<RwLock<UpstreamPool>> {
+    fn test_runtime_config(interval: u64, backend_addr: &str) -> RuntimeConfig {
         let mut upstreams = HashMap::new();
         upstreams.insert(
             "api".to_string(),
@@ -43,6 +36,8 @@ mod test_support {
                 auth: Default::default(),
                 host_policy: Default::default(),
                 forwarded_headers: Default::default(),
+                compression: Default::default(),
+                cache: Default::default(),
                 route: RouteMatch {
                     host: Some("api.example.com".to_string()),
                     path_prefix: None,
@@ -50,7 +45,7 @@ mod test_support {
                 },
                 backends: vec![Backend {
                     id: "backend-a".to_string(),
-                    address: "127.0.0.1:8080".to_string(),
+                    address: backend_addr.to_string(),
                     weight: 1,
                     health_check: (interval > 0).then_some(HealthCheck {
                         path: "/health".to_string(),
@@ -64,7 +59,7 @@ mod test_support {
             },
         );
 
-        let runtime = RuntimeConfig::from_config(&Config {
+        RuntimeConfig::from_config(&Config {
             version: 1,
             listen: Listen {
                 protocol: "http1".to_string(),
@@ -86,7 +81,11 @@ mod test_support {
             resilience: Default::default(),
             security: Default::default(),
         })
-        .expect("runtime config");
+        .expect("runtime config")
+    }
+
+    pub(crate) fn test_upstream_pool_with_interval(interval: u64) -> Arc<RwLock<UpstreamPool>> {
+        let runtime = test_runtime_config(interval, "127.0.0.1:8080");
 
         Arc::new(RwLock::new(
             UpstreamPool::from_runtime_upstream(runtime.upstreams.get("api").expect("upstream"))
@@ -100,21 +99,5 @@ mod test_support {
 
     pub(crate) fn test_active_health_upstream_pool() -> Arc<RwLock<UpstreamPool>> {
         test_upstream_pool_with_interval(1000)
-    }
-
-    pub(crate) fn test_transport_pool(backend_addr: &str) -> UpstreamTransportPool {
-        UpstreamTransportPool::new_from_runtime_backends(
-            [(backend_addr.to_string(), RuntimeBackendTransportKind::Http1)],
-            HashMap::new(),
-            impulse_config::runtime::RuntimeBackendConnectionPolicy {
-                max_inflight: 32,
-                max_idle_per_backend: 8,
-                pool_idle_timeout: Duration::from_secs(30),
-                connect_timeout: Duration::from_secs(2),
-                execution_timeout: Duration::from_secs(5),
-            },
-            SharedDnsResolver::new(),
-        )
-        .expect("transport pool")
     }
 }

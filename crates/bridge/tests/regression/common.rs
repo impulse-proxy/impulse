@@ -3,7 +3,6 @@
 use std::{convert::Infallible, net::SocketAddr};
 
 use bytes::Bytes;
-use http::HeaderMap;
 use http_body_util::{BodyExt, Empty, combinators::BoxBody};
 use impulse_bridge::request::{
     RequestBodyMode, RequestBuildInput, RequestBuildPolicies, RequestBuildTarget,
@@ -44,13 +43,6 @@ pub(crate) fn request_target<'a>(
 
 pub(crate) fn parse_backend_endpoint(backend: &str) -> Result<BackendEndpoint, BridgeError> {
     BackendEndpoint::parse(backend).map_err(|_| BridgeError::InvalidUri)
-}
-
-pub(crate) fn bridge_headers(headers: &HeaderMap) -> Vec<Header> {
-    headers
-        .iter()
-        .map(|(name, value)| Header::new(name.as_str().as_bytes(), value.as_bytes()))
-        .collect()
 }
 
 pub(crate) fn request_input<'a>(
@@ -143,21 +135,6 @@ pub(crate) fn build_h2_request_for_backend<'a>(
             &UpstreamHostPolicy::default(),
             &ForwardedHeaderPolicy::default(),
         ),
-        request_input(method, path, headers, meta),
-    )
-}
-
-pub(crate) fn build_h1_request_with_policy<'a>(
-    endpoint: &'a BackendEndpoint,
-    host_policy: &'a UpstreamHostPolicy,
-    forwarded_policy: &'a ForwardedHeaderPolicy,
-    method: &'a str,
-    path: &'a str,
-    headers: &'a [Header],
-    meta: RequestInputMeta<'a>,
-) -> Result<CanonicalBridgeRequest, BridgeError> {
-    build_h1_request(
-        request_target(endpoint, host_policy, forwarded_policy),
         request_input(method, path, headers, meta),
     )
 }

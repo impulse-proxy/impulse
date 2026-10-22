@@ -1,23 +1,37 @@
 use std::convert::Infallible;
 
+use impulse_config::runtime::RuntimeBackendTlsPolicy;
 use impulse_errors::{
     HedgeOutcomeTelemetryReason, HedgePolicyDecision, RetryPolicyDecision, is_idempotent_method,
 };
-use impulse_lb::alternate_backend::{
-    AlternateBackendDecision, AlternateBackendFailureReason, choose_alternate_backend,
+use impulse_lb::{
+    alternate_backend::AlternateBackendFailureReason, pingora_backend::GenerationSelector,
 };
+use impulse_transport::{
+    UpstreamBodyFrame, UpstreamCancellation, UpstreamConnectionReuse, UpstreamExchangeCompletion,
+    UpstreamExchangeOutcome, UpstreamExchangeRequest, UpstreamExchangeResponse,
+    UpstreamRequestHead,
+};
+use pingora_cache::{HitStatus, HttpCache, NoCacheReason, lock::LockWaitOutcome};
 
 use super::{
-    selection::{ForwardingSelectionService, RetryHedgePolicyInputs},
+    selection::{ForwardingSelectionService, MAX_UPSTREAM_RETRY_ATTEMPTS, RetryCoordinator},
     *,
 };
 use crate::{
+    metrics::ResponseCacheOutcome,
     observability::{HedgeDecisionReason, RetryDecisionReason},
-    runtime::connection::{request::PendingForward, response::ForwardingPolicyTelemetry},
+    runtime::{
+        cache::{
+            ResponseCacheKeyInput, ResponseCacheRequestEligibilityInput,
+            canonical_response_cache_key, evaluate_cache_request_eligibility,
+            route_auth_requires_cache_bypass,
+        },
+        connection::{request::PendingForward, response::ForwardingPolicyTelemetry},
+    },
 };
 
-const MAX_UPSTREAM_RETRY_ATTEMPTS: u8 = 1;
-type UpstreamRequest = Request<BoxBody<Bytes, Infallible>>;
+pub(in crate::quic_listener) type UpstreamRequest = Request<BoxBody<Bytes, Infallible>>;
 
 #[derive(Clone, Debug)]
 enum ResolvedAlternateBackend {
@@ -54,10 +68,58 @@ struct WebsocketTunnelForwardInput {
     body_rx: mpsc::Receiver<Bytes>,
 }
 
+enum H3CacheLookup {
+    Hit(ForwardSuccess),
+    Miss(H3CacheMiss),
+    Bypass,
+}
+
+struct H3CacheLookupInput<'a> {
+    cache_store: &'static crate::runtime::cache::BoundedPingoraMemoryCache,
+    metrics: &'a Metrics,
+    policy: impulse_config::runtime::RuntimeResponseCachePolicy,
+    route_auth_enabled: bool,
+    pending_forward: &'a PendingForward,
+    namespace: u64,
+    has_body: bool,
+    is_tunnel: bool,
+}
+
+struct H3CacheMiss {
+    cache: Option<HttpCache>,
+    policy: Option<impulse_config::runtime::RuntimeResponseCachePolicy>,
+}
+
+impl H3CacheMiss {
+    fn into_parts(
+        mut self,
+    ) -> Option<(
+        HttpCache,
+        impulse_config::runtime::RuntimeResponseCachePolicy,
+    )> {
+        match (self.cache.take(), self.policy.take()) {
+            (Some(cache), Some(policy)) => Some((cache, policy)),
+            (Some(mut cache), None) => {
+                cache.disable(NoCacheReason::UpstreamError);
+                None
+            }
+            (None, _) => None,
+        }
+    }
+}
+
+impl Drop for H3CacheMiss {
+    fn drop(&mut self) {
+        if let Some(mut cache) = self.cache.take() {
+            cache.disable(NoCacheReason::UpstreamError);
+        }
+    }
+}
+
 struct RetryExecutionCtx<'a> {
     request_id: u64,
     route_name: &'a str,
-    policy: RetryHedgePolicyInputs,
+    policy: RetryCoordinator,
     policy_telemetry: &'a mut ForwardingPolicyTelemetry,
     retry_budget: &'a crate::resilience::retry_budget::RetryBudget,
     alternate_backend: Option<&'a ResolvedAlternateBackend>,
@@ -77,16 +139,179 @@ fn alternate_backend_policy_state(
 }
 
 impl QUICListener {
+    async fn lookup_h3_response_cache(input: H3CacheLookupInput<'_>) -> H3CacheLookup {
+        let H3CacheLookupInput {
+            cache_store,
+            metrics,
+            policy,
+            route_auth_enabled,
+            pending_forward,
+            namespace,
+            has_body,
+            is_tunnel,
+        } = input;
+        let bypass = || {
+            metrics.record_response_cache_outcome(ResponseCacheOutcome::Bypass);
+            H3CacheLookup::Bypass
+        };
+        let mut headers = http::HeaderMap::new();
+        for header in pending_forward.original_request_headers() {
+            if let (Ok(name), Ok(value)) = (
+                http::header::HeaderName::from_bytes(header.name()),
+                http::HeaderValue::from_bytes(header.value()),
+            ) {
+                headers.append(name, value);
+            }
+        }
+        let cache_control = match headers
+            .get_all(http::header::CACHE_CONTROL)
+            .iter()
+            .map(|value| value.to_str())
+            .collect::<std::result::Result<Vec<_>, _>>()
+        {
+            Ok(values) => values,
+            Err(_) => return bypass(),
+        };
+        let request_disables_cache = cache_control
+            .into_iter()
+            .flat_map(|value| value.split(','))
+            .map(|directive| {
+                directive
+                    .split_once('=')
+                    .map_or(directive, |(name, _)| name)
+            })
+            .any(|directive| {
+                directive.trim().eq_ignore_ascii_case("no-cache")
+                    || directive.trim().eq_ignore_ascii_case("no-store")
+            });
+        let Ok(representation) =
+            evaluate_cache_request_eligibility(ResponseCacheRequestEligibilityInput {
+                policy: &policy,
+                route_auth_enabled,
+                method: pending_forward.method.as_ref(),
+                headers: &headers,
+                has_body,
+                is_upgrade: is_tunnel && !pending_forward.method.eq_ignore_ascii_case("CONNECT"),
+                is_tunnel,
+            })
+        else {
+            return bypass();
+        };
+        if request_disables_cache {
+            return bypass();
+        }
+        let Some(authority) = pending_forward.authority.as_deref() else {
+            return bypass();
+        };
+        let accept_encoding = match headers
+            .get_all(http::header::ACCEPT_ENCODING)
+            .iter()
+            .map(|value| value.to_str())
+            .collect::<std::result::Result<Vec<_>, _>>()
+        {
+            Ok(values) => values.join(","),
+            Err(_) => return bypass(),
+        };
+        let Some(key) = canonical_response_cache_key(ResponseCacheKeyInput {
+            scheme: "https",
+            authority,
+            path_and_query: pending_forward.path.as_ref(),
+            representation,
+            accept_encoding: (!accept_encoding.is_empty()).then_some(accept_encoding.as_str()),
+            namespace,
+        }) else {
+            return bypass();
+        };
+
+        let mut cache = HttpCache::new();
+        cache_store.enable(&mut cache, policy.max_object_bytes);
+        cache.set_cache_key(key);
+        for _ in 0..2 {
+            match cache.cache_lookup().await {
+                Ok(Some((meta, handler))) if meta.is_fresh(std::time::SystemTime::now()) => {
+                    let response = meta.response_header_copy();
+                    cache.cache_found(meta, handler, HitStatus::Fresh);
+                    let (frames, body) = mpsc::channel(RESPONSE_CHUNK_CHANNEL_CAPACITY);
+                    let body_pump = async move {
+                        loop {
+                            match cache.hit_handler().read_body().await {
+                                Ok(Some(data)) => {
+                                    if frames
+                                        .send(Ok(UpstreamBodyFrame::Data(data)))
+                                        .await
+                                        .is_err()
+                                    {
+                                        return;
+                                    }
+                                }
+                                Ok(None) => {
+                                    let _ = cache.finish_hit_handler().await;
+                                    return;
+                                }
+                                Err(error) => {
+                                    let _ = frames
+                                        .send(Err(ProxyError::Transport(format!(
+                                            "response cache read failed: {error}"
+                                        ))))
+                                        .await;
+                                    return;
+                                }
+                            }
+                        }
+                    };
+                    if !spawn_async_task(body_pump, "h3-cache-hit") {
+                        return bypass();
+                    }
+                    metrics.record_response_cache_outcome(ResponseCacheOutcome::Hit);
+                    return H3CacheLookup::Hit(ForwardSuccess::Response {
+                        status: response.status,
+                        headers: response.headers.clone(),
+                        body,
+                        cache_miss: None,
+                        cache_hit: true,
+                    });
+                }
+                Ok(Some((meta, handler))) => {
+                    metrics.record_response_cache_outcome(ResponseCacheOutcome::Expiry);
+                    cache.cache_found(meta, handler, HitStatus::Expired);
+                }
+                Ok(None) => {}
+                Err(_) => return bypass(),
+            }
+            if cache.is_cache_locked() {
+                let outcome = cache.cache_lock_wait().await;
+                metrics.record_response_cache_outcome(ResponseCacheOutcome::LockWait);
+                match outcome {
+                    LockWaitOutcome::Done
+                    | LockWaitOutcome::TransientError
+                    | LockWaitOutcome::Dangling
+                    | LockWaitOutcome::AgeTimeout => continue,
+                    LockWaitOutcome::WaitTimeout
+                    | LockWaitOutcome::GiveUp
+                    | LockWaitOutcome::Abandoned { .. } => return bypass(),
+                }
+            }
+            cache.cache_miss();
+            metrics.record_response_cache_outcome(ResponseCacheOutcome::Miss);
+            return H3CacheLookup::Miss(H3CacheMiss {
+                cache: Some(cache),
+                policy: Some(policy),
+            });
+        }
+        bypass()
+    }
+
     async fn send_upstream_request(
         backend: &str,
         request: UpstreamRequest,
         circuit_breakers: &crate::resilience::circuit_breaker::CircuitBreakers,
         transport: &UpstreamTransportPool,
-    ) -> Result<Response<Incoming>, ProxyError> {
+    ) -> Result<UpstreamExchangeResponse, ProxyError> {
         let breaker_permit =
             ForwardingSelectionService::allow_backend_request(circuit_breakers, backend)?;
 
-        let send_result = transport.send_backend_request(backend, request).await;
+        let (request, _cancellation, _completion) = Self::into_upstream_exchange_request(request)?;
+        let send_result = transport.send_exchange(backend, request).await;
         if send_result.is_ok() {
             breaker_permit.record_success();
         } else {
@@ -95,22 +320,59 @@ impl QUICListener {
         send_result
     }
 
-    async fn send_upstream_upgrade_request(
-        backend: &str,
+    pub(in crate::quic_listener) fn into_upstream_exchange_request(
         request: UpstreamRequest,
-        circuit_breakers: &crate::resilience::circuit_breaker::CircuitBreakers,
-        transport: &UpstreamTransportPool,
-    ) -> Result<impulse_transport::BackendUpgradeResponse, ProxyError> {
-        let breaker_permit =
-            ForwardingSelectionService::allow_backend_request(circuit_breakers, backend)?;
-
-        let send_result = transport.send_http1_upgrade_request(backend, request).await;
-        if send_result.is_ok() {
-            breaker_permit.record_success();
-        } else {
-            breaker_permit.record_failure();
+    ) -> Result<
+        (
+            UpstreamExchangeRequest,
+            oneshot::Sender<()>,
+            oneshot::Receiver<UpstreamExchangeCompletion>,
+        ),
+        ProxyError,
+    > {
+        let (parts, mut body) = request.into_parts();
+        let (frames, frame_rx) = mpsc::channel(REQUEST_CHUNK_CHANNEL_CAPACITY);
+        let body_pump = async move {
+            while let Some(frame) = body.frame().await {
+                let frame = match frame {
+                    Ok(frame) => match frame.into_data() {
+                        Ok(data) => UpstreamBodyFrame::Data(data),
+                        Err(frame) => {
+                            let Ok(headers) = frame.into_trailers() else {
+                                continue;
+                            };
+                            UpstreamBodyFrame::Trailers(headers)
+                        }
+                    },
+                    Err(never) => match never {},
+                };
+                if frames.send(Ok(frame)).await.is_err() {
+                    return;
+                }
+            }
+        };
+        if !spawn_async_task(body_pump, "upstream-exchange-request-body") {
+            return Err(ProxyError::Transport("runtime unavailable".into()));
         }
-        send_result
+        let (cancellation, cancellation_signal) = oneshot::channel();
+        let (completion_signal, completion) = oneshot::channel();
+        Ok((
+            UpstreamExchangeRequest {
+                head: UpstreamRequestHead {
+                    method: parts.method,
+                    uri: parts.uri,
+                    version: parts.version,
+                    headers: parts.headers,
+                },
+                body: frame_rx,
+                cancellation: UpstreamCancellation {
+                    signal: cancellation_signal,
+                },
+                completion: completion_signal,
+            },
+            cancellation,
+            completion,
+        ))
     }
 
     async fn forward_http1_websocket_tunnel(
@@ -125,41 +387,31 @@ impl QUICListener {
             mut body_rx,
         } = input;
         let request = pending_forward.build_http1_websocket_tunnel_request(&endpoint)?;
-        let mut response = Self::send_upstream_upgrade_request(
-            backend.as_ref(),
-            request,
-            circuit_breakers,
-            transport,
-        )
-        .await?;
+        let response =
+            Self::send_upstream_request(backend.as_ref(), request, circuit_breakers, transport)
+                .await?;
 
-        if response.response().status() != StatusCode::SWITCHING_PROTOCOLS {
-            let response = response.into_response();
-            let status = response.status();
-            let headers = response.headers().clone();
+        if response.head.status != StatusCode::SWITCHING_PROTOCOLS {
             return Ok(ForwardSuccess::Response {
-                status,
-                headers,
-                body: response.into_body(),
+                status: response.head.status,
+                headers: response.head.headers,
+                body: response.body,
+                cache_miss: None,
+                cache_hit: false,
             });
         }
 
-        let upgraded = upgrade::on(response.response_mut());
-        let headers = response.response().headers().clone();
-        let (_response, tunnel_lease) = response.into_parts();
+        let headers = response.head.headers;
+        let upgrade = response.upgrade.ok_or_else(|| {
+            ProxyError::Protocol("HTTP/1 upgrade response did not provide a tunnel".into())
+        })?;
+        let tunnel = upgrade
+            .tunnel
+            .await
+            .map_err(|_| ProxyError::Transport("upstream tunnel task stopped".into()))??;
         let (chunk_tx, chunk_rx) = mpsc::channel(RESPONSE_CHUNK_CHANNEL_CAPACITY);
         let fut = async move {
-            let _tunnel_lease = tunnel_lease;
-            let upgraded = match upgraded.await {
-                Ok(upgraded) => upgraded,
-                Err(err) => {
-                    let _ = chunk_tx
-                        .send(ResponseChunk::Error(ProxyError::Transport(err.to_string())))
-                        .await;
-                    return;
-                }
-            };
-            let io = TokioIo::new(upgraded);
+            let impulse_transport::UpstreamTunnel { io, lifecycle } = tunnel;
             let (mut reader, mut writer) = tokio::io::split(io);
             let write_fut = async {
                 while let Some(chunk) = body_rx.recv().await {
@@ -188,11 +440,20 @@ impl QUICListener {
             match tokio::try_join!(write_fut, read_fut) {
                 Ok(((), ())) => {
                     let _ = chunk_tx.send(ResponseChunk::End).await;
+                    let _ = lifecycle.completion.send(UpstreamExchangeCompletion {
+                        outcome: UpstreamExchangeOutcome::Completed,
+                        connection_reuse: UpstreamConnectionReuse::Close,
+                    });
                 }
                 Err(err) => {
+                    let detail = err.to_string();
                     let _ = chunk_tx
-                        .send(ResponseChunk::Error(ProxyError::Transport(err.to_string())))
+                        .send(ResponseChunk::Error(ProxyError::Transport(detail.clone())))
                         .await;
+                    let _ = lifecycle.completion.send(UpstreamExchangeCompletion {
+                        outcome: UpstreamExchangeOutcome::Failed(ProxyError::Transport(detail)),
+                        connection_reuse: UpstreamConnectionReuse::Close,
+                    });
                 }
             }
         };
@@ -207,28 +468,37 @@ impl QUICListener {
 
     fn resolve_alternate_backend(
         upstream_pool: &Arc<RwLock<UpstreamPool>>,
+        selector: &GenerationSelector<RuntimeBackendTlsPolicy>,
+        generation: u64,
+        lb_key: &str,
         primary_index: usize,
+        metrics: &Metrics,
     ) -> ResolvedAlternateBackend {
-        let Ok(pool) = upstream_pool.read() else {
-            return ResolvedAlternateBackend::Unavailable {
+        match ForwardingSelectionService::select_backend_excluding(
+            selector,
+            upstream_pool,
+            generation,
+            lb_key,
+            &[primary_index],
+            false,
+            metrics,
+        ) {
+            Ok(Some(BackendCandidate { address, .. })) => {
+                ResolvedAlternateBackend::Selected { address }
+            }
+            Ok(None) => {
+                let reason = match upstream_pool.read() {
+                    Ok(pool) if pool.membership_summary().healthy_backends == 0 => {
+                        AlternateBackendFailureReason::NoHealthyBackends
+                    }
+                    Ok(_) => AlternateBackendFailureReason::OnlyExcludedBackendsHealthy,
+                    Err(_) => AlternateBackendFailureReason::PoolUnavailable,
+                };
+                ResolvedAlternateBackend::Unavailable { reason }
+            }
+            Err(_) => ResolvedAlternateBackend::Unavailable {
                 reason: AlternateBackendFailureReason::PoolUnavailable,
-            };
-        };
-        match choose_alternate_backend(&pool, &[primary_index], None) {
-            AlternateBackendDecision::Select(choice) => {
-                if let Some(address) = pool.backend_address(choice.index) {
-                    ResolvedAlternateBackend::Selected {
-                        address: address.to_string(),
-                    }
-                } else {
-                    ResolvedAlternateBackend::Unavailable {
-                        reason: AlternateBackendFailureReason::BackendAddressMissing,
-                    }
-                }
-            }
-            AlternateBackendDecision::DoNotSelect { denial } => {
-                ResolvedAlternateBackend::Unavailable { reason: denial }
-            }
+            },
         }
     }
 
@@ -253,7 +523,7 @@ impl QUICListener {
     async fn retry_primary_error(
         primary_err: ProxyError,
         retry_ctx: RetryExecutionCtx<'_>,
-    ) -> Result<Response<Incoming>, ProxyError> {
+    ) -> Result<UpstreamExchangeResponse, ProxyError> {
         let RetryExecutionCtx {
             request_id,
             route_name,
@@ -346,9 +616,24 @@ impl QUICListener {
         let backend_endpoints = Arc::clone(&exec_ctx.backend_endpoints);
         let transport = Arc::clone(&exec_ctx.transport_pool);
         let hedge_delay = resilience.hedging_delay;
-        let alternate_backend = req.upstream_pool.as_ref().map(|upstream_pool| {
-            Self::resolve_alternate_backend(upstream_pool, pending_forward.backend_index)
-        });
+        let alternate_pool = req.upstream_pool.clone();
+        let alternate_selector = shared_ctx
+            .pingora_load_balancing
+            .selector(pending_forward.upstream_name.as_ref())
+            .cloned();
+        let alternate_generation = shared_ctx.generation;
+        let alternate_metrics = Arc::clone(&shared_ctx.metrics);
+        let response_cache_store = exec_ctx.response_cache;
+        let response_cache_namespace = exec_ctx.response_cache_namespace;
+        let response_cache_policy = shared_ctx
+            .upstream_policies
+            .get(pending_forward.upstream_name.as_ref())
+            .map(|policy| {
+                (
+                    policy.response_cache.clone(),
+                    route_auth_requires_cache_bypass(&policy.upstream_auth),
+                )
+            });
         let trace_span_for_upstream = req.trace_span.clone();
         let (result_tx, result_rx) = oneshot::channel::<UpstreamResult>();
         let tunnel_mode = req.tunnel_mode;
@@ -359,7 +644,9 @@ impl QUICListener {
         let hedge_configured =
             resilience.hedging_route_enabled_for(pending_forward.upstream_name.as_ref());
         let hedge_tunnel_request = req.tunnel_mode != TunnelMode::None;
-        let policy = RetryHedgePolicyInputs::new(
+        let needs_alternate_before_primary =
+            hedge_configured && hedge_method_allowed && bodyless_mode && !hedge_tunnel_request;
+        let policy = RetryCoordinator::new(
             method_idempotent,
             bodyless_mode,
             hedge_method_allowed,
@@ -367,6 +654,27 @@ impl QUICListener {
             hedge_tunnel_request,
         );
         let fut = async move {
+            let resolve_alternate = || {
+                alternate_pool.as_ref().map(|upstream_pool| {
+                    let Some(selector) = alternate_selector.as_ref() else {
+                        alternate_metrics.inc_pingora_lb_selector_failure();
+                        return ResolvedAlternateBackend::Unavailable {
+                            reason: AlternateBackendFailureReason::PoolUnavailable,
+                        };
+                    };
+                    Self::resolve_alternate_backend(
+                        upstream_pool,
+                        selector,
+                        alternate_generation,
+                        pending_forward.lb_key.as_ref(),
+                        pending_forward.backend_index,
+                        alternate_metrics.as_ref(),
+                    )
+                })
+            };
+            let mut alternate_backend = needs_alternate_before_primary
+                .then(resolve_alternate)
+                .flatten();
             let route_name = pending_forward.upstream_name.as_ref();
             let primary_backend = pending_forward.backend_addr.as_ref();
             let circuit_breakers = circuit_breakers.as_ref();
@@ -374,6 +682,30 @@ impl QUICListener {
             let transport_pool = transport.as_ref();
             let mut policy_telemetry = ForwardingPolicyTelemetry::default();
             let result: ForwardResult = async {
+                let cache_miss = if let (
+                    Some(cache_store),
+                    Some((cache_policy, route_auth_enabled)),
+                ) = (response_cache_store, response_cache_policy)
+                {
+                    match Self::lookup_h3_response_cache(H3CacheLookupInput {
+                        cache_store,
+                        metrics: alternate_metrics.as_ref(),
+                        policy: cache_policy,
+                        route_auth_enabled,
+                        pending_forward: pending_forward.as_ref(),
+                        namespace: response_cache_namespace,
+                        has_body: !bodyless_mode,
+                        is_tunnel: tunnel_mode != TunnelMode::None,
+                    })
+                    .await
+                    {
+                        H3CacheLookup::Hit(response) => return Ok(response),
+                        H3CacheLookup::Miss(cache) => Some(cache),
+                        H3CacheLookup::Bypass => None,
+                    }
+                } else {
+                    None
+                };
                 retry_budget.mark_primary(route_name);
 
                 let forward_success: ForwardSuccess = if tunnel_mode == TunnelMode::Websocket
@@ -399,7 +731,7 @@ impl QUICListener {
                     })?;
                     let (alternate_backend_available, alternate_backend_failure) =
                         alternate_backend_policy_state(alternate_backend.as_ref());
-                    let response: Response<Incoming> = match policy.hedge_before_delay(
+                    let response: UpstreamExchangeResponse = match policy.hedge_before_delay(
                         alternate_backend_available,
                         alternate_backend_failure,
                     ) {
@@ -533,7 +865,10 @@ impl QUICListener {
                             .await
                             {
                                 Ok(response) => response,
-                                Err(primary_err) => Self::retry_primary_error(
+                                Err(primary_err) => {
+                                    alternate_backend =
+                                        alternate_backend.or_else(resolve_alternate);
+                                    Self::retry_primary_error(
                                         primary_err,
                                         RetryExecutionCtx {
                                             request_id,
@@ -548,7 +883,8 @@ impl QUICListener {
                                             transport: transport_pool,
                                         },
                                     )
-                                    .await?,
+                                    .await?
+                                }
                             }
                         }
                         HedgePolicyDecision::Hedge { reason } => {
@@ -568,7 +904,10 @@ impl QUICListener {
                             .await
                             {
                                 Ok(response) => response,
-                                Err(primary_err) => Self::retry_primary_error(
+                                Err(primary_err) => {
+                                    alternate_backend =
+                                        alternate_backend.or_else(resolve_alternate);
+                                    Self::retry_primary_error(
                                         primary_err,
                                         RetryExecutionCtx {
                                             request_id,
@@ -583,16 +922,18 @@ impl QUICListener {
                                             transport: transport_pool,
                                         },
                                     )
-                                    .await?,
+                                    .await?
+                                }
                             }
                         }
                     };
 
-                    let (parts, body) = response.into_parts();
                     ForwardSuccess::Response {
-                        status: parts.status,
-                        headers: parts.headers,
-                        body,
+                        status: response.head.status,
+                        headers: response.head.headers,
+                        body: response.body,
+                        cache_miss: cache_miss.and_then(H3CacheMiss::into_parts),
+                        cache_hit: false,
                     }
                 };
                 Ok(forward_success)

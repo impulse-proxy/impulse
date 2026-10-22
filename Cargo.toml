@@ -12,6 +12,7 @@ members = [
 resolver = "2"
 
 [workspace.dependencies]
+async-trait = "0.1"
 boring = "4.3"
 base64 = "0.22"
 bytes = "1.10.1"
@@ -20,15 +21,14 @@ env_logger = "0.11.3"
 http = "1.3.1"
 http-body-util = "0.1"
 hyper = "1"
-hyper-util = { version = "0.1", features = ["full"] }
+hyper-util = "0.1"
 hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "http2", "webpki-roots", "ring"] }
-rustls = { version = "0.23", default-features = false, features = ["ring"] }
+rustls = { version = "0.23.46", default-features = false, features = ["ring"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
 log = "0.4.28"
 quiche = { version = "0.24.6", default-features = false, features = ["boringssl-boring-crate"] }
 rand = "0.8"
 rustls-pki-types = "1.12.0"
-webpki-roots = "0.26"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_yaml = "0.9"
@@ -47,6 +47,12 @@ opentelemetry = "0.28.0"
 opentelemetry_sdk = { version = "0.28.0", features = ["rt-tokio"] }
 opentelemetry-otlp = { version = "0.28.0", features = ["grpc-tonic", "trace"] }
 redis = { version = "0.27", features = ["tokio-comp"] }
+pingora-cache = { version = "=0.9.0", default-features = false }
+pingora-core = { version = "=0.9.0", default-features = false }
+pingora-error = "=0.9.0"
+pingora-http = { version = "=0.9.0", default-features = false }
+pingora-load-balancing = { version = "=0.9.0", default-features = false }
+pingora-proxy = { version = "=0.9.0", default-features = false, features = ["rustls", "connection_filter", "upstream_modules"] }
 
 [workspace.package]
 version = "0.6.0"

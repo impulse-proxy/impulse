@@ -3,8 +3,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use impulse_config::config::HealthCheck;
-
 use crate::{
     backend::BackendState,
     health::{HealthFailureReason, HealthTransition},
@@ -56,11 +54,6 @@ impl BackendPool {
     #[must_use]
     pub fn len(&self) -> usize {
         self.backends.len()
-    }
-
-    #[must_use = "this returns a bool, it does not modify the pool"]
-    pub fn is_empty(&self) -> bool {
-        self.backends.is_empty()
     }
 
     pub fn address(&self, index: usize) -> Option<&str> {
@@ -205,15 +198,6 @@ impl BackendPool {
         transition
     }
 
-    /// True when any backend is passively ejected and pending transition into
-    /// the probe-eligible recovery state.
-    /// Clock-free so the read-locked hot path pays only a branch (no syscall):
-    /// while something is pending, callers take the write-locked slow path where
-    /// `reconcile_readmit` checks the actual cooldown clock.
-    pub fn readmit_due(&self) -> bool {
-        self.earliest_readmit.is_some()
-    }
-
     /// Advance passively-ejected backends into probe eligibility once their
     /// cooldown has elapsed. Reads the clock only when recovery is actually
     /// pending, keeping the healthy pick path syscall-free.
@@ -244,16 +228,6 @@ impl BackendPool {
             }
         }
         self.earliest_readmit = next;
-    }
-
-    pub fn health_check(&self, index: usize) -> Option<HealthCheck> {
-        self.backends
-            .get(index)
-            .and_then(|b| b.health_check().cloned())
-    }
-
-    pub fn healthy_indices(&self) -> Vec<usize> {
-        self.healthy.clone()
     }
 
     #[must_use]
@@ -450,11 +424,11 @@ mod tests {
         health::{HealthFailureReason, HealthTransition},
     };
 
-    fn create_backend_state(address: &str, weight: u32) -> BackendState {
+    fn create_backend_state(address: &str) -> BackendState {
         BackendState::new(&Backend {
             id: format!("backend-{address}"),
             address: address.to_string(),
-            weight,
+            weight: 1,
             health_check: Some(HealthCheck {
                 path: "/health".to_string(),
                 interval: 1000,
@@ -468,7 +442,7 @@ mod tests {
 
     #[test]
     fn backend_pool_epoch_changes_only_on_health_membership_transition() {
-        let mut pool = BackendPool::new_from_states(vec![create_backend_state("10.0.0.1:1", 1)]);
+        let mut pool = BackendPool::new_from_states(vec![create_backend_state("10.0.0.1:1")]);
         assert_eq!(pool.membership_epoch(), 0);
 
         pool.mark_failure(0);
@@ -491,23 +465,23 @@ mod tests {
     #[test]
     fn healthy_cache_tracks_membership_changes_without_duplicates() {
         let mut pool = BackendPool::new_from_states(vec![
-            create_backend_state("10.0.0.1:1", 1),
-            create_backend_state("10.0.0.2:1", 1),
-            create_backend_state("10.0.0.3:1", 1),
+            create_backend_state("10.0.0.1:1"),
+            create_backend_state("10.0.0.2:1"),
+            create_backend_state("10.0.0.3:1"),
         ]);
 
-        assert_eq!(pool.healthy_indices(), vec![0, 1, 2]);
+        assert_eq!(pool.healthy, vec![0, 1, 2]);
 
         pool.mark_failure(1);
         pool.mark_failure(1);
         pool.mark_failure(1);
-        assert_eq!(pool.healthy_indices(), vec![0, 2]);
+        assert_eq!(pool.healthy, vec![0, 2]);
 
         pool.mark_failure(1);
-        assert_eq!(pool.healthy_indices(), vec![0, 2]);
+        assert_eq!(pool.healthy, vec![0, 2]);
 
         pool.mark_success(1);
-        let healthy = pool.healthy_indices();
+        let healthy = &pool.healthy;
         assert_eq!(healthy.len(), 3);
         assert!(healthy.contains(&0));
         assert!(healthy.contains(&1));
@@ -516,14 +490,14 @@ mod tests {
 
     #[test]
     fn backend_recovers_after_success_threshold() {
-        let mut pool = BackendPool::new_from_states(vec![create_backend_state("10.0.0.1:1", 1)]);
+        let mut pool = BackendPool::new_from_states(vec![create_backend_state("10.0.0.1:1")]);
         pool.mark_failure(0);
         pool.mark_failure(0);
         pool.mark_failure(0);
 
-        assert!(pool.healthy_indices().is_empty());
+        assert!(pool.healthy.is_empty());
         pool.mark_success(0);
-        assert_eq!(pool.healthy_indices(), vec![0]);
+        assert_eq!(pool.healthy, vec![0]);
     }
 
     #[test]
@@ -551,15 +525,15 @@ mod tests {
             Some(HealthTransition::BecameUnhealthy)
         ));
         assert_eq!(pool.healthy_len(), 0);
-        assert!(pool.readmit_due());
+        assert!(pool.earliest_readmit.is_some());
 
         pool.reconcile_readmit_at(Instant::now());
         assert_eq!(pool.healthy_len(), 0);
-        assert!(pool.readmit_due());
+        assert!(pool.earliest_readmit.is_some());
 
         pool.reconcile_readmit_at(Instant::now() + Duration::from_millis(10_001));
         assert_eq!(pool.healthy_len(), 0);
-        assert!(!pool.readmit_due());
+        assert!(pool.earliest_readmit.is_none());
         assert!(pool.backend(0).is_some_and(BackendState::is_probing));
 
         let transition = pool.mark_success(0);
@@ -653,14 +627,14 @@ mod tests {
         pool.reconcile_readmit_at(Instant::now() + Duration::from_millis(10_001));
 
         assert!(pool.backend(0).is_some_and(BackendState::is_probing));
-        assert!(!pool.readmit_due());
+        assert!(pool.earliest_readmit.is_none());
 
         assert!(
             pool.mark_request_failure(0, HealthFailureReason::Transport)
                 .is_none()
         );
         assert!(!pool.backend(0).is_some_and(BackendState::is_probing));
-        assert!(pool.readmit_due());
+        assert!(pool.earliest_readmit.is_some());
     }
 
     #[test]
@@ -695,7 +669,7 @@ mod tests {
 
     #[test]
     fn request_failure_records_penalty_sample_for_unsampled_backend() {
-        let mut pool = BackendPool::new_from_states(vec![create_backend_state("10.0.0.1:1", 1)]);
+        let mut pool = BackendPool::new_from_states(vec![create_backend_state("10.0.0.1:1")]);
 
         let transition = pool.observe_request_failure(
             0,
@@ -712,7 +686,7 @@ mod tests {
 
     #[test]
     fn request_failure_penalty_overrides_fast_transport_sample() {
-        let mut pool = BackendPool::new_from_states(vec![create_backend_state("10.0.0.1:1", 1)]);
+        let mut pool = BackendPool::new_from_states(vec![create_backend_state("10.0.0.1:1")]);
 
         pool.finish_request(0, Duration::from_millis(20), None);
         pool.observe_request_failure(
@@ -729,7 +703,7 @@ mod tests {
 
     #[test]
     fn request_failure_with_active_health_check_still_records_penalty_sample() {
-        let mut pool = BackendPool::new_from_states(vec![create_backend_state("10.0.0.1:1", 1)]);
+        let mut pool = BackendPool::new_from_states(vec![create_backend_state("10.0.0.1:1")]);
 
         let transition = pool.observe_request_failure(
             0,

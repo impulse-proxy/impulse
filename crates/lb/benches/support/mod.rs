@@ -7,11 +7,7 @@ use impulse_config::{
 use impulse_lb::upstream_pool::UpstreamPool;
 
 pub const BACKEND_COUNTS: [usize; 4] = [1, 10, 100, 1_000];
-pub const STRATEGIES: [(&str, &str); 6] = [
-    ("round_robin", "round-robin"),
-    ("random", "random"),
-    ("consistent_hash", "consistent-hash"),
-    ("sticky_cid", "sticky-cid"),
+pub const STRATEGIES: [(&str, &str); 2] = [
     ("least_connections", "least-connections"),
     ("latency_aware", "latency-aware"),
 ];
@@ -28,6 +24,8 @@ pub fn runtime_upstream(backend_count: usize, strategy: &str) -> RuntimeUpstream
             auth: Default::default(),
             host_policy: Default::default(),
             forwarded_headers: Default::default(),
+            compression: Default::default(),
+            cache: Default::default(),
             tls: None,
             route: RouteMatch {
                 host: None,

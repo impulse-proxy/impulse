@@ -60,7 +60,7 @@ fn runtime_config_keeps_generation_policies_normalized_and_listener_inputs_raw()
         config.observability.tracing.otlp_endpoint =
             Some("http://otel-collector.internal:4317".to_string());
     });
-    let policies = runtime.policies();
+    let policies = &runtime.policies;
     let listener = primary_listener_runtime_config(&runtime);
 
     assert_eq!(
@@ -183,12 +183,12 @@ fn runtime_config_excludes_log_sink_shape_from_generation_owned_runtime_state() 
     });
 
     assert_eq!(
-        plain_runtime.policies().timeouts,
-        json_runtime.policies().timeouts
+        plain_runtime.policies.timeouts,
+        json_runtime.policies.timeouts
     );
     assert_eq!(
-        plain_runtime.policies().transport,
-        json_runtime.policies().transport
+        plain_runtime.policies.transport,
+        json_runtime.policies.transport
     );
     assert_eq!(plain_runtime.listeners.len(), json_runtime.listeners.len());
     assert_eq!(

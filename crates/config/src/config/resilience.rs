@@ -529,7 +529,7 @@ impl DistributedQuotaWindow {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
 #[serde(default)]
 #[serde(deny_unknown_fields)]
 pub struct ProtocolPolicy {

@@ -2,11 +2,11 @@ use super::*;
 use crate::routing::util::{canonical_request_target, request_path_is_ambiguous};
 
 #[derive(Debug)]
-pub(super) struct RequestValidationResult {
-    pub(super) method: String,
-    pub(super) path: String,
-    pub(super) authority: Option<String>,
-    pub(super) content_length: Option<usize>,
+pub(crate) struct RequestValidationResult {
+    pub(crate) method: String,
+    pub(crate) path: String,
+    pub(crate) authority: Option<String>,
+    pub(crate) content_length: Option<usize>,
     pub(super) websocket_tunnel: bool,
 }
 
@@ -300,11 +300,13 @@ pub(super) fn validate_request_headers(
     )
 }
 
-pub(in crate::quic_listener) fn validate_http_request(
-    req: &http::Request<Incoming>,
+pub(crate) fn validate_http_request_parts(
+    method: &http::Method,
+    uri: &http::Uri,
+    headers: &http::HeaderMap,
     resilience: &RuntimeResilience,
 ) -> Result<RequestValidationResult, (http::StatusCode, &'static [u8], bool)> {
-    let header_count = req.headers().len().saturating_add(2);
+    let header_count = headers.len().saturating_add(2);
     if header_count > resilience.max_headers_count {
         return Err((
             http::StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE,
@@ -313,10 +315,9 @@ pub(in crate::quic_listener) fn validate_http_request(
         ));
     }
 
-    let mut header_bytes = req.method().as_str().len() + req.uri().path().len();
-    let authority = req.uri().authority().map(|a| a.as_str().to_owned());
-    let host = req
-        .headers()
+    let mut header_bytes = method.as_str().len() + uri.path().len();
+    let authority = uri.authority().map(|a| a.as_str().to_owned());
+    let host = headers
         .get(http::header::HOST)
         .map(|v| {
             v.to_str().map(str::to_owned).map_err(|_| {
@@ -337,7 +338,7 @@ pub(in crate::quic_listener) fn validate_http_request(
             header_bytes.saturating_add(http::header::HOST.as_str().len() + host_value.len());
     }
 
-    for (name, value) in req.headers() {
+    for (name, value) in headers {
         header_bytes = header_bytes.saturating_add(name.as_str().len() + value.as_bytes().len());
         if header_bytes > resilience.max_headers_bytes {
             return Err((
@@ -348,15 +349,11 @@ pub(in crate::quic_listener) fn validate_http_request(
         }
     }
 
-    let path = req
-        .uri()
-        .path_and_query()
-        .map(|pq| pq.as_str())
-        .unwrap_or("/");
-    let content_length = parse_http_content_length(req.headers())?;
+    let path = uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/");
+    let content_length = parse_http_content_length(headers)?;
 
     validate_request_parts(
-        req.method().as_str().to_string(),
+        method.as_str().to_string(),
         path.to_string(),
         authority,
         host,

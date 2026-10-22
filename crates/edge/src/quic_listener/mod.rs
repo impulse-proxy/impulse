@@ -1,7 +1,7 @@
 //! Internal listener subsystem façade.
 //!
 //! This module owns startup, worker orchestration, request ingress, and
-//! control-plane wiring for the QUIC and bootstrap listeners. The crate root
+//! control-plane wiring for the QUIC listener. The crate root
 //! re-exports the narrow worker/runtime entrypoints that external callers should
 //! depend on.
 
@@ -21,8 +21,7 @@ use boring::{
 use bytes::Bytes;
 use http::{Request, Response, StatusCode};
 use http_body_util::{BodyExt, combinators::BoxBody};
-use hyper::{body::Incoming, upgrade};
-use hyper_util::rt::TokioIo;
+use hyper::body::Incoming;
 #[cfg(test)]
 use impulse_bridge::response::should_strip_response_header;
 use impulse_bridge::response::{
@@ -39,7 +38,7 @@ use impulse_config::{
     },
 };
 use impulse_errors::{PoolError, ProxyError};
-use impulse_lb::{health::HealthFailureReason, upstream_pool::UpstreamPool};
+use impulse_lb::upstream_pool::UpstreamPool;
 use impulse_transport::{SharedDnsResolver, UpstreamTransportPool};
 use log::{debug, error, info, warn};
 use quiche::{Config, h3::NameValue};
@@ -47,7 +46,10 @@ use rand::RngCore;
 use rustls::{
     RootCertStore, ServerConfig as RustlsServerConfig,
     pki_types::{CertificateDer, PrivateKeyDer},
-    server::{ClientHello, ResolvesServerCert, ResolvesServerCertUsingSni, WebPkiClientVerifier},
+    server::{
+        ClientHello, ResolvesServerCert, ResolvesServerCertUsingSni, WebPkiClientVerifier,
+        danger::ClientCertVerifier,
+    },
     sign::CertifiedKey,
 };
 use rustls_pki_types::pem::PemObject;
@@ -56,8 +58,6 @@ use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     sync::{Semaphore, mpsc, mpsc::error::TrySendError, oneshot},
 };
-#[cfg(test)]
-use tokio_rustls::TlsAcceptor;
 use tracing::{Instrument, info_span};
 
 #[cfg(test)]
@@ -81,7 +81,6 @@ use crate::{
             response::{ForwardResult, ForwardSuccess, ResponseChunk, UpstreamResult},
             stream::{CancellationReason, TerminalReason, TunnelMode},
         },
-        health::{HealthClassification, outcome_from_status},
         listener::QUICListener,
         tasks::RuntimeTaskRegistry,
         tls::{
@@ -98,52 +97,51 @@ use crate::{
 mod admission;
 mod async_runtime;
 mod backend_resolution;
-mod bootstrap;
-mod bootstrap_tls;
 mod connection;
 mod control_api;
 mod control_plane;
 mod forwarding;
-mod health_check;
 mod metrics;
+mod pingora_health;
 mod protocol;
 mod runtime_endpoint;
 mod runtime_state;
 mod shutdown;
 mod startup;
 mod tls_runtime;
-mod token_bucket;
 mod validation;
 mod workers;
 
+pub(crate) use admission::{
+    AdmissionPolicyDecision, admission_rejection_response, evaluate_forwarding_pre_admission_policy,
+};
 pub use async_runtime::configure_async_runtime;
 pub(in crate::quic_listener) use async_runtime::{
     runtime_handle, spawn_async_task, spawn_supervised_async_task,
 };
-#[cfg(test)]
-use bootstrap::BootstrapStartupState;
 use connection::maybe_log_quic_connection_error;
 #[cfg(test)]
 pub(crate) use connection::purge_connection_routes;
 #[cfg(test)]
 use connection::resolve_primary_from_radix_prefix;
 pub(crate) use connection::{ConnectionRoutes, sweep_closed_connections};
+pub(crate) use forwarding::{
+    BackendCandidate, ForwardingSelectionService, MAX_UPSTREAM_RETRY_ATTEMPTS, RetryCoordinator,
+    TargetResolutionRequest,
+};
 use forwarding::{
     ForwardingExecutionCtx, ForwardingSharedCtx, H3RequestHandlingConfig, StreamProgressConfig,
 };
-#[cfg(test)]
-use health_check::classify_active_health_check_response;
 pub(in crate::quic_listener) use protocol::{
     can_poll_upstream_result, collect_h3_trailers, is_connect_method, is_tunnel_response,
 };
 #[cfg(test)]
 pub(in crate::quic_listener) use protocol::{
     connection_header_tokens, is_bodyless_request_mode, is_connect_tunnel_response,
-    should_strip_bootstrap_request_header, should_strip_bootstrap_response_header,
     should_strip_h3_response_header,
 };
 pub use runtime_state::ListenerWorkerRuntimeState;
-pub(crate) use token_bucket::{PerSourceTokenBucket, TokenBucket};
+pub(crate) use validation::validate_http_request_parts;
 use validation::{
     RequestBufferError, extract_header_value, generated_span_id, generated_trace_id,
     parse_traceparent, validate_request_headers,
@@ -172,7 +170,7 @@ struct ListenerRuntimeSettings {
     new_connections_burst: u32,
 }
 
-type LbHeaderLookup<'a> = dyn Fn(&str) -> Option<String> + 'a;
+type LbHeaderLookup<'a> = crate::request_pipeline::RequestHeaderLookup<'a>;
 
 impl QUICListener {
     fn random_reset_token() -> u128 {
@@ -396,6 +394,8 @@ impl QUICListener {
             routing_index: &self.routing_index,
             upstream_pools: &self.upstream_pools,
             upstream_policies: self.upstream_policies.as_ref(),
+            pingora_load_balancing: self.pingora_load_balancing.as_ref(),
+            generation: self.runtime_generation,
         };
         let exec_ctx = ForwardingExecutionCtx {
             transport_pool: Arc::clone(&self.transport_pool),
@@ -403,6 +403,11 @@ impl QUICListener {
             upstream_inflight: &self.upstream_inflight,
             global_inflight: Arc::clone(&self.global_inflight),
             inflight_acquire_wait: self.inflight_acquire_wait,
+            response_cache: self
+                .runtime_bundle
+                .as_ref()
+                .and_then(|runtime| runtime.response_cache()),
+            response_cache_namespace: self.response_cache_namespace,
         };
         let progress_config = StreamProgressConfig {
             backend_body_idle_timeout: self.backend_body_idle_timeout,
@@ -479,6 +484,8 @@ impl QUICListener {
             routing_index: &self.routing_index,
             upstream_pools: &self.upstream_pools,
             upstream_policies: self.upstream_policies.as_ref(),
+            pingora_load_balancing: self.pingora_load_balancing.as_ref(),
+            generation: self.runtime_generation,
         };
         let exec_ctx = ForwardingExecutionCtx {
             transport_pool: Arc::clone(&self.transport_pool),
@@ -486,6 +493,11 @@ impl QUICListener {
             upstream_inflight: &self.upstream_inflight,
             global_inflight: Arc::clone(&self.global_inflight),
             inflight_acquire_wait: self.inflight_acquire_wait,
+            response_cache: self
+                .runtime_bundle
+                .as_ref()
+                .and_then(|runtime| runtime.response_cache()),
+            response_cache_namespace: self.response_cache_namespace,
         };
         let progress_config = StreamProgressConfig {
             backend_body_idle_timeout: self.backend_body_idle_timeout,

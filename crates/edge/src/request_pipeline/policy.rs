@@ -1,27 +1,23 @@
 use impulse_config::{
     config::{ForwardedHeaderPolicy, UpstreamHostPolicy},
-    runtime::{RuntimeExternalAuth, RuntimeUpstreamPolicy},
+    runtime::{RuntimeExternalAuth, RuntimeResponseCompressionPolicy, RuntimeUpstreamPolicy},
 };
 
 use crate::runtime::connection::auth::{ExternalAuthFailureDisposition, ExternalAuthTaskConfig};
 
 /// Resolves the policies selected by route resolution independently of the
 /// ingress protocol.
-#[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct RequestPolicyService;
-
-impl RequestPolicyService {
-    pub(crate) fn resolve(upstream_policy: &RuntimeUpstreamPolicy) -> ResolvedRequestPolicy {
-        ResolvedRequestPolicy {
-            local_auth_policy: upstream_policy.clone(),
-            host_policy: upstream_policy.host.0.clone(),
-            forwarded_header_policy: upstream_policy.forwarded_headers.0.clone(),
-            external_auth: upstream_policy
-                .upstream_auth
-                .external_auth
-                .clone()
-                .map(ExternalAuthPlan::new),
-        }
+pub(crate) fn resolve_policy(upstream_policy: &RuntimeUpstreamPolicy) -> ResolvedRequestPolicy {
+    ResolvedRequestPolicy {
+        local_auth_policy: upstream_policy.clone(),
+        host_policy: upstream_policy.host.0.clone(),
+        forwarded_header_policy: upstream_policy.forwarded_headers.0.clone(),
+        response_compression: upstream_policy.response_compression.clone(),
+        external_auth: upstream_policy
+            .upstream_auth
+            .external_auth
+            .clone()
+            .map(ExternalAuthPlan::new),
     }
 }
 
@@ -32,6 +28,7 @@ pub(crate) struct ResolvedRequestPolicy {
     pub(crate) local_auth_policy: RuntimeUpstreamPolicy,
     pub(crate) host_policy: UpstreamHostPolicy,
     pub(crate) forwarded_header_policy: ForwardedHeaderPolicy,
+    pub(crate) response_compression: RuntimeResponseCompressionPolicy,
     pub(crate) external_auth: Option<ExternalAuthPlan>,
 }
 
@@ -73,7 +70,7 @@ mod tests {
             ..RuntimeUpstreamPolicy::default()
         };
 
-        let resolved = RequestPolicyService::resolve(&upstream_policy);
+        let resolved = resolve_policy(&upstream_policy);
 
         assert_eq!(
             resolved.host_policy.host.as_deref(),

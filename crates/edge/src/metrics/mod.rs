@@ -17,6 +17,7 @@ use impulse_lb::health::HealthFailureReason;
 
 use crate::{
     observability::{QuotaBackendHealthReason, QuotaPolicyDecision, QuotaPolicyReason},
+    request_pipeline::ResponseCompressionAction,
     runtime::activation::{RuntimeOperationOutcomeReason, RuntimeRejectionReason},
 };
 
@@ -26,6 +27,83 @@ mod support;
 #[cfg(test)]
 mod tests;
 mod types;
+
+#[derive(Clone, Copy)]
+pub(crate) enum PingoraDiscoveryRefreshOutcome {
+    Updated,
+    Unchanged,
+    RetainedFailure,
+    PublishFailed,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum ResponseCacheOutcome {
+    Hit,
+    Miss,
+    Bypass,
+    Rejection,
+    Eviction,
+    Expiry,
+    LockWait,
+}
+
+impl ResponseCacheOutcome {
+    const ALL: [Self; 7] = [
+        Self::Hit,
+        Self::Miss,
+        Self::Bypass,
+        Self::Rejection,
+        Self::Eviction,
+        Self::Expiry,
+        Self::LockWait,
+    ];
+    const COUNT: usize = Self::ALL.len();
+
+    const fn index(self) -> usize {
+        self as usize
+    }
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Hit => "hit",
+            Self::Miss => "miss",
+            Self::Bypass => "bypass",
+            Self::Rejection => "rejection",
+            Self::Eviction => "eviction",
+            Self::Expiry => "expiry",
+            Self::LockWait => "lock_wait",
+        }
+    }
+}
+
+impl PingoraDiscoveryRefreshOutcome {
+    const ALL: [Self; 4] = [
+        Self::Updated,
+        Self::Unchanged,
+        Self::RetainedFailure,
+        Self::PublishFailed,
+    ];
+    const COUNT: usize = Self::ALL.len();
+
+    const fn index(self) -> usize {
+        self as usize
+    }
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Updated => "updated",
+            Self::Unchanged => "unchanged",
+            Self::RetainedFailure => "retained_failure",
+            Self::PublishFailed => "publish_failed",
+        }
+    }
+}
+
+#[derive(Clone, Default)]
+struct PingoraDiscoveryState {
+    membership_generation: u64,
+    rebuild_duration_ns: u64,
+}
 
 #[allow(unused_imports)]
 pub(crate) use self::types::RequestLatencyStats;
@@ -103,6 +181,10 @@ pub struct Metrics {
     pub request_buffered_high_watermark_bytes: AtomicU64,
     pub request_buffer_limit_rejects: AtomicU64,
     pub response_prebuffer_limit_rejects: AtomicU64,
+    response_compression_outcomes: [AtomicU64; ResponseCompressionAction::COUNT],
+    response_compression_input_bytes: AtomicU64,
+    response_compression_output_bytes: AtomicU64,
+    response_cache_outcomes: [AtomicU64; ResponseCacheOutcome::COUNT],
     pub scid_rotations: AtomicU64,
     pub control_api_connection_limit_drops: AtomicU64,
     pub control_api_audit_event_drops: AtomicU64,
@@ -122,6 +204,12 @@ pub struct Metrics {
     pub runtime_preview_attempts: AtomicU64,
     pub runtime_active_generation: AtomicU64,
     pub runtime_history_depth: AtomicU64,
+    pub pingora_lb_selector_generation: AtomicU64,
+    pub pingora_lb_selector_rebuilds: AtomicU64,
+    pub pingora_lb_selector_failures: AtomicU64,
+    pub pingora_lb_selections: AtomicU64,
+    pingora_discovery_refresh_outcomes: [AtomicU64; PingoraDiscoveryRefreshOutcome::COUNT],
+    pingora_discovery_state: RwLock<HashMap<String, PingoraDiscoveryState>>,
     runtime_activation_outcomes: [AtomicU64; RuntimeOperationOutcomeReason::COUNT],
     runtime_rollback_outcomes: [AtomicU64; RuntimeOperationOutcomeReason::COUNT],
     pub retries_total: AtomicU64,

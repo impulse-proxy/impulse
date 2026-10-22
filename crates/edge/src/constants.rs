@@ -5,7 +5,6 @@
 //   Request path
 //   ├─ body channel:    REQUEST_CHUNK_CHANNEL_CAPACITY * REQUEST_CHUNK_BYTES_LIMIT
 //   │                   = 64 * 16 KiB = 1 MiB
-//   ├─ backpressure buf: REQUEST_BUFFERED_CHUNK_BYTES_LIMIT = 1 MiB (== MAX_REQUEST_BODY_BYTES)
 //   └─ hard request cap: MAX_REQUEST_BODY_BYTES = 1 MiB → 413 on breach
 //
 //   Response path
@@ -46,13 +45,6 @@ pub const QUIC_INITIAL_MAX_STREAMS_UNI: u64 = 100;
 /// what the transport layer permits.  Must be kept in sync.
 pub const MAX_STREAMS_PER_CONNECTION: usize = QUIC_INITIAL_MAX_STREAMS_BIDI as usize;
 
-/// Default hard cap on upstream response body bytes per stream (overridable via
-/// `performance.max_response_body_bytes`).  Streams exceeding this are aborted
-/// with a QUIC stream RST (H3_INTERNAL_ERROR) since response headers were already
-/// sent; no unbounded memory growth is possible.
-pub const MAX_RESPONSE_BODY_BYTES: usize = 100 * 1024 * 1024; // 100 MiB
-
-pub const MAX_INFLIGHT_PER_BACKEND: usize = 64;
 pub(crate) const DEFAULT_SCID_LEN_BYTES: usize = 16;
 pub(crate) const RESET_TOKEN_LEN_BYTES: usize = 16;
 pub(crate) const MIN_SCID_LEN_BYTES: usize = 8;
@@ -60,7 +52,6 @@ pub(crate) const MIN_SCID_LEN_BYTES: usize = 8;
 // Queue/backpressure controls for streaming request/response bodies.
 pub(crate) const REQUEST_CHUNK_CHANNEL_CAPACITY: usize = 64;
 pub(crate) const REQUEST_CHUNK_BYTES_LIMIT: usize = 16 * 1024;
-pub const REQUEST_BUFFERED_CHUNK_BYTES_LIMIT: usize = MAX_REQUEST_BODY_BYTES;
 pub(crate) const RESPONSE_CHUNK_CHANNEL_CAPACITY: usize = 16;
 pub(crate) const RESPONSE_CHUNK_BYTES_LIMIT: usize = 16 * 1024;
 

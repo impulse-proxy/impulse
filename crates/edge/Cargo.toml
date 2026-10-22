@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+async-trait.workspace = true
 boring.workspace = true
 base64.workspace = true
 log.workspace = true
@@ -18,12 +19,11 @@ impulse-utils = { path = "../utils" }
 bytes.workspace = true
 http.workspace = true
 http-body-util.workspace = true
-hyper.workspace = true
-hyper-util.workspace = true
+hyper = { workspace = true, features = ["client", "http1", "http2", "server"] }
+hyper-util = { workspace = true, features = ["client-legacy", "http1", "http2", "tokio"] }
 hyper-rustls.workspace = true
 tokio.workspace = true
 redis.workspace = true
-serial_test = "3"
 rand.workspace = true
 hmac = "0.12"
 sha2 = "0.10"
@@ -40,6 +40,10 @@ x509-parser = "0.16"
 core_affinity.workspace = true
 libc.workspace = true
 smallvec.workspace = true
+pingora-cache.workspace = true
+pingora-core.workspace = true
+pingora-http.workspace = true
+pingora-proxy.workspace = true
 
 [[test]]
 name = "regression"
@@ -51,13 +55,7 @@ harness = false
 
 [dev-dependencies]
 criterion = "0.5"
-rand.workspace = true
 rcgen = "0.12"
+serial_test = "3"
 tempfile = "3"
-bytes.workspace = true
-http.workspace = true
-http-body-util.workspace = true
-hyper.workspace = true
-hyper-util.workspace = true
-tokio.workspace = true
 serde_yaml.workspace = true

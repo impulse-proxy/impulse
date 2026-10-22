@@ -297,37 +297,34 @@ impl QUICListener {
         current: &RuntimeBundle,
         next: &RuntimeBundle,
     ) -> Option<TransitionRejection> {
-        for label in current
+        let current_listeners = &current
             .shared_state
             .generation_state()
-            .listener_runtime_configs
-            .keys()
+            .listener_runtime_configs;
+        let next_listeners = &next
+            .shared_state
+            .generation_state()
+            .listener_runtime_configs;
+        if next_listeners.len() < current_listeners.len()
+            && let Some(label) = current_listeners
+                .keys()
+                .find(|label| !next_listeners.contains_key(*label))
         {
-            if !next
-                .shared_state
-                .generation_state()
-                .listener_runtime_configs
-                .contains_key(label)
-            {
-                return Some(TransitionRejection::listener_bind_changed(label));
-            }
+            return Some(TransitionRejection::listener_bind_changed(label));
         }
 
-        let worker_count = next.runtime_config.performance.worker_threads.max(1);
-        for (label, listener_config) in next
-            .shared_state
-            .generation_state()
-            .listener_runtime_configs
-            .iter()
-        {
-            if current
-                .shared_state
-                .generation_state()
-                .listener_runtime_configs
-                .contains_key(label)
-            {
+        for (label, listener_config) in next_listeners.iter() {
+            if let Err(err) = Self::build_listener_tls_reload_state(listener_config) {
+                return Some(TransitionRejection::resource_preflight_failed(
+                    "Pingora listener TLS",
+                    label,
+                    err.to_string(),
+                ));
+            }
+            if current_listeners.contains_key(label) {
                 continue;
             }
+            let worker_count = listener_config.performance.worker_threads.max(1);
             if worker_count > 1 {
                 if let Err(err) = Self::bind_reuseport_sockets(listener_config, worker_count) {
                     return Some(TransitionRejection::resource_preflight_failed(
@@ -348,9 +345,9 @@ impl QUICListener {
                 "{}:{}",
                 listener_config.listen.listen.address, listener_config.listen.listen.port
             );
-            if let Err(err) = Self::probe_tcp_bind(&bind, "bootstrap TLS listener") {
+            if let Err(err) = Self::probe_tcp_bind(&bind, "Pingora listener") {
                 return Some(TransitionRejection::resource_preflight_failed(
-                    "bootstrap TLS listener",
+                    "Pingora listener",
                     label,
                     err,
                 ));
@@ -378,7 +375,7 @@ impl QUICListener {
             .shared_state
             .shared_services()
             .listener_tls_store
-            .bootstrap_server_config(&primary_listener_label)
+            .certificate_resolver(&primary_listener_label)
             .is_none()
         {
             return Some(TransitionRejection::raw_resource_message(format!(
@@ -471,6 +468,36 @@ impl QUICListener {
         next: &RuntimeBundle,
     ) -> Result<(), Vec<TransitionRejection>> {
         let mut authority = ReloadCompatibilityAuthority::new();
+
+        let cache_storage_limits = |runtime: &RuntimeBundle| {
+            runtime.runtime_config.upstreams.values().fold(
+                None,
+                |limits: Option<(usize, usize)>, upstream| {
+                    let policy = &upstream.policy.response_cache;
+                    Some(limits.map_or(
+                        (policy.max_bytes, policy.max_entries),
+                        |(max_bytes, max_entries)| {
+                            (
+                                max_bytes.max(policy.max_bytes),
+                                max_entries.max(policy.max_entries),
+                            )
+                        },
+                    ))
+                },
+            )
+        };
+        let current_cache_limits = cache_storage_limits(current);
+        let next_cache_limits = cache_storage_limits(next);
+        authority.note_restart_required_change(
+            "upstreams[].cache.max_bytes",
+            &current_cache_limits.map(|limits| limits.0),
+            &next_cache_limits.map(|limits| limits.0),
+        );
+        authority.note_restart_required_change(
+            "upstreams[].cache.max_entries",
+            &current_cache_limits.map(|limits| limits.1),
+            &next_cache_limits.map(|limits| limits.1),
+        );
 
         authority.note_restart_required_change(
             "log.file.enabled",

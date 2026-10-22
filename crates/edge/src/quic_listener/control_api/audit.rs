@@ -138,7 +138,7 @@ struct ControlApiBufferedAuditWriter {
 impl ControlApiBufferedAuditWriter {
     fn try_spawn(path: String, metrics: Arc<Metrics>) -> Option<Self> {
         #[cfg(test)]
-        if FORCE_AUDIT_WRITER_THREAD_SPAWN_FAILURE.load(std::sync::atomic::Ordering::Relaxed) {
+        if FORCE_AUDIT_WRITER_THREAD_SPAWN_FAILURE.with(std::cell::Cell::get) {
             return None;
         }
 
@@ -815,12 +815,13 @@ impl ControlApiAdminAuditEmitter {
 }
 
 #[cfg(test)]
-static FORCE_AUDIT_WRITER_THREAD_SPAWN_FAILURE: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
+thread_local! {
+    static FORCE_AUDIT_WRITER_THREAD_SPAWN_FAILURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
 
 #[cfg(test)]
 pub(super) fn force_audit_writer_thread_spawn_failure_for_test(enabled: bool) {
-    FORCE_AUDIT_WRITER_THREAD_SPAWN_FAILURE.store(enabled, std::sync::atomic::Ordering::Relaxed);
+    FORCE_AUDIT_WRITER_THREAD_SPAWN_FAILURE.set(enabled);
 }
 
 #[cfg(test)]

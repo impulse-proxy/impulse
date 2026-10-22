@@ -22,18 +22,18 @@ pub use self::{
         RuntimeAdmissionPolicy, RuntimeAlternateBackendPolicy, RuntimeApiKeyAuth,
         RuntimeAuthPolicy, RuntimeBackendAddressKind, RuntimeBackendConnectionPolicy,
         RuntimeBackendDnsPolicy, RuntimeBackendEndpoint, RuntimeBackendHealthCheck,
-        RuntimeBackendTlsPolicy, RuntimeBackendTransportKind, RuntimeBackendWeightPolicy,
-        RuntimeBrownoutPolicy, RuntimeCircuitBreakerPolicy, RuntimeConnectionLimits,
-        RuntimeExternalAuth, RuntimeExternalAuthFailureMode, RuntimeExternalAuthRequestHeader,
-        RuntimeHedgingPolicy, RuntimeJwtAuth, RuntimeJwtVerificationKey, RuntimeListenerPolicySet,
+        RuntimeBackendTlsPolicy, RuntimeBackendTransportKind, RuntimeBrownoutPolicy,
+        RuntimeCircuitBreakerPolicy, RuntimeConnectionLimits, RuntimeExternalAuth,
+        RuntimeExternalAuthFailureMode, RuntimeExternalAuthRequestHeader, RuntimeHedgingPolicy,
+        RuntimeJwtAuth, RuntimeJwtVerificationKey, RuntimeListenerPolicySet,
         RuntimeLoadBalancingPolicy, RuntimeLoadBalancingStrategy, RuntimePolicySet,
         RuntimeQuotaBackendFailurePolicy, RuntimeQuotaCounterBackend, RuntimeQuotaEnforcementMode,
         RuntimeQuotaLocalFallback, RuntimeQuotaPolicy, RuntimeQuotaPolicySet,
         RuntimeQuotaSelectorDimension, RuntimeQuotaSelectorMatcher, RuntimeQuotaWindow,
-        RuntimeRateLimitPolicy, RuntimeRequestKeySpec, RuntimeRetryBudgetPolicy,
-        RuntimeRouteHostPattern, RuntimeRouteMatchPolicy, RuntimeRouteQueuePolicy,
-        RuntimeScopedRateLimitPolicy, RuntimeTimeoutPolicy, RuntimeTransportPolicy,
-        RuntimeWatchdogPolicy,
+        RuntimeRateLimitPolicy, RuntimeRequestKeySpec, RuntimeResponseCachePolicy,
+        RuntimeResponseCompressionPolicy, RuntimeRetryBudgetPolicy, RuntimeRouteHostPattern,
+        RuntimeRouteMatchPolicy, RuntimeRouteQueuePolicy, RuntimeScopedRateLimitPolicy,
+        RuntimeTimeoutPolicy, RuntimeTransportPolicy, RuntimeWatchdogPolicy,
     },
     secrets::{
         FilesystemSecretProvider, LiteralSecretProvider, RuntimeResolvedSecret,
@@ -100,10 +100,6 @@ impl RuntimeConfig {
             .iter()
             .map(|(name, upstream)| (name.clone(), upstream.as_config_upstream()))
             .collect()
-    }
-
-    pub fn policies(&self) -> RuntimePolicySet {
-        self.policies.clone()
     }
 }
 
@@ -223,12 +219,6 @@ pub struct ListenerRuntimeConfig {
     pub observability: Observability,
 }
 
-impl ListenerRuntimeConfig {
-    pub fn policies(&self) -> RuntimeListenerPolicySet {
-        RuntimeListenerPolicySet::from_listener_runtime_config(self)
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimeListenerSource {
     LegacyListen,
@@ -272,21 +262,23 @@ pub struct RuntimeBackend {
     pub health_check: Option<RuntimeBackendHealthCheck>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RuntimeHostPolicy(pub UpstreamHostPolicy);
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RuntimeForwardedHeaderPolicy(pub ForwardedHeaderPolicy);
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RuntimeProtocolPolicy(pub ProtocolPolicy);
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RuntimeUpstreamPolicy {
     /// Upstream-owned auth policy selected after route lookup resolves an upstream.
     pub upstream_auth: RuntimeAuthPolicy,
     pub host: RuntimeHostPolicy,
     pub forwarded_headers: RuntimeForwardedHeaderPolicy,
+    pub response_cache: RuntimeResponseCachePolicy,
+    pub response_compression: RuntimeResponseCompressionPolicy,
     pub protocol: RuntimeProtocolPolicy,
 }
 
@@ -346,6 +338,8 @@ mod tests {
                 forwarded_headers: ForwardedHeaderPolicy {
                     mode: ForwardedHeaderPolicyMode::Append,
                 },
+                compression: Default::default(),
+                cache: Default::default(),
                 tls: None,
                 route: RouteMatch {
                     host: Some("api.example.com".to_string()),

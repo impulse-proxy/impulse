@@ -2,41 +2,28 @@ use std::sync::Arc;
 
 use crate::{request_pipeline::ResolvedRouteTarget, routing::index::RouteIndex};
 
-/// Shared route-index lookup service for protocol adapters.
-#[derive(Clone, Copy)]
-pub(crate) struct RouteResolutionService<'a> {
-    routing_index: &'a RouteIndex,
-}
-
-impl<'a> RouteResolutionService<'a> {
-    pub(crate) const fn new(routing_index: &'a RouteIndex) -> Self {
-        Self { routing_index }
+/// Resolves a validated HTTP method, path, and authority through the existing route index.
+pub(crate) fn resolve_route(
+    routing_index: &RouteIndex,
+    method: &str,
+    path: &str,
+    authority: Option<&str>,
+) -> Result<ResolvedRouteTarget, RouteResolutionError> {
+    if method.is_empty() || path.is_empty() {
+        return Err(RouteResolutionError::EmptyMethodOrPath);
     }
 
-    /// Resolves a validated HTTP method, path, and authority to an upstream route.
-    pub(crate) fn resolve(
-        self,
-        method: &str,
-        path: &str,
-        authority: Option<&str>,
-    ) -> Result<ResolvedRouteTarget, RouteResolutionError> {
-        if method.is_empty() || path.is_empty() {
-            return Err(RouteResolutionError::EmptyMethodOrPath);
-        }
+    let route = routing_index
+        .lookup_with_decision_for_method(path, authority, Some(method))
+        .ok_or(RouteResolutionError::NoRoute)?;
 
-        let route = self
-            .routing_index
-            .lookup_with_decision_for_method(path, authority, Some(method))
-            .ok_or(RouteResolutionError::NoRoute)?;
-
-        Ok(ResolvedRouteTarget {
-            upstream_name: Arc::from(route.upstream),
-            matched_path_len: route.matched_path_len,
-            host_specific: route.host_specific,
-            method_specific: route.method_specific,
-            reason: route.reason,
-        })
-    }
+    Ok(ResolvedRouteTarget {
+        upstream_name: Arc::from(route.upstream),
+        matched_path_len: route.matched_path_len,
+        host_specific: route.host_specific,
+        method_specific: route.method_specific,
+        reason: route.reason,
+    })
 }
 
 /// Route-lookup failures that ingress adapters map to their existing responses.
@@ -63,6 +50,8 @@ mod tests {
             auth: Default::default(),
             host_policy: Default::default(),
             forwarded_headers: Default::default(),
+            compression: Default::default(),
+            cache: Default::default(),
             tls: None,
             route: RouteMatch {
                 path_prefix: Some(path_prefix.to_string()),
@@ -91,8 +80,7 @@ mod tests {
         let expected = index
             .lookup_with_decision_for_method("/v1/messages", Some("api.example.com"), Some("POST"))
             .expect("indexed route");
-        let resolved = RouteResolutionService::new(&index)
-            .resolve("POST", "/v1/messages", Some("api.example.com"))
+        let resolved = resolve_route(&index, "POST", "/v1/messages", Some("api.example.com"))
             .expect("shared route");
 
         assert_eq!(resolved.upstream_name.as_ref(), expected.upstream);
@@ -107,11 +95,11 @@ mod tests {
         let index = RouteIndex::from_upstreams(&HashMap::new());
 
         assert_eq!(
-            RouteResolutionService::new(&index).resolve("GET", "/missing", None),
+            resolve_route(&index, "GET", "/missing", None),
             Err(RouteResolutionError::NoRoute)
         );
         assert_eq!(
-            RouteResolutionService::new(&index).resolve("", "/missing", None),
+            resolve_route(&index, "", "/missing", None),
             Err(RouteResolutionError::EmptyMethodOrPath)
         );
     }

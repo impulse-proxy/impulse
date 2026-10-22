@@ -69,10 +69,7 @@ mod jwks_cache;
 mod jwks_refresh;
 mod jwt;
 mod key_resolution;
-mod service;
 mod startup;
-
-pub(in crate::quic_listener) use service::RequestAdmissionService;
 
 #[cfg(test)]
 pub(super) use self::jwks_cache::{
@@ -138,14 +135,14 @@ impl OverloadDecisionReason {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct UnauthorizedDecision {
+pub(crate) struct UnauthorizedDecision {
     pub(super) challenge: AuthChallengeKind,
     pub(super) status: StatusCode,
     pub(super) body: &'static [u8],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct RateLimitedDecision {
+pub(crate) struct RateLimitedDecision {
     pub(super) rule_name: String,
     pub(super) route: String,
     pub(super) status: StatusCode,
@@ -173,7 +170,7 @@ pub(super) enum OverloadDecisionReason {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct OverloadDecision {
+pub(crate) struct OverloadDecision {
     pub(super) reason: OverloadDecisionReason,
     pub(super) status: StatusCode,
     pub(super) body: &'static [u8],
@@ -181,11 +178,11 @@ pub(super) struct OverloadDecision {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct AdmissionRejectionResponse {
-    pub(super) status: StatusCode,
-    pub(super) body: &'static [u8],
-    pub(super) www_authenticate: Option<&'static str>,
-    pub(super) retry_after_seconds: Option<u32>,
+pub(crate) struct AdmissionRejectionResponse {
+    pub(crate) status: StatusCode,
+    pub(crate) body: &'static [u8],
+    pub(crate) www_authenticate: Option<&'static str>,
+    pub(crate) retry_after_seconds: Option<u32>,
 }
 
 #[derive(Debug, Clone)]
@@ -221,7 +218,7 @@ pub(super) enum PostAuthAdmissionExecution {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum AdmissionPolicyDecision {
+pub(crate) enum AdmissionPolicyDecision {
     AdmitReady,
     Unauthorized(UnauthorizedDecision),
     RateLimited(RateLimitedDecision),
@@ -229,7 +226,7 @@ pub(super) enum AdmissionPolicyDecision {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn evaluate_forwarding_pre_admission_policy(
+pub(crate) fn evaluate_forwarding_pre_admission_policy(
     policy: &RuntimeUpstreamPolicy,
     header_lookup: Option<&LbHeaderLookup<'_>>,
     brownout: &BrownoutController,
@@ -372,7 +369,7 @@ fn overload_decision_for_route_queue_rejection(
     overload_decision(reason, retry_after_seconds)
 }
 
-pub(super) fn admission_rejection_response(
+pub(crate) fn admission_rejection_response(
     decision: &AdmissionPolicyDecision,
 ) -> Option<AdmissionRejectionResponse> {
     match decision {
@@ -743,6 +740,8 @@ mod tests {
             },
             host: Default::default(),
             forwarded_headers: Default::default(),
+            response_cache: Default::default(),
+            response_compression: Default::default(),
             protocol: Default::default(),
         }
     }
@@ -768,6 +767,8 @@ mod tests {
             },
             host: Default::default(),
             forwarded_headers: Default::default(),
+            response_cache: Default::default(),
+            response_compression: Default::default(),
             protocol: Default::default(),
         }
     }
@@ -841,6 +842,8 @@ mod tests {
                 auth: RouteAuth::default(),
                 host_policy: UpstreamHostPolicy::default(),
                 forwarded_headers: ForwardedHeaderPolicy::default(),
+                compression: Default::default(),
+                cache: Default::default(),
                 tls: None,
                 route: RouteMatch {
                     host: None,
@@ -926,6 +929,8 @@ mod tests {
                     },
                     host_policy: UpstreamHostPolicy::default(),
                     forwarded_headers: ForwardedHeaderPolicy::default(),
+                    compression: Default::default(),
+                    cache: Default::default(),
                     tls: None,
                     route: RouteMatch {
                         host: None,
@@ -1987,6 +1992,8 @@ mod tests {
                     auth: RouteAuth::default(),
                     host_policy: UpstreamHostPolicy::default(),
                     forwarded_headers: ForwardedHeaderPolicy::default(),
+                    compression: Default::default(),
+                    cache: Default::default(),
                     tls: None,
                     route: RouteMatch {
                         host: None,

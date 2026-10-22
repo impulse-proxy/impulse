@@ -1,14 +1,21 @@
 use std::{
-    collections::HashMap,
-    net::{IpAddr, SocketAddr, SocketAddr as StdSocketAddr, ToSocketAddrs, UdpSocket},
+    collections::{HashMap, hash_map::DefaultHasher},
+    hash::{Hash, Hasher},
+    net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddr as StdSocketAddr, ToSocketAddrs, UdpSocket},
     sync::{Arc, RwLock},
     time::Duration,
 };
 
 use impulse_config::runtime::{ListenerRuntimeConfig, RuntimeBackendAddressKind, RuntimeConfig};
 use impulse_errors::ProxyError;
-use impulse_lb::upstream_pool::UpstreamPool;
-use impulse_transport::{ConnectObservation, ConnectObserver, UpstreamTransportPool};
+use impulse_lb::{
+    pingora_backend::{
+        GenerationBackendView, HealthRegistry, PingoraLoadBalancingRuntimeState,
+        map_validated_backend,
+    },
+    upstream_pool::UpstreamPool,
+};
+use impulse_transport::{PingoraBackendHealthIdentity, UpstreamTransportPool};
 use log::{debug, info, warn};
 use socket2::{Domain, Protocol, Socket, Type};
 use tokio::sync::Semaphore;
@@ -16,10 +23,7 @@ use tokio::sync::Semaphore;
 use crate::{
     Metrics,
     constants::UDP_READ_TIMEOUT_MS,
-    quic_listener::{
-        ListenerRuntimeSettings, PerSourceTokenBucket, TokenBucket,
-        runtime_state::PreparedListenerStartup,
-    },
+    quic_listener::{ListenerRuntimeSettings, runtime_state::PreparedListenerStartup},
     resilience::{quota::QuotaRuntime, runtime::RuntimeResilience},
     routing::index::RouteIndex,
     runtime::{
@@ -28,6 +32,7 @@ use crate::{
             store::RuntimeBackendResolutionStore,
         },
         bundle::{RuntimeBundle, RuntimeBundleHandle},
+        connection::{PerSourceTokenBucket, TokenBucket},
         generation::{RuntimeGenerationState, RuntimeSharedServices, StartupOwnedRuntimeState},
         listener::{QUICListener, ShutdownSignal},
         shared_state::SharedRuntimeState,
@@ -104,17 +109,8 @@ impl QUICListener {
         })
     }
 
-    fn record_backend_connect(
-        metrics: &crate::Metrics,
-        backend: &str,
-        hostname: &str,
-        resolved_addr: StdSocketAddr,
-    ) {
-        metrics.record_backend_connect(backend, hostname, resolved_addr);
-    }
-
     pub fn build_shared_state(config: &RuntimeConfig) -> Result<SharedRuntimeState, ProxyError> {
-        Self::build_shared_state_with_carried(config, None)
+        Self::build_shared_state_for_generation(config, None, 0)
     }
 
     /// Build the shared runtime state for a generation.
@@ -127,6 +123,14 @@ impl QUICListener {
     pub fn build_shared_state_with_carried(
         config: &RuntimeConfig,
         carried: Option<crate::runtime::generation::CarriedProcessSharedServices>,
+    ) -> Result<SharedRuntimeState, ProxyError> {
+        Self::build_shared_state_for_generation(config, carried, 0)
+    }
+
+    pub(crate) fn build_shared_state_for_generation(
+        config: &RuntimeConfig,
+        carried: Option<crate::runtime::generation::CarriedProcessSharedServices>,
+        generation: u64,
     ) -> Result<SharedRuntimeState, ProxyError> {
         let transport_policy = &config.policies.transport;
         let timeout_policy = &config.policies.timeouts;
@@ -278,26 +282,30 @@ impl QUICListener {
         let backend_lifecycle = Arc::new(BackendLifecycleCoordinator::new(Arc::clone(
             &backend_resolution_store,
         )));
-        let connect_metrics = Arc::clone(&metrics);
-        let connect_observer: ConnectObserver = Arc::new(move |observation: ConnectObservation| {
-            Self::record_backend_connect(
-                &connect_metrics,
-                &observation.backend,
-                &observation.hostname,
-                observation.resolved_addr,
-            );
-        });
         let transport_pool = Arc::new(
             UpstreamTransportPool::from_runtime_upstreams(
                 config.upstreams.values(),
                 &transport_policy.backend_connections,
                 backend_dns_resolver.clone(),
-                Some(connect_observer),
             )
             .map_err(ProxyError::Tls)?,
         );
         let mut upstream_pools = HashMap::new();
         let mut upstream_inflight = HashMap::new();
+        let mut pingora_selectors = Vec::with_capacity(config.upstreams.len());
+        let pingora_health_registry = Arc::new(HealthRegistry::with_equivalence(|backend| {
+            backend
+                .ext
+                .get::<PingoraBackendHealthIdentity>()
+                .map_or_else(
+                    || {
+                        let mut hasher = DefaultHasher::new();
+                        backend.hash(&mut hasher);
+                        hasher.finish()
+                    },
+                    |identity| identity.equivalence_key(),
+                )
+        }));
         for (name, runtime_upstream) in &config.upstreams {
             let upstream_pool =
                 UpstreamPool::from_runtime_upstream(runtime_upstream).map_err(|err| {
@@ -308,7 +316,59 @@ impl QUICListener {
                 })?;
             upstream_pools.insert(name.clone(), Arc::new(RwLock::new(upstream_pool)));
             upstream_inflight.insert(name.clone(), Arc::new(Semaphore::new(per_upstream_limit)));
+
+            let tls_identity = runtime_upstream.backend_tls_policy().clone();
+            let view = GenerationBackendView::from_runtime_upstream(
+                generation,
+                name,
+                runtime_upstream,
+                |index, backend| {
+                    let endpoint = &runtime_upstream.backends[index].endpoint;
+                    // shortcut: hostname membership remains logical until Pingora discovery owns DNS.
+                    let address = StdSocketAddr::new(
+                        endpoint
+                            .authority_host
+                            .parse()
+                            .unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED)),
+                        endpoint.authority_port,
+                    );
+                    let mut mapped =
+                        map_validated_backend(backend, index, address, tls_identity.clone())?;
+                    let health_identity = transport_pool
+                        .pingora_backend_health_identity(&backend.address)
+                        .ok_or_else(|| {
+                            format!(
+                                "missing Pingora health identity for backend '{}'",
+                                backend.address
+                            )
+                        })?;
+                    mapped.ext.insert(health_identity);
+                    Ok(mapped)
+                },
+                Arc::clone(&pingora_health_registry),
+            )
+            .map_err(|error| {
+                metrics.inc_pingora_lb_selector_failure();
+                ProxyError::Transport(format!(
+                    "failed to create Pingora selector for upstream '{name}': {error}"
+                ))
+            })?;
+            pingora_selectors.push((name.clone(), runtime_upstream.load_balancing.strategy, view));
         }
+        let pingora_load_balancing = Arc::new(
+            PingoraLoadBalancingRuntimeState::new(
+                generation,
+                pingora_selectors,
+                pingora_health_registry,
+            )
+            .map_err(|error| {
+                metrics.inc_pingora_lb_selector_failure();
+                ProxyError::Transport(format!(
+                    "failed to create Pingora load-balancing runtime: {error}"
+                ))
+            })?,
+        );
+        metrics.record_pingora_lb_selector_rebuild(generation, pingora_load_balancing.len());
 
         let mut effective_admission = config.policies.admission.clone();
         let default_route_cap_limit = per_upstream_limit.saturating_mul(2).max(1);
@@ -384,6 +444,7 @@ impl QUICListener {
                         .collect(),
                 ),
                 upstream_pools,
+                pingora_load_balancing,
                 upstream_inflight,
                 global_inflight: Arc::new(Semaphore::new(global_inflight_limit)),
                 routing_index,
@@ -515,6 +576,7 @@ impl QUICListener {
             backend_dns_resolver: shared_services.backend_dns_resolver.clone(),
             upstream_policies: Arc::clone(&generation_state.upstream_policies),
             upstream_pools: generation_state.upstream_pools.clone(),
+            pingora_load_balancing: Arc::clone(&generation_state.pingora_load_balancing),
             upstream_inflight: generation_state.upstream_inflight.clone(),
             global_inflight: Arc::clone(&generation_state.global_inflight),
             routing_index: Arc::clone(&generation_state.routing_index),
@@ -542,6 +604,7 @@ impl QUICListener {
             require_client_cert,
             runtime_bundle: None,
             runtime_generation: 0,
+            response_cache_namespace: 0,
             recv_buf: Box::new([0; crate::constants::MAX_DATAGRAM_SIZE_BYTES]),
             send_buf: Box::new([0; crate::constants::MAX_DATAGRAM_SIZE_BYTES]),
             connections: HashMap::new(),
@@ -553,26 +616,14 @@ impl QUICListener {
         })
     }
 
-    pub fn new_with_socket_and_runtime_bundle(
-        listener_label: &str,
-        socket: UdpSocket,
-        runtime_bundle: Arc<RuntimeBundleHandle>,
-    ) -> Result<Self, ProxyError> {
-        Self::new_with_socket_and_runtime_bundle_and_shutdown(
-            listener_label,
-            socket,
-            runtime_bundle,
-            ShutdownSignal::new(),
-        )
-    }
-
     pub(crate) fn new_with_socket_and_runtime_bundle_and_shutdown(
         listener_label: &str,
         socket: UdpSocket,
         runtime_bundle: Arc<RuntimeBundleHandle>,
         shutdown: ShutdownSignal,
     ) -> Result<Self, ProxyError> {
-        let runtime = runtime_bundle.current_view();
+        let (runtime, response_cache_namespace) =
+            runtime_bundle.current_view_with_response_cache_namespace();
         let listener_config = runtime
             .listener_runtime_config(listener_label)
             .ok_or_else(|| {
@@ -588,12 +639,16 @@ impl QUICListener {
             shutdown,
         )?;
         listener.runtime_generation = runtime.generation();
+        listener.response_cache_namespace = response_cache_namespace;
         listener.runtime_bundle = Some(runtime_bundle);
         Ok(listener)
     }
 
     pub fn with_runtime_bundle(mut self, runtime_bundle: Arc<RuntimeBundleHandle>) -> Self {
-        self.runtime_generation = runtime_bundle.current_generation();
+        let (runtime, response_cache_namespace) =
+            runtime_bundle.current_view_with_response_cache_namespace();
+        self.runtime_generation = runtime.generation();
+        self.response_cache_namespace = response_cache_namespace;
         self.runtime_bundle = Some(runtime_bundle);
         self
     }

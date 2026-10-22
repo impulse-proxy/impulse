@@ -7,7 +7,6 @@ use tokio::{sync::oneshot, task::AbortHandle};
 
 use super::{
     auth::start_external_auth_task,
-    pipeline::{ForwardingRequestPipeline, PipelineRequest, PipelineResolution},
     resolve::{
         ForwardTargetResolution, ForwardTargetResolutionInput, ResolutionContext,
         ResolutionObservation, TargetResolutionRequest,
@@ -17,6 +16,10 @@ use super::{
 use crate::{
     quic_listener::admission::{
         AdmissionPolicyDecision, AdmissionRejectionResponse, admission_rejection_response,
+    },
+    request_pipeline::{
+        PipelineRequest, PipelineResolution, PipelineResult, PipelineRoute, TerminalOutcomeGuard,
+        evaluate_pipeline,
     },
     runtime::connection::{
         auth::{
@@ -173,6 +176,12 @@ pub(super) struct RequestFinalizationConfig {
 impl PendingForward {
     pub(super) fn original_request_headers(&self) -> &[quiche::h3::Header] {
         self.headers.as_ref()
+    }
+
+    pub(super) fn declares_request_trailers(&self) -> bool {
+        self.original_request_headers()
+            .iter()
+            .any(|header| header.name().eq_ignore_ascii_case(b"trailer"))
     }
 
     fn request_headers_cow(&self) -> Cow<'_, [quiche::h3::Header]> {
@@ -392,6 +401,7 @@ impl QUICListener {
                     authority: authority.map(str::to_string),
                     start: request_start,
                     total_request_deadline: request_start,
+                    terminal_outcome: TerminalOutcomeGuard::default(),
                 },
                 request_mode,
                 request_body: request_mode.initial_body_state(),
@@ -460,6 +470,9 @@ impl QUICListener {
             shared_ctx.routing_index,
             shared_ctx.upstream_pools,
             shared_ctx.upstream_policies,
+            shared_ctx.pingora_load_balancing,
+            shared_ctx.generation,
+            metrics,
         );
         let intake = Self::build_request_intake(IntakeRequestDescriptor {
             quic_trace_id,
@@ -479,7 +492,7 @@ impl QUICListener {
                 .and_then(|header| std::str::from_utf8(header.value()).ok())
                 .map(str::to_string)
         };
-        let resolved = ForwardingRequestPipeline::new(resilience).resolve(
+        let resolved: PipelineResult<ForwardTargetResolution> =
             Self::resolve_forwarding_target(ForwardTargetResolutionInput {
                 request: TargetResolutionRequest::new(
                     method,
@@ -490,19 +503,34 @@ impl QUICListener {
                 ),
                 context: resolution_context,
                 observation: ResolutionObservation::new(metrics, request_start.elapsed()),
-            }),
-            PipelineRequest {
-                method,
-                path,
-                authority,
-                peer_address,
-                header_lookup: Some(&lb_header_lookup),
-            },
-        );
+            })
+            .map(|target| {
+                let PipelineResolution {
+                    route: _,
+                    policy,
+                    admission,
+                } = evaluate_pipeline(
+                    resilience,
+                    PipelineRoute::new(&target.upstream_name, &target.upstream_policy),
+                    PipelineRequest {
+                        method,
+                        path,
+                        authority,
+                        peer_address,
+                        headers: Some(&lb_header_lookup),
+                    },
+                );
+
+                PipelineResolution {
+                    route: target,
+                    policy,
+                    admission,
+                }
+            });
 
         let prepared = match resolved {
             Ok(PipelineResolution {
-                target:
+                route:
                     ForwardTargetResolution {
                         upstream_name,
                         upstream_pool,
@@ -513,6 +541,7 @@ impl QUICListener {
                         backend_addr,
                         backend_index,
                         backend_lb,
+                        lb_key,
                     },
                 policy: resolved_policy,
                 admission,
@@ -531,6 +560,7 @@ impl QUICListener {
                 match admission {
                     AdmissionPolicyDecision::AdmitReady => {}
                     AdmissionPolicyDecision::Unauthorized(_) => {
+                        intake.state.context.terminal_outcome.record();
                         metrics.inc_policy_denied();
                         let _ = observe_admission_outcome(
                             metrics,
@@ -571,6 +601,7 @@ impl QUICListener {
                         )));
                     }
                     AdmissionPolicyDecision::RateLimited(decision) => {
+                        intake.state.context.terminal_outcome.record();
                         metrics.inc_request_rate_limited();
                         let _ = observe_admission_outcome(
                             metrics,
@@ -611,6 +642,7 @@ impl QUICListener {
                         )));
                     }
                     AdmissionPolicyDecision::Overloaded(decision) => {
+                        intake.state.context.terminal_outcome.record();
                         let _ = observe_admission_outcome(
                             metrics,
                             RouteOutcomeTarget {
@@ -665,6 +697,7 @@ impl QUICListener {
                     backend_addr: Arc::<str>::from(backend_addr.as_str()),
                     backend_index,
                     backend_lb: Some(Arc::<str>::from(backend_lb.as_str())),
+                    lb_key: Arc::<str>::from(lb_key.as_str()),
                     client_addr: peer_address,
                     request_id,
                     trace_id: intake
@@ -687,6 +720,7 @@ impl QUICListener {
                         .map(Arc::<str>::from),
                     host_policy: resolved_policy.host_policy,
                     forwarded_header_policy: resolved_policy.forwarded_header_policy,
+                    response_compression: resolved_policy.response_compression,
                     auth_header_mutations: Vec::new(),
                 });
                 let dispatch_ready = Self::build_dispatch_ready_candidate(
@@ -710,10 +744,11 @@ impl QUICListener {
                 })
             }
             Err(err) => {
+                intake.state.context.terminal_outcome.record();
                 let (status, body): (http::StatusCode, &[u8]) = match &err {
                     ProxyError::Bridge(_) => (http::StatusCode::BAD_REQUEST, b"invalid request\n"),
                     ProxyError::Transport(_) | ProxyError::Pool(_) => {
-                        Self::bootstrap_route_resolution_error_response(&err)
+                        Self::route_resolution_error_response(&err)
                     }
                     _ => (
                         http::StatusCode::INTERNAL_SERVER_ERROR,
