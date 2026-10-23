@@ -155,6 +155,8 @@ struct PingoraSelectedBackend {
     index: usize,
     selected_at: Instant,
     finish_status: Option<u16>,
+    failure_handled: bool,
+    passive_health_recorded: bool,
 }
 
 impl Drop for PingoraSelectedBackend {
@@ -280,6 +282,8 @@ impl PingoraIngressService {
             index: backend_index,
             selected_at: Instant::now(),
             finish_status: None,
+            failure_handled: false,
+            passive_health_recorded: false,
         })
     }
 }
@@ -1579,31 +1583,6 @@ impl ProxyHttp for PingoraIngressService {
                 Some(PingoraTerminalClassification::Error(ProxyError::Timeout));
             return Error::e_explain(HTTPStatus(504), "upstream request total timeout");
         }
-        if let Some(selected) = ctx.selected_backend.as_ref() {
-            if upstream_response.status.is_server_error() {
-                ctx.runtime
-                    .shared_state
-                    .shared_services()
-                    .metrics
-                    .inc_health_failure(impulse_lb::health::HealthFailureReason::HttpStatus5xx);
-            }
-            let transition =
-                observe_backend_response_status_and_log(BackendHealthObservationInput {
-                    backend_addr: &selected.address,
-                    backend_index: selected.index,
-                    upstream_pool: Some(&selected.pool),
-                    status: upstream_response.status,
-                });
-            apply_passive_readiness_to_pingora(
-                ctx.runtime
-                    .shared_state
-                    .generation_state()
-                    .pingora_load_balancing
-                    .as_ref(),
-                &selected.address,
-                transition,
-            );
-        }
         let method = ctx.method.as_deref().ok_or_else(|| {
             Error::explain(
                 InternalError,
@@ -1829,6 +1808,11 @@ impl ProxyHttp for PingoraIngressService {
         if let Some(selected) = ctx.selected_backend.as_mut() {
             selected.finish_status = status.map(|status| status.as_u16());
         }
+        if ctx.terminal_classification.is_none()
+            && let Some(status) = status
+        {
+            record_pingora_backend_response(ctx, status);
+        }
         let route = ctx
             .route
             .as_ref()
@@ -1961,10 +1945,15 @@ fn handle_pingora_proxy_failure(
     reused: bool,
     retry_safe: bool,
 ) -> Box<Error> {
-    if ctx.selected_backend.is_none() {
+    let Some(selected) = ctx.selected_backend.as_mut() else {
+        error.set_retry(false);
+        return error;
+    };
+    if selected.failure_handled {
         error.set_retry(false);
         return error;
     }
+    selected.failure_handled = true;
     let proxy_error = if h2 {
         classify_pingora_h2_error(&error, reused)
     } else {
@@ -2078,14 +2067,20 @@ fn handle_pingora_proxy_failure(
     error
 }
 
-fn record_pingora_backend_failure(ctx: &PingoraRequestContext, error: &ProxyError) {
-    let (Some(selected), Some(route), Some(classified)) = (
-        ctx.selected_backend.as_ref(),
-        ctx.route.as_ref(),
-        classify_upstream_proxy_error(error),
-    ) else {
+fn record_pingora_backend_failure(ctx: &mut PingoraRequestContext, error: &ProxyError) {
+    let Some(selected) = ctx.selected_backend.as_mut() else {
         return;
     };
+    if selected.passive_health_recorded {
+        return;
+    }
+    let Some(route) = ctx.route.as_ref() else {
+        return;
+    };
+    let Some(classified) = classify_upstream_proxy_error(error) else {
+        return;
+    };
+    selected.passive_health_recorded = true;
     let shared = ctx.runtime.shared_state.shared_services();
     let transition = observe_classified_backend_failure_and_log(ClassifiedBackendFailureInput {
         metrics_phase: "pingora_ingress",
@@ -2095,6 +2090,38 @@ fn record_pingora_backend_failure(ctx: &PingoraRequestContext, error: &ProxyErro
         upstream_pool: Some(&selected.pool),
         metrics: shared.metrics.as_ref(),
         classified: &classified,
+    });
+    apply_passive_readiness_to_pingora(
+        ctx.runtime
+            .shared_state
+            .generation_state()
+            .pingora_load_balancing
+            .as_ref(),
+        &selected.address,
+        transition,
+    );
+}
+
+fn record_pingora_backend_response(ctx: &mut PingoraRequestContext, status: http::StatusCode) {
+    let Some(selected) = ctx.selected_backend.as_mut() else {
+        return;
+    };
+    if selected.passive_health_recorded {
+        return;
+    }
+    selected.passive_health_recorded = true;
+    if status.is_server_error() {
+        ctx.runtime
+            .shared_state
+            .shared_services()
+            .metrics
+            .inc_health_failure(impulse_lb::health::HealthFailureReason::HttpStatus5xx);
+    }
+    let transition = observe_backend_response_status_and_log(BackendHealthObservationInput {
+        backend_addr: &selected.address,
+        backend_index: selected.index,
+        upstream_pool: Some(&selected.pool),
+        status,
     });
     apply_passive_readiness_to_pingora(
         ctx.runtime
