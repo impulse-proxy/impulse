@@ -322,12 +322,14 @@ upstream:
             request_headers,
             response_header_allowlist,
             timeout_ms,
+            failure_mode,
             ..
         }) => {
             assert_eq!(endpoint, "https://auth.internal/check");
             assert!(request_headers.is_empty());
             assert!(response_header_allowlist.is_empty());
             assert_eq!(*timeout_ms, 1_000);
+            assert_eq!(*failure_mode, ExternalAuthFailureMode::FailClosed);
         }
         other => panic!("unexpected external auth config: {:?}", other),
     }

@@ -151,7 +151,7 @@ pub(crate) struct RateLimitedDecision {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct QuotaRejectedDecision {
+pub(crate) struct QuotaRejectedDecision {
     pub(super) policy_name: String,
     pub(super) reason: QuotaDenyReason,
     pub(super) status: StatusCode,
@@ -418,7 +418,7 @@ impl QuotaRejectedDecision {
         }
     }
 
-    pub(super) fn as_response(&self) -> AdmissionRejectionResponse {
+    pub(crate) fn as_response(&self) -> AdmissionRejectionResponse {
         AdmissionRejectionResponse {
             status: self.status,
             body: self.body,
@@ -563,7 +563,6 @@ fn evaluate_forwarding_post_auth_quota_policy(
     resilience: &RuntimeResilience,
     pending_forward: &PendingForward,
 ) -> Option<PostAuthAdmissionRejection> {
-    let backend = resilience.quota_backend.as_ref()?;
     runtime_handle()?;
 
     let mut effective_headers = pending_forward.headers.as_ref().clone();
@@ -588,10 +587,17 @@ fn evaluate_forwarding_post_auth_quota_policy(
         Some(&header_lookup),
     );
 
-    match block_on_admission_future(async {
-        evaluate_admission_quota(resilience.quota.as_ref(), backend.as_ref(), &quota_context).await
-    })
-    .unwrap_or(QuotaDecision::NotApplied)
+    block_on_admission_future(evaluate_post_auth_quota_policy(resilience, &quota_context))
+        .flatten()
+        .map(PostAuthAdmissionRejection::Quota)
+}
+
+pub(crate) async fn evaluate_post_auth_quota_policy(
+    resilience: &RuntimeResilience,
+    quota_context: &QuotaIdentityContext<'_>,
+) -> Option<QuotaRejectedDecision> {
+    let backend = resilience.quota_backend.as_ref()?;
+    match evaluate_admission_quota(resilience.quota.as_ref(), backend.as_ref(), quota_context).await
     {
         QuotaDecision::NotApplied | QuotaDecision::Allowed(_) | QuotaDecision::FailedOpen(_) => {
             None
@@ -604,8 +610,7 @@ fn evaluate_forwarding_post_auth_quota_policy(
             );
             None
         }
-        denied => QuotaRejectedDecision::from_quota_decision(denied)
-            .map(PostAuthAdmissionRejection::Quota),
+        denied => QuotaRejectedDecision::from_quota_decision(denied),
     }
 }
 

@@ -113,7 +113,8 @@ mod validation;
 mod workers;
 
 pub(crate) use admission::{
-    AdmissionPolicyDecision, admission_rejection_response, evaluate_forwarding_pre_admission_policy,
+    AdmissionPolicyDecision, admission_rejection_response,
+    evaluate_forwarding_pre_admission_policy, evaluate_post_auth_quota_policy,
 };
 pub use async_runtime::configure_async_runtime;
 pub(in crate::quic_listener) use async_runtime::{
@@ -127,7 +128,7 @@ use connection::resolve_primary_from_radix_prefix;
 pub(crate) use connection::{ConnectionRoutes, sweep_closed_connections};
 pub(crate) use forwarding::{
     BackendCandidate, ForwardingSelectionService, MAX_UPSTREAM_RETRY_ATTEMPTS, RetryCoordinator,
-    TargetResolutionRequest,
+    TargetResolutionRequest, execute_external_auth_request,
 };
 use forwarding::{
     ForwardingExecutionCtx, ForwardingSharedCtx, H3RequestHandlingConfig, StreamProgressConfig,

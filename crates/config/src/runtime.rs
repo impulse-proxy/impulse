@@ -59,6 +59,7 @@ pub struct RuntimeConfig {
 impl RuntimeConfig {
     pub fn from_config(config: &Config) -> Result<Self, RuntimeConfigError> {
         let resolved_config = resolve_config_secrets(config)?;
+        validate_ingress_policy_support(&resolved_config)?;
         let policies = RuntimePolicySet::from_config(&resolved_config)?;
         Ok(Self {
             version: resolved_config.version,
@@ -101,6 +102,17 @@ impl RuntimeConfig {
             .map(|(name, upstream)| (name.clone(), upstream.as_config_upstream()))
             .collect()
     }
+}
+
+fn validate_ingress_policy_support(config: &Config) -> Result<(), RuntimeConfigError> {
+    if config.resilience.hedging.enabled {
+        return Err(RuntimeConfigError::UnsupportedPolicyCombination(
+            "resilience.hedging cannot be enabled because Pingora HTTP/1.1 and HTTP/2 ingress do not enforce hedged requests"
+                .to_string(),
+        ));
+    }
+
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
