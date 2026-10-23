@@ -127,7 +127,7 @@ use connection::resolve_primary_from_radix_prefix;
 pub(crate) use connection::{ConnectionRoutes, sweep_closed_connections};
 pub(crate) use forwarding::{
     BackendCandidate, ForwardingSelectionService, MAX_UPSTREAM_RETRY_ATTEMPTS, RetryCoordinator,
-    TargetResolutionRequest,
+    TargetResolutionRequest, execute_external_auth_request,
 };
 use forwarding::{
     ForwardingExecutionCtx, ForwardingSharedCtx, H3RequestHandlingConfig, StreamProgressConfig,

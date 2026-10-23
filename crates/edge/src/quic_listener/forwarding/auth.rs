@@ -16,10 +16,11 @@ use super::*;
 use crate::runtime::connection::{
     auth::{
         ExternalAuthDecision, ExternalAuthDenyResponse, ExternalAuthExecutionPolicy,
-        ExternalAuthResponseMetadata, ExternalAuthResult, ExternalAuthStateTransition,
-        ExternalAuthTaskConfig, OidcAuthorizationCheck, oidc_audience_matches,
-        oidc_authorization_check, oidc_discovery_target, oidc_scope_satisfied,
-        resolve_external_auth_state_transition, validate_oidc_provider_metadata,
+        ExternalAuthRequest, ExternalAuthResponseMetadata, ExternalAuthResult,
+        ExternalAuthStateTransition, ExternalAuthTaskConfig, OidcAuthorizationCheck,
+        oidc_audience_matches, oidc_authorization_check, oidc_discovery_target,
+        oidc_scope_satisfied, resolve_external_auth_state_transition,
+        validate_oidc_provider_metadata,
     },
     outcome::{
         AdmissionOutcomeClass, BackendOutcomeTarget, RouteOutcomeTarget, observe_admission_outcome,
@@ -181,7 +182,7 @@ pub(super) struct AuthStart {
 }
 
 struct OidcExternalAuthInput {
-    pending_forward: Arc<PendingForward>,
+    request: Arc<ExternalAuthRequest>,
     discovery_url: Option<String>,
     issuer_url: Option<String>,
     client_id: String,
@@ -239,23 +240,27 @@ fn is_unsafe_forwarded_auth_request_header(name: &[u8]) -> bool {
         || name.eq_ignore_ascii_case(b"proxy-connection")
 }
 
+#[cfg(test)]
 pub(super) fn append_auth_request_headers(
     builder: &mut http::request::Builder,
     pending_forward: &PendingForward,
     configured_headers: &[impulse_config::runtime::RuntimeExternalAuthRequestHeader],
 ) {
-    let request_headers = pending_forward.request_headers_read_only();
-    for header in request_headers.iter() {
-        if header.name().starts_with(b":") || is_unsafe_forwarded_auth_request_header(header.name())
-        {
+    let request = external_auth_request_from_pending_forward(pending_forward);
+    append_external_auth_request_headers(builder, &request, configured_headers);
+}
+
+fn append_external_auth_request_headers(
+    builder: &mut http::request::Builder,
+    request: &ExternalAuthRequest,
+    configured_headers: &[impulse_config::runtime::RuntimeExternalAuthRequestHeader],
+) {
+    for (name, value) in &request.headers {
+        if is_unsafe_forwarded_auth_request_header(name.as_str().as_bytes()) {
             continue;
         }
-        if let (Ok(name), Ok(value)) = (
-            http::header::HeaderName::from_bytes(header.name()),
-            http::header::HeaderValue::from_bytes(header.value()),
-        ) && let Some(headers) = builder.headers_mut()
-        {
-            headers.append(name, value);
+        if let Some(headers) = builder.headers_mut() {
+            headers.append(name.clone(), value.clone());
         }
     }
     for header in configured_headers {
@@ -269,19 +274,19 @@ pub(super) fn append_auth_request_headers(
         });
     }
     if let Some(headers) = builder.headers_mut() {
-        if let Ok(value) = http::header::HeaderValue::from_str(&pending_forward.method) {
+        if let Ok(value) = http::header::HeaderValue::from_str(&request.method) {
             headers.insert(
                 http::header::HeaderName::from_static("x-impulse-original-method"),
                 value,
             );
         }
-        if let Ok(value) = http::header::HeaderValue::from_str(&pending_forward.path) {
+        if let Ok(value) = http::header::HeaderValue::from_str(&request.path) {
             headers.insert(
                 http::header::HeaderName::from_static("x-impulse-original-path"),
                 value,
             );
         }
-        if let Some(authority) = pending_forward.authority.as_deref()
+        if let Some(authority) = request.authority.as_deref()
             && let Ok(value) = http::header::HeaderValue::from_str(authority)
         {
             headers.insert(
@@ -289,18 +294,42 @@ pub(super) fn append_auth_request_headers(
                 value,
             );
         }
-        if let Ok(value) = http::header::HeaderValue::from_str(&pending_forward.upstream_name) {
+        if let Ok(value) = http::header::HeaderValue::from_str(&request.upstream_name) {
             headers.insert(
                 http::header::HeaderName::from_static("x-impulse-route-upstream"),
                 value,
             );
         }
-        if let Ok(value) = http::header::HeaderValue::from_str(&pending_forward.backend_addr) {
+        if let Some(backend_addr) = request.backend_addr.as_deref()
+            && let Ok(value) = http::header::HeaderValue::from_str(backend_addr)
+        {
             headers.insert(
                 http::header::HeaderName::from_static("x-impulse-backend-address"),
                 value,
             );
         }
+    }
+}
+
+fn external_auth_request_from_pending_forward(
+    pending_forward: &PendingForward,
+) -> ExternalAuthRequest {
+    let mut headers = http::HeaderMap::new();
+    for header in pending_forward.request_headers_read_only().iter() {
+        if let (Ok(name), Ok(value)) = (
+            http::header::HeaderName::from_bytes(header.name()),
+            http::header::HeaderValue::from_bytes(header.value()),
+        ) {
+            headers.append(name, value);
+        }
+    }
+    ExternalAuthRequest {
+        method: pending_forward.method.to_string(),
+        path: pending_forward.path.to_string(),
+        authority: pending_forward.authority.as_deref().map(str::to_string),
+        headers,
+        upstream_name: pending_forward.upstream_name.to_string(),
+        backend_addr: Some(pending_forward.backend_addr.to_string()),
     }
 }
 
@@ -324,32 +353,17 @@ async fn collect_auth_body(mut body: Incoming) -> Result<Vec<u8>, ProxyError> {
     Ok(bytes)
 }
 
-fn authorization_header_from_pending_forward(pending_forward: &PendingForward) -> Option<String> {
-    for mutation in pending_forward.auth_header_mutations.iter().rev() {
-        match mutation {
-            crate::runtime::connection::auth::PendingHeaderMutation::Upsert { name, value }
-                if name.eq_ignore_ascii_case(http::header::AUTHORIZATION.as_str().as_bytes()) =>
-            {
-                return std::str::from_utf8(value).ok().map(str::to_string);
-            }
-            crate::runtime::connection::auth::PendingHeaderMutation::Remove { name }
-                if name.eq_ignore_ascii_case(http::header::AUTHORIZATION.as_str().as_bytes()) =>
-            {
-                return None;
-            }
-            _ => {}
-        }
-    }
+fn authorization_header_from_request(request: &ExternalAuthRequest) -> Option<String> {
+    request
+        .headers
+        .get(http::header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string)
+}
 
-    pending_forward
-        .original_request_headers()
-        .iter()
-        .find(|header| {
-            header
-                .name()
-                .eq_ignore_ascii_case(http::header::AUTHORIZATION.as_str().as_bytes())
-        })
-        .and_then(|header| std::str::from_utf8(header.value()).ok().map(str::to_string))
+#[cfg(test)]
+fn authorization_header_from_pending_forward(pending_forward: &PendingForward) -> Option<String> {
+    authorization_header_from_request(&external_auth_request_from_pending_forward(pending_forward))
 }
 
 fn percent_encode_component(raw: &str) -> String {
@@ -379,24 +393,24 @@ async fn send_auth_request(
 }
 
 async fn run_external_auth_with_timeout(
-    pending_forward: Arc<PendingForward>,
+    request: Arc<ExternalAuthRequest>,
     external_auth: RuntimeExternalAuth,
     timeout: Duration,
 ) -> ExternalAuthResult {
-    tokio::time::timeout(timeout, run_external_auth(pending_forward, external_auth))
+    tokio::time::timeout(timeout, run_external_auth(request, external_auth))
         .await
         .map_err(|_| ProxyError::Timeout)?
 }
 
 async fn run_http_external_auth(
-    pending_forward: Arc<PendingForward>,
+    request: Arc<ExternalAuthRequest>,
     endpoint: String,
     request_headers: Vec<impulse_config::runtime::RuntimeExternalAuthRequestHeader>,
     response_header_allowlist: Vec<String>,
     timeout: Duration,
 ) -> ExternalAuthResult {
     let mut builder = Request::builder().method(http::Method::GET).uri(endpoint);
-    append_auth_request_headers(&mut builder, &pending_forward, &request_headers);
+    append_external_auth_request_headers(&mut builder, &request, &request_headers);
     let request = builder
         .body(BoxBody::new(Full::new(Bytes::new())))
         .map_err(|err| ProxyError::Transport(err.to_string()))?;
@@ -443,7 +457,7 @@ async fn fetch_json_document_inner(uri: String, timeout: Duration) -> Result<Val
 
 async fn run_oidc_external_auth(input: OidcExternalAuthInput) -> ExternalAuthResult {
     let OidcExternalAuthInput {
-        pending_forward,
+        request,
         discovery_url,
         issuer_url,
         client_id,
@@ -453,14 +467,13 @@ async fn run_oidc_external_auth(input: OidcExternalAuthInput) -> ExternalAuthRes
         request_headers,
         timeout,
     } = input;
-    let token = match oidc_authorization_check(
-        authorization_header_from_pending_forward(&pending_forward).as_deref(),
-    ) {
-        OidcAuthorizationCheck::Token(token) => token,
-        OidcAuthorizationCheck::Challenge(response) => {
-            return Ok(ExternalAuthDecision::Challenge(response));
-        }
-    };
+    let token =
+        match oidc_authorization_check(authorization_header_from_request(&request).as_deref()) {
+            OidcAuthorizationCheck::Token(token) => token,
+            OidcAuthorizationCheck::Challenge(response) => {
+                return Ok(ExternalAuthDecision::Challenge(response));
+            }
+        };
     let discovery = oidc_discovery_target(discovery_url.as_deref(), issuer_url.as_deref())?;
     let metadata = oidc_provider_metadata(discovery.url, timeout).await?;
 
@@ -485,7 +498,7 @@ async fn run_oidc_external_auth(input: OidcExternalAuthInput) -> ExternalAuthRes
             http::header::CONTENT_TYPE,
             http::header::HeaderValue::from_static("application/x-www-form-urlencoded"),
         );
-    append_auth_request_headers(&mut builder, &pending_forward, &request_headers);
+    append_external_auth_request_headers(&mut builder, &request, &request_headers);
     let request = builder
         .body(BoxBody::new(Full::new(Bytes::from(body))))
         .map_err(|err| ProxyError::Transport(err.to_string()))?;
@@ -556,7 +569,7 @@ async fn run_oidc_external_auth(input: OidcExternalAuthInput) -> ExternalAuthRes
 }
 
 async fn run_external_auth(
-    pending_forward: Arc<PendingForward>,
+    request: Arc<ExternalAuthRequest>,
     external_auth: RuntimeExternalAuth,
 ) -> ExternalAuthResult {
     let timeout = ExternalAuthExecutionPolicy::from_external_auth(&external_auth).timeout;
@@ -568,7 +581,7 @@ async fn run_external_auth(
             ..
         } => {
             run_http_external_auth(
-                pending_forward,
+                request,
                 endpoint,
                 request_headers,
                 response_header_allowlist,
@@ -587,7 +600,7 @@ async fn run_external_auth(
             ..
         } => {
             run_oidc_external_auth(OidcExternalAuthInput {
-                pending_forward,
+                request,
                 discovery_url,
                 issuer_url,
                 client_id,
@@ -602,16 +615,23 @@ async fn run_external_auth(
     }
 }
 
+pub(crate) async fn execute_external_auth_request(
+    request: ExternalAuthRequest,
+    external_auth: RuntimeExternalAuth,
+) -> ExternalAuthResult {
+    let timeout = ExternalAuthExecutionPolicy::from_external_auth(&external_auth).timeout;
+    run_external_auth_with_timeout(Arc::new(request), external_auth, timeout).await
+}
+
 pub(super) fn start_external_auth_task(
     pending_forward: Arc<PendingForward>,
     external_auth: RuntimeExternalAuth,
 ) -> Result<AuthStart, ProxyError> {
     let task_config = ExternalAuthTaskConfig::from_external_auth(&external_auth);
+    let request = external_auth_request_from_pending_forward(&pending_forward);
     let (tx, rx) = oneshot::channel();
     let fut = async move {
-        let result =
-            run_external_auth_with_timeout(pending_forward, external_auth, task_config.timeout)
-                .await;
+        let result = execute_external_auth_request(request, external_auth).await;
         let _ = tx.send(result);
     };
     let Some(handle) = runtime_handle() else {
