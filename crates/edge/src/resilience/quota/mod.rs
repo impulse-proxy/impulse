@@ -114,7 +114,7 @@ pub enum QuotaSelectorKeySpec {
     LegacyFallback(Box<QuotaSelectorKeySpec>),
 }
 
-pub(crate) type QuotaHeaderLookup<'a> = dyn Fn(&str) -> Option<String> + 'a;
+pub(crate) type QuotaHeaderLookup<'a> = dyn Fn(&str) -> Option<String> + Sync + 'a;
 
 #[derive(Clone, Copy)]
 pub(crate) struct QuotaIdentityContext<'a> {

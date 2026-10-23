@@ -41,6 +41,7 @@ use pingora_core::{
 };
 use pingora_http::{RequestHeader, ResponseHeader};
 use pingora_proxy::{HttpProxy, ProxyHttp, Session, http_proxy};
+use quiche::h3::NameValue;
 use rustls::{
     server::{ClientHello, ResolvesServerCert},
     sign::CertifiedKey,
@@ -52,7 +53,8 @@ use crate::{
     quic_listener::{
         AdmissionPolicyDecision, BackendCandidate, ForwardingSelectionService,
         MAX_UPSTREAM_RETRY_ATTEMPTS, RetryCoordinator, TargetResolutionRequest,
-        admission_rejection_response, execute_external_auth_request, validate_http_request_parts,
+        admission_rejection_response, evaluate_post_auth_quota_policy,
+        execute_external_auth_request, validate_http_request_parts,
     },
     request_pipeline::{
         PipelineRequest, PipelineRoute, ResolvedRequestPolicy, ResolvedRouteTarget,
@@ -60,6 +62,7 @@ use crate::{
         TerminalOutcomeGuard, ensure_vary_accept_encoding, evaluate_pipeline,
         evaluate_response_compression, resolve_route,
     },
+    resilience::quota::QuotaIdentityContext,
     runtime::{
         bundle::{RuntimeBundle, RuntimeBundleHandle},
         cache::{
@@ -73,7 +76,8 @@ use crate::{
             PerSourceTokenBucket, TokenBucket,
             auth::{
                 ExternalAuthDecision, ExternalAuthRequest, ExternalAuthStateTransition,
-                PendingHeaderMutation, resolve_external_auth_state_transition,
+                PendingHeaderMutation, apply_auth_request_mutations,
+                resolve_external_auth_state_transition,
             },
             guardrails::{
                 BodyTimeoutKind, REQUEST_BODY_TOO_LARGE_BODY, RESPONSE_BODY_TOO_LARGE_BODY,
@@ -1045,6 +1049,51 @@ impl ProxyHttp for PingoraIngressService {
                     return Ok(true);
                 }
             }
+        }
+
+        let (Some(method), Some(path)) = (ctx.method.as_deref(), ctx.path.as_deref()) else {
+            return Error::e_explain(
+                InternalError,
+                "Pingora ingress quota evaluation is missing validated request metadata",
+            );
+        };
+        let mut effective_headers = bridge_headers(&session.req_header().headers);
+        apply_auth_request_mutations(&mut effective_headers, &ctx.auth_header_mutations);
+        let quota_header_lookup = |name: &str| {
+            effective_headers
+                .iter()
+                .find(|header| header.name().eq_ignore_ascii_case(name.as_bytes()))
+                .and_then(|header| std::str::from_utf8(header.value()).ok())
+                .map(str::to_string)
+        };
+        let quota_context = QuotaIdentityContext::new(
+            Some(route.upstream_name.as_ref()),
+            method,
+            path,
+            ctx.authority.as_deref(),
+            None,
+            Some(peer_address),
+            Some(&quota_header_lookup),
+        );
+        if let Some(rejection) =
+            evaluate_post_auth_quota_policy(&state.resilience, &quota_context).await
+        {
+            let response = rejection.as_response();
+            if response.status == http::StatusCode::TOO_MANY_REQUESTS {
+                shared.metrics.inc_request_rate_limited();
+            }
+            ctx.terminal_classification = Some(PingoraTerminalClassification::Admission(
+                AdmissionOutcomeClass::QuotaDenied,
+            ));
+            write_local_response(
+                session,
+                response.status,
+                response.body,
+                response.www_authenticate,
+                response.retry_after_seconds,
+            )
+            .await?;
+            return Ok(true);
         }
 
         if pipeline.policy.response_compression.enabled {
