@@ -57,4 +57,4 @@ pingora-proxy = { version = "=0.9.0", default-features = false, features = ["rus
 [workspace.package]
 version = "0.6.0"
 edition = "2024"
-license = "GPLv3"
+license = "Apache-2.0"

@@ -430,4 +430,4 @@ See [contributing guide](CONTRIBUTING.md) for development guidelines.
 
 ## License
 
-GNU General Public License v3.0 (GPLv3) — see [LICENSE.md](LICENSE.md)
+Apache License 2.0 — see [LICENSE.md](LICENSE.md)
