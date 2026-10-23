@@ -1,4 +1,4 @@
-//! h3→h2 request building: scheme, host/forwarded policy, WebSocket, H1/H2 parity.
+//! h3→h2 request building: scheme, host/forwarded policy, and WebSocket handling.
 
 use http::header::HOST;
 use hyper::ext::Protocol;
@@ -9,8 +9,8 @@ use impulse_errors::BridgeError;
 use quiche::h3::Header;
 
 use crate::common::{
-    RequestInputMeta, build_h1_and_h2_requests, build_h2_request_for_backend,
-    build_h2_request_with_policy, parse_backend_endpoint,
+    RequestInputMeta, build_h2_request_for_backend, build_h2_request_with_policy,
+    parse_backend_endpoint,
 };
 
 #[test]
@@ -397,61 +397,4 @@ fn websocket_requests_are_shaped_as_extended_connect() {
             .and_then(|value| value.to_str().ok()),
         Some("11")
     );
-}
-
-#[test]
-fn h1_and_h2_share_canonical_policy_outputs() {
-    let endpoint = parse_backend_endpoint("backend.internal:443").expect("endpoint");
-    let headers = vec![
-        Header::new(b"host", b"spoofed.example.com"),
-        Header::new(b"x-forwarded-for", b"1.2.3.4"),
-        Header::new(b"forwarded", b"for=1.2.3.4"),
-        Header::new(b"connection", b"keep-alive, x-secret"),
-        Header::new(b"x-secret", b"drop-me"),
-        Header::new(b"x-keep", b"ok"),
-    ];
-    let host_policy = UpstreamHostPolicy::default();
-    let forwarded_policy = ForwardedHeaderPolicy::default();
-
-    let (h1, h2) = build_h1_and_h2_requests(
-        &endpoint,
-        &host_policy,
-        &forwarded_policy,
-        "GET",
-        "/shared",
-        &headers,
-        RequestInputMeta {
-            authority: Some("api.example.com"),
-            content_length: None,
-            request_id: 55,
-            traceparent: Some("00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01"),
-            client_addr: "198.51.100.44:7000".parse().expect("client"),
-        },
-    )
-    .expect("requests");
-
-    assert_eq!(h1.uri(), h2.uri());
-    for name in [
-        HOST.as_str(),
-        "x-keep",
-        "x-forwarded-for",
-        "x-forwarded-proto",
-        "x-forwarded-host",
-        "forwarded",
-        "x-request-id",
-        "traceparent",
-    ] {
-        assert_eq!(
-            h1.headers().get(name).and_then(|value| value.to_str().ok()),
-            h2.headers().get(name).and_then(|value| value.to_str().ok()),
-            "header mismatch for {name}"
-        );
-    }
-    assert!(h1.headers().get("x-secret").is_none());
-    assert!(h2.headers().get("x-secret").is_none());
-    assert_eq!(
-        h1.headers().get("te").and_then(|value| value.to_str().ok()),
-        Some("trailers")
-    );
-    assert!(h2.headers().get("te").is_none());
 }

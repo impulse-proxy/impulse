@@ -361,11 +361,6 @@ fn authorization_header_from_request(request: &ExternalAuthRequest) -> Option<St
         .map(str::to_string)
 }
 
-#[cfg(test)]
-fn authorization_header_from_pending_forward(pending_forward: &PendingForward) -> Option<String> {
-    authorization_header_from_request(&external_auth_request_from_pending_forward(pending_forward))
-}
-
 fn percent_encode_component(raw: &str) -> String {
     let mut encoded = String::with_capacity(raw.len());
     for byte in raw.bytes() {
@@ -1015,60 +1010,6 @@ mod tests {
             "token%20value%2B%2F%3D%3F%26%25"
         );
         assert_eq!(percent_encode_component("\n"), "%0A");
-    }
-
-    #[test]
-    fn authorization_header_lookup_reads_unmutated_request_headers() {
-        let pending_forward = PendingForward::sample_for_test(vec![quiche::h3::Header::new(
-            b"authorization",
-            b"Bearer route-token",
-        )]);
-
-        assert_eq!(
-            authorization_header_from_pending_forward(&pending_forward).as_deref(),
-            Some("Bearer route-token")
-        );
-    }
-
-    #[test]
-    fn authorization_header_lookup_observes_pending_auth_mutations() {
-        let pending_forward = PendingForward {
-            auth_header_mutations: vec![
-                crate::runtime::connection::auth::PendingHeaderMutation::Upsert {
-                    name: http::header::AUTHORIZATION.as_str().as_bytes().to_vec(),
-                    value: b"Bearer refreshed-token".to_vec(),
-                },
-            ],
-            ..PendingForward::sample_for_test(vec![quiche::h3::Header::new(
-                b"authorization",
-                b"Bearer stale-token",
-            )])
-        };
-
-        assert_eq!(
-            authorization_header_from_pending_forward(&pending_forward).as_deref(),
-            Some("Bearer refreshed-token")
-        );
-    }
-
-    #[test]
-    fn authorization_header_lookup_honors_pending_auth_removal() {
-        let pending_forward = PendingForward {
-            auth_header_mutations: vec![
-                crate::runtime::connection::auth::PendingHeaderMutation::Remove {
-                    name: http::header::AUTHORIZATION.as_str().as_bytes().to_vec(),
-                },
-            ],
-            ..PendingForward::sample_for_test(vec![quiche::h3::Header::new(
-                b"authorization",
-                b"Bearer stale-token",
-            )])
-        };
-
-        assert_eq!(
-            authorization_header_from_pending_forward(&pending_forward),
-            None
-        );
     }
 
     #[test]

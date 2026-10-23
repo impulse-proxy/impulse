@@ -1479,12 +1479,30 @@ impl ProxyHttp for PingoraIngressService {
                 forwarded_header_policy: &policy.forwarded_header_policy,
             },
         };
+        let auth_header_mutations = ctx
+            .auth_header_mutations
+            .iter()
+            .map(|mutation| match mutation {
+                PendingHeaderMutation::Upsert { name, value } => {
+                    impulse_bridge::request::RequestHeaderMutationRef {
+                        name: name.as_slice(),
+                        value: Some(value.as_slice()),
+                    }
+                }
+                PendingHeaderMutation::Remove { name } => {
+                    impulse_bridge::request::RequestHeaderMutationRef {
+                        name: name.as_slice(),
+                        value: None,
+                    }
+                }
+            })
+            .collect::<Vec<_>>();
         let input = impulse_bridge::request::RequestBuildInput {
             method,
             path,
             authority: ctx.authority.as_deref(),
             headers: &headers,
-            auth_header_mutations: &ctx.auth_header_mutations,
+            auth_header_mutations: &auth_header_mutations,
             body: BoxBody::new(Full::<Bytes>::new(Bytes::new())),
             body_mode: impulse_bridge::request::RequestBuildInput::<
                 BoxBody<Bytes, Infallible>,

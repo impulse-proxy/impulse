@@ -6,7 +6,7 @@ use impulse_errors::ProxyError;
 use super::policy::ResolvedRequestPolicy;
 use crate::{quic_listener::AdmissionPolicyDecision, routing::decision::RouteDecisionReason};
 
-pub(crate) type RequestHeaderLookup<'a> = dyn Fn(&str) -> Option<String> + 'a;
+pub(crate) type RequestHeaderLookup<'a> = dyn Fn(&str) -> Option<String> + Sync + 'a;
 
 /// Protocol-neutral request data supplied to the shared policy pipeline.
 pub(crate) struct PipelineRequest<'a> {
