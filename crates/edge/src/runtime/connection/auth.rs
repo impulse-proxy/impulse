@@ -69,6 +69,16 @@ impl ExternalAuthTaskConfig {
     }
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct ExternalAuthRequest {
+    pub(crate) method: String,
+    pub(crate) path: String,
+    pub(crate) authority: Option<String>,
+    pub(crate) headers: http::HeaderMap,
+    pub(crate) upstream_name: String,
+    pub(crate) backend_addr: Option<String>,
+}
+
 #[derive(Debug)]
 pub(crate) struct ExternalAuthResponseMetadata<'a> {
     pub status: http::StatusCode,
