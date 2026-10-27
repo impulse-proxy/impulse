@@ -2,6 +2,9 @@ use std::{collections::VecDeque, sync::Arc, time::Instant};
 
 use bytes::Bytes;
 use http::StatusCode;
+pub(crate) use impulse_contracts::{
+    BackendFailureReason, CancellationReason, RejectionReason, TimeoutReason,
+};
 use impulse_errors::ProxyError;
 use tokio::{
     sync::{OwnedSemaphorePermit, mpsc, oneshot},
@@ -193,50 +196,6 @@ pub(crate) enum ResponseBackpressureState {
 pub enum CompletionReason {
     ResponseStreamFinished,
     ImmediateResponse,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CancellationReason {
-    ClientReset,
-    ConnectionClosed,
-    OperatorAbort,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TimeoutReason {
-    RequestBodyIdle,
-    RequestBodyTotal,
-    ExternalAuth,
-    TotalRequest,
-    AwaitingUpstream,
-    ResponseBodyIdle,
-    ResponseBodyTotal,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RejectionReason {
-    AuthDenied,
-    AuthUnavailable,
-    ValidationFailed,
-    RateLimited,
-    QuotaDenied,
-    Overloaded,
-    RequestBodyNotAllowed,
-    RequestBodyTooLarge,
-    ResponsePrebufferCap,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BackendFailureReason {
-    DispatchSpawnFailed,
-    UpstreamResultChannelDropped,
-    UpstreamTimeout,
-    UpstreamTransport,
-    UpstreamProtocol,
-    UpstreamTls,
-    UpstreamBridge,
-    ResponseWriteFailed,
-    ResponseStreamAborted,
 }
 
 #[derive(Debug, Clone)]

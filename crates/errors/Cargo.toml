@@ -8,4 +8,5 @@ license.workspace = true
 thiserror = { workspace = true }
 http = { workspace = true }
 impulse-lb = { path = "../lb" }
+impulse-contracts = { path = "../contracts" }
 

@@ -1,10 +1,4 @@
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum HealthFailureReason {
-    HttpStatus5xx,
-    Timeout,
-    Transport,
-    Tls,
-}
+pub use impulse_contracts::HealthFailureReason;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HealthTransition {

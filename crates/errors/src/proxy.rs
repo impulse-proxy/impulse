@@ -111,7 +111,7 @@ pub fn classify_upstream_proxy_error(err: &ProxyError) -> Option<ClassifiedUpstr
 
 #[cfg(test)]
 mod tests {
-    use impulse_lb::health::HealthFailureReason;
+    use impulse_contracts::HealthFailureReason;
 
     use super::{ProxyError, UpstreamProxyErrorKind, classify_upstream_proxy_error};
     use crate::{

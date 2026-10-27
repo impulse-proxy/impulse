@@ -4,6 +4,8 @@
 //! [`UpstreamPool`]. It consumes pool-level read APIs and does not mutate pool
 //! internals directly.
 
+pub use impulse_contracts::AlternateBackendFailureReason;
+
 use crate::upstream_pool::UpstreamPool;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -16,13 +18,6 @@ pub enum AlternateBackendSelectionMode {
 pub struct AlternateBackendChoice {
     pub index: usize,
     pub mode: AlternateBackendSelectionMode,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum AlternateBackendFailureReason {
-    NoHealthyBackends,
-    OnlyExcludedBackendsHealthy,
-    PoolUnavailable,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

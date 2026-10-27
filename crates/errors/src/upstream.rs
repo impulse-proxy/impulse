@@ -1,6 +1,6 @@
 //! Shared upstream error-detail classification and health-mapping contract.
 
-use impulse_lb::health::HealthFailureReason;
+use impulse_contracts::HealthFailureReason;
 
 pub fn classify_upstream_error_detail(
     detail: &str,

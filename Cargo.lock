@@ -1570,6 +1570,7 @@ name = "impulse-errors"
 version = "0.6.0"
 dependencies = [
  "http",
+ "impulse-contracts",
  "impulse-lb",
  "thiserror 1.0.69",
 ]
@@ -1581,6 +1582,7 @@ dependencies = [
  "async-trait",
  "criterion",
  "impulse-config",
+ "impulse-contracts",
  "pingora-error",
  "pingora-load-balancing",
 ]
