@@ -4,6 +4,8 @@
 //! loading, protocol implementations, and infrastructure dependencies belong
 //! to their owning crates.
 
+#![forbid(unsafe_code)]
+#![deny(unused_crate_dependencies)]
 #![warn(unreachable_pub)]
 
 mod identity;
