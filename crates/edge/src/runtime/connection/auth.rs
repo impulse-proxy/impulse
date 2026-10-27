@@ -1,6 +1,7 @@
 use std::{collections::HashMap, time::Duration};
 
 use impulse_config::runtime::{RuntimeExternalAuth, RuntimeExternalAuthFailureMode};
+pub(crate) use impulse_contracts::HeaderMutation as PendingHeaderMutation;
 use impulse_errors::ProxyError;
 use quiche::h3::NameValue;
 
@@ -717,12 +718,6 @@ pub(crate) struct ExternalAuthChallengeResponse {
     pub headers: Vec<(String, String)>,
     pub www_authenticate: String,
     pub body: Vec<u8>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum PendingHeaderMutation {
-    Upsert { name: Vec<u8>, value: Vec<u8> },
-    Remove { name: Vec<u8> },
 }
 
 #[cfg(test)]

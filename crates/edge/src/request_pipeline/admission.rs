@@ -1,5 +1,7 @@
+use impulse_contracts::RequestDecision;
+
 use crate::{
-    quic_listener::{AdmissionPolicyDecision, evaluate_forwarding_pre_admission_policy},
+    quic_listener::evaluate_forwarding_pre_admission_policy,
     request_pipeline::{PipelineRequest, ResolvedRequestPolicy},
     resilience::runtime::RuntimeResilience,
 };
@@ -10,7 +12,7 @@ pub(super) fn evaluate_admission(
     policy: &ResolvedRequestPolicy,
     route: &str,
     request: &PipelineRequest<'_>,
-) -> AdmissionPolicyDecision {
+) -> RequestDecision {
     evaluate_forwarding_pre_admission_policy(
         &policy.local_auth_policy,
         request.headers,

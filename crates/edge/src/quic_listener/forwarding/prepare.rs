@@ -656,7 +656,11 @@ impl QUICListener {
                             request_start.elapsed(),
                             http::StatusCode::SERVICE_UNAVAILABLE,
                             AdmissionOutcomeClass::OverloadShed {
-                                reason: Some(decision.reason.metrics_reason()),
+                                reason: Some(
+                                    crate::quic_listener::admission::overload_metrics_reason(
+                                        decision.reason,
+                                    ),
+                                ),
                             },
                         );
                         let Some(response) = rejection_response.as_ref() else {

@@ -71,6 +71,12 @@ mod jwt;
 mod key_resolution;
 mod startup;
 
+pub(crate) use impulse_contracts::{
+    AuthChallengeKind, BoundedRejectionResponse as AdmissionRejectionResponse, OverloadDecision,
+    OverloadDecisionReason, RateLimitedDecision, RequestDecision as AdmissionPolicyDecision,
+    UnauthorizedDecision,
+};
+
 #[cfg(test)]
 pub(super) use self::jwks_cache::{
     clear_jwks_cache_for_test, jwks_source_identity_for_test, mark_jwks_source_invalid_for_test,
@@ -95,59 +101,15 @@ pub(super) use self::{
     jwks_refresh::{JwtJwksFetchFailure, JwtJwksFetchFailureReason},
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum AuthChallengeKind {
-    ApiKey,
-    Bearer,
-}
-
-impl AuthChallengeKind {
-    pub(super) fn as_www_authenticate(self) -> &'static str {
-        match self {
-            Self::ApiKey => "ApiKey",
-            Self::Bearer => "Bearer",
-        }
+pub(crate) const fn overload_metrics_reason(reason: OverloadDecisionReason) -> OverloadShedReason {
+    match reason {
+        OverloadDecisionReason::Brownout => OverloadShedReason::Brownout,
+        OverloadDecisionReason::AdaptiveAdmission => OverloadShedReason::AdaptiveAdmission,
+        OverloadDecisionReason::RouteCap => OverloadShedReason::RouteCap,
+        OverloadDecisionReason::RouteGlobalCap => OverloadShedReason::RouteGlobalCap,
+        OverloadDecisionReason::GlobalInflight => OverloadShedReason::GlobalInflight,
+        OverloadDecisionReason::UpstreamInflight => OverloadShedReason::UpstreamInflight,
     }
-}
-
-impl OverloadDecisionReason {
-    pub(super) fn metrics_reason(self) -> OverloadShedReason {
-        match self {
-            Self::Brownout => OverloadShedReason::Brownout,
-            Self::AdaptiveAdmission => OverloadShedReason::AdaptiveAdmission,
-            Self::RouteCap => OverloadShedReason::RouteCap,
-            Self::RouteGlobalCap => OverloadShedReason::RouteGlobalCap,
-            Self::GlobalInflight => OverloadShedReason::GlobalInflight,
-            Self::UpstreamInflight => OverloadShedReason::UpstreamInflight,
-        }
-    }
-
-    fn response_body(self) -> &'static [u8] {
-        match self {
-            Self::Brownout => b"brownout active, non-core route shed\n",
-            Self::AdaptiveAdmission => b"adaptive admission overload\n",
-            Self::RouteCap => b"route queue cap exceeded\n",
-            Self::RouteGlobalCap => b"global queue cap exceeded\n",
-            Self::GlobalInflight => b"overloaded, retry later\n",
-            Self::UpstreamInflight => b"upstream overloaded, retry later\n",
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct UnauthorizedDecision {
-    pub(super) challenge: AuthChallengeKind,
-    pub(super) status: StatusCode,
-    pub(super) body: &'static [u8],
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct RateLimitedDecision {
-    pub(super) rule_name: String,
-    pub(super) route: String,
-    pub(super) status: StatusCode,
-    pub(super) body: &'static [u8],
-    pub(super) retry_after_seconds: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -157,32 +119,6 @@ pub(crate) struct QuotaRejectedDecision {
     pub(super) status: StatusCode,
     pub(super) body: &'static [u8],
     pub(super) retry_after_seconds: Option<u32>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum OverloadDecisionReason {
-    Brownout,
-    AdaptiveAdmission,
-    RouteCap,
-    RouteGlobalCap,
-    GlobalInflight,
-    UpstreamInflight,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct OverloadDecision {
-    pub(super) reason: OverloadDecisionReason,
-    pub(super) status: StatusCode,
-    pub(super) body: &'static [u8],
-    pub(super) retry_after_seconds: u32,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct AdmissionRejectionResponse {
-    pub(crate) status: StatusCode,
-    pub(crate) body: &'static [u8],
-    pub(crate) www_authenticate: Option<&'static str>,
-    pub(crate) retry_after_seconds: Option<u32>,
 }
 
 #[derive(Debug, Clone)]
@@ -215,14 +151,6 @@ pub(super) enum PostAuthAdmissionRejection {
 pub(super) enum PostAuthAdmissionExecution {
     Ready(PostAuthAdmissionReady),
     Rejected(PostAuthAdmissionRejection),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum AdmissionPolicyDecision {
-    AdmitReady,
-    Unauthorized(UnauthorizedDecision),
-    RateLimited(RateLimitedDecision),
-    Overloaded(OverloadDecision),
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -372,27 +300,7 @@ fn overload_decision_for_route_queue_rejection(
 pub(crate) fn admission_rejection_response(
     decision: &AdmissionPolicyDecision,
 ) -> Option<AdmissionRejectionResponse> {
-    match decision {
-        AdmissionPolicyDecision::AdmitReady => None,
-        AdmissionPolicyDecision::Unauthorized(decision) => Some(AdmissionRejectionResponse {
-            status: decision.status,
-            body: decision.body,
-            www_authenticate: Some(decision.challenge.as_www_authenticate()),
-            retry_after_seconds: None,
-        }),
-        AdmissionPolicyDecision::RateLimited(decision) => Some(AdmissionRejectionResponse {
-            status: decision.status,
-            body: decision.body,
-            www_authenticate: None,
-            retry_after_seconds: Some(decision.retry_after_seconds.max(1)),
-        }),
-        AdmissionPolicyDecision::Overloaded(decision) => Some(AdmissionRejectionResponse {
-            status: decision.status,
-            body: decision.body,
-            www_authenticate: None,
-            retry_after_seconds: Some(decision.retry_after_seconds.max(1)),
-        }),
-    }
+    decision.rejection_response()
 }
 
 impl QuotaRejectedDecision {
@@ -1017,7 +925,7 @@ mod tests {
             ];
 
             for (reason, label, body) in cases {
-                assert_eq!(reason.metrics_reason().reason_label(), label);
+                assert_eq!(overload_metrics_reason(reason).reason_label(), label);
                 assert_eq!(reason.response_body(), body);
             }
         }

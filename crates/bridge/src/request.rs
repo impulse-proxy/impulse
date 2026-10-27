@@ -13,6 +13,7 @@ use impulse_config::{
     backend_endpoint::BackendEndpoint,
     config::{ForwardedHeaderPolicy, UpstreamHostPolicy},
 };
+pub use impulse_contracts::HeaderMutationRef as RequestHeaderMutationRef;
 use impulse_contracts::RequestId;
 use impulse_errors::BridgeError;
 
@@ -77,12 +78,6 @@ pub struct RequestBuildInput<'a, B = BoxBody<Bytes, Infallible>> {
     pub body_mode: RequestBodyMode,
     pub trace: RequestTraceContext<'a>,
     pub forwarded: RequestForwardedContext,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct RequestHeaderMutationRef<'a> {
-    pub name: &'a [u8],
-    pub value: Option<&'a [u8]>,
 }
 
 #[derive(Debug)]

@@ -1,10 +1,11 @@
 use std::{net::SocketAddr, sync::Arc};
 
 use impulse_config::runtime::RuntimeUpstreamPolicy;
+use impulse_contracts::RequestDecision;
 use impulse_errors::ProxyError;
 
 use super::policy::ResolvedRequestPolicy;
-use crate::{quic_listener::AdmissionPolicyDecision, routing::decision::RouteDecisionReason};
+use crate::routing::decision::RouteDecisionReason;
 
 pub(crate) type RequestHeaderLookup<'a> = dyn Fn(&str) -> Option<String> + Sync + 'a;
 
@@ -41,7 +42,7 @@ pub(crate) type PipelineResult<Route> = Result<PipelineResolution<Route>, ProxyE
 pub(crate) struct PipelineResolution<Route> {
     pub(crate) route: Route,
     pub(crate) policy: ResolvedRequestPolicy,
-    pub(crate) admission: AdmissionPolicyDecision,
+    pub(crate) admission: RequestDecision,
 }
 
 /// The route selected by the shared routing service before backend selection.

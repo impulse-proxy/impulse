@@ -160,7 +160,9 @@ impl QUICListener {
                     req.start.elapsed(),
                     http::StatusCode::SERVICE_UNAVAILABLE,
                     crate::runtime::connection::outcome::AdmissionOutcomeClass::OverloadShed {
-                        reason: Some(decision.reason.metrics_reason()),
+                        reason: Some(crate::quic_listener::admission::overload_metrics_reason(
+                            decision.reason,
+                        )),
                     },
                 );
                 Self::send_overload_response(
@@ -173,7 +175,9 @@ impl QUICListener {
                 resilience
                     .adaptive_admission
                     .observe(req.start.elapsed(), true);
-                req.set_terminal_overload_reason(Some(decision.reason.metrics_reason()));
+                req.set_terminal_overload_reason(Some(
+                    crate::quic_listener::admission::overload_metrics_reason(decision.reason),
+                ));
                 req.mark_terminal_outcome_recorded();
                 terminalize_stream(
                     req,
@@ -187,7 +191,9 @@ impl QUICListener {
             ) => {
                 let outcome = if let Some(reason) = decision.overload_reason {
                     crate::runtime::connection::outcome::AdmissionOutcomeClass::OverloadShed {
-                        reason: Some(reason.metrics_reason()),
+                        reason: Some(crate::quic_listener::admission::overload_metrics_reason(
+                            reason,
+                        )),
                     }
                 } else {
                     crate::runtime::connection::outcome::AdmissionOutcomeClass::Failed {
@@ -215,7 +221,9 @@ impl QUICListener {
                         .observe(req.start.elapsed(), true);
                 }
                 if let Some(reason) = decision.overload_reason {
-                    req.set_terminal_overload_reason(Some(reason.metrics_reason()));
+                    req.set_terminal_overload_reason(Some(
+                        crate::quic_listener::admission::overload_metrics_reason(reason),
+                    ));
                 }
                 req.mark_terminal_outcome_recorded();
                 terminalize_stream(
