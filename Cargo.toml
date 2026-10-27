@@ -2,6 +2,7 @@
 members = [
     "impulse",
     "crates/contracts",
+    "crates/observability",
     "crates/config",
     "crates/utils",
     "crates/edge",

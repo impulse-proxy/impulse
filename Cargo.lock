@@ -1587,6 +1587,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "impulse-observability"
+version = "0.6.0"
+dependencies = [
+ "impulse-contracts",
+]
+
+[[package]]
 name = "impulse-transport"
 version = "0.6.0"
 dependencies = [
