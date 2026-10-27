@@ -905,22 +905,22 @@ impl Metrics {
             .fetch_add(1, Ordering::Relaxed);
     }
 
-    pub(crate) fn record_response_compression_outcome(&self, outcome: ResponseCompressionAction) {
+    pub fn record_response_compression_outcome(&self, outcome: ResponseCompressionAction) {
         self.response_compression_outcomes[outcome.index()].fetch_add(1, Ordering::Relaxed);
     }
 
-    pub(crate) fn add_response_compression_bytes(&self, input: usize, output: usize) {
+    pub fn add_response_compression_bytes(&self, input: usize, output: usize) {
         self.response_compression_input_bytes
             .fetch_add(u64::try_from(input).unwrap_or(u64::MAX), Ordering::Relaxed);
         self.response_compression_output_bytes
             .fetch_add(u64::try_from(output).unwrap_or(u64::MAX), Ordering::Relaxed);
     }
 
-    pub(crate) fn record_response_cache_outcome(&self, outcome: ResponseCacheOutcome) {
+    pub fn record_response_cache_outcome(&self, outcome: ResponseCacheOutcome) {
         self.response_cache_outcomes[outcome.index()].fetch_add(1, Ordering::Relaxed);
     }
 
-    pub(crate) fn add_response_cache_outcomes(&self, outcome: ResponseCacheOutcome, count: usize) {
+    pub fn add_response_cache_outcomes(&self, outcome: ResponseCacheOutcome, count: usize) {
         self.response_cache_outcomes[outcome.index()]
             .fetch_add(u64::try_from(count).unwrap_or(u64::MAX), Ordering::Relaxed);
     }
@@ -1075,29 +1075,27 @@ impl Metrics {
         self.pingora_lb_selections.fetch_add(1, Ordering::Relaxed);
     }
 
-    pub(crate) fn record_pingora_discovery_refresh(
+    pub fn record_pingora_discovery_refresh(
         &self,
         outcome: PingoraDiscoveryRefreshOutcome,
-        update: Option<&impulse_lb::pingora_backend::PingoraDiscoveryUpdate>,
+        update: Option<DiscoveryRefreshUpdate<'_>>,
     ) {
         self.pingora_discovery_refresh_outcomes[outcome.index()].fetch_add(1, Ordering::Relaxed);
         let Some(update) = update else {
             return;
         };
-        if !self.route_label_to_id.contains_key(update.upstream_name()) {
+        if !self.route_label_to_id.contains_key(update.upstream_name) {
             return;
         }
         let mut states = self
             .pingora_discovery_state
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let state = states
-            .entry(update.upstream_name().to_string())
-            .or_default();
-        state.membership_generation = update.membership_generation();
-        if update.membership_changed() {
+        let state = states.entry(update.upstream_name.to_string()).or_default();
+        state.membership_generation = update.membership_generation;
+        if update.membership_changed {
             state.rebuild_duration_ns =
-                u64::try_from(update.rebuild_duration().as_nanos()).unwrap_or(u64::MAX);
+                u64::try_from(update.rebuild_duration.as_nanos()).unwrap_or(u64::MAX);
         }
     }
 

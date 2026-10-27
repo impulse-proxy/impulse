@@ -373,15 +373,15 @@ impl Metrics {
         snapshot
     }
 
-    pub(crate) fn snapshot_jwt_validation_failures(&self) -> Vec<(String, u64)> {
+    pub fn snapshot_jwt_validation_failures(&self) -> Vec<(String, u64)> {
         self.snapshot_jwt_jwks_metrics().jwt_validation_failures
     }
 
-    pub(crate) fn snapshot_jwt_algorithm_rejections(&self) -> Vec<(String, u64)> {
+    pub fn snapshot_jwt_algorithm_rejections(&self) -> Vec<(String, u64)> {
         self.snapshot_jwt_jwks_metrics().jwt_algorithm_rejections
     }
 
-    pub(crate) fn snapshot_jwks_unknown_kid_events(&self) -> Vec<(String, u64)> {
+    pub fn snapshot_jwks_unknown_kid_events(&self) -> Vec<(String, u64)> {
         self.snapshot_jwt_jwks_metrics().jwks_unknown_kid_events
     }
 
@@ -413,19 +413,19 @@ impl Metrics {
     }
 
     #[cfg(test)]
-    pub(crate) fn snapshot_upstream_request_counts(&self) -> Vec<(UpstreamRequestCountKey, u64)> {
+    pub fn snapshot_upstream_request_counts(&self) -> Vec<(UpstreamRequestCountKey, u64)> {
         self.snapshot_request_result_metrics()
             .upstream_request_counts
     }
 
     #[cfg(test)]
-    pub(crate) fn snapshot_backend_request_counts(&self) -> Vec<(BackendRequestCountKey, u64)> {
+    pub fn snapshot_backend_request_counts(&self) -> Vec<(BackendRequestCountKey, u64)> {
         self.snapshot_request_result_metrics()
             .backend_request_counts
     }
 
     #[cfg(test)]
-    pub(crate) fn snapshot_upstream_request_latency(
+    pub fn snapshot_upstream_request_latency(
         &self,
     ) -> Vec<(UpstreamRequestLatencyKey, RequestLatencyStats)> {
         self.snapshot_request_result_metrics()

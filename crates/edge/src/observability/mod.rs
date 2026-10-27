@@ -152,6 +152,10 @@
 
 use std::fmt;
 
+pub use impulse_observability::{
+    AdmissionOverloadCause, QuotaBackendHealthReason, QuotaPolicyDecision, QuotaPolicyReason,
+};
+
 /// Why a request reached its terminal state — the one canonical request-outcome
 /// vocabulary. Unifies the QUIC data-path terminal enums
 /// (`RejectionReason`/`BackendFailureReason`/`TimeoutReason`) and the bootstrap
@@ -266,58 +270,6 @@ pub enum AdmissionDecisionReason {
     ValidationRejected,
     /// A non-auth policy rejected the request.
     PolicyRejected,
-}
-
-/// The fine-grained cause of an [`AdmissionDecisionReason::Overloaded`] decision,
-/// carried alongside it. This is the union of the two legacy overload enums so
-/// the shed cause is not lost when the coarse decision is recorded.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum AdmissionOverloadCause {
-    Brownout,
-    AdaptiveAdmission,
-    RouteCap,
-    RouteGlobalCap,
-    GlobalInflight,
-    UpstreamInflight,
-    BackendInflight,
-    CircuitOpen,
-    RequestBufferCap,
-    ResponsePrebufferCap,
-    ConnectionCap,
-}
-
-/// The coarse result of a quota-policy evaluation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum QuotaPolicyDecision {
-    Allowed,
-    Denied,
-    ShadowDenied,
-    FailedOpen,
-    FailedClosed,
-    NotApplied,
-}
-
-/// The reason attached to a quota-policy evaluation result.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum QuotaPolicyReason {
-    Allowed,
-    NotApplied,
-    BurstQuotaExhausted,
-    SustainedQuotaExhausted,
-    SelectorIdentityMissing,
-    SelectorIdentityInvalid,
-    BackendTimeout,
-    BackendUnavailable,
-    BackendError,
-}
-
-/// The health/error classification of a quota backend interaction.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum QuotaBackendHealthReason {
-    Available,
-    Timeout,
-    Unavailable,
-    Error,
 }
 
 // ---------------------------------------------------------------------------
@@ -451,67 +403,6 @@ impl AdmissionDecisionReason {
             Self::Overloaded => "overloaded",
             Self::ValidationRejected => "validation_rejected",
             Self::PolicyRejected => "policy_rejected",
-        }
-    }
-}
-
-impl AdmissionOverloadCause {
-    /// The canonical slug, matching the existing `OverloadShedReason` metric-label
-    /// values (Phase 0 §1.6) so migrating the overload emitter is a no-op on the
-    /// `reason=` label.
-    pub fn slug(self) -> &'static str {
-        match self {
-            Self::Brownout => "brownout",
-            Self::AdaptiveAdmission => "adaptive_admission",
-            Self::RouteCap => "route_cap",
-            Self::RouteGlobalCap => "route_global_cap",
-            Self::GlobalInflight => "global_inflight",
-            Self::UpstreamInflight => "upstream_inflight",
-            Self::BackendInflight => "backend_inflight",
-            Self::CircuitOpen => "circuit_open",
-            Self::RequestBufferCap => "request_buffer_cap",
-            Self::ResponsePrebufferCap => "response_prebuffer_cap",
-            Self::ConnectionCap => "connection_cap",
-        }
-    }
-}
-
-impl QuotaPolicyDecision {
-    pub fn slug(self) -> &'static str {
-        match self {
-            Self::Allowed => "allowed",
-            Self::Denied => "denied",
-            Self::ShadowDenied => "shadow_denied",
-            Self::FailedOpen => "failed_open",
-            Self::FailedClosed => "failed_closed",
-            Self::NotApplied => "not_applied",
-        }
-    }
-}
-
-impl QuotaPolicyReason {
-    pub fn slug(self) -> &'static str {
-        match self {
-            Self::Allowed => "allowed",
-            Self::NotApplied => "not_applied",
-            Self::BurstQuotaExhausted => "burst_quota_exhausted",
-            Self::SustainedQuotaExhausted => "sustained_quota_exhausted",
-            Self::SelectorIdentityMissing => "selector_identity_missing",
-            Self::SelectorIdentityInvalid => "selector_identity_invalid",
-            Self::BackendTimeout => "backend_timeout",
-            Self::BackendUnavailable => "backend_unavailable",
-            Self::BackendError => "backend_error",
-        }
-    }
-}
-
-impl QuotaBackendHealthReason {
-    pub fn slug(self) -> &'static str {
-        match self {
-            Self::Available => "available",
-            Self::Timeout => "timeout",
-            Self::Unavailable => "unavailable",
-            Self::Error => "error",
         }
     }
 }

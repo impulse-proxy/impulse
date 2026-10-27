@@ -1,5 +1,74 @@
 use super::*;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ResponseCompressionAction {
+    Gzip,
+    Bypass(ResponseCompressionBypassReason),
+}
+
+impl ResponseCompressionAction {
+    pub(super) const ALL: [Self; 11] = [
+        Self::Gzip,
+        Self::Bypass(ResponseCompressionBypassReason::Disabled),
+        Self::Bypass(ResponseCompressionBypassReason::Bodyless),
+        Self::Bypass(ResponseCompressionBypassReason::Status),
+        Self::Bypass(ResponseCompressionBypassReason::ExistingEncoding),
+        Self::Bypass(ResponseCompressionBypassReason::NoTransform),
+        Self::Bypass(ResponseCompressionBypassReason::Range),
+        Self::Bypass(ResponseCompressionBypassReason::ContentType),
+        Self::Bypass(ResponseCompressionBypassReason::UnknownLength),
+        Self::Bypass(ResponseCompressionBypassReason::BelowMinimumSize),
+        Self::Bypass(ResponseCompressionBypassReason::NotAccepted),
+    ];
+    pub(super) const COUNT: usize = Self::ALL.len();
+
+    pub(super) const fn index(self) -> usize {
+        match self {
+            Self::Gzip => 0,
+            Self::Bypass(ResponseCompressionBypassReason::Disabled) => 1,
+            Self::Bypass(ResponseCompressionBypassReason::Bodyless) => 2,
+            Self::Bypass(ResponseCompressionBypassReason::Status) => 3,
+            Self::Bypass(ResponseCompressionBypassReason::ExistingEncoding) => 4,
+            Self::Bypass(ResponseCompressionBypassReason::NoTransform) => 5,
+            Self::Bypass(ResponseCompressionBypassReason::Range) => 6,
+            Self::Bypass(ResponseCompressionBypassReason::ContentType) => 7,
+            Self::Bypass(ResponseCompressionBypassReason::UnknownLength) => 8,
+            Self::Bypass(ResponseCompressionBypassReason::BelowMinimumSize) => 9,
+            Self::Bypass(ResponseCompressionBypassReason::NotAccepted) => 10,
+        }
+    }
+
+    pub(super) const fn label(self) -> &'static str {
+        match self {
+            Self::Gzip => "gzip",
+            Self::Bypass(ResponseCompressionBypassReason::Disabled) => "disabled",
+            Self::Bypass(ResponseCompressionBypassReason::Bodyless) => "bodyless",
+            Self::Bypass(ResponseCompressionBypassReason::Status) => "status",
+            Self::Bypass(ResponseCompressionBypassReason::ExistingEncoding) => "existing_encoding",
+            Self::Bypass(ResponseCompressionBypassReason::NoTransform) => "no_transform",
+            Self::Bypass(ResponseCompressionBypassReason::Range) => "range",
+            Self::Bypass(ResponseCompressionBypassReason::ContentType) => "content_type",
+            Self::Bypass(ResponseCompressionBypassReason::UnknownLength) => "unknown_length",
+            Self::Bypass(ResponseCompressionBypassReason::BelowMinimumSize) => "below_minimum_size",
+            Self::Bypass(ResponseCompressionBypassReason::NotAccepted) => "not_accepted",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ResponseCompressionBypassReason {
+    Disabled,
+    Bodyless,
+    Status,
+    ExistingEncoding,
+    NoTransform,
+    Range,
+    ContentType,
+    UnknownLength,
+    BelowMinimumSize,
+    NotAccepted,
+}
+
 #[derive(Default, Clone)]
 pub(crate) struct BackendDnsState {
     pub(crate) last_success_unix_seconds: u64,
@@ -40,24 +109,24 @@ pub(crate) const BACKEND_CONNECT_ATTEMPT_LABEL_CAP: usize = 512;
 pub(crate) const METRIC_LABEL_OVER_CAP: &str = "__over_cap__";
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) struct UpstreamRequestCountKey {
-    pub(crate) upstream: String,
-    pub(crate) status_class: &'static str,
-    pub(crate) outcome: &'static str,
+pub struct UpstreamRequestCountKey {
+    pub upstream: String,
+    pub status_class: &'static str,
+    pub outcome: &'static str,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) struct BackendRequestCountKey {
-    pub(crate) upstream: String,
-    pub(crate) backend: String,
-    pub(crate) status_class: &'static str,
-    pub(crate) outcome: &'static str,
+pub struct BackendRequestCountKey {
+    pub upstream: String,
+    pub backend: String,
+    pub status_class: &'static str,
+    pub outcome: &'static str,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) struct UpstreamRequestLatencyKey {
-    pub(crate) upstream: String,
-    pub(crate) outcome: &'static str,
+pub struct UpstreamRequestLatencyKey {
+    pub upstream: String,
+    pub outcome: &'static str,
 }
 
 #[derive(Default)]
@@ -248,10 +317,10 @@ pub(super) struct WorkerStats {
 }
 
 #[derive(Default, Clone)]
-pub(crate) struct RequestLatencyStats {
-    pub(crate) latency_buckets: [u64; LATENCY_BUCKETS_MS.len() + 1],
-    pub(crate) latency_ms_sum: u64,
-    pub(crate) count: u64,
+pub struct RequestLatencyStats {
+    pub latency_buckets: [u64; LATENCY_BUCKETS_MS.len() + 1],
+    pub latency_ms_sum: u64,
+    pub count: u64,
 }
 
 pub(super) struct RouteStatsAtomic {
@@ -357,8 +426,8 @@ pub enum OverloadShedReason {
 }
 
 impl OverloadShedReason {
-    pub fn canonical(self) -> crate::observability::AdmissionOverloadCause {
-        use crate::observability::AdmissionOverloadCause as C;
+    pub fn canonical(self) -> crate::AdmissionOverloadCause {
+        use crate::AdmissionOverloadCause as C;
         match self {
             Self::Brownout => C::Brownout,
             Self::AdaptiveAdmission => C::AdaptiveAdmission,

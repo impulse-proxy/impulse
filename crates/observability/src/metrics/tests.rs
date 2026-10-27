@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use super::*;
-use crate::observability::{QuotaBackendHealthReason, QuotaPolicyDecision, QuotaPolicyReason};
+use crate::{QuotaBackendHealthReason, QuotaPolicyDecision, QuotaPolicyReason};
 
 #[test]
 fn prometheus_render_includes_jwt_and_jwks_observability_series() {

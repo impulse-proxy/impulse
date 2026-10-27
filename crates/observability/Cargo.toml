@@ -6,3 +6,4 @@ license.workspace = true
 
 [dependencies]
 impulse-contracts = { path = "../contracts" }
+serde.workspace = true

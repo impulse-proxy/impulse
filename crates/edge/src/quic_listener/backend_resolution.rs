@@ -8,7 +8,7 @@ use impulse_lb::pingora_backend::SharedPingoraLoadBalancingRuntimeState;
 use log::{debug, error, info, warn};
 
 use super::*;
-use crate::metrics::PingoraDiscoveryRefreshOutcome;
+use crate::metrics::{DiscoveryRefreshUpdate, PingoraDiscoveryRefreshOutcome};
 
 const DNS_REFRESH_CONCURRENCY: usize = 8;
 
@@ -243,7 +243,15 @@ async fn refresh_pingora_backend(
             } else {
                 PingoraDiscoveryRefreshOutcome::Unchanged
             };
-            metrics.record_pingora_discovery_refresh(refresh_outcome, Some(&update));
+            metrics.record_pingora_discovery_refresh(
+                refresh_outcome,
+                Some(DiscoveryRefreshUpdate {
+                    upstream_name: update.upstream_name(),
+                    membership_generation: update.membership_generation(),
+                    membership_changed: update.membership_changed(),
+                    rebuild_duration: update.rebuild_duration(),
+                }),
+            );
         }
         Err(error) => {
             metrics.inc_backend_dns_refresh_failure();

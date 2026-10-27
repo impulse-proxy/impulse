@@ -6,10 +6,17 @@
 
 mod event;
 mod labels;
+mod metrics;
 
 pub use event::{MetricReasonLabels, OperationalEventContext};
 pub use labels::{
     AdmissionDecisionReason, AdmissionOverloadCause, BackendHealthReason, HedgeDecisionReason,
     QuotaBackendHealthReason, QuotaPolicyDecision, QuotaPolicyReason, RequestOutcomeReason,
-    RetryDecisionReason,
+    RetryDecisionReason, RuntimeOperationOutcomeReason, RuntimeRejectionReason,
+};
+pub use metrics::{
+    BackendRequestCountKey, DiscoveryRefreshUpdate, Metrics, OverloadShedReason,
+    PingoraDiscoveryRefreshOutcome, RequestLatencyStats, ResponseCacheOutcome,
+    ResponseCompressionAction, ResponseCompressionBypassReason, RouteOutcome,
+    UpstreamRequestCountKey, UpstreamRequestLatencyKey,
 };

@@ -287,3 +287,113 @@ impl QuotaBackendHealthReason {
         }
     }
 }
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeRejectionReason {
+    InvalidConfig,
+    StartupOwnedChange,
+    BindConflict,
+    ResourcePrepareFailed,
+    IncompatibleReload,
+    UnknownGeneration,
+    RollbackNotAllowed,
+}
+
+impl RuntimeRejectionReason {
+    #[must_use]
+    pub const fn slug(self) -> &'static str {
+        match self {
+            Self::InvalidConfig => "invalid_config",
+            Self::StartupOwnedChange => "startup_owned_change",
+            Self::BindConflict => "bind_conflict",
+            Self::ResourcePrepareFailed => "resource_prepare_failed",
+            Self::IncompatibleReload => "incompatible_reload",
+            Self::UnknownGeneration => "unknown_generation",
+            Self::RollbackNotAllowed => "rollback_not_allowed",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeOperationOutcomeReason {
+    Applied,
+    InvalidConfig,
+    StartupOwnedChange,
+    BindConflict,
+    ResourcePrepareFailed,
+    IncompatibleReload,
+    UnknownGeneration,
+    RollbackNotAllowed,
+}
+
+impl RuntimeOperationOutcomeReason {
+    pub const COUNT: usize = 8;
+    pub const ALL: [Self; Self::COUNT] = [
+        Self::Applied,
+        Self::InvalidConfig,
+        Self::StartupOwnedChange,
+        Self::BindConflict,
+        Self::ResourcePrepareFailed,
+        Self::IncompatibleReload,
+        Self::UnknownGeneration,
+        Self::RollbackNotAllowed,
+    ];
+
+    #[must_use]
+    pub const fn index(self) -> usize {
+        match self {
+            Self::Applied => 0,
+            Self::InvalidConfig => 1,
+            Self::StartupOwnedChange => 2,
+            Self::BindConflict => 3,
+            Self::ResourcePrepareFailed => 4,
+            Self::IncompatibleReload => 5,
+            Self::UnknownGeneration => 6,
+            Self::RollbackNotAllowed => 7,
+        }
+    }
+
+    #[must_use]
+    pub const fn slug(self) -> &'static str {
+        match self {
+            Self::Applied => "applied",
+            Self::InvalidConfig => "invalid_config",
+            Self::StartupOwnedChange => "startup_owned_change",
+            Self::BindConflict => "bind_conflict",
+            Self::ResourcePrepareFailed => "resource_prepare_failed",
+            Self::IncompatibleReload => "incompatible_reload",
+            Self::UnknownGeneration => "unknown_generation",
+            Self::RollbackNotAllowed => "rollback_not_allowed",
+        }
+    }
+
+    #[must_use]
+    pub const fn result_label(self) -> &'static str {
+        match self {
+            Self::Applied => "success",
+            Self::InvalidConfig
+            | Self::StartupOwnedChange
+            | Self::BindConflict
+            | Self::ResourcePrepareFailed
+            | Self::IncompatibleReload
+            | Self::UnknownGeneration
+            | Self::RollbackNotAllowed => "failure",
+        }
+    }
+
+    #[must_use]
+    pub const fn from_rejection_reason(reason: RuntimeRejectionReason) -> Self {
+        match reason {
+            RuntimeRejectionReason::InvalidConfig => Self::InvalidConfig,
+            RuntimeRejectionReason::StartupOwnedChange => Self::StartupOwnedChange,
+            RuntimeRejectionReason::BindConflict => Self::BindConflict,
+            RuntimeRejectionReason::ResourcePrepareFailed => Self::ResourcePrepareFailed,
+            RuntimeRejectionReason::IncompatibleReload => Self::IncompatibleReload,
+            RuntimeRejectionReason::UnknownGeneration => Self::UnknownGeneration,
+            RuntimeRejectionReason::RollbackNotAllowed => Self::RollbackNotAllowed,
+        }
+    }
+}

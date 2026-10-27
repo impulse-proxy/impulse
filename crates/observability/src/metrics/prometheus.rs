@@ -1,5 +1,4 @@
 use super::*;
-use crate::runtime::activation::{RuntimeOperationOutcomeReason, RuntimeRejectionReason};
 
 fn render_quota_metrics_families(snapshot: &QuotaMetricsSnapshot) -> String {
     let mut out = String::new();

@@ -1536,6 +1536,7 @@ dependencies = [
  "impulse-contracts",
  "impulse-errors",
  "impulse-lb",
+ "impulse-observability",
  "impulse-transport",
  "impulse-utils",
  "libc",
@@ -1591,6 +1592,7 @@ name = "impulse-observability"
 version = "0.6.0"
 dependencies = [
  "impulse-contracts",
+ "serde",
 ]
 
 [[package]]
