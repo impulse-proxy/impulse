@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "impulse",
+    "crates/contracts",
     "crates/config",
     "crates/utils",
     "crates/edge",
