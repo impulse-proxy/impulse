@@ -121,6 +121,28 @@ pub enum BackendFailureReason {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BackendHealthObservationSource {
+    ActiveCheck,
+    PassiveRequest,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BackendHealthObservationOutcome {
+    Success,
+    Failure,
+    Neutral,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AdmissionOutcomeKind {
+    AuthDenied,
+    RateLimited,
+    QuotaDenied,
+    OverloadShed,
+    Failed,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CompletionReason {
     ResponseStreamFinished,
     ImmediateResponse,

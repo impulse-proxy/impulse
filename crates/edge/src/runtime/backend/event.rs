@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use http::StatusCode;
+pub use impulse_contracts::{BackendHealthObservationOutcome, BackendHealthObservationSource};
 use impulse_lb::health::HealthFailureReason;
 
 use super::state::BackendIdentity;
@@ -26,19 +27,6 @@ impl BackendHealthObservation {
             reason,
         }
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BackendHealthObservationSource {
-    ActiveCheck,
-    PassiveRequest,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BackendHealthObservationOutcome {
-    Success,
-    Failure,
-    Neutral,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

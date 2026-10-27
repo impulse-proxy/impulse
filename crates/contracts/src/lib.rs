@@ -14,8 +14,9 @@ mod request;
 
 pub use identity::{BackendIdentity, GenerationId, IngressProtocol, RequestId};
 pub use outcome::{
-    AlternateBackendFailureReason, BackendFailureReason, CancellationReason, CompletionReason,
-    HealthFailureReason, HedgeOutcomeTelemetryReason, HedgePolicyDenialReason,
+    AdmissionOutcomeKind, AlternateBackendFailureReason, BackendFailureReason,
+    BackendHealthObservationOutcome, BackendHealthObservationSource, CancellationReason,
+    CompletionReason, HealthFailureReason, HedgeOutcomeTelemetryReason, HedgePolicyDenialReason,
     HedgeTriggerTelemetryReason, RejectionReason, RetryAttemptTelemetryReason,
     RetryPolicyDenialReason, TerminalReason, TimeoutReason, UpstreamRetryReason,
     UpstreamTerminalErrorKind,

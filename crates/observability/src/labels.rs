@@ -1,6 +1,7 @@
 use impulse_contracts::{
-    BackendFailureReason, HedgePolicyDenialReason, RejectionReason, RetryPolicyDenialReason,
-    TimeoutReason, UpstreamRetryReason,
+    AdmissionOutcomeKind, BackendFailureReason, BackendHealthObservationOutcome,
+    BackendHealthObservationSource, HedgePolicyDenialReason, RejectionReason,
+    RetryPolicyDenialReason, TimeoutReason, UpstreamRetryReason,
 };
 use serde::{Deserialize, Serialize};
 
@@ -366,6 +367,43 @@ impl From<HedgePolicyDenialReason> for HedgeDecisionReason {
             }
             HedgePolicyDenialReason::BudgetDenied => Self::HedgeBudgetDenied,
         }
+    }
+}
+
+impl From<AdmissionOutcomeKind> for AdmissionDecisionReason {
+    fn from(outcome: AdmissionOutcomeKind) -> Self {
+        match outcome {
+            AdmissionOutcomeKind::AuthDenied => Self::AuthDenied,
+            AdmissionOutcomeKind::RateLimited | AdmissionOutcomeKind::QuotaDenied => {
+                Self::RateLimited
+            }
+            AdmissionOutcomeKind::OverloadShed => Self::Overloaded,
+            AdmissionOutcomeKind::Failed => Self::PolicyRejected,
+        }
+    }
+}
+
+#[must_use]
+pub const fn backend_health_reason(
+    source: BackendHealthObservationSource,
+    outcome: BackendHealthObservationOutcome,
+) -> Option<BackendHealthReason> {
+    match (source, outcome) {
+        (BackendHealthObservationSource::ActiveCheck, BackendHealthObservationOutcome::Success) => {
+            Some(BackendHealthReason::ActiveProbeSuccess)
+        }
+        (BackendHealthObservationSource::ActiveCheck, BackendHealthObservationOutcome::Failure) => {
+            Some(BackendHealthReason::ActiveProbeFailure)
+        }
+        (
+            BackendHealthObservationSource::PassiveRequest,
+            BackendHealthObservationOutcome::Success,
+        ) => Some(BackendHealthReason::PassiveSuccess),
+        (
+            BackendHealthObservationSource::PassiveRequest,
+            BackendHealthObservationOutcome::Failure,
+        ) => Some(BackendHealthReason::PassiveFailure),
+        (_, BackendHealthObservationOutcome::Neutral) => None,
     }
 }
 

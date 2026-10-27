@@ -2,44 +2,19 @@
 
 #[cfg(test)]
 use impulse_contracts::{
-    BackendFailureReason, HedgePolicyDenialReason, RejectionReason, RetryPolicyDenialReason,
-    TimeoutReason, UpstreamRetryReason,
+    AdmissionOutcomeKind, BackendFailureReason, BackendHealthObservationOutcome,
+    BackendHealthObservationSource, HedgePolicyDenialReason, RejectionReason,
+    RetryPolicyDenialReason, TimeoutReason, UpstreamRetryReason,
 };
 pub use impulse_observability::{
     AdmissionDecisionReason, AdmissionOverloadCause, BackendHealthReason, HedgeDecisionReason,
     MetricReasonLabels, OperationalEventContext, QuotaBackendHealthReason, QuotaPolicyDecision,
-    QuotaPolicyReason, RequestOutcomeReason, RetryDecisionReason,
+    QuotaPolicyReason, RequestOutcomeReason, RetryDecisionReason, backend_health_reason,
 };
 
-pub fn backend_health_reason(
-    source: crate::runtime::backend::event::BackendHealthObservationSource,
-    outcome: crate::runtime::backend::event::BackendHealthObservationOutcome,
-) -> Option<BackendHealthReason> {
-    use crate::runtime::backend::event::{
-        BackendHealthObservationOutcome as O, BackendHealthObservationSource as S,
-    };
-
-    match (source, outcome) {
-        (S::ActiveCheck, O::Success) => Some(BackendHealthReason::ActiveProbeSuccess),
-        (S::ActiveCheck, O::Failure) => Some(BackendHealthReason::ActiveProbeFailure),
-        (S::PassiveRequest, O::Success) => Some(BackendHealthReason::PassiveSuccess),
-        (S::PassiveRequest, O::Failure) => Some(BackendHealthReason::PassiveFailure),
-        (_, O::Neutral) => None,
-    }
-}
-
 #[cfg(test)]
-fn admission_decision_reason(
-    outcome: crate::runtime::connection::outcome::AdmissionOutcomeClass,
-) -> AdmissionDecisionReason {
-    use crate::runtime::connection::outcome::AdmissionOutcomeClass as A;
-
-    match outcome {
-        A::AuthDenied => AdmissionDecisionReason::AuthDenied,
-        A::RateLimited | A::QuotaDenied => AdmissionDecisionReason::RateLimited,
-        A::OverloadShed { .. } => AdmissionDecisionReason::Overloaded,
-        A::Failed { .. } => AdmissionDecisionReason::PolicyRejected,
-    }
+fn admission_decision_reason(outcome: AdmissionOutcomeKind) -> AdmissionDecisionReason {
+    outcome.into()
 }
 
 #[cfg(test)]
@@ -534,7 +509,6 @@ mod tests {
 
         #[test]
         fn local_rejection_maps_to_canonical_request_outcome() {
-            use crate::runtime::connection::stream::RejectionReason;
             assert_eq!(
                 RequestOutcomeReason::from(RejectionReason::AuthDenied),
                 RequestOutcomeReason::AuthDenied
@@ -559,7 +533,6 @@ mod tests {
 
         #[test]
         fn local_backend_failure_maps_to_canonical_transport_class() {
-            use crate::runtime::connection::stream::BackendFailureReason;
             assert_eq!(
                 RequestOutcomeReason::from(BackendFailureReason::UpstreamTimeout),
                 RequestOutcomeReason::TimedOut
@@ -584,9 +557,8 @@ mod tests {
 
         #[test]
         fn backend_health_observation_maps_to_canonical_health_reason() {
-            use crate::runtime::backend::event::{
-                BackendHealthObservationOutcome as O, BackendHealthObservationSource as S,
-            };
+            use BackendHealthObservationOutcome as O;
+            use BackendHealthObservationSource as S;
             assert_eq!(
                 backend_health_reason(S::ActiveCheck, O::Success),
                 Some(BackendHealthReason::ActiveProbeSuccess)
@@ -605,29 +577,24 @@ mod tests {
 
         #[test]
         fn admission_outcome_maps_to_canonical_decision_reason() {
-            use crate::{
-                metrics::OverloadShedReason, runtime::connection::outcome::AdmissionOutcomeClass,
-            };
             assert_eq!(
-                admission_decision_reason(AdmissionOutcomeClass::AuthDenied),
+                admission_decision_reason(AdmissionOutcomeKind::AuthDenied),
                 AdmissionDecisionReason::AuthDenied
             );
             assert_eq!(
-                admission_decision_reason(AdmissionOutcomeClass::RateLimited),
+                admission_decision_reason(AdmissionOutcomeKind::RateLimited),
                 AdmissionDecisionReason::RateLimited
             );
             assert_eq!(
-                admission_decision_reason(AdmissionOutcomeClass::QuotaDenied),
+                admission_decision_reason(AdmissionOutcomeKind::QuotaDenied),
                 AdmissionDecisionReason::RateLimited
             );
             assert_eq!(
-                admission_decision_reason(AdmissionOutcomeClass::OverloadShed {
-                    reason: Some(OverloadShedReason::GlobalInflight)
-                }),
+                admission_decision_reason(AdmissionOutcomeKind::OverloadShed),
                 AdmissionDecisionReason::Overloaded
             );
             assert_eq!(
-                admission_decision_reason(AdmissionOutcomeClass::Failed { timed_out: true }),
+                admission_decision_reason(AdmissionOutcomeKind::Failed),
                 AdmissionDecisionReason::PolicyRejected
             );
         }
@@ -664,12 +631,7 @@ mod tests {
 
         #[test]
         fn representative_reason_tokens_stay_aligned_across_metrics_logs_and_control_plane() {
-            use crate::{
-                metrics::OverloadShedReason,
-                runtime::connection::{
-                    outcome::AdmissionOutcomeClass, stream::BackendFailureReason,
-                },
-            };
+            use crate::metrics::OverloadShedReason;
 
             assert_reason_surface_alignment(RequestOutcomeReason::TimedOut.slug());
             assert_reason_surface_alignment(
@@ -679,19 +641,16 @@ mod tests {
                 RequestOutcomeReason::from(BackendFailureReason::UpstreamTls).slug(),
             );
             assert_reason_surface_alignment(
-                admission_decision_reason(AdmissionOutcomeClass::AuthDenied).slug(),
+                admission_decision_reason(AdmissionOutcomeKind::AuthDenied).slug(),
             );
             assert_reason_surface_alignment(
-                admission_decision_reason(AdmissionOutcomeClass::RateLimited).slug(),
+                admission_decision_reason(AdmissionOutcomeKind::RateLimited).slug(),
             );
             assert_reason_surface_alignment(
-                admission_decision_reason(AdmissionOutcomeClass::QuotaDenied).slug(),
+                admission_decision_reason(AdmissionOutcomeKind::QuotaDenied).slug(),
             );
             assert_reason_surface_alignment(
-                admission_decision_reason(AdmissionOutcomeClass::OverloadShed {
-                    reason: Some(OverloadShedReason::GlobalInflight),
-                })
-                .slug(),
+                admission_decision_reason(AdmissionOutcomeKind::OverloadShed).slug(),
             );
             assert_reason_surface_alignment(QuotaPolicyDecision::Denied.slug());
             assert_reason_surface_alignment(QuotaPolicyReason::BackendError.slug());
@@ -730,9 +689,6 @@ mod tests {
 
         #[test]
         fn retry_and_hedge_denials_map_to_canonical_reasons() {
-            use impulse_errors::{
-                HedgePolicyDenialReason, RetryPolicyDenialReason, UpstreamRetryReason,
-            };
             assert_eq!(
                 RetryDecisionReason::from(UpstreamRetryReason::Timeout),
                 RetryDecisionReason::UpstreamTimeout
@@ -802,11 +758,9 @@ mod tests {
 
         #[test]
         fn retry_and_outcome_mappings_stay_aligned_but_distinct_by_failure_class() {
-            use impulse_errors::{
+            use impulse_contracts::{
                 RetryPolicyDenialReason, UpstreamRetryReason, UpstreamTerminalErrorKind,
             };
-
-            use crate::runtime::connection::stream::BackendFailureReason;
 
             assert_eq!(
                 RetryDecisionReason::from(UpstreamRetryReason::Transport),
