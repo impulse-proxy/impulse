@@ -830,15 +830,14 @@ impl RequestEnvelope {
         }
 
         let snapshot = self.terminal_snapshot();
-        let terminal_state = reason.into_terminal_state(snapshot.clone());
+        let terminal_state = TerminalState::from_reason(reason, snapshot.clone());
         if self.terminal_outcome.record() {
             let _ = observe_terminal_request_outcome(metrics, &terminal_state);
         }
         let should_finalize_backend = self.execution.should_finalize_backend_accounting();
         let buffered_body_bytes = Self::buffered_request_body_bytes(&self.execution);
-        let finalize_status = reason
-            .terminal_status(&snapshot)
-            .or(snapshot.response_status)
+        let finalize_status = snapshot
+            .response_status
             .map(|status| status.as_u16())
             .or(Some(503));
 

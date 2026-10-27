@@ -119,3 +119,18 @@ pub enum BackendFailureReason {
     ResponseWriteFailed,
     ResponseStreamAborted,
 }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CompletionReason {
+    ResponseStreamFinished,
+    ImmediateResponse,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TerminalReason {
+    Completed(CompletionReason),
+    Cancelled(CancellationReason),
+    TimedOut(TimeoutReason),
+    Rejected(RejectionReason),
+    BackendFailed(BackendFailureReason),
+}

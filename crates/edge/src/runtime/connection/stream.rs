@@ -2,8 +2,9 @@ use std::{collections::VecDeque, sync::Arc, time::Instant};
 
 use bytes::Bytes;
 use http::StatusCode;
+pub use impulse_contracts::CompletionReason;
 pub(crate) use impulse_contracts::{
-    BackendFailureReason, CancellationReason, RejectionReason, TimeoutReason,
+    BackendFailureReason, CancellationReason, RejectionReason, TerminalReason, TimeoutReason,
 };
 use impulse_errors::ProxyError;
 use tokio::{
@@ -192,12 +193,6 @@ pub(crate) enum ResponseBackpressureState {
     Blocked(ResponseChunk),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CompletionReason {
-    ResponseStreamFinished,
-    ImmediateResponse,
-}
-
 #[derive(Debug, Clone)]
 pub struct RequestContext {
     pub request_id: impulse_contracts::RequestId,
@@ -382,37 +377,6 @@ pub struct BackendFailedState {
     pub snapshot: TerminalSnapshot,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum TerminalReason {
-    Completed(CompletionReason),
-    Cancelled(CancellationReason),
-    TimedOut(TimeoutReason),
-    Rejected(RejectionReason),
-    BackendFailed(BackendFailureReason),
-}
-
-impl TerminalReason {
-    pub(crate) fn terminal_status(self, snapshot: &TerminalSnapshot) -> Option<StatusCode> {
-        snapshot.response_status
-    }
-
-    pub(crate) fn into_terminal_state(self, snapshot: TerminalSnapshot) -> TerminalState {
-        match self {
-            Self::Completed(reason) => {
-                TerminalState::Completed(CompletedState { reason, snapshot })
-            }
-            Self::Cancelled(reason) => {
-                TerminalState::Cancelled(CancelledState { reason, snapshot })
-            }
-            Self::TimedOut(reason) => TerminalState::TimedOut(TimedOutState { reason, snapshot }),
-            Self::Rejected(reason) => TerminalState::Rejected(RejectedState { reason, snapshot }),
-            Self::BackendFailed(reason) => {
-                TerminalState::BackendFailed(BackendFailedState { reason, snapshot })
-            }
-        }
-    }
-}
-
 pub enum TerminalState {
     Completed(CompletedState),
     Cancelled(CancelledState),
@@ -422,6 +386,22 @@ pub enum TerminalState {
 }
 
 impl TerminalState {
+    pub(crate) fn from_reason(reason: TerminalReason, snapshot: TerminalSnapshot) -> Self {
+        match reason {
+            TerminalReason::Completed(reason) => {
+                Self::Completed(CompletedState { reason, snapshot })
+            }
+            TerminalReason::Cancelled(reason) => {
+                Self::Cancelled(CancelledState { reason, snapshot })
+            }
+            TerminalReason::TimedOut(reason) => Self::TimedOut(TimedOutState { reason, snapshot }),
+            TerminalReason::Rejected(reason) => Self::Rejected(RejectedState { reason, snapshot }),
+            TerminalReason::BackendFailed(reason) => {
+                Self::BackendFailed(BackendFailedState { reason, snapshot })
+            }
+        }
+    }
+
     pub fn terminal_status(&self) -> Option<StatusCode> {
         match self {
             Self::Completed(state) => state.snapshot.response_status,
