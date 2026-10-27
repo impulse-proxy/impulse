@@ -1,3 +1,9 @@
+use impulse_contracts::{
+    BackendFailureReason, HedgePolicyDenialReason, RejectionReason, RetryPolicyDenialReason,
+    TimeoutReason, UpstreamRetryReason,
+};
+use serde::{Deserialize, Serialize};
+
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum RequestOutcomeReason {
     Completed,
@@ -287,7 +293,81 @@ impl QuotaBackendHealthReason {
         }
     }
 }
-use serde::{Deserialize, Serialize};
+
+impl From<RejectionReason> for RequestOutcomeReason {
+    fn from(reason: RejectionReason) -> Self {
+        match reason {
+            RejectionReason::AuthDenied | RejectionReason::AuthUnavailable => Self::AuthDenied,
+            RejectionReason::ValidationFailed
+            | RejectionReason::RequestBodyNotAllowed
+            | RejectionReason::RequestBodyTooLarge => Self::ValidationRejected,
+            RejectionReason::RateLimited | RejectionReason::QuotaDenied => Self::RateLimited,
+            RejectionReason::Overloaded | RejectionReason::ResponsePrebufferCap => Self::Overloaded,
+        }
+    }
+}
+
+impl From<BackendFailureReason> for RequestOutcomeReason {
+    fn from(reason: BackendFailureReason) -> Self {
+        match reason {
+            BackendFailureReason::UpstreamTimeout => Self::TimedOut,
+            BackendFailureReason::UpstreamTls => Self::BackendTlsFailed,
+            BackendFailureReason::UpstreamProtocol => Self::BackendProtocolFailed,
+            BackendFailureReason::UpstreamBridge => Self::BackendBridgeFailed,
+            BackendFailureReason::UpstreamTransport
+            | BackendFailureReason::DispatchSpawnFailed
+            | BackendFailureReason::UpstreamResultChannelDropped
+            | BackendFailureReason::ResponseWriteFailed
+            | BackendFailureReason::ResponseStreamAborted => Self::BackendTransportFailed,
+        }
+    }
+}
+
+impl From<TimeoutReason> for RequestOutcomeReason {
+    fn from(_reason: TimeoutReason) -> Self {
+        Self::TimedOut
+    }
+}
+
+impl From<UpstreamRetryReason> for RetryDecisionReason {
+    fn from(reason: UpstreamRetryReason) -> Self {
+        match reason {
+            UpstreamRetryReason::Timeout => Self::UpstreamTimeout,
+            UpstreamRetryReason::Transport | UpstreamRetryReason::Pool => {
+                Self::UpstreamTransportFailure
+            }
+        }
+    }
+}
+
+impl From<RetryPolicyDenialReason> for RetryDecisionReason {
+    fn from(reason: RetryPolicyDenialReason) -> Self {
+        match reason {
+            RetryPolicyDenialReason::BudgetDenied => Self::RetryBudgetDenied,
+            RetryPolicyDenialReason::MethodNotIdempotent
+            | RetryPolicyDenialReason::RequestBodyNotReplayable => Self::IdempotencyDenied,
+            RetryPolicyDenialReason::TerminalError(_)
+            | RetryPolicyDenialReason::AttemptLimitReached
+            | RetryPolicyDenialReason::AlternateBackendUnavailable(_) => Self::RetryPolicyDisabled,
+        }
+    }
+}
+
+impl From<HedgePolicyDenialReason> for HedgeDecisionReason {
+    fn from(reason: HedgePolicyDenialReason) -> Self {
+        match reason {
+            HedgePolicyDenialReason::HedgingDisabled => Self::HedgingDisabled,
+            HedgePolicyDenialReason::PrimaryRequestCompleted => Self::PrimaryCompleted,
+            HedgePolicyDenialReason::RequestBodyNotReplayable => Self::RequestBodyNotReplayable,
+            HedgePolicyDenialReason::TunnelRequest => Self::TunnelRequest,
+            HedgePolicyDenialReason::MethodNotAllowed => Self::MethodNotAllowed,
+            HedgePolicyDenialReason::AlternateBackendUnavailable(_) => {
+                Self::AlternateBackendUnavailable
+            }
+            HedgePolicyDenialReason::BudgetDenied => Self::HedgeBudgetDenied,
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
