@@ -1,21 +1,9 @@
 use std::{net::SocketAddr, time::SystemTime};
 
+pub use impulse_contracts::BackendIdentity;
 use impulse_lb::health::HealthFailureReason;
 
 use super::resolution::{RuntimeBackendAddressKind, RuntimeBackendResolution};
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct BackendIdentity {
-    pub backend_addr: String,
-}
-
-impl BackendIdentity {
-    pub fn new(backend_addr: impl Into<String>) -> Self {
-        Self {
-            backend_addr: backend_addr.into(),
-        }
-    }
-}
 
 impl From<&RuntimeBackendResolution> for BackendIdentity {
     fn from(value: &RuntimeBackendResolution) -> Self {

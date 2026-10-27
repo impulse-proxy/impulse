@@ -528,7 +528,7 @@ impl QuotaBackendHealthReason {
 /// The canonical field name for the upstream-name concept is **`upstream`**.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct OperationalEventContext<'a> {
-    pub request_id: Option<u64>,
+    pub request_id: Option<impulse_contracts::RequestId>,
     pub route: Option<&'a str>,
     pub upstream: Option<&'a str>,
     pub backend: Option<&'a str>,
@@ -542,7 +542,7 @@ impl<'a> OperationalEventContext<'a> {
         Self::default()
     }
 
-    pub fn with_request_id(mut self, request_id: u64) -> Self {
+    pub fn with_request_id(mut self, request_id: impulse_contracts::RequestId) -> Self {
         self.request_id = Some(request_id);
         self
     }

@@ -5,3 +5,7 @@
 //! to their owning crates.
 
 #![warn(unreachable_pub)]
+
+mod identity;
+
+pub use identity::{BackendIdentity, GenerationId, IngressProtocol, RequestId};

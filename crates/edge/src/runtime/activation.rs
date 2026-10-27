@@ -6,6 +6,7 @@
 //! activation services should consume these types rather than inventing
 //! endpoint-local request/result payloads.
 
+pub use impulse_contracts::GenerationId;
 use serde::{Deserialize, Serialize};
 
 use crate::runtime::policy::{TransitionRejection, TransitionRejectionKind};
@@ -17,9 +18,6 @@ mod service;
 mod swap;
 
 pub(crate) use self::service::RuntimeActivationService;
-
-/// Stable identifier for a published or staged runtime generation.
-pub type GenerationId = u64;
 
 /// Milliseconds since the Unix epoch.
 ///

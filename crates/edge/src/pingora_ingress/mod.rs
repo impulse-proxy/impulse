@@ -132,7 +132,7 @@ pub(crate) struct PingoraRequestContext {
     retry_count: u8,
     retry_backend: Option<(String, usize)>,
     lb_key: Option<String>,
-    request_id: u64,
+    request_id: impulse_contracts::RequestId,
     selected_backend: Option<PingoraSelectedBackend>,
     drain: Arc<PingoraDrainState>,
 }

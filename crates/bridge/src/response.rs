@@ -6,12 +6,7 @@
 use std::collections::HashSet;
 
 use http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ResponseNormalizationProtocol {
-    Http1,
-    Http3,
-}
+pub use impulse_contracts::IngressProtocol as ResponseNormalizationProtocol;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ResponseBodyMode {

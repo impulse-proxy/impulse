@@ -13,6 +13,7 @@ use impulse_config::{
     backend_endpoint::BackendEndpoint,
     config::{ForwardedHeaderPolicy, UpstreamHostPolicy},
 };
+use impulse_contracts::RequestId;
 use impulse_errors::BridgeError;
 
 use crate::{
@@ -45,7 +46,7 @@ pub enum RequestBodyMode {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RequestTraceContext<'a> {
-    pub request_id: u64,
+    pub request_id: RequestId,
     pub traceparent: Option<&'a str>,
 }
 

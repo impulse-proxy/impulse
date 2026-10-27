@@ -37,7 +37,7 @@ use crate::{
 };
 
 pub struct RequestEnvelope {
-    pub request_id: u64,
+    pub request_id: impulse_contracts::RequestId,
     pub trace_id: Option<String>,
     pub span_id: Option<String>,
     pub traceparent: Option<String>,
@@ -88,7 +88,7 @@ impl RequestStateError {
 }
 
 impl RequestEnvelope {
-    pub fn request_id(&self) -> u64 {
+    pub fn request_id(&self) -> impulse_contracts::RequestId {
         self.request_id
     }
 
@@ -987,7 +987,7 @@ pub struct PendingForward {
     pub backend_lb: Option<Arc<str>>,
     pub lb_key: Arc<str>,
     pub client_addr: SocketAddr,
-    pub request_id: u64,
+    pub request_id: impulse_contracts::RequestId,
     pub trace_id: Option<Arc<str>>,
     pub span_id: Option<Arc<str>>,
     pub traceparent: Option<Arc<str>>,

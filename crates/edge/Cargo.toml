@@ -11,6 +11,7 @@ base64.workspace = true
 log.workspace = true
 quiche.workspace = true
 impulse-config = { path = "../config" }
+impulse-contracts = { path = "../contracts" }
 impulse-lb = { path = "../lb" }
 impulse-bridge = { path = "../bridge" }
 impulse-transport = { path = "../transport" }

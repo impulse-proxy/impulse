@@ -241,7 +241,7 @@ pub enum BackendFailureReason {
 
 #[derive(Debug, Clone)]
 pub struct RequestContext {
-    pub request_id: u64,
+    pub request_id: impulse_contracts::RequestId,
     pub trace_id: Option<String>,
     pub span_id: Option<String>,
     pub traceparent: Option<String>,
