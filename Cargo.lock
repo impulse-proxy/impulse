@@ -1571,7 +1571,6 @@ version = "0.6.0"
 dependencies = [
  "http",
  "impulse-contracts",
- "impulse-lb",
  "thiserror 1.0.69",
 ]
 
