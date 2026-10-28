@@ -8,6 +8,7 @@
 mod client_rotation;
 mod connection_identity;
 mod exchange;
+mod input;
 mod pingora_failure;
 mod pingora_h1;
 mod pingora_h2;
@@ -23,6 +24,10 @@ pub use exchange::{
     UpstreamExchangeCompletion, UpstreamExchangeLifecycle, UpstreamExchangeOutcome,
     UpstreamExchangeRequest, UpstreamExchangeResponse, UpstreamInflightPermit, UpstreamRequestHead,
     UpstreamResponseHead, UpstreamTunnel, UpstreamTunnelIo, UpstreamUpgrade,
+};
+pub use input::{
+    UpstreamConnectionLimitsInput, UpstreamEndpointInput, UpstreamProtocol, UpstreamProxyInput,
+    UpstreamTimeoutInput, UpstreamTlsInput, UpstreamTransportInput,
 };
 pub use pingora_failure::{classify_pingora_h1_error, classify_pingora_h2_error};
 pub use runtime_config::SharedDnsResolver;
