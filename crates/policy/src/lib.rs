@@ -7,6 +7,8 @@
 #![deny(unused_crate_dependencies)]
 #![warn(unreachable_pub)]
 
+mod api_key;
 mod request;
 
+pub use api_key::{ApiKeyPolicyInput, api_key_is_authorized};
 pub use request::{RequestHeaderLookup, RequestView};

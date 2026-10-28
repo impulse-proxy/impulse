@@ -1537,6 +1537,7 @@ dependencies = [
  "impulse-errors",
  "impulse-lb",
  "impulse-observability",
+ "impulse-policy",
  "impulse-transport",
  "impulse-utils",
  "libc",
@@ -1598,6 +1599,9 @@ dependencies = [
 [[package]]
 name = "impulse-policy"
 version = "0.6.0"
+dependencies = [
+ "subtle",
+]
 
 [[package]]
 name = "impulse-transport"

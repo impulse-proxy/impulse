@@ -551,19 +551,12 @@ pub(super) fn api_key_is_authorized(
     policy: &RuntimeUpstreamPolicy,
     header_lookup: Option<&LbHeaderLookup<'_>>,
 ) -> bool {
-    let Some(api_key) = policy.upstream_auth.api_key.as_ref() else {
-        return true;
-    };
-    let Some(provided) = header_lookup.and_then(|lookup| lookup(api_key.header_name.as_str()))
-    else {
-        return false;
-    };
-    let provided = provided.trim();
-    !provided.is_empty()
-        && api_key
-            .keys
-            .iter()
-            .any(|expected| bool::from(provided.as_bytes().ct_eq(expected.as_bytes())))
+    impulse_policy::api_key_is_authorized(
+        policy.upstream_auth.api_key.as_ref().map(|api_key| {
+            impulse_policy::ApiKeyPolicyInput::new(&api_key.header_name, &api_key.keys)
+        }),
+        header_lookup,
+    )
 }
 
 pub(super) fn jwt_is_authorized(

@@ -3,3 +3,6 @@ name = "impulse-policy"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+
+[dependencies]
+subtle.workspace = true
