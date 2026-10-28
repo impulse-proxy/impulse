@@ -20,5 +20,6 @@ pub mod websocket;
 
 pub use input::{
     ForwardedHeaderMode, ForwardingPolicyInput, HostPolicyInput, HostPolicyMode,
-    NormalizationInput, RequestFramingInput, TrailerPolicyInput,
+    NormalizationInput, RequestFramingInput, TrailerPolicyInput, UpstreamScheme,
+    UpstreamTargetInput,
 };

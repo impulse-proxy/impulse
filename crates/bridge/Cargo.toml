@@ -13,8 +13,10 @@ hyper.workspace = true
 itoa.workspace = true
 smallvec.workspace = true
 impulse-errors = { path = "../errors" }
-impulse-config = { path = "../config" }
 impulse-contracts = { path = "../contracts" }
+
+[dev-dependencies]
+impulse-config = { path = "../config" }
 
 [[test]]
 name = "regression"

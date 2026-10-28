@@ -4,13 +4,21 @@ use std::{convert::Infallible, net::SocketAddr};
 
 use bytes::Bytes;
 use http_body_util::{BodyExt, Empty, combinators::BoxBody};
-use impulse_bridge::request::{
-    RequestBodyMode, RequestBuildInput, RequestBuildPolicies, RequestBuildTarget,
-    RequestForwardedContext, RequestTraceContext, build_h1_request, build_h2_request_for_target,
+use impulse_bridge::{
+    ForwardedHeaderMode, ForwardingPolicyInput, HostPolicyInput, HostPolicyMode, UpstreamScheme,
+    UpstreamTargetInput,
+    request::{
+        RequestBodyMode, RequestBuildInput, RequestBuildPolicies, RequestBuildTarget,
+        RequestForwardedContext, RequestTraceContext, build_h1_request,
+        build_h2_request_for_target,
+    },
 };
 use impulse_config::{
-    backend_endpoint::BackendEndpoint,
-    config::{ForwardedHeaderPolicy, UpstreamHostPolicy},
+    backend_endpoint::{BackendEndpoint, BackendScheme},
+    config::{
+        ForwardedHeaderPolicy, ForwardedHeaderPolicyMode, UpstreamHostPolicy,
+        UpstreamHostPolicyMode,
+    },
 };
 use impulse_errors::BridgeError;
 use quiche::h3::Header;
@@ -33,10 +41,29 @@ pub(crate) fn request_target<'a>(
     forwarded_header_policy: &'a ForwardedHeaderPolicy,
 ) -> RequestBuildTarget<'a> {
     RequestBuildTarget {
-        endpoint,
+        endpoint: UpstreamTargetInput {
+            scheme: match endpoint.scheme() {
+                BackendScheme::Http => UpstreamScheme::Http,
+                BackendScheme::Https => UpstreamScheme::Https,
+            },
+            authority: endpoint.authority(),
+        },
         policies: RequestBuildPolicies {
-            host_policy,
-            forwarded_header_policy,
+            host_policy: HostPolicyInput {
+                mode: match host_policy.mode {
+                    UpstreamHostPolicyMode::PassThrough => HostPolicyMode::PassThrough,
+                    UpstreamHostPolicyMode::Rewrite => HostPolicyMode::Rewrite,
+                    UpstreamHostPolicyMode::Upstream => HostPolicyMode::Upstream,
+                },
+                rewrite_host: host_policy.host.as_deref(),
+            },
+            forwarded_header_policy: ForwardingPolicyInput {
+                mode: match forwarded_header_policy.mode {
+                    ForwardedHeaderPolicyMode::Preserve => ForwardedHeaderMode::Preserve,
+                    ForwardedHeaderPolicyMode::Append => ForwardedHeaderMode::Append,
+                    ForwardedHeaderPolicyMode::Overwrite => ForwardedHeaderMode::Overwrite,
+                },
+            },
         },
     }
 }

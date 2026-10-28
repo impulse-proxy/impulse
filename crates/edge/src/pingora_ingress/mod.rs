@@ -1503,10 +1503,41 @@ impl ProxyHttp for PingoraIngressService {
             .get("traceparent")
             .and_then(|value| value.to_str().ok());
         let target = impulse_bridge::request::RequestBuildTarget {
-            endpoint,
+            endpoint: impulse_bridge::UpstreamTargetInput {
+                scheme: match endpoint.scheme() {
+                    BackendScheme::Http => impulse_bridge::UpstreamScheme::Http,
+                    BackendScheme::Https => impulse_bridge::UpstreamScheme::Https,
+                },
+                authority: endpoint.authority(),
+            },
             policies: impulse_bridge::request::RequestBuildPolicies {
-                host_policy: &policy.host_policy,
-                forwarded_header_policy: &policy.forwarded_header_policy,
+                host_policy: impulse_bridge::HostPolicyInput {
+                    mode: match policy.host_policy.mode {
+                        impulse_config::config::UpstreamHostPolicyMode::PassThrough => {
+                            impulse_bridge::HostPolicyMode::PassThrough
+                        }
+                        impulse_config::config::UpstreamHostPolicyMode::Rewrite => {
+                            impulse_bridge::HostPolicyMode::Rewrite
+                        }
+                        impulse_config::config::UpstreamHostPolicyMode::Upstream => {
+                            impulse_bridge::HostPolicyMode::Upstream
+                        }
+                    },
+                    rewrite_host: policy.host_policy.host.as_deref(),
+                },
+                forwarded_header_policy: impulse_bridge::ForwardingPolicyInput {
+                    mode: match policy.forwarded_header_policy.mode {
+                        impulse_config::config::ForwardedHeaderPolicyMode::Preserve => {
+                            impulse_bridge::ForwardedHeaderMode::Preserve
+                        }
+                        impulse_config::config::ForwardedHeaderPolicyMode::Append => {
+                            impulse_bridge::ForwardedHeaderMode::Append
+                        }
+                        impulse_config::config::ForwardedHeaderPolicyMode::Overwrite => {
+                            impulse_bridge::ForwardedHeaderMode::Overwrite
+                        }
+                    },
+                },
             },
         };
         let auth_header_mutations = ctx

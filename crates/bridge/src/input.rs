@@ -50,3 +50,39 @@ pub struct NormalizationInput {
     pub protocol: IngressProtocol,
     pub preserve_upgrade: bool,
 }
+
+/// Scheme used when constructing an absolute upstream request URI.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum UpstreamScheme {
+    Http,
+    Https,
+}
+
+impl UpstreamScheme {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Http => "http",
+            Self::Https => "https",
+        }
+    }
+}
+
+/// Validated upstream target required by protocol translation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct UpstreamTargetInput<'a> {
+    pub scheme: UpstreamScheme,
+    pub authority: &'a str,
+}
+
+impl UpstreamTargetInput<'_> {
+    pub fn uri_for_path(self, path: &str) -> String {
+        let path = if path.is_empty() {
+            "/"
+        } else if path.starts_with('/') {
+            path
+        } else {
+            return format!("{}://{}/{path}", self.scheme.as_str(), self.authority);
+        };
+        format!("{}://{}{}", self.scheme.as_str(), self.authority, path)
+    }
+}

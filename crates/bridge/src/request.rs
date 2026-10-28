@@ -9,15 +9,12 @@ use std::{borrow::Cow, convert::Infallible, net::SocketAddr};
 use bytes::Bytes;
 use http::{HeaderName, HeaderValue};
 use http_body_util::combinators::BoxBody;
-use impulse_config::{
-    backend_endpoint::BackendEndpoint,
-    config::{ForwardedHeaderPolicy, UpstreamHostPolicy},
-};
 pub use impulse_contracts::HeaderMutationRef as RequestHeaderMutationRef;
 use impulse_contracts::RequestId;
 use impulse_errors::BridgeError;
 
 use crate::{
+    ForwardingPolicyInput, HostPolicyInput, UpstreamTargetInput,
     forwarded::{ForwardedHeaderChains, ForwardedHeaderValues, build_forwarded_header_values},
     h3_to_h1, h3_to_h2,
     headers::{connection_header_tokens, should_strip_proxy_header, should_strip_request_header},
@@ -58,13 +55,13 @@ pub struct RequestForwardedContext {
 
 #[derive(Clone, Copy, Debug)]
 pub struct RequestBuildPolicies<'a> {
-    pub host_policy: &'a UpstreamHostPolicy,
-    pub forwarded_header_policy: &'a ForwardedHeaderPolicy,
+    pub host_policy: HostPolicyInput<'a>,
+    pub forwarded_header_policy: ForwardingPolicyInput,
 }
 
 #[derive(Debug)]
 pub struct RequestBuildTarget<'a> {
-    pub endpoint: &'a BackendEndpoint,
+    pub endpoint: UpstreamTargetInput<'a>,
     pub policies: RequestBuildPolicies<'a>,
 }
 
