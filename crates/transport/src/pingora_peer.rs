@@ -3,25 +3,18 @@ use std::{
     sync::Arc,
 };
 
-use impulse_config::{
-    backend_endpoint::BackendScheme,
-    runtime::{
-        RuntimeBackendConnectionPolicy, RuntimeBackendEndpoint, RuntimeBackendTransportKind,
-    },
-};
 use pingora_core::{
-    upstreams::peer::{ALPN, HttpPeer},
+    upstreams::peer::{ALPN, HttpPeer, Proxy},
     utils::tls::{CertKey, WrappedX509, parse_x509},
 };
 use rustls_pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
 
-use crate::TlsClientConfig;
+use crate::{UpstreamProtocol, UpstreamTransportInput};
 
 pub(crate) fn build_pingora_http_peer(
-    endpoint: &RuntimeBackendEndpoint,
-    connection_policy: &RuntimeBackendConnectionPolicy,
-    tls_config: &TlsClientConfig,
+    input: &UpstreamTransportInput,
 ) -> Result<(HttpPeer, SocketAddr), String> {
+    let endpoint = &input.endpoint;
     let address = SocketAddr::new(
         endpoint
             .authority_host
@@ -29,7 +22,7 @@ pub(crate) fn build_pingora_http_peer(
             .unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED)),
         endpoint.authority_port,
     );
-    let tls = endpoint.canonical.scheme() == BackendScheme::Https;
+    let tls = endpoint.tls;
     let mut peer = HttpPeer::new(
         address,
         tls,
@@ -39,21 +32,29 @@ pub(crate) fn build_pingora_http_peer(
             String::new()
         },
     );
-    peer.options.connection_timeout = Some(connection_policy.connect_timeout);
-    peer.options.total_connection_timeout = Some(connection_policy.connect_timeout);
-    peer.options.read_timeout = Some(connection_policy.execution_timeout);
-    peer.options.write_timeout = Some(connection_policy.execution_timeout);
-    peer.options.idle_timeout = Some(connection_policy.pool_idle_timeout);
-    peer.options.alpn = match endpoint.transport_kind {
-        RuntimeBackendTransportKind::Http1 => ALPN::H1,
-        RuntimeBackendTransportKind::H2 => ALPN::H2,
+    peer.options.connection_timeout = Some(input.timeouts.connect);
+    peer.options.total_connection_timeout = Some(input.timeouts.connect);
+    peer.options.read_timeout = Some(input.timeouts.execution);
+    peer.options.write_timeout = Some(input.timeouts.execution);
+    peer.options.idle_timeout = Some(input.timeouts.pool_idle);
+    peer.options.alpn = match endpoint.protocol {
+        UpstreamProtocol::Http1 => ALPN::H1,
+        UpstreamProtocol::Http2 => ALPN::H2,
     };
-    peer.options.max_h2_streams = connection_policy.max_inflight;
+    peer.options.max_h2_streams = input.connection_limits.max_inflight;
+    peer.proxy = input.proxy.as_ref().map(|proxy| Proxy {
+        next_hop: proxy.next_hop.clone().into_boxed_path(),
+        host: proxy.host.clone(),
+        port: proxy.port,
+        headers: proxy.headers.clone(),
+    });
     if tls {
-        peer.options.verify_cert = tls_config.verify_certificates;
-        peer.options.verify_hostname = tls_config.strict_sni;
+        let tls_config = input.tls.as_ref();
+        peer.options.verify_cert = tls_config.is_none_or(|tls| tls.verify_certificates);
+        peer.options.verify_hostname = tls_config.is_none_or(|tls| tls.verify_hostname);
         let ca_certificates = tls_config
-            .ca_pem_blobs
+            .map(|tls| tls.ca_pem_blobs.as_slice())
+            .unwrap_or_default()
             .iter()
             .flat_map(|pem| CertificateDer::pem_slice_iter(pem))
             .collect::<Result<Vec<_>, _>>()
@@ -66,8 +67,8 @@ pub(crate) fn build_pingora_http_peer(
             peer.options.ca = Some(Arc::from(certificates.into_boxed_slice()));
         }
         match (
-            tls_config.client_certificate_pem.as_deref(),
-            tls_config.client_key_pem.as_deref(),
+            tls_config.and_then(|tls| tls.client_certificate_pem.as_deref()),
+            tls_config.and_then(|tls| tls.client_key_pem.as_deref()),
         ) {
             (Some(certificate_pem), Some(key_pem)) => {
                 let certificates = CertificateDer::pem_slice_iter(certificate_pem)

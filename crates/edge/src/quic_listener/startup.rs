@@ -17,7 +17,8 @@ use socket2::{Domain, Protocol, Socket, Type};
 use tokio::sync::Semaphore;
 
 use super::{
-    load_balancing_backend_inputs, load_balancing_strategy_input, upstream_pool_from_runtime,
+    load_balancing_backend_inputs, load_balancing_strategy_input,
+    transport::upstream_transport_inputs, upstream_pool_from_runtime,
 };
 use crate::{
     Metrics,
@@ -282,9 +283,8 @@ impl QUICListener {
             &backend_resolution_store,
         )));
         let transport_pool = Arc::new(
-            UpstreamTransportPool::from_runtime_upstreams(
-                config.upstreams.values(),
-                &transport_policy.backend_connections,
+            UpstreamTransportPool::new(
+                upstream_transport_inputs(config),
                 backend_dns_resolver.clone(),
             )
             .map_err(ProxyError::Tls)?,

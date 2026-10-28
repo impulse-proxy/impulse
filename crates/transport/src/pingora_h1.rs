@@ -4,7 +4,6 @@ use std::{
 };
 
 use hyper::{Method, http::Version};
-use impulse_config::runtime::RuntimeBackendTransportKind;
 use impulse_errors::ProxyError;
 use pingora_core::{
     Error, InternalError, Result,
@@ -23,9 +22,10 @@ use tokio::{
 use crate::{
     PingoraUpstreamConnectionIdentity, UpstreamBody, UpstreamBodyFrame, UpstreamCancellation,
     UpstreamConnectionReuse, UpstreamExchangeCompletion, UpstreamExchangeLifecycle,
-    UpstreamExchangeOutcome, UpstreamExchangeResponse, UpstreamRequestHead, UpstreamResponseHead,
-    UpstreamTunnel, UpstreamUpgrade, exchange::upstream_response_body_channel,
-    pingora_failure::classify_pingora_h1_error, pingora_pool::PingoraPoolLease,
+    UpstreamExchangeOutcome, UpstreamExchangeResponse, UpstreamProtocol, UpstreamRequestHead,
+    UpstreamResponseHead, UpstreamTunnel, UpstreamUpgrade,
+    exchange::upstream_response_body_channel, pingora_failure::classify_pingora_h1_error,
+    pingora_pool::PingoraPoolLease,
 };
 
 pub(crate) fn translate_pingora_h1_request_header(
@@ -76,7 +76,7 @@ impl PingoraH1UpstreamSession {
         mut peer: HttpPeer,
         identity: &PingoraUpstreamConnectionIdentity,
     ) -> Result<Self> {
-        if identity.protocol != RuntimeBackendTransportKind::Http1 {
+        if identity.protocol != UpstreamProtocol::Http1 {
             return Err(Error::explain(
                 InternalError,
                 "HTTP/1 session acquisition requires an HTTP/1 connection identity",

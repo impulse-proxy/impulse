@@ -31,5 +31,4 @@ pub use input::{
 };
 pub use pingora_failure::{classify_pingora_h1_error, classify_pingora_h2_error};
 pub use runtime_config::SharedDnsResolver;
-pub(crate) use runtime_config::TlsClientConfig;
 pub use transport_pool::{TransportClientRotation, UpstreamTransportPool};

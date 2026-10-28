@@ -31,6 +31,22 @@ pub struct UpstreamTlsInput {
     pub client_key_fingerprint_sha256: Option<String>,
 }
 
+impl Default for UpstreamTlsInput {
+    fn default() -> Self {
+        Self {
+            verify_certificates: true,
+            verify_hostname: true,
+            ca_file_fingerprint_sha256: None,
+            ca_dir_fingerprint_sha256: None,
+            ca_pem_blobs: Vec::new(),
+            client_certificate_pem: None,
+            client_key_pem: None,
+            client_certificate_fingerprint_sha256: None,
+            client_key_fingerprint_sha256: None,
+        }
+    }
+}
+
 /// Connection and exchange deadlines applied to one upstream backend.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct UpstreamTimeoutInput {

@@ -1,5 +1,4 @@
 use hyper::http::Version;
-use impulse_config::runtime::RuntimeBackendTransportKind;
 use impulse_errors::ProxyError;
 use pingora_core::{
     Error, ErrorType, InternalError, Result,
@@ -12,9 +11,9 @@ use tokio::sync::mpsc;
 use crate::{
     PingoraUpstreamConnectionIdentity, UpstreamBody, UpstreamBodyFrame, UpstreamCancellation,
     UpstreamConnectionReuse, UpstreamExchangeCompletion, UpstreamExchangeLifecycle,
-    UpstreamExchangeOutcome, UpstreamExchangeResponse, UpstreamRequestHead, UpstreamResponseHead,
-    exchange::upstream_response_body_channel, pingora_failure::classify_pingora_h2_error,
-    pingora_pool::PingoraPoolLease,
+    UpstreamExchangeOutcome, UpstreamExchangeResponse, UpstreamProtocol, UpstreamRequestHead,
+    UpstreamResponseHead, exchange::upstream_response_body_channel,
+    pingora_failure::classify_pingora_h2_error, pingora_pool::PingoraPoolLease,
 };
 
 pub(crate) fn translate_pingora_h2_request_header(
@@ -55,7 +54,7 @@ impl PingoraH2UpstreamSession {
         mut peer: HttpPeer,
         identity: &PingoraUpstreamConnectionIdentity,
     ) -> Result<Self> {
-        if identity.protocol != RuntimeBackendTransportKind::H2 {
+        if identity.protocol != UpstreamProtocol::Http2 {
             return Err(Error::explain(
                 InternalError,
                 "HTTP/2 session acquisition requires an HTTP/2 connection identity",

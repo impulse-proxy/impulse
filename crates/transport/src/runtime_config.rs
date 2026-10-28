@@ -4,65 +4,6 @@ use std::{
     sync::{Arc, RwLock},
 };
 
-use impulse_config::runtime::{RuntimeBackendTlsPolicy, RuntimeUpstream};
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct TlsClientConfig {
-    pub(crate) verify_certificates: bool,
-    pub(crate) strict_sni: bool,
-    pub(crate) ca_file_fingerprint_sha256: Option<String>,
-    pub(crate) ca_dir_fingerprint_sha256: Option<String>,
-    pub(crate) ca_pem_blobs: Vec<Vec<u8>>,
-    pub(crate) client_certificate_pem: Option<Vec<u8>>,
-    pub(crate) client_key_pem: Option<Vec<u8>>,
-    pub(crate) client_certificate_fingerprint_sha256: Option<String>,
-    pub(crate) client_key_fingerprint_sha256: Option<String>,
-}
-
-impl Default for TlsClientConfig {
-    fn default() -> Self {
-        Self {
-            verify_certificates: true,
-            strict_sni: true,
-            ca_file_fingerprint_sha256: None,
-            ca_dir_fingerprint_sha256: None,
-            ca_pem_blobs: Vec::new(),
-            client_certificate_pem: None,
-            client_key_pem: None,
-            client_certificate_fingerprint_sha256: None,
-            client_key_fingerprint_sha256: None,
-        }
-    }
-}
-
-impl From<&RuntimeBackendTlsPolicy> for TlsClientConfig {
-    fn from(value: &RuntimeBackendTlsPolicy) -> Self {
-        Self {
-            verify_certificates: value.verify_certificates,
-            strict_sni: value.strict_sni,
-            ca_file_fingerprint_sha256: value.ca_file_fingerprint_sha256.clone(),
-            ca_dir_fingerprint_sha256: value.ca_dir_fingerprint_sha256.clone(),
-            ca_pem_blobs: value.ca_pem_blobs().to_vec(),
-            client_certificate_pem: value.client_certificate_pem().map(|pem| pem.to_vec()),
-            client_key_pem: value.client_key_pem().map(|pem| pem.to_vec()),
-            client_certificate_fingerprint_sha256: value
-                .client_certificate
-                .as_ref()
-                .map(|metadata| metadata.fingerprint_sha256.clone()),
-            client_key_fingerprint_sha256: value
-                .client_key
-                .as_ref()
-                .map(|metadata| metadata.fingerprint_sha256.clone()),
-        }
-    }
-}
-
-impl TlsClientConfig {
-    pub(crate) fn from_runtime_upstream(upstream: &RuntimeUpstream) -> Self {
-        Self::from(upstream.backend_tls_policy())
-    }
-}
-
 #[derive(Clone, Default)]
 pub struct SharedDnsResolver {
     cache: Arc<RwLock<HashMap<String, Vec<SocketAddr>>>>,
