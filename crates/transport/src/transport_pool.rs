@@ -14,11 +14,10 @@ use tokio::sync::{Semaphore, TryAcquireError};
 use crate::{
     PingoraBackendHealthIdentity, PingoraUpstreamConnectionIdentity, UpstreamProtocol,
     UpstreamTransportInput,
-    client_rotation::BackendClientRotation,
     exchange::{
-        UpstreamConnectionReuse, UpstreamExchangeCompletion, UpstreamExchangeLifecycle,
-        UpstreamExchangeOutcome, UpstreamExchangeRequest, UpstreamExchangeResponse,
-        UpstreamInflightPermit,
+        UpstreamCancellation, UpstreamConnectionReuse, UpstreamExchangeCompletion,
+        UpstreamExchangeLifecycle, UpstreamExchangeOutcome, UpstreamExchangeRequest,
+        UpstreamExchangeResponse, UpstreamInflightPermit,
     },
     pingora_failure::{classify_pingora_h1_error, classify_pingora_h2_error},
     pingora_h1::PingoraH1UpstreamSession,
@@ -34,18 +33,6 @@ struct PingoraBackend {
     port: u16,
     peer: HttpPeer,
     identity: PingoraUpstreamConnectionIdentity,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TransportClientRotation {
-    rotation: BackendClientRotation,
-}
-
-impl TransportClientRotation {
-    /// Returns true when transport rotated or recreated the backend client.
-    pub fn rotated(self) -> bool {
-        self.rotation.changed()
-    }
 }
 
 /// Canonical transport façade used by edge/runtime code for backend execution.
@@ -87,12 +74,9 @@ impl UpstreamTransportPool {
         backend: &str,
         request: UpstreamExchangeRequest,
     ) -> Result<UpstreamExchangeResponse, ProxyError> {
-        let UpstreamExchangeRequest {
-            head,
-            body,
-            cancellation,
-            completion,
-        } = request;
+        let UpstreamExchangeRequest { head, body } = request;
+        let (_cancellation_signal, cancellation) = tokio::sync::oneshot::channel();
+        let (completion, _completion_observer) = tokio::sync::oneshot::channel();
         if self.backend_entry(backend) == Some(UpstreamProtocol::Http1)
             && head.headers.contains_key(hyper::header::TRAILER)
         {
@@ -126,7 +110,9 @@ impl UpstreamTransportPool {
         let mut identity = config.identity;
         identity.generation = pool.generation();
         let lifecycle = UpstreamExchangeLifecycle {
-            cancellation,
+            cancellation: UpstreamCancellation {
+                signal: cancellation,
+            },
             completion,
             inflight_permit: UpstreamInflightPermit { _permit: permit },
         };
@@ -260,17 +246,8 @@ impl UpstreamTransportPool {
         }
     }
 
-    pub fn rotate_backend_client(&self, backend: &str) -> Result<TransportClientRotation, String> {
-        match self.backend_entry(backend) {
-            Some(UpstreamProtocol::Http1 | UpstreamProtocol::Http2) => {
-                Ok(TransportClientRotation {
-                    rotation: BackendClientRotation::recreated(),
-                })
-            }
-            None => Ok(TransportClientRotation {
-                rotation: BackendClientRotation::missing_backend(),
-            }),
-        }
+    pub fn rotate_backend_client(&self, backend: &str) -> bool {
+        self.backend_entry(backend).is_some()
     }
 }
 
@@ -357,25 +334,19 @@ mod tests {
             ("https://127.0.0.1:8443", UpstreamProtocol::Http2),
         ]);
 
-        let http1_rotation = pool
-            .rotate_backend_client("http://127.0.0.1:8080")
-            .expect("http1 rotation");
-        let h2_rotation = pool
-            .rotate_backend_client("https://127.0.0.1:8443")
-            .expect("h2 rotation");
+        let http1_rotation = pool.rotate_backend_client("http://127.0.0.1:8080");
+        let h2_rotation = pool.rotate_backend_client("https://127.0.0.1:8443");
 
-        assert!(http1_rotation.rotated());
-        assert!(h2_rotation.rotated());
+        assert!(http1_rotation);
+        assert!(h2_rotation);
     }
 
     #[test]
     fn backend_not_found_rotation_is_a_no_op_facade_result() {
         let pool = transport_pool(&[("https://127.0.0.1:8443", UpstreamProtocol::Http2)]);
 
-        let rotation = pool
-            .rotate_backend_client("missing-backend")
-            .expect("missing backend rotation should not error");
+        let rotation = pool.rotate_backend_client("missing-backend");
 
-        assert!(!rotation.rotated());
+        assert!(!rotation);
     }
 }

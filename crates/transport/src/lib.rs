@@ -5,7 +5,6 @@
 //! policy application. Protocol-specific Pingora sessions remain internal
 //! details behind [`UpstreamTransportPool`].
 
-mod client_rotation;
 mod connection_identity;
 mod exchange;
 mod input;
@@ -20,10 +19,9 @@ mod transport_pool;
 pub use connection_identity::PingoraBackendHealthIdentity;
 pub(crate) use connection_identity::PingoraUpstreamConnectionIdentity;
 pub use exchange::{
-    UpstreamBody, UpstreamBodyFrame, UpstreamCancellation, UpstreamConnectionReuse,
-    UpstreamExchangeCompletion, UpstreamExchangeLifecycle, UpstreamExchangeOutcome,
-    UpstreamExchangeRequest, UpstreamExchangeResponse, UpstreamInflightPermit, UpstreamRequestHead,
-    UpstreamResponseHead, UpstreamTunnel, UpstreamTunnelIo, UpstreamUpgrade,
+    UpstreamBody, UpstreamBodyFrame, UpstreamExchangeRequest, UpstreamExchangeResponse,
+    UpstreamRequestHead, UpstreamResponseHead, UpstreamTunnel, UpstreamTunnelCompletion,
+    UpstreamTunnelIo, UpstreamUpgrade,
 };
 pub use input::{
     UpstreamConnectionLimitsInput, UpstreamEndpointInput, UpstreamProtocol, UpstreamProxyInput,
@@ -31,4 +29,4 @@ pub use input::{
 };
 pub use pingora_failure::{classify_pingora_h1_error, classify_pingora_h2_error};
 pub use runtime_config::SharedDnsResolver;
-pub use transport_pool::{TransportClientRotation, UpstreamTransportPool};
+pub use transport_pool::UpstreamTransportPool;

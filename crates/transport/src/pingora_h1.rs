@@ -263,10 +263,10 @@ impl PingoraH1UpstreamSession {
             let (frames, body) = upstream_response_body_channel();
             drop(frames);
             let (tunnel_sender, tunnel) = oneshot::channel();
-            let _ = tunnel_sender.send(Ok(UpstreamTunnel {
-                io: Box::new(self.into_tunnel()),
+            let _ = tunnel_sender.send(Ok(UpstreamTunnel::new(
+                Box::new(self.into_tunnel()),
                 lifecycle,
-            }));
+            )));
             return Ok(UpstreamExchangeResponse {
                 head,
                 body,

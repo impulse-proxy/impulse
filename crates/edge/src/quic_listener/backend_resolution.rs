@@ -213,22 +213,10 @@ async fn refresh_pingora_backend(
                 metrics
                     .runtime_observations()
                     .record_pingora_lb_selector_rebuild(pingora_load_balancing.generation(), 1);
-                match transport_pool.rotate_backend_client(&backend.configured_address) {
-                    Ok(rotation) if rotation.rotated() => {
-                        metrics
-                            .runtime_observations()
-                            .inc_backend_client_rotation(&backend.configured_address);
-                    }
-                    Ok(_) => {}
-                    Err(error) => {
-                        metrics
-                            .runtime_observations()
-                            .inc_backend_client_rotation_failure();
-                        warn!(
-                            "backend client rotation failed for '{}' (backend '{}') after DNS refresh: {}",
-                            backend.authority_host, backend.configured_address, error
-                        );
-                    }
+                if transport_pool.rotate_backend_client(&backend.configured_address) {
+                    metrics
+                        .runtime_observations()
+                        .inc_backend_client_rotation(&backend.configured_address);
                 }
                 info!(
                     "Pingora discovery updated '{}' (backend '{}') to {:?} generation={}",

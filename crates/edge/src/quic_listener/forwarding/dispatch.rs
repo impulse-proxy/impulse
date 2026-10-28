@@ -8,9 +8,7 @@ use impulse_lb::{
     alternate_backend::AlternateBackendFailureReason, pingora_backend::GenerationSelector,
 };
 use impulse_transport::{
-    UpstreamBodyFrame, UpstreamCancellation, UpstreamConnectionReuse, UpstreamExchangeCompletion,
-    UpstreamExchangeOutcome, UpstreamExchangeRequest, UpstreamExchangeResponse,
-    UpstreamRequestHead,
+    UpstreamBodyFrame, UpstreamExchangeRequest, UpstreamExchangeResponse, UpstreamRequestHead,
 };
 use pingora_cache::{HitStatus, HttpCache, NoCacheReason, lock::LockWaitOutcome};
 
@@ -320,7 +318,7 @@ impl QUICListener {
         let breaker_permit =
             ForwardingSelectionService::allow_backend_request(circuit_breakers, backend)?;
 
-        let (request, _cancellation, _completion) = Self::into_upstream_exchange_request(request)?;
+        let request = Self::into_upstream_exchange_request(request)?;
         let send_result = transport.send_exchange(backend, request).await;
         if send_result.is_ok() {
             breaker_permit.record_success();
@@ -332,14 +330,7 @@ impl QUICListener {
 
     pub(in crate::quic_listener) fn into_upstream_exchange_request(
         request: UpstreamRequest,
-    ) -> Result<
-        (
-            UpstreamExchangeRequest,
-            oneshot::Sender<()>,
-            oneshot::Receiver<UpstreamExchangeCompletion>,
-        ),
-        ProxyError,
-    > {
+    ) -> Result<UpstreamExchangeRequest, ProxyError> {
         let (parts, mut body) = request.into_parts();
         let (frames, frame_rx) = mpsc::channel(REQUEST_CHUNK_CHANNEL_CAPACITY);
         let body_pump = async move {
@@ -364,25 +355,15 @@ impl QUICListener {
         if !spawn_async_task(body_pump, "upstream-exchange-request-body") {
             return Err(ProxyError::Transport("runtime unavailable".into()));
         }
-        let (cancellation, cancellation_signal) = oneshot::channel();
-        let (completion_signal, completion) = oneshot::channel();
-        Ok((
-            UpstreamExchangeRequest {
-                head: UpstreamRequestHead {
-                    method: parts.method,
-                    uri: parts.uri,
-                    version: parts.version,
-                    headers: parts.headers,
-                },
-                body: frame_rx,
-                cancellation: UpstreamCancellation {
-                    signal: cancellation_signal,
-                },
-                completion: completion_signal,
+        Ok(UpstreamExchangeRequest {
+            head: UpstreamRequestHead {
+                method: parts.method,
+                uri: parts.uri,
+                version: parts.version,
+                headers: parts.headers,
             },
-            cancellation,
-            completion,
-        ))
+            body: frame_rx,
+        })
     }
 
     async fn forward_http1_websocket_tunnel(
@@ -421,7 +402,7 @@ impl QUICListener {
             .map_err(|_| ProxyError::Transport("upstream tunnel task stopped".into()))??;
         let (chunk_tx, chunk_rx) = mpsc::channel(RESPONSE_CHUNK_CHANNEL_CAPACITY);
         let fut = async move {
-            let impulse_transport::UpstreamTunnel { io, lifecycle } = tunnel;
+            let (io, completion) = tunnel.into_parts();
             let (mut reader, mut writer) = tokio::io::split(io);
             let write_fut = async {
                 while let Some(chunk) = body_rx.recv().await {
@@ -450,20 +431,14 @@ impl QUICListener {
             match tokio::try_join!(write_fut, read_fut) {
                 Ok(((), ())) => {
                     let _ = chunk_tx.send(ResponseChunk::End).await;
-                    let _ = lifecycle.completion.send(UpstreamExchangeCompletion {
-                        outcome: UpstreamExchangeOutcome::Completed,
-                        connection_reuse: UpstreamConnectionReuse::Close,
-                    });
+                    completion.complete();
                 }
                 Err(err) => {
                     let detail = err.to_string();
                     let _ = chunk_tx
                         .send(ResponseChunk::Error(ProxyError::Transport(detail.clone())))
                         .await;
-                    let _ = lifecycle.completion.send(UpstreamExchangeCompletion {
-                        outcome: UpstreamExchangeOutcome::Failed(ProxyError::Transport(detail)),
-                        connection_reuse: UpstreamConnectionReuse::Close,
-                    });
+                    completion.fail(ProxyError::Transport(detail));
                 }
             }
         };
