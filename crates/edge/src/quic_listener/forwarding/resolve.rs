@@ -85,12 +85,13 @@ pub(in crate::quic_listener) fn selectors_for_test(
     let view_health_registry = Arc::clone(&health_registry);
     let views = runtime.upstreams.iter().map(move |(name, upstream)| {
         let tls_identity = upstream.backend_tls_policy().clone();
-        let view = impulse_lb::pingora_backend::GenerationBackendView::from_runtime_upstream(
+        let backend_inputs = load_balancing_backend_inputs(upstream);
+        let view = impulse_lb::pingora_backend::GenerationBackendView::new(
             generation,
             name,
-            upstream,
-            |index, backend| {
-                let endpoint = &upstream.backends[index].endpoint;
+            &backend_inputs,
+            |backend| {
+                let endpoint = &upstream.backends[backend.index()].endpoint;
                 let address = std::net::SocketAddr::new(
                     endpoint
                         .authority_host
@@ -100,7 +101,6 @@ pub(in crate::quic_listener) fn selectors_for_test(
                 );
                 impulse_lb::pingora_backend::map_validated_backend(
                     backend,
-                    index,
                     address,
                     tls_identity.clone(),
                 )
@@ -108,7 +108,12 @@ pub(in crate::quic_listener) fn selectors_for_test(
             Arc::clone(&view_health_registry),
         )
         .expect("selector view");
-        (name.clone(), upstream.load_balancing.strategy, view)
+        (
+            name.clone(),
+            load_balancing_strategy_input(upstream.load_balancing.strategy)
+                .expect("validated load balancing strategy"),
+            view,
+        )
     });
     PingoraLoadBalancingRuntimeState::new(generation, views, health_registry)
         .expect("selector runtime")
@@ -534,7 +539,7 @@ mod tests {
                 (
                     name.clone(),
                     Arc::new(RwLock::new(
-                        UpstreamPool::from_runtime_upstream(upstream).expect("pool"),
+                        upstream_pool_from_runtime(upstream).expect("pool"),
                     )),
                 )
             })

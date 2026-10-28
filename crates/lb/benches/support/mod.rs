@@ -4,7 +4,7 @@ use impulse_config::{
     config::{Backend, Config, Listen, LoadBalancing, RouteMatch, Tls, Upstream},
     runtime::{RuntimeConfig, RuntimeUpstream},
 };
-use impulse_lb::upstream_pool::UpstreamPool;
+use impulse_lb::{BackendInput, BackendWeight, LoadBalancingStrategy, upstream_pool::UpstreamPool};
 
 pub const BACKEND_COUNTS: [usize; 4] = [1, 10, 100, 1_000];
 pub const STRATEGIES: [(&str, &str); 2] = [
@@ -72,6 +72,31 @@ pub fn runtime_upstream(backend_count: usize, strategy: &str) -> RuntimeUpstream
 }
 
 pub fn upstream_pool(backend_count: usize, strategy: &str) -> UpstreamPool {
-    UpstreamPool::from_runtime_upstream(&runtime_upstream(backend_count, strategy))
-        .expect("benchmark upstream pool must build")
+    upstream_pool_from_runtime(&runtime_upstream(backend_count, strategy))
+}
+
+pub fn upstream_pool_from_runtime(upstream: &RuntimeUpstream) -> UpstreamPool {
+    let strategy = match upstream.load_balancing.strategy {
+        impulse_config::runtime::RuntimeLoadBalancingStrategy::LeastConnections => {
+            LoadBalancingStrategy::LeastConnections
+        }
+        impulse_config::runtime::RuntimeLoadBalancingStrategy::LatencyAware => {
+            LoadBalancingStrategy::LatencyAware
+        }
+        _ => panic!("benchmark strategy must use a custom dynamic selector"),
+    };
+    let backends = upstream
+        .backends
+        .iter()
+        .enumerate()
+        .map(|(index, backend)| {
+            BackendInput::new(
+                backend.backend.id.clone(),
+                backend.backend.address.clone(),
+                index,
+                BackendWeight::new(backend.backend.weight),
+                None,
+            )
+        });
+    UpstreamPool::new(backends, strategy, None)
 }

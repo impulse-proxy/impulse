@@ -967,7 +967,7 @@ mod tests {
         });
 
         Arc::new(RwLock::new(
-            UpstreamPool::from_runtime_upstream(&runtime_upstream).expect("pool"),
+            crate::quic_listener::upstream_pool_from_runtime(&runtime_upstream).expect("pool"),
         ))
     }
 

@@ -979,10 +979,9 @@ fn test_routing_context(lb_type: &str) -> TestRoutingContext {
     let runtime = runtime_config_with_upstreams(upstreams);
     let selectors = super::forwarding::test_selectors(&runtime);
     let routing_index = super::RouteIndex::from_runtime_upstreams(&runtime.upstreams);
-    let pool = super::UpstreamPool::from_runtime_upstream(
-        runtime.upstreams.get("api_pool").expect("upstream"),
-    )
-    .expect("pool");
+    let pool =
+        super::upstream_pool_from_runtime(runtime.upstreams.get("api_pool").expect("upstream"))
+            .expect("pool");
     let pool = Arc::new(RwLock::new(pool));
     let mut upstream_pools = HashMap::new();
     upstream_pools.insert("api_pool".to_string(), Arc::clone(&pool));
@@ -1130,7 +1129,7 @@ fn resolve_backend_prefers_method_specific_route() {
     let mut upstream_pools = HashMap::new();
     let mut upstream_policies = HashMap::new();
     for (name, upstream) in &runtime.upstreams {
-        let pool = super::UpstreamPool::from_runtime_upstream(upstream).expect("pool");
+        let pool = super::upstream_pool_from_runtime(upstream).expect("pool");
         upstream_pools.insert(name.clone(), Arc::new(RwLock::new(pool)));
         upstream_policies.insert(name.clone(), upstream.policy.clone());
     }
@@ -1174,10 +1173,9 @@ fn resolve_backend_uses_configured_header_lb_key() {
         let runtime = runtime_config_with_upstreams(upstreams);
         let selectors = super::forwarding::test_selectors(&runtime);
         let routing_index = super::RouteIndex::from_runtime_upstreams(&runtime.upstreams);
-        let pool = super::UpstreamPool::from_runtime_upstream(
-            runtime.upstreams.get("api_pool").expect("upstream"),
-        )
-        .expect("pool");
+        let pool =
+            super::upstream_pool_from_runtime(runtime.upstreams.get("api_pool").expect("upstream"))
+                .expect("pool");
         let pool = Arc::new(RwLock::new(pool));
         let mut upstream_pools = HashMap::new();
         upstream_pools.insert("api_pool".to_string(), Arc::clone(&pool));

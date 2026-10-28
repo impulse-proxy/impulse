@@ -182,7 +182,7 @@ mod tests {
         failure_threshold: u32,
         cooldown_ms: u64,
     ) -> BackendState {
-        BackendState::new(&Backend {
+        BackendState::from_config(&Backend {
             id: format!("backend-{address}"),
             address: address.to_string(),
             weight: 1,

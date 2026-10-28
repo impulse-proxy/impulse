@@ -804,8 +804,10 @@ mod tests {
         .expect("runtime config");
 
         Arc::new(RwLock::new(
-            UpstreamPool::from_runtime_upstream(runtime.upstreams.get("api").expect("upstream"))
-                .expect("pool"),
+            crate::quic_listener::upstream_pool_from_runtime(
+                runtime.upstreams.get("api").expect("upstream"),
+            )
+            .expect("pool"),
         ))
     }
 

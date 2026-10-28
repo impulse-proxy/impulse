@@ -18,4 +18,6 @@ pub(crate) mod test_support;
 pub mod upstream_pool;
 
 pub use health::HealthTransition;
-pub use input::{BackendInput, BackendWeight, LoadBalancingStrategy, RequestKeyInput};
+pub use input::{
+    BackendHealthInput, BackendInput, BackendWeight, LoadBalancingStrategy, RequestKeyInput,
+};

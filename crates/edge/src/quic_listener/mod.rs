@@ -101,6 +101,7 @@ mod connection;
 mod control_api;
 mod control_plane;
 mod forwarding;
+mod load_balancing;
 mod metrics;
 mod pingora_health;
 mod protocol;
@@ -132,6 +133,10 @@ pub(crate) use forwarding::{
 };
 use forwarding::{
     ForwardingExecutionCtx, ForwardingSharedCtx, H3RequestHandlingConfig, StreamProgressConfig,
+};
+pub(crate) use load_balancing::{
+    backend_inputs as load_balancing_backend_inputs,
+    strategy_input as load_balancing_strategy_input, upstream_pool as upstream_pool_from_runtime,
 };
 pub(in crate::quic_listener) use protocol::{
     can_poll_upstream_result, collect_h3_trailers, is_connect_method, is_tunnel_response,

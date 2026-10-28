@@ -8,18 +8,17 @@ use std::{
 
 use impulse_config::runtime::{ListenerRuntimeConfig, RuntimeBackendAddressKind, RuntimeConfig};
 use impulse_errors::ProxyError;
-use impulse_lb::{
-    pingora_backend::{
-        GenerationBackendView, HealthRegistry, PingoraLoadBalancingRuntimeState,
-        map_validated_backend,
-    },
-    upstream_pool::UpstreamPool,
+use impulse_lb::pingora_backend::{
+    GenerationBackendView, HealthRegistry, PingoraLoadBalancingRuntimeState, map_validated_backend,
 };
 use impulse_transport::{PingoraBackendHealthIdentity, UpstreamTransportPool};
 use log::{debug, info, warn};
 use socket2::{Domain, Protocol, Socket, Type};
 use tokio::sync::Semaphore;
 
+use super::{
+    load_balancing_backend_inputs, load_balancing_strategy_input, upstream_pool_from_runtime,
+};
 use crate::{
     Metrics,
     constants::UDP_READ_TIMEOUT_MS,
@@ -307,23 +306,23 @@ impl QUICListener {
                 )
         }));
         for (name, runtime_upstream) in &config.upstreams {
-            let upstream_pool =
-                UpstreamPool::from_runtime_upstream(runtime_upstream).map_err(|err| {
-                    ProxyError::Transport(format!(
-                        "failed to create upstream pool '{}': {}",
-                        name, err
-                    ))
-                })?;
+            let upstream_pool = upstream_pool_from_runtime(runtime_upstream).map_err(|err| {
+                ProxyError::Transport(format!(
+                    "failed to create upstream pool '{}': {}",
+                    name, err
+                ))
+            })?;
             upstream_pools.insert(name.clone(), Arc::new(RwLock::new(upstream_pool)));
             upstream_inflight.insert(name.clone(), Arc::new(Semaphore::new(per_upstream_limit)));
 
             let tls_identity = runtime_upstream.backend_tls_policy().clone();
-            let view = GenerationBackendView::from_runtime_upstream(
+            let backend_inputs = load_balancing_backend_inputs(runtime_upstream);
+            let view = GenerationBackendView::new(
                 generation,
                 name,
-                runtime_upstream,
-                |index, backend| {
-                    let endpoint = &runtime_upstream.backends[index].endpoint;
+                &backend_inputs,
+                |backend| {
+                    let endpoint = &runtime_upstream.backends[backend.index()].endpoint;
                     // shortcut: hostname membership remains logical until Pingora discovery owns DNS.
                     let address = StdSocketAddr::new(
                         endpoint
@@ -332,14 +331,13 @@ impl QUICListener {
                             .unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED)),
                         endpoint.authority_port,
                     );
-                    let mut mapped =
-                        map_validated_backend(backend, index, address, tls_identity.clone())?;
+                    let mut mapped = map_validated_backend(backend, address, tls_identity.clone())?;
                     let health_identity = transport_pool
-                        .pingora_backend_health_identity(&backend.address)
+                        .pingora_backend_health_identity(backend.configured_address())
                         .ok_or_else(|| {
                             format!(
                                 "missing Pingora health identity for backend '{}'",
-                                backend.address
+                                backend.configured_address()
                             )
                         })?;
                     mapped.ext.insert(health_identity);
@@ -355,7 +353,17 @@ impl QUICListener {
                     "failed to create Pingora selector for upstream '{name}': {error}"
                 ))
             })?;
-            pingora_selectors.push((name.clone(), runtime_upstream.load_balancing.strategy, view));
+            pingora_selectors.push((
+                name.clone(),
+                load_balancing_strategy_input(runtime_upstream.load_balancing.strategy).map_err(
+                    |error| {
+                        ProxyError::Transport(format!(
+                            "failed to create Pingora selector for upstream '{name}': {error}"
+                        ))
+                    },
+                )?,
+                view,
+            ));
         }
         let pingora_load_balancing = Arc::new(
             PingoraLoadBalancingRuntimeState::new(

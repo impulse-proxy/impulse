@@ -76,10 +76,10 @@ pub fn choose_alternate_backend(
 
 #[cfg(test)]
 mod tests {
-    use impulse_config::runtime::RuntimeAlternateBackendPolicy;
-
     use super::*;
-    use crate::test_support::runtime_upstream_from_addresses;
+    use crate::{
+        test_support::runtime_upstream_from_addresses, upstream_pool::AlternateBackendPolicy,
+    };
 
     fn pool_for(lb_type: &str, backends: &[&str]) -> UpstreamPool {
         UpstreamPool::from_runtime_upstream(&runtime_upstream_from_addresses(
@@ -240,7 +240,7 @@ mod tests {
     #[test]
     fn no_healthy_backend_denial_survives_policy_disablement() {
         let mut pool = pool_for("least-connections", &["http://a", "http://b"]);
-        pool.set_alternate_backend_policy(RuntimeAlternateBackendPolicy {
+        pool.set_alternate_backend_policy(AlternateBackendPolicy {
             readonly_lb_pick: false,
             healthy_fallback: false,
         });
@@ -259,7 +259,7 @@ mod tests {
     #[test]
     fn alternate_selection_respects_disabled_readonly_pick_policy() {
         let mut pool = pool_for("least-connections", &["http://a", "http://b", "http://c"]);
-        pool.set_alternate_backend_policy(RuntimeAlternateBackendPolicy {
+        pool.set_alternate_backend_policy(AlternateBackendPolicy {
             readonly_lb_pick: false,
             healthy_fallback: true,
         });
@@ -277,7 +277,7 @@ mod tests {
     #[test]
     fn only_excluded_backend_denial_survives_when_failover_modes_are_disabled() {
         let mut pool = pool_for("least-connections", &["http://a", "http://b"]);
-        pool.set_alternate_backend_policy(RuntimeAlternateBackendPolicy {
+        pool.set_alternate_backend_policy(AlternateBackendPolicy {
             readonly_lb_pick: false,
             healthy_fallback: false,
         });

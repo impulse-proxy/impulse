@@ -1,11 +1,8 @@
 #[cfg(test)]
 use impulse_config::config::ScopedRateLimitScope;
-use impulse_config::runtime::{RuntimeLoadBalancingStrategy, RuntimeRequestKeySpec};
+use impulse_lb::{LoadBalancingStrategy, RequestKeyInput};
 
 use super::*;
-use crate::resilience::quota::{
-    QuotaIdentityContext, RequestKeyExtraction, extract_runtime_request_key,
-};
 
 pub(in crate::quic_listener::forwarding) struct LbKeyRequestParts<'a> {
     method: &'a str,
@@ -68,7 +65,6 @@ pub(super) struct ResolvedLbKey {
     pub(super) source: LbKeySource,
 }
 
-#[cfg(test)]
 fn extract_cookie_value(cookie_header: &str, cookie_name: &str) -> Option<String> {
     for pair in cookie_header.split(';') {
         let part = pair.trim();
@@ -87,7 +83,6 @@ fn extract_cookie_value(cookie_header: &str, cookie_name: &str) -> Option<String
     None
 }
 
-#[cfg(test)]
 fn extract_query_param(path: &str, param: &str) -> Option<String> {
     let (_, query) = path.split_once('?')?;
     for pair in query.split('&') {
@@ -105,8 +100,8 @@ fn extract_query_param(path: &str, param: &str) -> Option<String> {
 
 impl QUICListener {
     pub(in crate::quic_listener::forwarding) fn resolve_lb_key_for_runtime_request(
-        lb_strategy: RuntimeLoadBalancingStrategy,
-        lb_key_spec: Option<&RuntimeRequestKeySpec>,
+        lb_strategy: LoadBalancingStrategy,
+        lb_key_spec: Option<&RequestKeyInput>,
         request: &super::resolve::TargetResolutionRequest<'_>,
     ) -> ResolvedLbKey {
         let request = LbKeyRequestParts::new(
@@ -130,22 +125,35 @@ impl QUICListener {
     }
 
     fn resolve_lb_key_from_runtime_parts(
-        lb_key_spec: &RuntimeRequestKeySpec,
+        lb_key_spec: &RequestKeyInput,
         request: &LbKeyRequestParts<'_>,
     ) -> Option<String> {
-        let context = QuotaIdentityContext::new(
-            None,
-            request.method,
-            request.path,
-            request.authority,
-            request.cid_key,
-            request.client_addr,
-            request.header_lookup,
-        );
-
-        match extract_runtime_request_key(lb_key_spec, &context) {
-            RequestKeyExtraction::Found(value) => Some(value),
-            RequestKeyExtraction::Missing | RequestKeyExtraction::Invalid => None,
+        match lb_key_spec {
+            RequestKeyInput::Path => Some(
+                request
+                    .path
+                    .split_once('?')
+                    .map_or(request.path, |(path, _)| path)
+                    .to_string(),
+            ),
+            RequestKeyInput::Authority => request.authority.map(str::to_string),
+            RequestKeyInput::Method => Some(request.method.to_string()),
+            RequestKeyInput::Cid | RequestKeyInput::StickyCid => {
+                request.cid_key.map(str::to_string)
+            }
+            RequestKeyInput::PeerIp | RequestKeyInput::ClientIp => {
+                request.client_addr.map(|address| address.ip().to_string())
+            }
+            RequestKeyInput::BearerToken => request
+                .header_lookup
+                .and_then(|lookup| lookup(http::header::AUTHORIZATION.as_str()))
+                .and_then(|value| Self::bearer_token_from_authorization_value(&value)),
+            RequestKeyInput::Header(name) => request.header_lookup.and_then(|lookup| lookup(name)),
+            RequestKeyInput::Cookie(name) => request
+                .header_lookup
+                .and_then(|lookup| lookup(http::header::COOKIE.as_str()))
+                .and_then(|value| extract_cookie_value(&value, name)),
+            RequestKeyInput::Query(name) => extract_query_param(request.path, name),
         }
     }
 
@@ -254,8 +262,8 @@ impl QUICListener {
     }
 
     fn resolve_lb_key_for_runtime_input(
-        lb_strategy: RuntimeLoadBalancingStrategy,
-        lb_key_spec: Option<&RuntimeRequestKeySpec>,
+        lb_strategy: LoadBalancingStrategy,
+        lb_key_spec: Option<&RequestKeyInput>,
         request: &LbKeyRequestParts<'_>,
     ) -> ResolvedLbKey {
         let default_key = Self::default_lb_request_key_for_parts(request);
@@ -271,7 +279,7 @@ impl QUICListener {
             };
         }
 
-        if matches!(lb_strategy, RuntimeLoadBalancingStrategy::StickyCid)
+        if matches!(lb_strategy, LoadBalancingStrategy::StickyCid)
             && let Some(cid_key) = request.cid_key
         {
             return ResolvedLbKey {
@@ -371,7 +379,10 @@ impl QUICListener {
 mod tests {
     use std::{collections::HashMap, net::SocketAddr};
 
-    use impulse_config::runtime::{RuntimeLoadBalancingStrategy, RuntimeRequestKeySpec};
+    use impulse_lb::{
+        LoadBalancingStrategy as RuntimeLoadBalancingStrategy,
+        RequestKeyInput as RuntimeRequestKeySpec,
+    };
 
     use super::{LbKeyRequestParts, LbKeySource, QUICListener, ResolvedLbKey};
 

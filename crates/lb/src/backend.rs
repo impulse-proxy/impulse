@@ -6,14 +6,15 @@ use std::{
     time::{Duration, Instant},
 };
 
-use impulse_config::config::{Backend, HealthCheck};
-
-use crate::health::{HealthFailureReason, HealthTransition};
+use crate::{
+    BackendHealthInput,
+    health::{HealthFailureReason, HealthTransition},
+};
 
 #[derive(Clone)]
 pub struct BackendState {
     pub address: String,
-    pub health_check: Option<HealthCheck>,
+    pub health_check: Option<BackendHealthInput>,
     pub consecutive_failures: u32,
     health_state: HealthState,
     pub active_requests: Arc<AtomicUsize>,
@@ -21,10 +22,15 @@ pub struct BackendState {
 }
 
 impl BackendState {
-    pub fn new(backend: &Backend) -> Self {
+    #[cfg(test)]
+    pub(crate) fn from_config(backend: &impulse_config::config::Backend) -> Self {
+        Self::new(&crate::test_support::backend_input(0, backend))
+    }
+
+    pub fn new(backend: &crate::BackendInput) -> Self {
         Self {
-            address: backend.address.clone(),
-            health_check: backend.health_check.clone(),
+            address: backend.configured_address().to_string(),
+            health_check: backend.health().copied(),
             consecutive_failures: 0,
             health_state: HealthState::Healthy,
             active_requests: Arc::new(AtomicUsize::new(0)),
@@ -46,7 +52,8 @@ impl BackendState {
     /// When active checks are present, only the health-check loop should drive
     /// consecutive_failures — request-path failures should not contribute.
     pub fn has_active_health_check(&self) -> bool {
-        self.health_check.as_ref().is_some_and(|hc| hc.interval > 0)
+        self.health_check
+            .is_some_and(BackendHealthInput::active_checks)
     }
 
     pub fn address(&self) -> &str {
@@ -64,8 +71,7 @@ impl BackendState {
     pub fn record_success(&mut self) -> Option<HealthTransition> {
         let success_threshold = self
             .health_check
-            .as_ref()
-            .map_or(1, |hc| hc.success_threshold)
+            .map_or(1, BackendHealthInput::success_threshold)
             .max(1);
 
         match self.health_state.clone() {
@@ -101,8 +107,7 @@ impl BackendState {
         self.consecutive_failures = self.consecutive_failures.saturating_add(1);
         let threshold = self
             .health_check
-            .as_ref()
-            .map_or(3, |hc| hc.failure_threshold);
+            .map_or(3, BackendHealthInput::failure_threshold);
         if self.consecutive_failures < threshold {
             return None;
         }
@@ -154,17 +159,14 @@ impl BackendState {
     }
 
     fn cooldown_duration(&self) -> Duration {
-        Duration::from_millis(
-            self.health_check
-                .as_ref()
-                .map_or(10_000, |hc| hc.cooldown_ms),
-        )
+        self.health_check
+            .map_or(Duration::from_secs(10), BackendHealthInput::cooldown)
     }
 
     fn probe_budget(&self) -> u32 {
         self.health_check
-            .as_ref()
-            .map_or(1, |hc| hc.success_threshold.max(1))
+            .map_or(1, BackendHealthInput::success_threshold)
+            .max(1)
     }
 
     fn record_probing_success(&mut self, success_threshold: u32) -> Option<HealthTransition> {

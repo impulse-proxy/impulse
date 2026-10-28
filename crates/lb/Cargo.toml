@@ -12,8 +12,8 @@ harness = false
 async-trait.workspace = true
 pingora-load-balancing.workspace = true
 pingora-error.workspace = true
-impulse-config = { path = "../config" }
 impulse-contracts = { path = "../contracts" }
 
 [dev-dependencies]
 criterion = "0.5"
+impulse-config = { path = "../config" }

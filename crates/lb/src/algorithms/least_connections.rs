@@ -42,7 +42,7 @@ mod tests {
     use crate::{backend::BackendState, backend_pool::BackendPool};
 
     fn create_backend_state(address: &str) -> BackendState {
-        BackendState::new(&Backend {
+        BackendState::from_config(&Backend {
             id: format!("backend-{address}"),
             address: address.to_string(),
             weight: 1,

@@ -425,7 +425,7 @@ mod tests {
     };
 
     fn create_backend_state(address: &str) -> BackendState {
-        BackendState::new(&Backend {
+        BackendState::from_config(&Backend {
             id: format!("backend-{address}"),
             address: address.to_string(),
             weight: 1,
@@ -515,7 +515,7 @@ mod tests {
                 cooldown_ms: 10_000,
             }),
         };
-        let mut pool = BackendPool::new_from_states(vec![BackendState::new(&backend)]);
+        let mut pool = BackendPool::new_from_states(vec![BackendState::from_config(&backend)]);
         assert_eq!(pool.healthy_len(), 1);
 
         pool.mark_request_failure(0, HealthFailureReason::Transport);
@@ -556,7 +556,7 @@ mod tests {
                 cooldown_ms: 10_000,
             }),
         };
-        let mut pool = BackendPool::new_from_states(vec![BackendState::new(&backend)]);
+        let mut pool = BackendPool::new_from_states(vec![BackendState::from_config(&backend)]);
 
         assert!(matches!(
             pool.mark_request_failure(0, HealthFailureReason::Transport),
@@ -585,7 +585,7 @@ mod tests {
                 cooldown_ms: 10_000,
             }),
         };
-        let mut pool = BackendPool::new_from_states(vec![BackendState::new(&backend)]);
+        let mut pool = BackendPool::new_from_states(vec![BackendState::from_config(&backend)]);
 
         assert!(matches!(
             pool.mark_request_failure(0, HealthFailureReason::Transport),
@@ -618,7 +618,7 @@ mod tests {
                 cooldown_ms: 10_000,
             }),
         };
-        let mut pool = BackendPool::new_from_states(vec![BackendState::new(&backend)]);
+        let mut pool = BackendPool::new_from_states(vec![BackendState::from_config(&backend)]);
 
         assert!(matches!(
             pool.mark_request_failure(0, HealthFailureReason::Transport),
@@ -652,7 +652,7 @@ mod tests {
                 cooldown_ms: 10_000,
             }),
         };
-        let mut pool = BackendPool::new_from_states(vec![BackendState::new(&backend)]);
+        let mut pool = BackendPool::new_from_states(vec![BackendState::from_config(&backend)]);
 
         assert!(matches!(
             pool.mark_request_failure(0, HealthFailureReason::Transport),

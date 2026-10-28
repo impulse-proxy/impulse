@@ -1413,8 +1413,8 @@ mod tests {
             ),
         );
         let routed_header = QUICListener::resolve_lb_key_for_runtime_request(
-            impulse_config::runtime::RuntimeLoadBalancingStrategy::RoundRobin,
-            Some(&impulse_config::runtime::RuntimeRequestKeySpec::Header(
+            impulse_lb::LoadBalancingStrategy::RoundRobin,
+            Some(&impulse_lb::RequestKeyInput::Header(
                 "x-user-id".to_string(),
             )),
             &route_request,
@@ -1438,8 +1438,8 @@ mod tests {
             ),
         );
         let routed_sticky = QUICListener::resolve_lb_key_for_runtime_request(
-            impulse_config::runtime::RuntimeLoadBalancingStrategy::StickyCid,
-            Some(&impulse_config::runtime::RuntimeRequestKeySpec::Header(
+            impulse_lb::LoadBalancingStrategy::StickyCid,
+            Some(&impulse_lb::RequestKeyInput::Header(
                 "x-missing".to_string(),
             )),
             &route_request,
