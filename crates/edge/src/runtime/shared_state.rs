@@ -67,7 +67,11 @@ impl SharedRuntimeState {
         let summary = self
             .shared_services
             .backend_lifecycle
-            .snapshot_inventory(&self.generation_state.upstream_pools)
+            .snapshot_inventory(
+                self.generation_state
+                    .pingora_load_balancing
+                    .upstream_pools(),
+            )
             .summary();
         (summary.healthy_backends, summary.total_backends)
     }

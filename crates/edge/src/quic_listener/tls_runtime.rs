@@ -524,7 +524,6 @@ impl QUICListener {
         self.backend_endpoints = Arc::clone(&generation.backend_endpoints);
         self.backend_dns_resolver = shared.backend_dns_resolver.clone();
         self.upstream_policies = Arc::clone(&generation.upstream_policies);
-        self.upstream_pools = generation.upstream_pools.clone();
         self.pingora_load_balancing = Arc::clone(&generation.pingora_load_balancing);
         self.upstream_inflight = generation.upstream_inflight.clone();
         self.global_inflight = Arc::clone(&generation.global_inflight);

@@ -780,7 +780,7 @@ pub(crate) fn apply_passive_readiness_to_pingora(
     let Some(transition) = transition else {
         return;
     };
-    pingora_load_balancing.set_backend_health(
+    pingora_load_balancing.set_backend_readiness(
         backend_addr,
         matches!(transition, HealthTransition::BecameHealthy),
     );

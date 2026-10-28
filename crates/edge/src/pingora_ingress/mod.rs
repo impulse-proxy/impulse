@@ -199,8 +199,8 @@ impl PingoraIngressService {
         })?;
         let state = ctx.runtime.shared_state.generation_state();
         let pool = state
-            .upstream_pools
-            .get(route.upstream_name.as_ref())
+            .pingora_load_balancing
+            .upstream_pool(route.upstream_name.as_ref())
             .cloned()
             .ok_or_else(|| {
                 Error::explain(

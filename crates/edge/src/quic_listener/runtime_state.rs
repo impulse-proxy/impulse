@@ -1,9 +1,4 @@
-use std::{
-    collections::HashMap,
-    net::UdpSocket,
-    sync::{Arc, RwLock},
-    time::Instant,
-};
+use std::{collections::HashMap, net::UdpSocket, sync::Arc, time::Instant};
 
 use impulse_config::runtime::{ListenerRuntimeConfig, RuntimeBackendTlsPolicy, RuntimeConfig};
 use impulse_errors::ProxyError;
@@ -36,7 +31,6 @@ pub(super) struct ControlPlaneRuntimeView {
     backend_lifecycle: Arc<BackendLifecycleCoordinator>,
     transport_pool: Arc<UpstreamTransportPool>,
     backend_dns_resolver: SharedDnsResolver,
-    upstream_pools: HashMap<String, Arc<RwLock<UpstreamPool>>>,
     pingora_load_balancing: SharedPingoraLoadBalancingRuntimeState<RuntimeBackendTlsPolicy>,
     listener_runtime_configs: Arc<HashMap<String, ListenerRuntimeConfig>>,
     backend_health_checks: Arc<HashMap<String, impulse_config::runtime::RuntimeBackendHealthCheck>>,
@@ -62,7 +56,6 @@ impl ControlPlaneRuntimeView {
             backend_lifecycle: Arc::clone(&shared.backend_lifecycle),
             transport_pool: Arc::clone(&shared.transport_pool),
             backend_dns_resolver: shared.backend_dns_resolver.clone(),
-            upstream_pools: generation.upstream_pools.clone(),
             pingora_load_balancing: Arc::clone(&generation.pingora_load_balancing),
             listener_runtime_configs: Arc::clone(&generation.listener_runtime_configs),
             backend_health_checks: Arc::clone(&generation.backend_health_checks),
@@ -87,7 +80,6 @@ impl ControlPlaneRuntimeView {
             backend_lifecycle: Arc::clone(&view.shared.backend_lifecycle),
             transport_pool: Arc::clone(&view.shared.transport_pool),
             backend_dns_resolver: view.shared.backend_dns_resolver.clone(),
-            upstream_pools: view.state.upstream_pools.clone(),
             pingora_load_balancing: Arc::clone(&view.state.pingora_load_balancing),
             listener_runtime_configs: Arc::clone(&view.state.listener_runtime_configs),
             backend_health_checks: Arc::clone(&view.state.backend_health_checks),
@@ -132,8 +124,8 @@ impl ControlPlaneRuntimeView {
         self.backend_dns_resolver.clone()
     }
 
-    pub(super) fn upstream_pools(&self) -> &HashMap<String, Arc<RwLock<UpstreamPool>>> {
-        &self.upstream_pools
+    pub(super) fn upstream_pools(&self) -> &HashMap<String, Arc<std::sync::RwLock<UpstreamPool>>> {
+        self.pingora_load_balancing.upstream_pools()
     }
 
     pub(super) fn pingora_load_balancing(

@@ -368,6 +368,7 @@ impl QUICListener {
         let pingora_load_balancing = Arc::new(
             PingoraLoadBalancingRuntimeState::new(
                 generation,
+                upstream_pools,
                 pingora_selectors,
                 pingora_health_registry,
             )
@@ -457,7 +458,6 @@ impl QUICListener {
                         .map(|(name, upstream)| (name.clone(), upstream.policy.clone()))
                         .collect(),
                 ),
-                upstream_pools,
                 pingora_load_balancing,
                 upstream_inflight,
                 global_inflight: Arc::new(Semaphore::new(global_inflight_limit)),
@@ -589,7 +589,6 @@ impl QUICListener {
             backend_endpoints: Arc::clone(&generation_state.backend_endpoints),
             backend_dns_resolver: shared_services.backend_dns_resolver.clone(),
             upstream_policies: Arc::clone(&generation_state.upstream_policies),
-            upstream_pools: generation_state.upstream_pools.clone(),
             pingora_load_balancing: Arc::clone(&generation_state.pingora_load_balancing),
             upstream_inflight: generation_state.upstream_inflight.clone(),
             global_inflight: Arc::clone(&generation_state.global_inflight),

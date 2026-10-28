@@ -80,7 +80,6 @@ impl QUICListener {
             let pingora_load_balancing = runtime.pingora_load_balancing();
             Self::spawn_pingora_health_service(PingoraHealthServiceInput {
                 generation: pingora_load_balancing.generation(),
-                upstream_pools: runtime.upstream_pools().clone(),
                 transport_pool: runtime.transport_pool(),
                 backend_health_checks: runtime.backend_health_checks(),
                 pingora_load_balancing,

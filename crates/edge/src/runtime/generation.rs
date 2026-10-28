@@ -1,7 +1,4 @@
-use std::{
-    collections::HashMap,
-    sync::{Arc, RwLock},
-};
+use std::{collections::HashMap, sync::Arc};
 
 use impulse_config::{
     backend_endpoint::BackendEndpoint,
@@ -11,9 +8,7 @@ use impulse_config::{
         RuntimeUpstreamPolicy,
     },
 };
-use impulse_lb::{
-    pingora_backend::SharedPingoraLoadBalancingRuntimeState, upstream_pool::UpstreamPool,
-};
+use impulse_lb::pingora_backend::SharedPingoraLoadBalancingRuntimeState;
 use impulse_transport::{SharedDnsResolver, UpstreamTransportPool};
 use tokio::sync::Semaphore;
 
@@ -134,9 +129,7 @@ pub struct RuntimeGenerationState {
     pub backend_health_checks: Arc<HashMap<String, RuntimeBackendHealthCheck>>,
     /// Upstream policies, keyed by upstream name.
     pub upstream_policies: Arc<HashMap<String, RuntimeUpstreamPolicy>>,
-    /// Per-upstream load-balancing pools.
-    pub upstream_pools: HashMap<String, Arc<RwLock<UpstreamPool>>>,
-    /// Pingora selectors owned by this runtime generation.
+    /// Backend membership, readiness, discovery, and selectors for this generation.
     pub pingora_load_balancing: SharedPingoraLoadBalancingRuntimeState<RuntimeBackendTlsPolicy>,
     /// Per-upstream inflight semaphores.
     pub upstream_inflight: HashMap<String, Arc<Semaphore>>,

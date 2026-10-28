@@ -60,7 +60,6 @@ struct ImpulsePingoraHealthCheck {
 
 pub(super) struct PingoraHealthServiceInput {
     pub(super) generation: u64,
-    pub(super) upstream_pools: HashMap<String, Arc<RwLock<UpstreamPool>>>,
     pub(super) transport_pool: Arc<UpstreamTransportPool>,
     pub(super) backend_health_checks: Arc<HashMap<String, RuntimeBackendHealthCheck>>,
     pub(super) pingora_load_balancing:
@@ -326,7 +325,6 @@ impl QUICListener {
     pub(super) fn spawn_pingora_health_service(input: PingoraHealthServiceInput) {
         let PingoraHealthServiceInput {
             generation,
-            upstream_pools,
             transport_pool,
             backend_health_checks,
             pingora_load_balancing,
@@ -344,7 +342,7 @@ impl QUICListener {
         let registry = pingora_load_balancing.health_registry();
         registry.set_health_check(Box::new(ImpulsePingoraHealthCheck::new(
             generation,
-            &upstream_pools,
+            pingora_load_balancing.upstream_pools(),
             backend_health_checks.as_ref(),
             transport_pool,
             backend_lifecycle,

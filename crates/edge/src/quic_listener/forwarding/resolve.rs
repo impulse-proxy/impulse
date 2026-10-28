@@ -83,6 +83,18 @@ pub(in crate::quic_listener) fn selectors_for_test(
         }),
     );
     let view_health_registry = Arc::clone(&health_registry);
+    let upstream_pools = runtime
+        .upstreams
+        .iter()
+        .map(|(name, upstream)| {
+            (
+                name.clone(),
+                Arc::new(RwLock::new(
+                    upstream_pool_from_runtime(upstream).expect("validated upstream pool"),
+                )),
+            )
+        })
+        .collect();
     let views = runtime.upstreams.iter().map(move |(name, upstream)| {
         let tls_identity = upstream.backend_tls_policy().clone();
         let backend_inputs = load_balancing_backend_inputs(upstream);
@@ -115,7 +127,7 @@ pub(in crate::quic_listener) fn selectors_for_test(
             view,
         )
     });
-    PingoraLoadBalancingRuntimeState::new(generation, views, health_registry)
+    PingoraLoadBalancingRuntimeState::new(generation, upstream_pools, views, health_registry)
         .expect("selector runtime")
 }
 
