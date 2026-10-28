@@ -9,6 +9,7 @@ pub mod alternate_backend;
 mod backend;
 mod backend_pool;
 pub mod health;
+mod input;
 mod load_balancing;
 pub mod pingora_backend;
 mod pingora_discovery;
@@ -17,3 +18,4 @@ pub(crate) mod test_support;
 pub mod upstream_pool;
 
 pub use health::HealthTransition;
+pub use input::{BackendInput, BackendWeight, LoadBalancingStrategy, RequestKeyInput};
