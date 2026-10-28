@@ -49,19 +49,21 @@ impl ForwardingOrchestrationService {
 
     pub(super) fn record_policy_metrics(metrics: &Metrics, policy: &ForwardingPolicyTelemetry) {
         if let Some(reason) = policy.hedge.trigger_reason {
-            metrics.inc_hedge_trigger(reason);
+            metrics.policy_observations().inc_hedge_trigger(reason);
         }
         if let Some(reason) = policy.hedge.outcome_reason {
-            metrics.inc_hedge_outcome(reason);
+            metrics.policy_observations().inc_hedge_outcome(reason);
         }
         if policy.hedge.primary_late_ms > 0 {
-            metrics.observe_hedge_primary_late_ms(policy.hedge.primary_late_ms);
+            metrics
+                .policy_observations()
+                .observe_hedge_primary_late_ms(policy.hedge.primary_late_ms);
         }
         if let Some(reason) = policy.retry.attempt_reason {
-            metrics.inc_retry_attempt(reason);
+            metrics.policy_observations().inc_retry_attempt(reason);
         }
         if let Some(reason) = policy.retry.denial_reason {
-            metrics.inc_retry_denied(reason);
+            metrics.policy_observations().inc_retry_denied(reason);
         }
     }
 

@@ -352,10 +352,14 @@ impl QUICListener {
         let current = handle.current_view();
         let metrics = Arc::clone(&current.shared_services().metrics);
         let outcome = activation.outcome_reason();
-        metrics.record_runtime_activation_outcome(outcome);
+        metrics
+            .runtime_observations()
+            .record_runtime_activation_outcome(outcome);
         record_control_api_secret_metrics(current.runtime_config(), metrics.as_ref(), activation);
         if let Some(reason) = activation.primary_rejection_reason() {
-            metrics.inc_runtime_rejection_reason(reason);
+            metrics
+                .runtime_observations()
+                .inc_runtime_rejection_reason(reason);
             warn!(
                 "runtime activation rejected active_generation={} candidate_generation={} reason={} error={}",
                 activation.active_generation,
@@ -443,7 +447,9 @@ fn record_control_api_secret_metrics(
             .iter()
             .any(|entry| entry.secret_material_changed)
         {
-            metrics.record_secret_reload("upstreams", "success", &reason);
+            metrics
+                .runtime_observations()
+                .record_secret_reload("upstreams", "success", &reason);
             if let Some(last_loaded_at_unix_ms) = runtime_config
                 .upstreams
                 .values()
@@ -464,6 +470,7 @@ fn record_control_api_secret_metrics(
                 .max()
             {
                 metrics
+                    .runtime_observations()
                     .set_secret_last_success_unixtime("upstreams", last_loaded_at_unix_ms / 1_000);
             }
         }
@@ -474,12 +481,16 @@ fn record_control_api_secret_metrics(
         classify_upstream_mtls_material_outcome(activation),
         Some(UpstreamMtlsMaterialOutcome::ResolutionFailed | UpstreamMtlsMaterialOutcome::Invalid)
     ) {
-        metrics.record_secret_reload("upstreams", "failed", &reason);
+        metrics
+            .runtime_observations()
+            .record_secret_reload("upstreams", "failed", &reason);
     }
     if let Some((provider, resolve_reason)) =
         classify_secret_resolution_failure(activation_error(activation))
     {
-        metrics.record_secret_resolve(provider, "failed", resolve_reason);
+        metrics
+            .runtime_observations()
+            .record_secret_resolve(provider, "failed", resolve_reason);
     }
 }
 

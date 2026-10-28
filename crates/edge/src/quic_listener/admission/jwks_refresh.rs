@@ -156,7 +156,9 @@ pub(super) async fn refresh_jwks_source_once(
         return Ok(());
     }
     if let Some(metrics) = current_jwt_jwks_metrics() {
-        metrics.record_jwks_refresh_started(&source.source_identity, SystemTime::now());
+        metrics
+            .runtime_observations()
+            .record_jwks_refresh_started(&source.source_identity, SystemTime::now());
     }
     log::debug!(
         "JWKS refresh started source_id={} endpoint={} trigger={} configured_algorithms={:?}",
@@ -189,7 +191,7 @@ pub(super) async fn refresh_jwks_source_inflight(
             cache.complete_refresh_success(&source.source_identity, Instant::now(), keys);
             if let Some(snapshot) = cache.snapshot(&source.source_identity, Instant::now()) {
                 if let Some(metrics) = current_jwt_jwks_metrics() {
-                    metrics.record_jwks_refresh_success(
+                    metrics.runtime_observations().record_jwks_refresh_success(
                         &source.source_identity,
                         jwt_jwks_cache_state_name(snapshot.state),
                         snapshot.active_keys.len(),
@@ -264,7 +266,7 @@ pub(super) async fn refresh_jwks_source_inflight(
             cache.complete_refresh_failure(&source.source_identity, Instant::now(), &failure);
             let snapshot = cache.snapshot(&source.source_identity, Instant::now());
             if let Some(metrics) = current_jwt_jwks_metrics() {
-                metrics.record_jwks_refresh_failure(
+                metrics.runtime_observations().record_jwks_refresh_failure(
                     &source.source_identity,
                     snapshot
                         .as_ref()

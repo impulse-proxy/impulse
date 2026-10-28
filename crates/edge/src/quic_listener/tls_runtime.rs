@@ -1105,7 +1105,9 @@ impl QUICListener {
                     )
                 }),
         );
-        metrics.replace_downstream_tls_cert_expiry(listener_label, certs);
+        metrics
+            .ingress_observations()
+            .replace_downstream_tls_cert_expiry(listener_label, certs);
     }
 
     pub(super) fn classify_downstream_tls_cert_selection<'a>(
@@ -1183,10 +1185,14 @@ impl QUICListener {
             .unwrap_or("none");
         let client_cert_present = connection.quic.peer_cert().is_some();
 
-        self.metrics.inc_downstream_tls_handshake_success();
         self.metrics
+            .ingress_observations()
+            .inc_downstream_tls_handshake_success();
+        self.metrics
+            .ingress_observations()
             .record_downstream_tls_cert_selection(&listener_label, selection);
         self.metrics
+            .ingress_observations()
             .record_downstream_tls_alpn(&listener_label, alpn);
         debug!(
             "QUIC TLS established listener={} peer={} sni={:?} selection={} cert='{}' alpn={} client_cert_present={}",
@@ -1243,6 +1249,7 @@ impl QUICListener {
         };
         let reason = Self::classify_downstream_tls_failure_reason(&reason_text);
         self.metrics
+            .ingress_observations()
             .record_downstream_tls_handshake_failure(&Self::listener_label(&self.config), reason);
         connection.tls_handshake_failure_recorded = true;
         debug!(

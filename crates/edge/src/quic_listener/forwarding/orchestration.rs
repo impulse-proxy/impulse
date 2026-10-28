@@ -98,7 +98,7 @@ impl QUICListener {
                 crate::quic_listener::admission::PostAuthAdmissionRejection::Quota(decision),
             ) => {
                 if decision.status == http::StatusCode::TOO_MANY_REQUESTS {
-                    metrics.inc_request_rate_limited();
+                    metrics.policy_observations().inc_request_rate_limited();
                 }
                 let _ = observe_admission_outcome(
                     metrics,
@@ -130,10 +130,14 @@ impl QUICListener {
             }
             crate::quic_listener::admission::PostAuthAdmissionExecution::Ready(ready) => {
                 if ready.waited_for_global_permit {
-                    metrics.inc_inflight_wait_admit_global();
+                    metrics
+                        .policy_observations()
+                        .inc_inflight_wait_admit_global();
                 }
                 if ready.waited_for_upstream_permit {
-                    metrics.inc_inflight_wait_admit_upstream();
+                    metrics
+                        .policy_observations()
+                        .inc_inflight_wait_admit_upstream();
                 }
                 (
                     ready.backend_index,
@@ -562,9 +566,11 @@ impl QUICListener {
                     let request = match validate_request_headers(&list, resilience) {
                         Ok(request) => request,
                         Err((status, body, is_policy)) => {
-                            metrics.inc_request_validation_reject();
+                            metrics
+                                .request_observations()
+                                .inc_request_validation_reject();
                             if is_policy {
-                                metrics.inc_policy_denied();
+                                metrics.policy_observations().inc_policy_denied();
                             }
                             let _ = observe_proxy_error_outcome(
                                 metrics,
@@ -598,15 +604,15 @@ impl QUICListener {
                         TunnelMode::None
                     };
 
-                    metrics.inc_total();
+                    metrics.request_observations().inc_total();
                     let request_start = Instant::now();
 
                     if connection.quic.is_in_early_data() {
                         if resilience.early_data_allowed_for(&method) {
-                            metrics.inc_early_data_accepted();
+                            metrics.ingress_observations().inc_early_data_accepted();
                         } else {
-                            metrics.inc_early_data_rejected();
-                            metrics.inc_policy_denied();
+                            metrics.ingress_observations().inc_early_data_rejected();
+                            metrics.policy_observations().inc_policy_denied();
                             let _ = observe_proxy_error_outcome(
                                 metrics,
                                 RouteOutcomeTarget::UNROUTED,
@@ -802,7 +808,9 @@ impl QUICListener {
                                                         ));
                                                     } else {
                                                         shed_due_to_buffer_pressure = true;
-                                                        metrics.inc_request_buffer_limit_reject();
+                                                        metrics
+                                                            .request_observations()
+                                                            .inc_request_buffer_limit_reject();
                                                         if err == RequestBufferError::Global {
                                                             debug!(
                                                                 "global request buffer cap reached"
@@ -819,7 +827,9 @@ impl QUICListener {
                                                 | BodyLimitKind::BufferedBody,
                                         }) => {
                                             shed_due_to_buffer_pressure = true;
-                                            metrics.inc_request_buffer_limit_reject();
+                                            metrics
+                                                .request_observations()
+                                                .inc_request_buffer_limit_reject();
                                         }
                                         Err(other) => {
                                             unreachable!(

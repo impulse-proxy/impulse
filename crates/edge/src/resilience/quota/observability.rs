@@ -270,7 +270,7 @@ pub(super) fn observe_quota_policy_outcome(
     }
 
     if let Some(metrics) = current_quota_metrics() {
-        metrics.record_quota_policy_outcome(
+        metrics.policy_observations().record_quota_policy_outcome(
             policy_name,
             decision_kind,
             reason,
@@ -280,7 +280,9 @@ pub(super) fn observe_quota_policy_outcome(
         if backend_observed
             && let Some(health_reason) = quota_backend_health_reason(decision, backend_mode)
         {
-            metrics.record_quota_backend_health(backend_mode, health_reason);
+            metrics
+                .policy_observations()
+                .record_quota_backend_health(backend_mode, health_reason);
         }
     }
 

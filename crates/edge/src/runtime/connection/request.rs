@@ -865,7 +865,9 @@ impl RequestEnvelope {
         }
 
         if buffered_body_bytes > 0 {
-            metrics.release_request_buffer(buffered_body_bytes);
+            metrics
+                .request_observations()
+                .release_request_buffer(buffered_body_bytes);
         }
 
         self.execution = RequestExecutionState::Terminal(terminal_state);
@@ -1178,7 +1180,11 @@ mod tests {
         let (mut req, global_sem, upstream_sem, _adaptive, route_limiter) =
             make_admitted_envelope(start, body_buf, 7, false);
 
-        assert!(metrics.try_reserve_request_buffer(7, 64));
+        assert!(
+            metrics
+                .request_observations()
+                .try_reserve_request_buffer(7, 64)
+        );
 
         let phase = req.transition_to_terminal_with_cleanup(
             TerminalReason::Rejected(

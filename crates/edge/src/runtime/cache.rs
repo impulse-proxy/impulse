@@ -67,6 +67,7 @@ struct ObservedEvictionManager {
 impl ObservedEvictionManager {
     fn record(&self, evicted: Vec<CacheEntryKey>) -> Vec<CacheEntryKey> {
         self.metrics
+            .ingress_observations()
             .add_response_cache_outcomes(ResponseCacheOutcome::Eviction, evicted.len());
         evicted
     }

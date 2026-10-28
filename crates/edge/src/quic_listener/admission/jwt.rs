@@ -136,7 +136,9 @@ pub(super) fn observe_jwt_validation_failure(
     let Some(metrics) = current_jwt_jwks_metrics() else {
         return;
     };
-    metrics.record_jwt_validation_failure(failure.reason.as_str());
+    metrics
+        .runtime_observations()
+        .record_jwt_validation_failure(failure.reason.as_str());
     let header = parse_compact_jwt(token)
         .ok()
         .and_then(|parsed| parse_jose_header(&parsed.header_bytes).ok());
@@ -150,7 +152,9 @@ pub(super) fn observe_jwt_validation_failure(
             .as_ref()
             .map(|header| jwt_algorithm_name(header.algorithm))
             .unwrap_or("unknown");
-        metrics.record_jwt_algorithm_rejection(algorithm);
+        metrics
+            .runtime_observations()
+            .record_jwt_algorithm_rejection(algorithm);
     }
     if failure.reason == JwtValidationFailureReason::MissingVerificationKey
         && let Some(source) = JwtJwksSourceConfig::from_jwt(jwt)
@@ -159,7 +163,9 @@ pub(super) fn observe_jwt_validation_failure(
             .and_then(|header| header.kid.as_deref())
             .is_some()
     {
-        metrics.record_jwks_unknown_kid(&source.source_identity);
+        metrics
+            .runtime_observations()
+            .record_jwks_unknown_kid(&source.source_identity);
     }
 }
 

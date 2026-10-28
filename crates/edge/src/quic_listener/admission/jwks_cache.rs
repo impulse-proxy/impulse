@@ -179,7 +179,9 @@ impl JwtJwksSharedCache {
         drop(entries);
 
         if let Some(metrics) = current_jwt_jwks_metrics() {
-            metrics.reconcile_jwks_sources(active_source_ids.iter().map(String::as_str));
+            metrics
+                .runtime_observations()
+                .reconcile_jwks_sources(active_source_ids.iter().map(String::as_str));
         }
 
         if removed > 0 {

@@ -188,6 +188,7 @@ impl QUICListener {
                     ) {
                         runtime_state
                             .metrics()
+                            .ingress_observations()
                             .inc_control_api_connection_limit_drop();
                         warn!(
                             "Control API endpoint dropped connection from {} due to max connection limit ({})",

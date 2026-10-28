@@ -59,8 +59,14 @@ impl QUICListener {
         }
 
         if !failures.is_empty() {
-            metrics.record_control_plane_cert_reload("failed", "cert_reload_failed");
-            metrics.record_secret_reload("listeners", "failed", "cert_reload_failed");
+            metrics
+                .runtime_observations()
+                .record_control_plane_cert_reload("failed", "cert_reload_failed");
+            metrics.runtime_observations().record_secret_reload(
+                "listeners",
+                "failed",
+                "cert_reload_failed",
+            );
             return Self::json_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 json!({
@@ -74,8 +80,14 @@ impl QUICListener {
         let generations = match listener_tls_store.replace_listeners(&staged) {
             Ok(generations) => generations,
             Err(err) => {
-                metrics.record_control_plane_cert_reload("failed", "cert_reload_failed");
-                metrics.record_secret_reload("listeners", "failed", "cert_reload_failed");
+                metrics
+                    .runtime_observations()
+                    .record_control_plane_cert_reload("failed", "cert_reload_failed");
+                metrics.runtime_observations().record_secret_reload(
+                    "listeners",
+                    "failed",
+                    "cert_reload_failed",
+                );
                 return Self::json_response(
                     StatusCode::INTERNAL_SERVER_ERROR,
                     json!({
@@ -109,10 +121,18 @@ impl QUICListener {
             }));
         }
         if last_loaded_at_unix_ms > 0 {
-            metrics.set_secret_last_success_unixtime("listeners", last_loaded_at_unix_ms / 1_000);
+            metrics
+                .runtime_observations()
+                .set_secret_last_success_unixtime("listeners", last_loaded_at_unix_ms / 1_000);
         }
-        metrics.record_control_plane_cert_reload("success", "cert_reload_applied");
-        metrics.record_secret_reload("listeners", "success", "cert_reload_applied");
+        metrics
+            .runtime_observations()
+            .record_control_plane_cert_reload("success", "cert_reload_applied");
+        metrics.runtime_observations().record_secret_reload(
+            "listeners",
+            "success",
+            "cert_reload_applied",
+        );
 
         Self::json_response(
             StatusCode::ACCEPTED,

@@ -62,7 +62,7 @@ where
             Ok(()) => {}
             Err(err) => {
                 if let Some(metrics) = metrics {
-                    metrics.inc_runtime_panic();
+                    metrics.runtime_observations().inc_runtime_panic();
                 }
                 if err.is_panic() {
                     error!("Background task '{}' panicked", task_name);

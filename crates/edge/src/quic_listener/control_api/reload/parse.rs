@@ -153,8 +153,10 @@ impl QUICListener {
         let current = handle.current_view();
         let metrics = Arc::clone(&current.shared_services().metrics);
         match operation {
-            "validate" => metrics.inc_runtime_validation_attempt(),
-            "preview" => metrics.inc_runtime_preview_attempt(),
+            "validate" => metrics
+                .runtime_observations()
+                .inc_runtime_validation_attempt(),
+            "preview" => metrics.runtime_observations().inc_runtime_preview_attempt(),
             _ => {}
         }
         info!(
@@ -176,7 +178,9 @@ impl QUICListener {
         if let Some(reason) = plan.primary_rejection_reason() {
             let current = handle.current_view();
             let metrics = Arc::clone(&current.shared_services().metrics);
-            metrics.inc_runtime_rejection_reason(reason);
+            metrics
+                .runtime_observations()
+                .inc_runtime_rejection_reason(reason);
             warn!(
                 "runtime {} rejected generation={} reason={} summary={}",
                 operation,

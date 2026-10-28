@@ -17,7 +17,10 @@ impl QUICListener {
         request_buffer_global_cap_bytes: usize,
     ) -> Result<(), RequestBufferError> {
         let chunk_len = chunk.len();
-        if !metrics.try_reserve_request_buffer(chunk_len, request_buffer_global_cap_bytes) {
+        if !metrics
+            .request_observations()
+            .try_reserve_request_buffer(chunk_len, request_buffer_global_cap_bytes)
+        {
             return Err(RequestBufferError::Global);
         }
 
@@ -43,7 +46,9 @@ impl QUICListener {
             },
         );
         let Ok(next_state) = next_state else {
-            metrics.release_request_buffer(chunk_len);
+            metrics
+                .request_observations()
+                .release_request_buffer(chunk_len);
             return Err(match next_state {
                 Err(RequestBodyGuardrailDecision::Reject {
                     kind: BodyLimitKind::BodySize,
@@ -85,7 +90,9 @@ impl QUICListener {
                 ),
                 Err(TrySendError::Closed(_chunk)) => {
                     if req.body_buf_bytes() > 0 {
-                        metrics.release_request_buffer(req.body_buf_bytes());
+                        metrics
+                            .request_observations()
+                            .release_request_buffer(req.body_buf_bytes());
                     }
                     req.body_buf_mut().clear();
                     req.set_body_buf_bytes(0);
@@ -120,7 +127,7 @@ impl QUICListener {
             match tx.try_send(chunk) {
                 Ok(()) => {
                     req.set_body_buf_bytes(req.body_buf_bytes().saturating_sub(len));
-                    metrics.release_request_buffer(len);
+                    metrics.request_observations().release_request_buffer(len);
                 }
                 Err(TrySendError::Full(chunk)) => {
                     req.body_buf_mut().push_front(chunk);
@@ -128,7 +135,9 @@ impl QUICListener {
                 }
                 Err(TrySendError::Closed(_chunk)) => {
                     if req.body_buf_bytes() > 0 {
-                        metrics.release_request_buffer(req.body_buf_bytes());
+                        metrics
+                            .request_observations()
+                            .release_request_buffer(req.body_buf_bytes());
                     }
                     req.body_buf_mut().clear();
                     req.set_body_buf_bytes(0);
@@ -250,7 +259,7 @@ impl QUICListener {
                         kind: BodyTimeoutKind::Idle,
                     }
                 ) {
-                    metrics.inc_timeout();
+                    metrics.request_observations().inc_timeout();
                     let _ = crate::runtime::connection::outcome::observe_proxy_error_outcome(
                         metrics,
                         crate::runtime::connection::outcome::RouteOutcomeTarget {

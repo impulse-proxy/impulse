@@ -348,7 +348,9 @@ impl QUICListener {
                 Arc::clone(&pingora_health_registry),
             )
             .map_err(|error| {
-                metrics.inc_pingora_lb_selector_failure();
+                metrics
+                    .runtime_observations()
+                    .inc_pingora_lb_selector_failure();
                 ProxyError::Transport(format!(
                     "failed to create Pingora selector for upstream '{name}': {error}"
                 ))
@@ -362,13 +364,17 @@ impl QUICListener {
                 pingora_health_registry,
             )
             .map_err(|error| {
-                metrics.inc_pingora_lb_selector_failure();
+                metrics
+                    .runtime_observations()
+                    .inc_pingora_lb_selector_failure();
                 ProxyError::Transport(format!(
                     "failed to create Pingora load-balancing runtime: {error}"
                 ))
             })?,
         );
-        metrics.record_pingora_lb_selector_rebuild(generation, pingora_load_balancing.len());
+        metrics
+            .runtime_observations()
+            .record_pingora_lb_selector_rebuild(generation, pingora_load_balancing.len());
 
         let mut effective_admission = config.policies.admission.clone();
         let default_route_cap_limit = per_upstream_limit.saturating_mul(2).max(1);
@@ -766,12 +772,20 @@ impl QUICListener {
             let tls_policy = upstream.backend_tls_policy();
 
             if let Some(metadata) = tls_policy.client_certificate.as_ref() {
-                metrics.record_secret_resolve(metadata.source_kind.as_str(), "success", "resolved");
+                metrics.runtime_observations().record_secret_resolve(
+                    metadata.source_kind.as_str(),
+                    "success",
+                    "resolved",
+                );
                 latest_upstream_load_unix_seconds =
                     latest_upstream_load_unix_seconds.max(metadata.loaded_at_unix_ms / 1_000);
             }
             if let Some(metadata) = tls_policy.client_key.as_ref() {
-                metrics.record_secret_resolve(metadata.source_kind.as_str(), "success", "resolved");
+                metrics.runtime_observations().record_secret_resolve(
+                    metadata.source_kind.as_str(),
+                    "success",
+                    "resolved",
+                );
                 latest_upstream_load_unix_seconds =
                     latest_upstream_load_unix_seconds.max(metadata.loaded_at_unix_ms / 1_000);
             }
@@ -782,13 +796,17 @@ impl QUICListener {
             }
         }
 
-        metrics.replace_upstream_client_cert_expiry(upstream_client_cert_expiry);
+        metrics
+            .runtime_observations()
+            .replace_upstream_client_cert_expiry(upstream_client_cert_expiry);
         if latest_listener_load_unix_seconds > 0 {
             metrics
+                .runtime_observations()
                 .set_secret_last_success_unixtime("listeners", latest_listener_load_unix_seconds);
         }
         if latest_upstream_load_unix_seconds > 0 {
             metrics
+                .runtime_observations()
                 .set_secret_last_success_unixtime("upstreams", latest_upstream_load_unix_seconds);
         }
     }

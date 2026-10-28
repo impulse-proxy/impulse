@@ -151,9 +151,13 @@ impl QUICListener {
         let current = handle.current_view();
         let metrics = Arc::clone(&current.shared_services().metrics);
         let outcome = rollback.outcome_reason();
-        metrics.record_runtime_rollback_outcome(outcome);
+        metrics
+            .runtime_observations()
+            .record_runtime_rollback_outcome(outcome);
         if let Some(reason) = rollback.primary_rejection_reason() {
-            metrics.inc_runtime_rejection_reason(reason);
+            metrics
+                .runtime_observations()
+                .inc_runtime_rejection_reason(reason);
             warn!(
                 "runtime rollback rejected active_generation={} target_generation={} reason={} error={}",
                 rollback.active_generation,

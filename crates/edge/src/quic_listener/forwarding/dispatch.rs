@@ -151,7 +151,9 @@ impl QUICListener {
             is_tunnel,
         } = input;
         let bypass = || {
-            metrics.record_response_cache_outcome(ResponseCacheOutcome::Bypass);
+            metrics
+                .ingress_observations()
+                .record_response_cache_outcome(ResponseCacheOutcome::Bypass);
             H3CacheLookup::Bypass
         };
         let mut headers = http::HeaderMap::new();
@@ -262,7 +264,9 @@ impl QUICListener {
                     if !spawn_async_task(body_pump, "h3-cache-hit") {
                         return bypass();
                     }
-                    metrics.record_response_cache_outcome(ResponseCacheOutcome::Hit);
+                    metrics
+                        .ingress_observations()
+                        .record_response_cache_outcome(ResponseCacheOutcome::Hit);
                     return H3CacheLookup::Hit(ForwardSuccess::Response {
                         status: response.status,
                         headers: response.headers.clone(),
@@ -272,7 +276,9 @@ impl QUICListener {
                     });
                 }
                 Ok(Some((meta, handler))) => {
-                    metrics.record_response_cache_outcome(ResponseCacheOutcome::Expiry);
+                    metrics
+                        .ingress_observations()
+                        .record_response_cache_outcome(ResponseCacheOutcome::Expiry);
                     cache.cache_found(meta, handler, HitStatus::Expired);
                 }
                 Ok(None) => {}
@@ -280,7 +286,9 @@ impl QUICListener {
             }
             if cache.is_cache_locked() {
                 let outcome = cache.cache_lock_wait().await;
-                metrics.record_response_cache_outcome(ResponseCacheOutcome::LockWait);
+                metrics
+                    .ingress_observations()
+                    .record_response_cache_outcome(ResponseCacheOutcome::LockWait);
                 match outcome {
                     LockWaitOutcome::Done
                     | LockWaitOutcome::TransientError
@@ -292,7 +300,9 @@ impl QUICListener {
                 }
             }
             cache.cache_miss();
-            metrics.record_response_cache_outcome(ResponseCacheOutcome::Miss);
+            metrics
+                .ingress_observations()
+                .record_response_cache_outcome(ResponseCacheOutcome::Miss);
             return H3CacheLookup::Miss(H3CacheMiss {
                 cache: Some(cache),
                 policy: Some(policy),
@@ -657,7 +667,9 @@ impl QUICListener {
             let resolve_alternate = || {
                 alternate_pool.as_ref().map(|upstream_pool| {
                     let Some(selector) = alternate_selector.as_ref() else {
-                        alternate_metrics.inc_pingora_lb_selector_failure();
+                        alternate_metrics
+                            .runtime_observations()
+                            .inc_pingora_lb_selector_failure();
                         return ResolvedAlternateBackend::Unavailable {
                             reason: AlternateBackendFailureReason::PoolUnavailable,
                         };

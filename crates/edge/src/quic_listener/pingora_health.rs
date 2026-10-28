@@ -215,6 +215,7 @@ impl ImpulsePingoraHealthCheck {
                     })
                     .or_else(|| {
                         self.metrics
+                            .policy_observations()
                             .inc_health_failure(HealthFailureReason::Transport);
                         Some(HealthFailureReason::Transport)
                     });
@@ -234,8 +235,14 @@ impl ImpulsePingoraHealthCheck {
             &evaluation.observation,
         );
         match evaluation.observation.outcome {
-            BackendHealthObservationOutcome::Success => self.metrics.inc_health_check_success(),
-            BackendHealthObservationOutcome::Failure => self.metrics.inc_health_check_failure(),
+            BackendHealthObservationOutcome::Success => self
+                .metrics
+                .runtime_observations()
+                .inc_health_check_success(),
+            BackendHealthObservationOutcome::Failure => self
+                .metrics
+                .runtime_observations()
+                .inc_health_check_failure(),
             BackendHealthObservationOutcome::Neutral => {}
         }
         let _ = crate::runtime::connection::outcome::log_backend_health_transition_result(

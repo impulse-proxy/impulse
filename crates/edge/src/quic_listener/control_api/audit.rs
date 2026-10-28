@@ -112,7 +112,9 @@ impl ControlApiAdminAuditDelivery {
                 match ControlApiBufferedAuditWriter::try_spawn(path.clone(), Arc::clone(&metrics)) {
                     Some(writer) => Self::BufferedFile(Arc::new(writer)),
                     None => {
-                        metrics.inc_control_api_audit_write_failure();
+                        metrics
+                            .ingress_observations()
+                            .inc_control_api_audit_write_failure();
                         error!(
                             "failed to start control API admin audit sink thread for {}; file audit sink is degraded and audit events will be dropped until the process is restarted",
                             path
@@ -156,15 +158,21 @@ impl ControlApiBufferedAuditWriter {
                     }
 
                     let Some(open_file) = file.as_mut() else {
-                        thread_metrics.inc_control_api_audit_event_drop();
+                        thread_metrics
+                            .ingress_observations()
+                            .inc_control_api_audit_event_drop();
                         continue;
                     };
 
                     if let Err(err) =
                         writeln!(open_file, "{}", serialized).and_then(|()| open_file.flush())
                     {
-                        thread_metrics.inc_control_api_audit_write_failure();
-                        thread_metrics.inc_control_api_audit_event_drop();
+                        thread_metrics
+                            .ingress_observations()
+                            .inc_control_api_audit_write_failure();
+                        thread_metrics
+                            .ingress_observations()
+                            .inc_control_api_audit_event_drop();
                         error!(
                             "failed to write control API admin audit event to {}: {}",
                             thread_path, err
@@ -185,26 +193,34 @@ impl ControlApiBufferedAuditWriter {
 
     fn emit(&self, serialized: String) {
         let Some(sender) = self.sender.as_ref() else {
-            self.metrics.inc_control_api_audit_event_drop();
+            self.metrics
+                .ingress_observations()
+                .inc_control_api_audit_event_drop();
             return;
         };
         match sender.try_send(serialized) {
             Ok(()) => {}
             Err(TrySendError::Full(_)) => {
-                self.metrics.inc_control_api_audit_event_drop();
+                self.metrics
+                    .ingress_observations()
+                    .inc_control_api_audit_event_drop();
                 error!(
                     "control API admin audit buffer for {} is full; dropping audit event",
                     self.path
                 );
             }
             Err(TrySendError::Disconnected(serialized)) => {
-                self.metrics.inc_control_api_audit_write_failure();
+                self.metrics
+                    .ingress_observations()
+                    .inc_control_api_audit_write_failure();
                 error!(
                     "control API admin audit writer thread for {} is unavailable; falling back to synchronous file append",
                     self.path
                 );
                 if !self.write_synchronously(serialized) {
-                    self.metrics.inc_control_api_audit_event_drop();
+                    self.metrics
+                        .ingress_observations()
+                        .inc_control_api_audit_event_drop();
                 }
             }
         }
@@ -216,7 +232,9 @@ impl ControlApiBufferedAuditWriter {
         };
 
         if let Err(err) = writeln!(file, "{}", serialized).and_then(|()| file.flush()) {
-            self.metrics.inc_control_api_audit_write_failure();
+            self.metrics
+                .ingress_observations()
+                .inc_control_api_audit_write_failure();
             error!(
                 "failed to synchronously write control API admin audit event to {}: {}",
                 self.path, err
@@ -249,7 +267,9 @@ impl ControlApiBufferedAuditWriter {
             Ok(file) => {
                 #[cfg(unix)]
                 if let Err(err) = file.set_permissions(std::fs::Permissions::from_mode(0o640)) {
-                    metrics.inc_control_api_audit_write_failure();
+                    metrics
+                        .ingress_observations()
+                        .inc_control_api_audit_write_failure();
                     error!(
                         "failed to set restrictive permissions on control API admin audit sink {}: {}",
                         path, err
@@ -260,7 +280,9 @@ impl ControlApiBufferedAuditWriter {
                 Some(file)
             }
             Err(err) => {
-                metrics.inc_control_api_audit_write_failure();
+                metrics
+                    .ingress_observations()
+                    .inc_control_api_audit_write_failure();
                 error!(
                     "failed to open control API admin audit sink {}: {}",
                     path, err
@@ -743,7 +765,9 @@ impl ControlApiAdminAuditEmitter {
             .target(CONTROL_API_AUDIT_LOG_TARGET)
             .build();
         if !log::logger().enabled(&metadata) {
-            self.metrics.inc_control_api_audit_event_drop();
+            self.metrics
+                .ingress_observations()
+                .inc_control_api_audit_event_drop();
             eprintln!(
                 "dropping control API admin audit event because the audit logger is unavailable"
             );
@@ -764,7 +788,9 @@ impl ControlApiAdminAuditEmitter {
                 Ok(serialized) => serialized,
                 Err(err) => {
                     error!("failed to serialize control API admin audit event: {}", err);
-                    self.metrics.inc_control_api_audit_event_drop();
+                    self.metrics
+                        .ingress_observations()
+                        .inc_control_api_audit_event_drop();
                     return;
                 }
             },
@@ -775,14 +801,18 @@ impl ControlApiAdminAuditEmitter {
             ControlApiAdminAuditTarget::File(Some(_)) => match &self.delivery {
                 ControlApiAdminAuditDelivery::BufferedFile(writer) => writer.emit(serialized),
                 ControlApiAdminAuditDelivery::UnavailableFile { path, reason } => {
-                    self.metrics.inc_control_api_audit_event_drop();
+                    self.metrics
+                        .ingress_observations()
+                        .inc_control_api_audit_event_drop();
                     error!(
                         "dropping control API admin audit event because file sink {} is unavailable: {}",
                         path, reason
                     );
                 }
                 ControlApiAdminAuditDelivery::Inline => {
-                    self.metrics.inc_control_api_audit_event_drop();
+                    self.metrics
+                        .ingress_observations()
+                        .inc_control_api_audit_event_drop();
                     error!(
                         "dropping control API admin audit event because file sink configuration unexpectedly resolved to inline delivery"
                     );

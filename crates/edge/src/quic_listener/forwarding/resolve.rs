@@ -391,7 +391,10 @@ impl QUICListener {
             .pingora_load_balancing
             .selector(&route.upstream_name)
             .ok_or_else(|| {
-                context.metrics.inc_pingora_lb_selector_failure();
+                context
+                    .metrics
+                    .runtime_observations()
+                    .inc_pingora_lb_selector_failure();
                 ProxyError::Transport(format!(
                     "Pingora selector not found: {}",
                     route.upstream_name

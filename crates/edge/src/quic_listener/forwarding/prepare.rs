@@ -555,13 +555,15 @@ impl QUICListener {
                     route_host_specific,
                     backend_lb: Some(backend_lb.clone()),
                 };
-                metrics.set_brownout_active(resilience.brownout.is_active());
+                metrics
+                    .policy_observations()
+                    .set_brownout_active(resilience.brownout.is_active());
                 let rejection_response = admission_rejection_response(&admission);
                 match admission {
                     AdmissionPolicyDecision::AdmitReady => {}
                     AdmissionPolicyDecision::Unauthorized(_) => {
                         intake.state.context.terminal_outcome.record();
-                        metrics.inc_policy_denied();
+                        metrics.policy_observations().inc_policy_denied();
                         let _ = observe_admission_outcome(
                             metrics,
                             RouteOutcomeTarget {
@@ -602,7 +604,7 @@ impl QUICListener {
                     }
                     AdmissionPolicyDecision::RateLimited(decision) => {
                         intake.state.context.terminal_outcome.record();
-                        metrics.inc_request_rate_limited();
+                        metrics.policy_observations().inc_request_rate_limited();
                         let _ = observe_admission_outcome(
                             metrics,
                             RouteOutcomeTarget {
@@ -815,7 +817,7 @@ impl QUICListener {
                     Err(err) => {
                         match evaluate_external_auth_completion(Err(err), auth_disposition) {
                             ExternalAuthCompletion::FailOpen { timed_out, error } => {
-                                metrics.inc_external_auth_error();
+                                metrics.policy_observations().inc_external_auth_error();
                                 if timed_out {
                                     warn!(
                                         "external auth failed open: request_id={} upstream={} reason=auth_timeout",
@@ -838,7 +840,7 @@ impl QUICListener {
                                 timed_out,
                                 error,
                             } => {
-                                metrics.inc_external_auth_error();
+                                metrics.policy_observations().inc_external_auth_error();
                                 let _ = observe_admission_outcome(
                                     metrics,
                                     RouteOutcomeTarget {

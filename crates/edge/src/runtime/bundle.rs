@@ -597,28 +597,34 @@ impl RuntimeBundleHandle {
             .len();
         let metrics = &current.shared_state.shared_services().metrics;
         let generation_state = current.shared_state.generation_state();
-        metrics.reconcile_runtime_metric_labels(
-            generation_state
-                .upstream_policies
-                .keys()
-                .map(String::as_str),
-            generation_state
-                .backend_endpoints
-                .keys()
-                .map(String::as_str),
-            generation_state
-                .listener_runtime_configs
-                .keys()
-                .map(String::as_str),
-            generation_state
-                .resilience
-                .quota
-                .policies
-                .iter()
-                .map(|policy| policy.name.as_str()),
-        );
-        metrics.set_runtime_active_generation(current.generation);
-        metrics.set_runtime_history_depth(history_depth);
+        metrics
+            .runtime_observations()
+            .reconcile_runtime_metric_labels(
+                generation_state
+                    .upstream_policies
+                    .keys()
+                    .map(String::as_str),
+                generation_state
+                    .backend_endpoints
+                    .keys()
+                    .map(String::as_str),
+                generation_state
+                    .listener_runtime_configs
+                    .keys()
+                    .map(String::as_str),
+                generation_state
+                    .resilience
+                    .quota
+                    .policies
+                    .iter()
+                    .map(|policy| policy.name.as_str()),
+            );
+        metrics
+            .runtime_observations()
+            .set_runtime_active_generation(current.generation);
+        metrics
+            .runtime_observations()
+            .set_runtime_history_depth(history_depth);
     }
 
     fn archive_previous_generation(

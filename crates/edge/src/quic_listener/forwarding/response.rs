@@ -51,6 +51,7 @@ struct ResponseCompressionByteMetrics {
 impl Drop for ResponseCompressionByteMetrics {
     fn drop(&mut self) {
         self.metrics
+            .ingress_observations()
             .add_response_compression_bytes(self.input, self.output);
     }
 }
@@ -96,30 +97,40 @@ fn prepare_response_cache(
         || evaluate_cache_response_eligibility(ResponseCacheResponseEligibilityInput { headers })
             .is_err()
     {
-        metrics.record_response_cache_outcome(ResponseCacheOutcome::Rejection);
+        metrics
+            .ingress_observations()
+            .record_response_cache_outcome(ResponseCacheOutcome::Rejection);
         cache.disable(NoCacheReason::OriginNotCache);
         return None;
     }
     let Ok(mut response) = ResponseHeader::build(status, Some(headers.len())) else {
-        metrics.record_response_cache_outcome(ResponseCacheOutcome::Rejection);
+        metrics
+            .ingress_observations()
+            .record_response_cache_outcome(ResponseCacheOutcome::Rejection);
         cache.disable(NoCacheReason::StorageError);
         return None;
     };
     for (name, value) in headers {
         if response.append_header(name.clone(), value.clone()).is_err() {
-            metrics.record_response_cache_outcome(ResponseCacheOutcome::Rejection);
+            metrics
+                .ingress_observations()
+                .record_response_cache_outcome(ResponseCacheOutcome::Rejection);
             cache.disable(NoCacheReason::StorageError);
             return None;
         }
     }
     let now = SystemTime::now();
     let Some(ttl) = response_cache_ttl(&response, policy.max_ttl_secs, now) else {
-        metrics.record_response_cache_outcome(ResponseCacheOutcome::Rejection);
+        metrics
+            .ingress_observations()
+            .record_response_cache_outcome(ResponseCacheOutcome::Rejection);
         cache.disable(NoCacheReason::OriginNotCache);
         return None;
     };
     let Some(fresh_until) = now.checked_add(ttl) else {
-        metrics.record_response_cache_outcome(ResponseCacheOutcome::Rejection);
+        metrics
+            .ingress_observations()
+            .record_response_cache_outcome(ResponseCacheOutcome::Rejection);
         cache.disable(NoCacheReason::StorageError);
         return None;
     };
@@ -560,7 +571,9 @@ impl QUICListener {
                 response_status: status,
                 response_headers: &resp_headers,
             });
-            metrics.record_response_compression_outcome(compression.action);
+            metrics
+                .ingress_observations()
+                .record_response_compression_outcome(compression.action);
             compress_response = matches!(compression.action, ResponseCompressionAction::Gzip);
             if compress_response {
                 apply_gzip_response_headers(&mut response_headers);
@@ -720,7 +733,7 @@ impl QUICListener {
         match result {
             Ok(_) => {
                 error!("Unexpected successful forward result in error handler path");
-                metrics.inc_backend_error();
+                metrics.request_observations().inc_backend_error();
                 let _ = crate::runtime::connection::outcome::observe_status_outcome(
                     metrics,
                     route_target,
@@ -756,7 +769,9 @@ impl QUICListener {
             }
             Err(ProxyError::Pool(PoolError::BackendOverloaded(reason))) => {
                 let overload_reason = if is_unknown_length_response_prebuffer_reason(&reason) {
-                    metrics.inc_response_prebuffer_limit_reject();
+                    metrics
+                        .request_observations()
+                        .inc_response_prebuffer_limit_reject();
                     OverloadShedReason::ResponsePrebufferCap
                 } else {
                     OverloadShedReason::BackendInflight
@@ -781,7 +796,7 @@ impl QUICListener {
                 )
             }
             Err(ProxyError::Pool(PoolError::CircuitOpen(reason))) => {
-                metrics.inc_circuit_breaker_rejected();
+                metrics.policy_observations().inc_circuit_breaker_rejected();
                 let circuit_open = ProxyError::Pool(PoolError::CircuitOpen(reason));
                 let _ = crate::runtime::connection::outcome::observe_proxy_error_outcome(
                     metrics,
@@ -813,7 +828,7 @@ impl QUICListener {
                     }
                     _ => {}
                 }
-                metrics.inc_backend_error();
+                metrics.request_observations().inc_backend_error();
                 let _ = crate::runtime::connection::outcome::observe_status_outcome(
                     metrics,
                     route_target,
@@ -839,7 +854,7 @@ impl QUICListener {
                         backend_addr,
                         err
                     );
-                    metrics.inc_backend_error();
+                    metrics.request_observations().inc_backend_error();
                     let _ = crate::runtime::connection::outcome::observe_status_outcome(
                         metrics,
                         route_target,
@@ -883,7 +898,7 @@ impl QUICListener {
 
                 match classified.kind {
                     UpstreamProxyErrorKind::Timeout => {
-                        metrics.inc_timeout();
+                        metrics.request_observations().inc_timeout();
                         let _ = crate::runtime::connection::outcome::observe_proxy_error_outcome(
                             metrics,
                             route_target,
@@ -920,7 +935,7 @@ impl QUICListener {
                         )
                     }
                     UpstreamProxyErrorKind::Protocol => {
-                        metrics.inc_backend_error();
+                        metrics.request_observations().inc_backend_error();
                         let _ = crate::runtime::connection::outcome::observe_status_outcome(
                             metrics,
                             route_target,
@@ -938,7 +953,7 @@ impl QUICListener {
                         )
                     }
                     UpstreamProxyErrorKind::Transport => {
-                        metrics.inc_backend_error();
+                        metrics.request_observations().inc_backend_error();
                         let _ = crate::runtime::connection::outcome::observe_status_outcome(
                             metrics,
                             route_target,
@@ -1357,7 +1372,7 @@ impl QUICListener {
                     && let (Some(addr), Some(idx)) = (&req.backend_addr, req.backend_index)
                 {
                     if status.is_server_error() {
-                        metrics.inc_health_failure(
+                        metrics.policy_observations().inc_health_failure(
                             impulse_lb::health::HealthFailureReason::HttpStatus5xx,
                         );
                     }
@@ -1574,7 +1589,7 @@ impl QUICListener {
                                 "HTTP/3 send_response protocol error on stream {}: {:?}",
                                 stream_id, err
                             );
-                            metrics.inc_backend_error();
+                            metrics.request_observations().inc_backend_error();
                             let _ = crate::runtime::connection::outcome::observe_status_outcome(
                                 metrics,
                                 Self::request_outcome_route_target(req),
@@ -1607,7 +1622,7 @@ impl QUICListener {
                             "HTTP/3 send_body data protocol error on stream {}: {:?}",
                             stream_id, err
                         );
-                        metrics.inc_backend_error();
+                        metrics.request_observations().inc_backend_error();
                         let _ = crate::runtime::connection::outcome::observe_status_outcome(
                             metrics,
                             Self::request_outcome_route_target(req),
@@ -1646,7 +1661,7 @@ impl QUICListener {
                                 "HTTP/3 send_additional_headers protocol error on stream {}: {:?}",
                                 stream_id, err
                             );
-                            metrics.inc_backend_error();
+                            metrics.request_observations().inc_backend_error();
                             let _ = crate::runtime::connection::outcome::observe_status_outcome(
                                 metrics,
                                 Self::request_outcome_route_target(req),
@@ -1687,7 +1702,7 @@ impl QUICListener {
                             "HTTP/3 send_body end protocol error on stream {}: {:?}",
                             stream_id, err
                         );
-                        metrics.inc_backend_error();
+                        metrics.request_observations().inc_backend_error();
                         let _ = crate::runtime::connection::outcome::observe_status_outcome(
                             metrics,
                             Self::request_outcome_route_target(req),
@@ -1779,7 +1794,7 @@ impl QUICListener {
                     }
                     match err {
                         ProxyError::Timeout => {
-                            metrics.inc_timeout();
+                            metrics.request_observations().inc_timeout();
                             let _ =
                                 crate::runtime::connection::outcome::observe_proxy_error_outcome(
                                     metrics,
@@ -1804,7 +1819,9 @@ impl QUICListener {
                         ProxyError::Pool(PoolError::BackendOverloaded(reason)) => {
                             let overload_reason =
                                 if is_unknown_length_response_prebuffer_reason(&reason) {
-                                    metrics.inc_response_prebuffer_limit_reject();
+                                    metrics
+                                        .request_observations()
+                                        .inc_response_prebuffer_limit_reject();
                                     OverloadShedReason::ResponsePrebufferCap
                                 } else {
                                     OverloadShedReason::BackendInflight
@@ -1833,7 +1850,7 @@ impl QUICListener {
                             );
                         }
                         _ => {
-                            metrics.inc_backend_error();
+                            metrics.request_observations().inc_backend_error();
                             let _ =
                                 crate::runtime::connection::outcome::observe_proxy_error_outcome(
                                     metrics,
@@ -1876,7 +1893,7 @@ impl QUICListener {
                     break;
                 }
                 ResponseChunk::Timeout(reason) => {
-                    metrics.inc_timeout();
+                    metrics.request_observations().inc_timeout();
                     let _ = crate::runtime::connection::outcome::observe_proxy_error_outcome(
                         metrics,
                         Self::request_outcome_route_target(req),

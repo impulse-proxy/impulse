@@ -213,7 +213,7 @@ impl QUICListener {
             Ok(seq) => {
                 connection.last_scid_rotation = now;
                 connection.packets_since_rotation = 0;
-                metrics.inc_scid_rotation();
+                metrics.ingress_observations().inc_scid_rotation();
                 debug!(
                     "Issued new SCID seq={} cid={}",
                     seq,
@@ -278,13 +278,13 @@ impl QUICListener {
         local_addr: SocketAddr,
         packet: &mut [u8],
     ) {
-        self.metrics.inc_ingress_packet();
+        self.metrics.ingress_observations().inc_ingress_packet();
 
         let header = match quiche::Header::from_slice(packet, quiche::MAX_CONN_ID_LEN) {
             Ok(hdr) => hdr,
             Err(_) => {
                 error!("Failed to parse QUIC packet header");
-                self.metrics.inc_ingress_bad_header();
+                self.metrics.ingress_observations().inc_ingress_bad_header();
                 return;
             }
         };
@@ -301,7 +301,9 @@ impl QUICListener {
                 Ok(len) => len,
                 Err(e) => {
                     error!("Version negotiation failed: {:?}", e);
-                    self.metrics.inc_ingress_version_neg_failed();
+                    self.metrics
+                        .ingress_observations()
+                        .inc_ingress_version_neg_failed();
                     return;
                 }
             };
@@ -374,10 +376,12 @@ impl QUICListener {
             && connection.quic.peer_cert().is_none()
         {
             if !connection.tls_client_auth_failure_recorded {
-                self.metrics.record_downstream_tls_handshake_failure(
-                    &Self::listener_label(&self.config),
-                    "missing_client_cert",
-                );
+                self.metrics
+                    .ingress_observations()
+                    .record_downstream_tls_handshake_failure(
+                        &Self::listener_label(&self.config),
+                        "missing_client_cert",
+                    );
                 connection.tls_client_auth_failure_recorded = true;
             }
             warn!(

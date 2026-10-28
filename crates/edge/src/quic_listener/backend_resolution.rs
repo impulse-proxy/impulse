@@ -201,21 +201,29 @@ async fn refresh_pingora_backend(
                     .iter()
                     .map(|address| SocketAddr::new(address.ip(), 0)),
             );
-            metrics.record_backend_dns_refresh_success(
-                &backend.configured_address,
-                SystemTime::now(),
-                resolved_addrs.len(),
-                changed,
-            );
+            metrics
+                .runtime_observations()
+                .record_backend_dns_refresh_success(
+                    &backend.configured_address,
+                    SystemTime::now(),
+                    resolved_addrs.len(),
+                    changed,
+                );
             if changed {
-                metrics.record_pingora_lb_selector_rebuild(pingora_load_balancing.generation(), 1);
+                metrics
+                    .runtime_observations()
+                    .record_pingora_lb_selector_rebuild(pingora_load_balancing.generation(), 1);
                 match transport_pool.rotate_backend_client(&backend.configured_address) {
                     Ok(rotation) if rotation.rotated() => {
-                        metrics.inc_backend_client_rotation(&backend.configured_address);
+                        metrics
+                            .runtime_observations()
+                            .inc_backend_client_rotation(&backend.configured_address);
                     }
                     Ok(_) => {}
                     Err(error) => {
-                        metrics.inc_backend_client_rotation_failure();
+                        metrics
+                            .runtime_observations()
+                            .inc_backend_client_rotation_failure();
                         warn!(
                             "backend client rotation failed for '{}' (backend '{}') after DNS refresh: {}",
                             backend.authority_host, backend.configured_address, error
@@ -243,23 +251,31 @@ async fn refresh_pingora_backend(
             } else {
                 PingoraDiscoveryRefreshOutcome::Unchanged
             };
-            metrics.record_pingora_discovery_refresh(
-                refresh_outcome,
-                Some(DiscoveryRefreshUpdate {
-                    upstream_name: update.upstream_name(),
-                    membership_generation: update.membership_generation(),
-                    membership_changed: update.membership_changed(),
-                    rebuild_duration: update.rebuild_duration(),
-                }),
-            );
+            metrics
+                .runtime_observations()
+                .record_pingora_discovery_refresh(
+                    refresh_outcome,
+                    Some(DiscoveryRefreshUpdate {
+                        upstream_name: update.upstream_name(),
+                        membership_generation: update.membership_generation(),
+                        membership_changed: update.membership_changed(),
+                        rebuild_duration: update.rebuild_duration(),
+                    }),
+                );
         }
         Err(error) => {
-            metrics.inc_backend_dns_refresh_failure();
-            metrics.inc_pingora_lb_selector_failure();
-            metrics.record_pingora_discovery_refresh(
-                PingoraDiscoveryRefreshOutcome::PublishFailed,
-                None,
-            );
+            metrics
+                .runtime_observations()
+                .inc_backend_dns_refresh_failure();
+            metrics
+                .runtime_observations()
+                .inc_pingora_lb_selector_failure();
+            metrics
+                .runtime_observations()
+                .record_pingora_discovery_refresh(
+                    PingoraDiscoveryRefreshOutcome::PublishFailed,
+                    None,
+                );
             error!(
                 "failed to publish Pingora DNS membership for backend '{}': {}",
                 backend.configured_address, error
@@ -274,11 +290,15 @@ async fn record_pingora_discovery_failure(
     pingora_load_balancing: &SharedPingoraLoadBalancingRuntimeState<RuntimeBackendTlsPolicy>,
     metrics: &Metrics,
 ) {
-    metrics.inc_backend_dns_refresh_failure();
+    metrics
+        .runtime_observations()
+        .inc_backend_dns_refresh_failure();
     let _ = pingora_load_balancing
         .publish_dns_result(&backend.configured_address, Err(error.clone()))
         .await;
-    metrics.record_pingora_discovery_refresh(PingoraDiscoveryRefreshOutcome::RetainedFailure, None);
+    metrics
+        .runtime_observations()
+        .record_pingora_discovery_refresh(PingoraDiscoveryRefreshOutcome::RetainedFailure, None);
     warn!(
         "Pingora discovery refresh failed for '{}' (backend '{}'): {}; retaining last-known-good membership",
         backend.authority_host, backend.configured_address, error

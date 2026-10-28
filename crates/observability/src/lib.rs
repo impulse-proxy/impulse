@@ -7,6 +7,7 @@
 mod event;
 mod labels;
 mod metrics;
+mod recorders;
 
 pub use event::{MetricReasonLabels, OperationalEventContext};
 pub use labels::{
@@ -20,4 +21,8 @@ pub use metrics::{
     PingoraDiscoveryRefreshOutcome, RequestLatencyStats, ResponseCacheOutcome,
     ResponseCompressionAction, ResponseCompressionBypassReason, RouteOutcome,
     UpstreamRequestCountKey, UpstreamRequestLatencyKey,
+};
+pub use recorders::{
+    IngressObservationRecorder, PolicyObservationRecorder, RequestObservationRecorder,
+    RuntimeObservationRecorder,
 };

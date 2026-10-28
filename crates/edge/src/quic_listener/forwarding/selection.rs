@@ -49,7 +49,9 @@ impl ForwardingSelectionService {
     ) -> Result<BackendSelection, ProxyError> {
         let (lb_key, backend_lb) = {
             let pool = upstream_pool.read().map_err(|_| {
-                metrics.inc_pingora_lb_selector_failure();
+                metrics
+                    .runtime_observations()
+                    .inc_pingora_lb_selector_failure();
                 ProxyError::Transport("upstream pool lock poisoned".into())
             })?;
             let lb_key = QUICListener::resolve_lb_key_for_runtime_request(
@@ -90,7 +92,9 @@ impl ForwardingSelectionService {
         metrics: &Metrics,
     ) -> Result<Option<BackendCandidate>, ProxyError> {
         if selector.generation() != generation {
-            metrics.inc_pingora_lb_selector_failure();
+            metrics
+                .runtime_observations()
+                .inc_pingora_lb_selector_failure();
             return Err(ProxyError::Transport(format!(
                 "selector generation {} does not match runtime generation {generation}",
                 selector.generation()
@@ -105,15 +109,21 @@ impl ForwardingSelectionService {
             );
         }
         let pool = pool.read().map_err(|_| {
-            metrics.inc_pingora_lb_selector_failure();
+            metrics
+                .runtime_observations()
+                .inc_pingora_lb_selector_failure();
             ProxyError::Transport("upstream pool lock poisoned".into())
         })?;
         let Some(selected) = selector.select_excluding(key, excluded_backend_indices) else {
-            metrics.inc_pingora_lb_selector_failure();
+            metrics
+                .runtime_observations()
+                .inc_pingora_lb_selector_failure();
             return Ok(None);
         };
         if selected.generation() != generation {
-            metrics.inc_pingora_lb_selector_failure();
+            metrics
+                .runtime_observations()
+                .inc_pingora_lb_selector_failure();
             return Err(ProxyError::Transport(format!(
                 "Pingora selector generation {} does not match runtime generation {generation}",
                 selected.generation()
@@ -121,16 +131,20 @@ impl ForwardingSelectionService {
         }
         let index = selected.index();
         let Some(address) = pool.backend_address(index).map(str::to_string) else {
-            metrics.inc_pingora_lb_selector_failure();
+            metrics
+                .runtime_observations()
+                .inc_pingora_lb_selector_failure();
             return Err(ProxyError::Transport(
                 "Pingora selector returned an invalid backend index".into(),
             ));
         };
         if begin_request && !pool.begin_request_if_healthy(index) {
-            metrics.inc_pingora_lb_selector_failure();
+            metrics
+                .runtime_observations()
+                .inc_pingora_lb_selector_failure();
             return Ok(None);
         }
-        metrics.inc_pingora_lb_selection();
+        metrics.runtime_observations().inc_pingora_lb_selection();
         Ok(Some(BackendCandidate { address, index }))
     }
 

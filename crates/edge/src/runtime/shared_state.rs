@@ -36,21 +36,31 @@ impl SharedRuntimeState {
     }
 
     pub fn bind_metrics_worker_slot(&self, slot: usize) {
-        self.shared_services.metrics.bind_worker_slot(slot);
+        self.shared_services
+            .metrics
+            .runtime_observations()
+            .bind_worker_slot(slot);
     }
 
     pub fn inc_ingress_queue_drop(&self) {
-        self.shared_services.metrics.inc_ingress_queue_drop();
+        self.shared_services
+            .metrics
+            .ingress_observations()
+            .inc_ingress_queue_drop();
     }
 
     pub fn inc_ingress_queue_drop_bytes(&self, bytes: usize) {
         self.shared_services
             .metrics
+            .ingress_observations()
             .inc_ingress_queue_drop_bytes(bytes);
     }
 
     pub fn set_ingress_queue_bytes(&self, bytes: usize) {
-        self.shared_services.metrics.set_ingress_queue_bytes(bytes);
+        self.shared_services
+            .metrics
+            .ingress_observations()
+            .set_ingress_queue_bytes(bytes);
     }
 
     pub fn snapshot_backend_health(&self) -> (usize, usize) {

@@ -249,6 +249,7 @@ impl PingoraIngressService {
                         .shared_state
                         .shared_services()
                         .metrics
+                        .runtime_observations()
                         .inc_pingora_lb_selector_failure();
                     Error::explain(
                         InternalError,
@@ -329,12 +330,12 @@ impl ConnectionFilter for PingoraConnectionFilter {
         let current = self.runtime.current();
         let metrics = &current.shared_state.shared_services().metrics;
         let Some(listener) = current.listener_runtime_config(&self.listener_label) else {
-            metrics.inc_ingress_rate_limited();
+            metrics.ingress_observations().inc_ingress_rate_limited();
             return false;
         };
         let policy = &listener.policies.transport;
         let Ok(mut state) = self.state.lock() else {
-            metrics.inc_ingress_rate_limited();
+            metrics.ingress_observations().inc_ingress_rate_limited();
             return false;
         };
         if state.generation != current.generation {
@@ -352,13 +353,13 @@ impl ConnectionFilter for PingoraConnectionFilter {
             state.generation = current.generation;
         }
         if !state.global.try_consume() {
-            metrics.inc_ingress_rate_limited();
+            metrics.ingress_observations().inc_ingress_rate_limited();
             return false;
         }
         drop(state);
         let source_allowed = addr.is_none_or(|addr| self.per_source.try_consume(addr.ip()));
         if !source_allowed {
-            metrics.inc_ingress_rate_limited();
+            metrics.ingress_observations().inc_ingress_rate_limited();
         }
         source_allowed
     }
@@ -447,6 +448,7 @@ impl ServerApp for PingoraConnectionLimitedApp {
                 .shared_state
                 .shared_services()
                 .metrics
+                .ingress_observations()
                 .inc_connection_cap_reject();
             return None;
         };
@@ -828,9 +830,12 @@ impl ProxyHttp for PingoraIngressService {
                 ctx.terminal_classification = Some(PingoraTerminalClassification::Error(
                     ProxyError::Bridge(BridgeError::InvalidHeader),
                 ));
-                shared.metrics.inc_request_validation_reject();
+                shared
+                    .metrics
+                    .request_observations()
+                    .inc_request_validation_reject();
                 if is_policy {
-                    shared.metrics.inc_policy_denied();
+                    shared.metrics.policy_observations().inc_policy_denied();
                 }
                 write_local_response(session, status, body, None, None).await?;
                 return Ok(true);
@@ -914,6 +919,7 @@ impl ProxyHttp for PingoraIngressService {
         );
         shared
             .metrics
+            .policy_observations()
             .set_brownout_active(state.resilience.brownout.is_active());
         let body_limit_exempt = validated.method.eq_ignore_ascii_case("CONNECT")
             || impulse_bridge::websocket::legacy_websocket_upgrade_requested(
@@ -946,13 +952,16 @@ impl ProxyHttp for PingoraIngressService {
                     ctx.terminal_classification = Some(PingoraTerminalClassification::Admission(
                         AdmissionOutcomeClass::AuthDenied,
                     ));
-                    shared.metrics.inc_policy_denied();
+                    shared.metrics.policy_observations().inc_policy_denied();
                 }
                 AdmissionPolicyDecision::RateLimited(_) => {
                     ctx.terminal_classification = Some(PingoraTerminalClassification::Admission(
                         AdmissionOutcomeClass::RateLimited,
                     ));
-                    shared.metrics.inc_request_rate_limited()
+                    shared
+                        .metrics
+                        .policy_observations()
+                        .inc_request_rate_limited()
                 }
                 AdmissionPolicyDecision::Overloaded(_) => {
                     ctx.terminal_classification = Some(PingoraTerminalClassification::Admission(
@@ -1024,12 +1033,18 @@ impl ProxyHttp for PingoraIngressService {
                 ExternalAuthStateTransition::Admitted {
                     request_header_mutations,
                 } => {
-                    shared.metrics.inc_external_auth_allowed();
+                    shared
+                        .metrics
+                        .policy_observations()
+                        .inc_external_auth_allowed();
                     ctx.auth_header_mutations = request_header_mutations;
                 }
                 ExternalAuthStateTransition::RejectedAuthDenied { decision } => {
-                    shared.metrics.inc_policy_denied();
-                    shared.metrics.inc_external_auth_denied();
+                    shared.metrics.policy_observations().inc_policy_denied();
+                    shared
+                        .metrics
+                        .policy_observations()
+                        .inc_external_auth_denied();
                     ctx.terminal_classification = Some(PingoraTerminalClassification::Admission(
                         AdmissionOutcomeClass::AuthDenied,
                     ));
@@ -1037,7 +1052,10 @@ impl ProxyHttp for PingoraIngressService {
                     return Ok(true);
                 }
                 ExternalAuthStateTransition::RejectedAuthUnavailable { status, body, .. } => {
-                    shared.metrics.inc_external_auth_error();
+                    shared
+                        .metrics
+                        .policy_observations()
+                        .inc_external_auth_error();
                     ctx.terminal_classification = Some(PingoraTerminalClassification::Admission(
                         AdmissionOutcomeClass::Failed { timed_out: false },
                     ));
@@ -1045,7 +1063,10 @@ impl ProxyHttp for PingoraIngressService {
                     return Ok(true);
                 }
                 ExternalAuthStateTransition::TimedOutAuth { status, body } => {
-                    shared.metrics.inc_external_auth_timeout();
+                    shared
+                        .metrics
+                        .policy_observations()
+                        .inc_external_auth_timeout();
                     ctx.terminal_classification = Some(PingoraTerminalClassification::Admission(
                         AdmissionOutcomeClass::Failed { timed_out: true },
                     ));
@@ -1084,7 +1105,10 @@ impl ProxyHttp for PingoraIngressService {
         {
             let response = rejection.as_response();
             if response.status == http::StatusCode::TOO_MANY_REQUESTS {
-                shared.metrics.inc_request_rate_limited();
+                shared
+                    .metrics
+                    .policy_observations()
+                    .inc_request_rate_limited();
             }
             ctx.terminal_classification = Some(PingoraTerminalClassification::Admission(
                 AdmissionOutcomeClass::QuotaDenied,
@@ -1128,6 +1152,7 @@ impl ProxyHttp for PingoraIngressService {
                 .shared_state
                 .shared_services()
                 .metrics
+                .ingress_observations()
                 .record_response_cache_outcome(ResponseCacheOutcome::Bypass);
             ctx.response_cache_bypass_recorded = true;
             return Ok(());
@@ -1150,6 +1175,7 @@ impl ProxyHttp for PingoraIngressService {
                 .shared_state
                 .shared_services()
                 .metrics
+                .ingress_observations()
                 .record_response_cache_outcome(ResponseCacheOutcome::Bypass);
             ctx.response_cache_bypass_recorded = true;
             return Ok(());
@@ -1207,6 +1233,7 @@ impl ProxyHttp for PingoraIngressService {
                 .shared_state
                 .shared_services()
                 .metrics
+                .ingress_observations()
                 .record_response_cache_outcome(ResponseCacheOutcome::Rejection);
             return Ok(RespCacheable::Uncacheable(NoCacheReason::Custom(
                 "impulse_policy",
@@ -1222,6 +1249,7 @@ impl ProxyHttp for PingoraIngressService {
                 .shared_state
                 .shared_services()
                 .metrics
+                .ingress_observations()
                 .record_response_cache_outcome(ResponseCacheOutcome::Rejection);
             return Ok(RespCacheable::Uncacheable(NoCacheReason::Custom(
                 "impulse_policy",
@@ -1237,6 +1265,7 @@ impl ProxyHttp for PingoraIngressService {
                 .shared_state
                 .shared_services()
                 .metrics
+                .ingress_observations()
                 .record_response_cache_outcome(ResponseCacheOutcome::Rejection);
             return Ok(RespCacheable::Uncacheable(NoCacheReason::OriginNotCache));
         };
@@ -1245,6 +1274,7 @@ impl ProxyHttp for PingoraIngressService {
                 .shared_state
                 .shared_services()
                 .metrics
+                .ingress_observations()
                 .record_response_cache_outcome(ResponseCacheOutcome::Rejection);
             return Ok(RespCacheable::Uncacheable(NoCacheReason::OriginNotCache));
         };
@@ -1575,6 +1605,7 @@ impl ProxyHttp for PingoraIngressService {
             .shared_state
             .shared_services()
             .metrics
+            .ingress_observations()
             .record_response_compression_outcome(compression.action);
         ctx.response_compression_vary = compression.vary_accept_encoding;
         session.upstream_compression.adjust_level(0);
@@ -1848,21 +1879,35 @@ impl ProxyHttp for PingoraIngressService {
         let metrics = &ctx.runtime.shared_state.shared_services().metrics;
         match session.cache.phase() {
             CachePhase::Hit | CachePhase::Revalidated => {
-                metrics.record_response_cache_outcome(ResponseCacheOutcome::Hit);
+                metrics
+                    .ingress_observations()
+                    .record_response_cache_outcome(ResponseCacheOutcome::Hit);
             }
             CachePhase::Miss => {
-                metrics.record_response_cache_outcome(ResponseCacheOutcome::Miss);
+                metrics
+                    .ingress_observations()
+                    .record_response_cache_outcome(ResponseCacheOutcome::Miss);
             }
             CachePhase::Expired => {
-                metrics.record_response_cache_outcome(ResponseCacheOutcome::Expiry);
-                metrics.record_response_cache_outcome(ResponseCacheOutcome::Miss);
+                metrics
+                    .ingress_observations()
+                    .record_response_cache_outcome(ResponseCacheOutcome::Expiry);
+                metrics
+                    .ingress_observations()
+                    .record_response_cache_outcome(ResponseCacheOutcome::Miss);
             }
             CachePhase::Stale | CachePhase::StaleUpdating => {
-                metrics.record_response_cache_outcome(ResponseCacheOutcome::Expiry);
-                metrics.record_response_cache_outcome(ResponseCacheOutcome::Hit);
+                metrics
+                    .ingress_observations()
+                    .record_response_cache_outcome(ResponseCacheOutcome::Expiry);
+                metrics
+                    .ingress_observations()
+                    .record_response_cache_outcome(ResponseCacheOutcome::Hit);
             }
             CachePhase::Bypass if !ctx.response_cache_bypass_recorded => {
-                metrics.record_response_cache_outcome(ResponseCacheOutcome::Bypass);
+                metrics
+                    .ingress_observations()
+                    .record_response_cache_outcome(ResponseCacheOutcome::Bypass);
             }
             CachePhase::Disabled(_)
             | CachePhase::Uninit
@@ -1871,10 +1916,14 @@ impl ProxyHttp for PingoraIngressService {
             | CachePhase::RevalidatedNoCache(_) => {}
         }
         if session.cache.lock_duration().is_some() {
-            metrics.record_response_cache_outcome(ResponseCacheOutcome::LockWait);
+            metrics
+                .ingress_observations()
+                .record_response_cache_outcome(ResponseCacheOutcome::LockWait);
         }
         if let Some(("gzip", input, output, _duration)) = session.upstream_compression.get_info() {
-            metrics.add_response_compression_bytes(input, output);
+            metrics
+                .ingress_observations()
+                .add_response_compression_bytes(input, output);
         }
         match (&ctx.terminal_classification, status) {
             (Some(PingoraTerminalClassification::Admission(outcome)), Some(status)) => {
@@ -2013,7 +2062,9 @@ fn handle_pingora_proxy_failure(
             metrics,
         )),
         None => {
-            metrics.inc_pingora_lb_selector_failure();
+            metrics
+                .runtime_observations()
+                .inc_pingora_lb_selector_failure();
             None
         }
     };
@@ -2058,20 +2109,24 @@ fn handle_pingora_proxy_failure(
                 .allow_retry(route_name)
                 .is_ok() =>
         {
-            metrics.inc_retry_attempt(RetryAttemptTelemetryReason::from(reason));
+            metrics
+                .policy_observations()
+                .inc_retry_attempt(RetryAttemptTelemetryReason::from(reason));
             ctx.retry_count = ctx.retry_count.saturating_add(1);
             ctx.retry_backend = retry_backend;
             error.set_retry(true);
             true
         }
         RetryPolicyDecision::Retry { .. } => {
-            metrics.inc_retry_denied(RetryPolicyDenialReason::BudgetDenied);
+            metrics
+                .policy_observations()
+                .inc_retry_denied(RetryPolicyDenialReason::BudgetDenied);
             error.set_retry(false);
             false
         }
         RetryPolicyDecision::DoNotRetry { denial } => {
             if let Some(denial) = denial {
-                metrics.inc_retry_denied(denial);
+                metrics.policy_observations().inc_retry_denied(denial);
             }
             error.set_retry(false);
             false
@@ -2133,6 +2188,7 @@ fn record_pingora_backend_response(ctx: &mut PingoraRequestContext, status: http
             .shared_state
             .shared_services()
             .metrics
+            .policy_observations()
             .inc_health_failure(impulse_lb::health::HealthFailureReason::HttpStatus5xx);
     }
     let transition = observe_backend_response_status_and_log(BackendHealthObservationInput {

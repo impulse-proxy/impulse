@@ -359,19 +359,23 @@ pub(crate) fn record_request_metrics_observation(
     } = observation;
 
     if !matches!(metrics_outcome, RouteOutcome::Success) {
-        metrics.inc_failure();
+        metrics.request_observations().inc_failure();
     }
 
     if matches!(metrics_outcome, RouteOutcome::OverloadShed) {
         if let Some(reason) = overload_reason {
-            metrics.inc_overload_shed_reason(reason);
+            metrics
+                .policy_observations()
+                .inc_overload_shed_reason(reason);
         } else {
-            metrics.inc_overload_shed();
+            metrics.policy_observations().inc_overload_shed();
         }
     }
 
-    metrics.record_route(route_target.route, elapsed, metrics_outcome);
-    metrics.record_request_result(
+    metrics
+        .request_observations()
+        .record_route(route_target.route, elapsed, metrics_outcome);
+    metrics.request_observations().record_request_result(
         route_target.route,
         backend_target.and_then(|target| target.backend_addr),
         status,
@@ -389,7 +393,7 @@ pub(crate) fn observe_request_outcome(
     decision: RequestOutcomeClassification,
 ) -> RequestOutcomeClassification {
     if matches!(decision.route_outcome, CanonicalRouteOutcome::Success) {
-        metrics.inc_success();
+        metrics.request_observations().inc_success();
     }
 
     record_request_metrics_observation(
@@ -790,7 +794,7 @@ pub(crate) fn record_classified_backend_failure_metrics(
     classified: &ClassifiedUpstreamProxyError,
 ) -> Option<HealthFailureReason> {
     if classified.classification.category == UpstreamErrorCategory::Tls {
-        metrics.record_upstream_tls_failure(
+        metrics.runtime_observations().record_upstream_tls_failure(
             upstream_name,
             backend_addr,
             metrics_phase,
@@ -798,7 +802,9 @@ pub(crate) fn record_classified_backend_failure_metrics(
         );
     }
     let health_mapping = classified.health_failure?;
-    metrics.inc_health_failure(health_mapping.failure_reason);
+    metrics
+        .policy_observations()
+        .inc_health_failure(health_mapping.failure_reason);
     Some(health_mapping.failure_reason)
 }
 

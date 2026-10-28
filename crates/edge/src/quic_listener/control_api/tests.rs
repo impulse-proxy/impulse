@@ -2123,9 +2123,15 @@ async fn control_api_runtime_snapshot_includes_jwks_cache_visibility() {
         }],
     );
     let metrics = state.current_service_state().metrics();
-    metrics.record_jwt_validation_failure("issuer_mismatch");
-    metrics.record_jwt_algorithm_rejection("RS256");
-    metrics.record_jwks_unknown_kid(&jwks_source_id);
+    metrics
+        .runtime_observations()
+        .record_jwt_validation_failure("issuer_mismatch");
+    metrics
+        .runtime_observations()
+        .record_jwt_algorithm_rejection("RS256");
+    metrics
+        .runtime_observations()
+        .record_jwks_unknown_kid(&jwks_source_id);
 
     let payload = json_body(QUICListener::render_control_api_runtime_snapshot(&state)).await;
     let providers = payload["auth"]["providers"]

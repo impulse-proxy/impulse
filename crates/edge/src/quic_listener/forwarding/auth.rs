@@ -669,7 +669,7 @@ impl QUICListener {
             ExternalAuthStateTransition::Admitted {
                 request_header_mutations,
             } => {
-                metrics.inc_external_auth_allowed();
+                metrics.policy_observations().inc_external_auth_allowed();
                 if let Err(state_err) =
                     req.transition_awaiting_auth_to_dispatch_ready(request_header_mutations)
                 {
@@ -711,8 +711,8 @@ impl QUICListener {
             }
             ExternalAuthStateTransition::RejectedAuthDenied { decision } => {
                 req.response_status = Some(decision.status().as_u16());
-                metrics.inc_policy_denied();
-                metrics.inc_external_auth_denied();
+                metrics.policy_observations().inc_policy_denied();
+                metrics.policy_observations().inc_external_auth_denied();
                 let _ = observe_admission_outcome(
                     metrics,
                     RouteOutcomeTarget {
@@ -746,7 +746,7 @@ impl QUICListener {
                 body,
                 error,
             } => {
-                metrics.inc_external_auth_error();
+                metrics.policy_observations().inc_external_auth_error();
                 if let Some(error) = &error {
                     debug!(
                         "admission denied: request_id={} upstream={} reason=auth_unavailable detail={:?}",
@@ -779,7 +779,7 @@ impl QUICListener {
                 Ok(false)
             }
             ExternalAuthStateTransition::TimedOutAuth { status, body } => {
-                metrics.inc_external_auth_timeout();
+                metrics.policy_observations().inc_external_auth_timeout();
                 req.response_status = Some(status.as_u16());
                 let _ = observe_admission_outcome(
                     metrics,

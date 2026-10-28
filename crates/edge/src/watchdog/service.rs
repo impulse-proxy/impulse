@@ -95,7 +95,9 @@ pub(crate) async fn run_watchdog_service(state: WatchdogServiceState) {
         if stalled || timeout_pressure || overload_pressure {
             degraded_windows = degraded_windows.saturating_add(1);
             watchdog.set_degraded(true);
-            metrics.inc_watchdog_degraded_window();
+            metrics
+                .runtime_observations()
+                .inc_watchdog_degraded_window();
         } else {
             degraded_windows = 0;
             watchdog.set_degraded(false);
@@ -121,7 +123,9 @@ pub(crate) async fn run_watchdog_service(state: WatchdogServiceState) {
             }
             let reason = reasons.join("+");
             if watchdog.request_restart(&reason) {
-                metrics.inc_watchdog_restart_request();
+                metrics
+                    .runtime_observations()
+                    .inc_watchdog_restart_request();
                 warn!("Watchdog requested safe restart: {}", reason);
             }
             degraded_windows = 0;
@@ -167,7 +171,7 @@ pub(crate) async fn run_watchdog_service(state: WatchdogServiceState) {
         let status = command.status().await;
         match status {
             Ok(status) => {
-                metrics.inc_watchdog_restart_hook();
+                metrics.runtime_observations().inc_watchdog_restart_hook();
                 let exit_status = status
                     .code()
                     .map(|code| code.to_string())

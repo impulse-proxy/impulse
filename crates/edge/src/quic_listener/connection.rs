@@ -149,13 +149,15 @@ impl QUICListener {
         );
 
         if self.draining {
-            self.metrics.inc_ingress_draining_drop();
+            self.metrics
+                .ingress_observations()
+                .inc_ingress_draining_drop();
             return None;
         }
 
         if packet_type != quiche::Type::Initial {
             debug!("Non-Initial packet for unknown connection, ignoring");
-            self.metrics.inc_ingress_unroutable();
+            self.metrics.ingress_observations().inc_ingress_unroutable();
             return None;
         }
 
@@ -168,7 +170,9 @@ impl QUICListener {
                 "New connection rate limit exceeded, dropping Initial packet from {}",
                 peer
             );
-            self.metrics.inc_ingress_rate_limited();
+            self.metrics
+                .ingress_observations()
+                .inc_ingress_rate_limited();
             return None;
         }
 
@@ -177,13 +181,18 @@ impl QUICListener {
                 "Per-source new connection rate limit exceeded, dropping Initial packet from {}",
                 peer
             );
-            self.metrics.inc_ingress_rate_limited();
+            self.metrics
+                .ingress_observations()
+                .inc_ingress_rate_limited();
             return None;
         }
 
         if self.connections.len() >= self.max_active_connections {
-            self.metrics.inc_connection_cap_reject();
             self.metrics
+                .ingress_observations()
+                .inc_connection_cap_reject();
+            self.metrics
+                .policy_observations()
                 .inc_overload_shed_reason(OverloadShedReason::ConnectionCap);
             debug!(
                 "Active connection cap reached (cap={}, active={}), dropping Initial packet from {}",
@@ -199,7 +208,9 @@ impl QUICListener {
                 "Failed to reload QUIC TLS configuration for listener {}: {}",
                 self.listener_label, err
             );
-            self.metrics.inc_ingress_connection_create_failed();
+            self.metrics
+                .ingress_observations()
+                .inc_ingress_connection_create_failed();
             return None;
         }
 
@@ -213,7 +224,9 @@ impl QUICListener {
                 Ok(conn) => conn,
                 Err(e) => {
                     error!("quiche::accept failed: {:?}", e);
-                    self.metrics.inc_ingress_connection_create_failed();
+                    self.metrics
+                        .ingress_observations()
+                        .inc_ingress_connection_create_failed();
                     return None;
                 }
             };
@@ -384,7 +397,9 @@ impl QUICListener {
     }
 
     pub(super) fn refresh_active_connection_metric(&self) {
-        self.metrics.set_active_connections(self.connections.len());
+        self.metrics
+            .ingress_observations()
+            .set_active_connections(self.connections.len());
     }
 }
 
