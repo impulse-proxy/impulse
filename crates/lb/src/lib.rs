@@ -19,5 +19,6 @@ pub mod upstream_pool;
 
 pub use health::HealthTransition;
 pub use input::{
-    BackendHealthInput, BackendInput, BackendWeight, LoadBalancingStrategy, RequestKeyInput,
+    BackendHealthInput, BackendInput, BackendSelectionInput, BackendWeight, LoadBalancingStrategy,
+    RequestKeyInput,
 };

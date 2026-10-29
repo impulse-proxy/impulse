@@ -7,6 +7,7 @@ use impulse_errors::{
     evaluate_retry_policy,
 };
 use impulse_lb::{
+    BackendSelectionInput,
     alternate_backend::{
         AlternateBackendDecision, AlternateBackendFailureReason, choose_alternate_backend,
     },
@@ -65,10 +66,7 @@ impl ForwardingSelectionService {
         let Some(selected) = Self::select_backend_excluding(
             selector,
             upstream_pool,
-            generation,
-            &lb_key,
-            &[],
-            begin_request,
+            BackendSelectionInput::new(generation, &lb_key, &[], begin_request),
             metrics,
         )?
         else {
@@ -85,28 +83,21 @@ impl ForwardingSelectionService {
     pub(crate) fn select_backend_excluding(
         selector: &GenerationSelector<RuntimeBackendTlsPolicy>,
         pool: &Arc<RwLock<UpstreamPool>>,
-        generation: u64,
-        key: &str,
-        excluded_backend_indices: &[usize],
-        begin_request: bool,
+        input: BackendSelectionInput<'_>,
         metrics: &Metrics,
     ) -> Result<Option<BackendCandidate>, ProxyError> {
-        if selector.generation() != generation {
+        if selector.generation() != input.generation() {
             metrics
                 .runtime_observations()
                 .inc_pingora_lb_selector_failure();
             return Err(ProxyError::Transport(format!(
-                "selector generation {} does not match runtime generation {generation}",
-                selector.generation()
+                "selector generation {} does not match runtime generation {}",
+                selector.generation(),
+                input.generation()
             )));
         }
         if selector.uses_custom_dynamic_selector() {
-            return Self::select_custom_dynamic_backend(
-                pool,
-                key,
-                excluded_backend_indices,
-                begin_request,
-            );
+            return Self::select_custom_dynamic_backend(pool, input);
         }
         let pool = pool.read().map_err(|_| {
             metrics
@@ -114,19 +105,22 @@ impl ForwardingSelectionService {
                 .inc_pingora_lb_selector_failure();
             ProxyError::Transport("upstream pool lock poisoned".into())
         })?;
-        let Some(selected) = selector.select_excluding(key, excluded_backend_indices) else {
+        let Some(selected) =
+            selector.select_excluding(input.request_key(), input.excluded_backend_indices())
+        else {
             metrics
                 .runtime_observations()
                 .inc_pingora_lb_selector_failure();
             return Ok(None);
         };
-        if selected.generation() != generation {
+        if selected.generation() != input.generation() {
             metrics
                 .runtime_observations()
                 .inc_pingora_lb_selector_failure();
             return Err(ProxyError::Transport(format!(
                 "Pingora selector generation {} does not match runtime generation {generation}",
-                selected.generation()
+                selected.generation(),
+                generation = input.generation()
             )));
         }
         let index = selected.index();
@@ -138,7 +132,7 @@ impl ForwardingSelectionService {
                 "Pingora selector returned an invalid backend index".into(),
             ));
         };
-        if begin_request && !pool.begin_request_if_healthy(index) {
+        if input.begin_request() && !pool.begin_request_if_healthy(index) {
             metrics
                 .runtime_observations()
                 .inc_pingora_lb_selector_failure();
@@ -150,23 +144,25 @@ impl ForwardingSelectionService {
 
     fn select_custom_dynamic_backend(
         pool: &Arc<RwLock<UpstreamPool>>,
-        key: &str,
-        excluded_backend_indices: &[usize],
-        begin_request: bool,
+        input: BackendSelectionInput<'_>,
     ) -> Result<Option<BackendCandidate>, ProxyError> {
         let mut pool = pool
             .write()
             .map_err(|_| ProxyError::Transport("upstream pool lock poisoned".into()))?;
-        let selected = if excluded_backend_indices.is_empty() {
-            if begin_request {
-                pool.pick(key)
+        let selected = if input.excluded_backend_indices().is_empty() {
+            if input.begin_request() {
+                pool.pick(input.request_key())
             } else {
-                pool.pick_without_begin(key)
+                pool.pick_without_begin(input.request_key())
             }
         } else {
-            match choose_alternate_backend(&pool, excluded_backend_indices, Some(key)) {
+            match choose_alternate_backend(
+                &pool,
+                input.excluded_backend_indices(),
+                Some(input.request_key()),
+            ) {
                 AlternateBackendDecision::Select(choice) => {
-                    if begin_request && !pool.begin_request_if_healthy(choice.index) {
+                    if input.begin_request() && !pool.begin_request_if_healthy(choice.index) {
                         None
                     } else {
                         Some(choice.index)

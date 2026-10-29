@@ -5,7 +5,8 @@ use impulse_errors::{
     HedgeOutcomeTelemetryReason, HedgePolicyDecision, RetryPolicyDecision, is_idempotent_method,
 };
 use impulse_lb::{
-    alternate_backend::AlternateBackendFailureReason, pingora_backend::GenerationSelector,
+    BackendSelectionInput, alternate_backend::AlternateBackendFailureReason,
+    pingora_backend::GenerationSelector,
 };
 use impulse_transport::{
     UpstreamBodyFrame, UpstreamExchangeRequest, UpstreamExchangeResponse, UpstreamRequestHead,
@@ -440,10 +441,7 @@ impl QUICListener {
         match ForwardingSelectionService::select_backend_excluding(
             selector,
             upstream_pool,
-            generation,
-            lb_key,
-            &[primary_index],
-            false,
+            BackendSelectionInput::new(generation, lb_key, &[primary_index], false),
             metrics,
         ) {
             Ok(Some(BackendCandidate { address, .. })) => {

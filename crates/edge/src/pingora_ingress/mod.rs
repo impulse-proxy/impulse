@@ -20,7 +20,10 @@ use impulse_errors::{
     BridgeError, PoolError, ProxyError, RetryAttemptTelemetryReason, RetryPolicyDecision,
     RetryPolicyDenialReason, classify_upstream_proxy_error, is_idempotent_method,
 };
-use impulse_lb::{alternate_backend::AlternateBackendFailureReason, upstream_pool::UpstreamPool};
+use impulse_lb::{
+    BackendSelectionInput, alternate_backend::AlternateBackendFailureReason,
+    upstream_pool::UpstreamPool,
+};
 use impulse_transport::{classify_pingora_h1_error, classify_pingora_h2_error};
 use pingora_cache::{CacheKey, CacheMeta, CachePhase, NoCacheReason, RespCacheable};
 #[cfg(unix)]
@@ -2081,10 +2084,12 @@ fn handle_pingora_proxy_failure(
         Some(selector) => Some(ForwardingSelectionService::select_backend_excluding(
             selector,
             &selected.pool,
-            ctx.runtime.generation,
-            ctx.lb_key.as_deref().unwrap_or_default(),
-            &[selected.index],
-            false,
+            BackendSelectionInput::new(
+                ctx.runtime.generation,
+                ctx.lb_key.as_deref().unwrap_or_default(),
+                &[selected.index],
+                false,
+            ),
             metrics,
         )),
         None => {
