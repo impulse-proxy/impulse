@@ -1,9 +1,8 @@
 use impulse_config::{
     config::{ForwardedHeaderPolicy, UpstreamHostPolicy},
-    runtime::{RuntimeExternalAuth, RuntimeResponseCompressionPolicy, RuntimeUpstreamPolicy},
+    runtime::{RuntimeResponseCompressionPolicy, RuntimeUpstreamPolicy},
 };
-
-use crate::runtime::connection::auth::{ExternalAuthFailureDisposition, ExternalAuthTaskConfig};
+use impulse_policy::ExternalAuthPlan;
 
 /// Resolves the policies selected by route resolution independently of the
 /// ingress protocol.
@@ -30,22 +29,6 @@ pub(crate) struct ResolvedRequestPolicy {
     pub(crate) forwarded_header_policy: ForwardedHeaderPolicy,
     pub(crate) response_compression: RuntimeResponseCompressionPolicy,
     pub(crate) external_auth: Option<ExternalAuthPlan>,
-}
-
-/// External-auth work selected by the resolved request policy.
-#[derive(Clone, Debug)]
-pub(crate) struct ExternalAuthPlan {
-    pub(crate) policy: RuntimeExternalAuth,
-    pub(crate) disposition: ExternalAuthFailureDisposition,
-}
-
-impl ExternalAuthPlan {
-    fn new(policy: RuntimeExternalAuth) -> Self {
-        Self {
-            disposition: ExternalAuthTaskConfig::from_external_auth(&policy).disposition,
-            policy,
-        }
-    }
 }
 
 #[cfg(test)]

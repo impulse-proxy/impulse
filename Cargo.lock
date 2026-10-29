@@ -1611,6 +1611,8 @@ dependencies = [
  "hyper-rustls",
  "hyper-util",
  "impulse-config",
+ "impulse-contracts",
+ "impulse-errors",
  "impulse-observability",
  "log",
  "serde_json",
