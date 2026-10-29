@@ -9,7 +9,8 @@ use impulse_lb::{
     pingora_backend::GenerationSelector,
 };
 use impulse_transport::{
-    UpstreamBodyFrame, UpstreamExchangeRequest, UpstreamExchangeResponse, UpstreamRequestHead,
+    UpstreamBodyFrame, UpstreamExchangeRequest, UpstreamExchangeResponse, UpstreamRequestExecutor,
+    UpstreamRequestHead,
 };
 use pingora_cache::{HitStatus, HttpCache, NoCacheReason, lock::LockWaitOutcome};
 
@@ -125,7 +126,7 @@ struct RetryExecutionCtx<'a> {
     backend_endpoints: &'a HashMap<String, BackendEndpoint>,
     pending_forward: &'a PendingForward,
     circuit_breakers: &'a crate::resilience::circuit_breaker::CircuitBreakers,
-    transport: &'a UpstreamTransportPool,
+    executor: &'a UpstreamRequestExecutor,
 }
 
 fn alternate_backend_policy_state(
@@ -292,13 +293,13 @@ impl QUICListener {
         backend: &str,
         request: UpstreamRequest,
         circuit_breakers: &crate::resilience::circuit_breaker::CircuitBreakers,
-        transport: &UpstreamTransportPool,
+        executor: &UpstreamRequestExecutor,
     ) -> Result<UpstreamExchangeResponse, ProxyError> {
         let breaker_permit =
             ForwardingSelectionService::allow_backend_request(circuit_breakers, backend)?;
 
         let request = Self::into_upstream_exchange_request(request)?;
-        let send_result = transport.send_exchange(backend, request).await;
+        let send_result = executor.execute(backend, request).await;
         if send_result.is_ok() {
             breaker_permit.record_success();
         } else {
@@ -348,7 +349,7 @@ impl QUICListener {
     async fn forward_http1_websocket_tunnel(
         input: WebsocketTunnelForwardInput,
         circuit_breakers: &crate::resilience::circuit_breaker::CircuitBreakers,
-        transport: &UpstreamTransportPool,
+        executor: &UpstreamRequestExecutor,
     ) -> ForwardResult {
         let WebsocketTunnelForwardInput {
             backend,
@@ -358,7 +359,7 @@ impl QUICListener {
         } = input;
         let request = pending_forward.build_http1_websocket_tunnel_request(&endpoint)?;
         let response =
-            Self::send_upstream_request(backend.as_ref(), request, circuit_breakers, transport)
+            Self::send_upstream_request(backend.as_ref(), request, circuit_breakers, executor)
                 .await?;
 
         if response.head.status != StatusCode::SWITCHING_PROTOCOLS {
@@ -495,7 +496,7 @@ impl QUICListener {
             backend_endpoints,
             pending_forward,
             circuit_breakers,
-            transport,
+            executor,
         } = retry_ctx;
         let (alternate_backend_available, alternate_backend_failure) =
             alternate_backend_policy_state(alternate_backend);
@@ -557,7 +558,7 @@ impl QUICListener {
             retry_backend.as_str(),
             retry_request,
             circuit_breakers,
-            transport,
+            executor,
         )
         .await
     }
@@ -575,7 +576,7 @@ impl QUICListener {
         let circuit_breakers = Arc::clone(&resilience.circuit_breakers);
         let retry_budget = Arc::clone(&resilience.retry_budget);
         let backend_endpoints = Arc::clone(&exec_ctx.backend_endpoints);
-        let transport = Arc::clone(&exec_ctx.transport_pool);
+        let executor = exec_ctx.upstream_executor.clone();
         let hedge_delay = resilience.hedging_delay;
         let alternate_pool = req.upstream_pool.clone();
         let alternate_selector = shared_ctx
@@ -648,7 +649,7 @@ impl QUICListener {
             let primary_backend = pending_forward.backend_addr.as_ref();
             let circuit_breakers = circuit_breakers.as_ref();
             let retry_budget = retry_budget.as_ref();
-            let transport_pool = transport.as_ref();
+            let upstream_executor = &executor;
             let mut policy_telemetry = ForwardingPolicyTelemetry::default();
             let result: ForwardResult = async {
                 let cache_miss = if let (
@@ -685,12 +686,16 @@ impl QUICListener {
                             "websocket H1 tunnels require a downstream body channel".into(),
                         ));
                     };
-                    Self::forward_http1_websocket_tunnel(WebsocketTunnelForwardInput {
-                        backend: Arc::clone(&pending_forward.backend_addr),
-                        endpoint: backend_endpoint.clone(),
-                        pending_forward: Arc::clone(&pending_forward),
-                        body_rx,
-                    }, circuit_breakers, transport_pool)
+                    Self::forward_http1_websocket_tunnel(
+                        WebsocketTunnelForwardInput {
+                            backend: Arc::clone(&pending_forward.backend_addr),
+                            endpoint: backend_endpoint.clone(),
+                            pending_forward: Arc::clone(&pending_forward),
+                            body_rx,
+                        },
+                        circuit_breakers,
+                        upstream_executor,
+                    )
                     .await?
                 } else {
                     let request = request.ok_or_else(|| {
@@ -721,7 +726,7 @@ impl QUICListener {
                                     primary_backend,
                                     request,
                                     circuit_breakers,
-                                    transport_pool,
+                                    upstream_executor,
                                 );
                                 tokio::pin!(primary_fut);
                                 let hedge_sleep = tokio::time::sleep(hedge_delay);
@@ -746,7 +751,7 @@ impl QUICListener {
                                                 hedge_backend.as_str(),
                                                 hedge_request,
                                                 circuit_breakers,
-                                                transport_pool,
+                                                upstream_executor,
                                             );
                                             tokio::pin!(hedge_fut);
                                             tokio::select! {
@@ -812,7 +817,7 @@ impl QUICListener {
                                     primary_backend,
                                     request,
                                     circuit_breakers,
-                                    transport_pool,
+                                    upstream_executor,
                                 )
                                 .await?
                             }
@@ -829,7 +834,7 @@ impl QUICListener {
                                 primary_backend,
                                 request,
                                 circuit_breakers,
-                                transport_pool,
+                                upstream_executor,
                             )
                             .await
                             {
@@ -849,7 +854,7 @@ impl QUICListener {
                                             backend_endpoints: backend_endpoints.as_ref(),
                                             pending_forward: pending_forward.as_ref(),
                                             circuit_breakers,
-                                            transport: transport_pool,
+                                            executor: upstream_executor,
                                         },
                                     )
                                     .await?
@@ -868,7 +873,7 @@ impl QUICListener {
                                 primary_backend,
                                 request,
                                 circuit_breakers,
-                                transport_pool,
+                                upstream_executor,
                             )
                             .await
                             {
@@ -888,7 +893,7 @@ impl QUICListener {
                                             backend_endpoints: backend_endpoints.as_ref(),
                                             pending_forward: pending_forward.as_ref(),
                                             circuit_breakers,
-                                            transport: transport_pool,
+                                            executor: upstream_executor,
                                         },
                                     )
                                     .await?

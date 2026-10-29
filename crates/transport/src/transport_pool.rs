@@ -69,7 +69,7 @@ impl UpstreamTransportPool {
         Ok(config.peer)
     }
 
-    pub async fn send_exchange(
+    pub(crate) async fn send_exchange(
         &self,
         backend: &str,
         request: UpstreamExchangeRequest,

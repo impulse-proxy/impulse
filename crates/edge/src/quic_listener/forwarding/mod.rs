@@ -44,7 +44,7 @@ pub(in crate::quic_listener) struct ForwardingSharedCtx<'a> {
 }
 
 pub(in crate::quic_listener) struct ForwardingExecutionCtx<'a> {
-    pub(in crate::quic_listener) transport_pool: Arc<UpstreamTransportPool>,
+    pub(in crate::quic_listener) upstream_executor: UpstreamRequestExecutor,
     pub(in crate::quic_listener) backend_endpoints: Arc<HashMap<String, BackendEndpoint>>,
     pub(in crate::quic_listener) upstream_inflight: &'a HashMap<String, Arc<Semaphore>>,
     pub(in crate::quic_listener) global_inflight: Arc<Semaphore>,

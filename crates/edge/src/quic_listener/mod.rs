@@ -39,7 +39,7 @@ use impulse_config::{
 };
 use impulse_errors::{PoolError, ProxyError};
 use impulse_lb::upstream_pool::UpstreamPool;
-use impulse_transport::{SharedDnsResolver, UpstreamTransportPool};
+use impulse_transport::{SharedDnsResolver, UpstreamRequestExecutor, UpstreamTransportPool};
 use log::{debug, error, info, warn};
 use quiche::{Config, h3::NameValue};
 use rand::RngCore;
@@ -408,7 +408,7 @@ impl QUICListener {
             generation: self.runtime_generation,
         };
         let exec_ctx = ForwardingExecutionCtx {
-            transport_pool: Arc::clone(&self.transport_pool),
+            upstream_executor: UpstreamRequestExecutor::new(Arc::clone(&self.transport_pool)),
             backend_endpoints: Arc::clone(&self.backend_endpoints),
             upstream_inflight: &self.upstream_inflight,
             global_inflight: Arc::clone(&self.global_inflight),
@@ -498,7 +498,7 @@ impl QUICListener {
             generation: self.runtime_generation,
         };
         let exec_ctx = ForwardingExecutionCtx {
-            transport_pool: Arc::clone(&self.transport_pool),
+            upstream_executor: UpstreamRequestExecutor::new(Arc::clone(&self.transport_pool)),
             backend_endpoints: Arc::clone(&self.backend_endpoints),
             upstream_inflight: &self.upstream_inflight,
             global_inflight: Arc::clone(&self.global_inflight),
