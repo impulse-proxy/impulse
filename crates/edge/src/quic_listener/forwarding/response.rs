@@ -12,8 +12,8 @@ use super::*;
 use crate::{
     metrics::ResponseCacheOutcome,
     request_pipeline::{
-        ResponseCompressionAction, ResponseCompressionInput, ensure_vary_accept_encoding,
-        evaluate_response_compression,
+        ResponseCompressionAction, ResponseCompressionInput, apply_gzip_response_headers,
+        ensure_vary_accept_encoding, evaluate_response_compression,
     },
     runtime::{
         cache::{
@@ -54,33 +54,6 @@ impl Drop for ResponseCompressionByteMetrics {
             .ingress_observations()
             .add_response_compression_bytes(self.input, self.output);
     }
-}
-
-fn apply_gzip_response_headers(headers: &mut http::HeaderMap) {
-    headers.insert(
-        http::header::CONTENT_ENCODING,
-        http::HeaderValue::from_static("gzip"),
-    );
-    headers.remove(http::header::CONTENT_LENGTH);
-    headers.remove(http::header::ACCEPT_RANGES);
-    ensure_vary_accept_encoding(headers);
-
-    let Some(etag) = headers.get(http::header::ETAG).cloned() else {
-        return;
-    };
-    if etag.as_bytes().starts_with(b"W/") {
-        return;
-    }
-    if etag.as_bytes().starts_with(b"\"") {
-        let mut weak = Vec::with_capacity(etag.as_bytes().len() + 2);
-        weak.extend_from_slice(b"W/");
-        weak.extend_from_slice(etag.as_bytes());
-        if let Ok(weak) = http::HeaderValue::from_bytes(&weak) {
-            headers.insert(http::header::ETAG, weak);
-            return;
-        }
-    }
-    headers.remove(http::header::ETAG);
 }
 
 fn prepare_response_cache(
