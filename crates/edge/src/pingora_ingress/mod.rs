@@ -47,18 +47,21 @@ use rustls::{
 
 use crate::{
     REQUEST_ID_COUNTER,
-    edge_core::request_pipeline::{
-        PipelineRequest, PipelineRoute, ResolvedRequestPolicy, ResolvedRouteTarget,
-        ResponseCompressionAction, ResponseCompressionInput, ResponseCompressionPolicyInput,
-        RouteResolutionError, TerminalOutcomeGuard, ensure_vary_accept_encoding, evaluate_pipeline,
-        evaluate_response_compression, resolve_route,
+    edge_core::{
+        request_pipeline::{
+            PipelineRequest, PipelineRoute, ResolvedRequestPolicy, ResolvedRouteTarget,
+            ResponseCompressionAction, ResponseCompressionInput, ResponseCompressionPolicyInput,
+            RouteResolutionError, TerminalOutcomeGuard, ensure_vary_accept_encoding,
+            evaluate_pipeline, evaluate_response_compression, resolve_route,
+        },
+        request_validation::validate_http_request_parts,
     },
     metrics::ResponseCacheOutcome,
     quic_listener::{
         AdmissionPolicyDecision, BackendCandidate, ForwardingSelectionService,
         MAX_UPSTREAM_RETRY_ATTEMPTS, RetryCoordinator, TargetResolutionRequest,
         admission_rejection_response, evaluate_post_auth_quota_policy,
-        execute_external_auth_request, validate_http_request_parts,
+        execute_external_auth_request,
     },
     resilience::quota::QuotaIdentityContext,
     runtime::{

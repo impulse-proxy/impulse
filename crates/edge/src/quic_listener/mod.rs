@@ -148,7 +148,6 @@ pub(in crate::quic_listener) use protocol::{
     should_strip_h3_response_header,
 };
 pub use runtime_state::ListenerWorkerRuntimeState;
-pub(crate) use validation::validate_http_request_parts;
 use validation::{
     RequestBufferError, extract_header_value, generated_span_id, generated_trace_id,
     parse_traceparent, validate_request_headers,
