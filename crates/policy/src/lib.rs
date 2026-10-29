@@ -8,6 +8,7 @@
 #![warn(unreachable_pub)]
 
 mod api_key;
+pub mod jwks;
 mod jwt;
 mod request;
 

@@ -34,7 +34,7 @@ impl JwtJwksHttpClient {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum JwtJwksFetchFailureReason {
+pub enum JwtJwksFetchFailureReason {
     RequestFailed,
     HttpStatus,
     MalformedDocument,
@@ -42,7 +42,7 @@ pub(crate) enum JwtJwksFetchFailureReason {
 }
 
 impl JwtJwksFetchFailureReason {
-    pub(super) fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::RequestFailed => "request_failed",
             Self::HttpStatus => "http_status",
@@ -53,14 +53,14 @@ impl JwtJwksFetchFailureReason {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct JwtJwksFetchFailure {
-    pub(crate) reason: JwtJwksFetchFailureReason,
+pub struct JwtJwksFetchFailure {
+    pub reason: JwtJwksFetchFailureReason,
     detail: String,
 }
 
 #[allow(dead_code)]
 impl JwtJwksFetchFailure {
-    pub(crate) fn request_failed(detail: String) -> Self {
+    pub fn request_failed(detail: String) -> Self {
         Self {
             reason: JwtJwksFetchFailureReason::RequestFailed,
             detail,
@@ -74,7 +74,7 @@ impl JwtJwksFetchFailure {
         }
     }
 
-    pub(crate) fn malformed_document(detail: impl Into<String>) -> Self {
+    pub fn malformed_document(detail: impl Into<String>) -> Self {
         Self {
             reason: JwtJwksFetchFailureReason::MalformedDocument,
             detail: detail.into(),
@@ -99,7 +99,7 @@ impl std::fmt::Display for JwtJwksFetchFailure {
 struct NormalizedJwksDocument {
     keys: Vec<RuntimeJwtVerificationKey>,
 }
-pub(super) fn maybe_spawn_jwks_on_demand_refresh(source: &JwtJwksSourceConfig) {
+pub fn maybe_spawn_jwks_on_demand_refresh(source: &JwtJwksSourceConfig) {
     let now = Instant::now();
     let Some(source) =
         JwtJwksSharedCache::shared().schedule_on_demand_refresh(&source.source_identity, now)
@@ -146,7 +146,7 @@ pub(super) fn jwt_verification_keys_equivalent(
     }
 }
 
-pub(super) async fn refresh_jwks_source_once(
+pub async fn refresh_jwks_source_once(
     source: JwtJwksSourceConfig,
     trigger: &'static str,
 ) -> Result<(), JwtJwksFetchFailure> {
@@ -174,7 +174,7 @@ pub(super) async fn refresh_jwks_source_once(
     refresh_jwks_source_inflight(source, trigger).await
 }
 
-pub(super) async fn refresh_jwks_source_inflight(
+pub async fn refresh_jwks_source_inflight(
     source: JwtJwksSourceConfig,
     trigger: &'static str,
 ) -> Result<(), JwtJwksFetchFailure> {
@@ -188,7 +188,7 @@ pub(super) async fn refresh_jwks_source_inflight(
     .await
     {
         Ok(keys) => {
-            cache.complete_refresh_success(&source.source_identity, Instant::now(), keys);
+            cache.complete_refresh_success(&source, Instant::now(), keys);
             if let Some(snapshot) = cache.snapshot(&source.source_identity, Instant::now()) {
                 if let Some(metrics) = current_jwt_jwks_metrics() {
                     metrics.runtime_observations().record_jwks_refresh_success(
@@ -263,7 +263,7 @@ pub(super) async fn refresh_jwks_source_inflight(
             Ok(())
         }
         Err(failure) => {
-            cache.complete_refresh_failure(&source.source_identity, Instant::now(), &failure);
+            cache.complete_refresh_failure(&source, Instant::now(), &failure);
             let snapshot = cache.snapshot(&source.source_identity, Instant::now());
             if let Some(metrics) = current_jwt_jwks_metrics() {
                 metrics.runtime_observations().record_jwks_refresh_failure(
@@ -311,7 +311,7 @@ pub(super) async fn refresh_jwks_source_inflight(
         }
     }
 }
-pub(super) async fn fetch_and_normalize_jwks(
+pub async fn fetch_and_normalize_jwks(
     jwks_url: &str,
     allowed_algorithms: &[JwtAlgorithm],
     timeout: Duration,
@@ -325,8 +325,7 @@ pub(super) async fn fetch_and_normalize_jwks(
     Ok(normalized.keys)
 }
 
-#[cfg(test)]
-pub(crate) fn normalize_jwks_document_for_test(
+pub fn normalize_jwks_document_for_test(
     jwks_url: &str,
     document: &Value,
     allowed_algorithms: &[JwtAlgorithm],
@@ -344,7 +343,6 @@ async fn fetch_jwks_document(
     jwks_url: &str,
     timeout: Duration,
 ) -> Result<Value, JwtJwksFetchFailure> {
-    #[cfg(test)]
     if let Some(result) = take_scripted_jwks_fetch_for_test(jwks_url) {
         return result;
     }
@@ -365,7 +363,6 @@ async fn fetch_jwks_document(
         .map_err(|err| JwtJwksFetchFailure::malformed_document(err.to_string()))
 }
 
-#[cfg(test)]
 fn take_scripted_jwks_fetch_for_test(jwks_url: &str) -> Option<Result<Value, JwtJwksFetchFailure>> {
     JWT_JWKS_FETCH_SCRIPT
         .get_or_init(|| Mutex::new(HashMap::new()))
@@ -375,8 +372,7 @@ fn take_scripted_jwks_fetch_for_test(jwks_url: &str) -> Option<Result<Value, Jwt
         .and_then(VecDeque::pop_front)
 }
 
-#[cfg(test)]
-pub(crate) fn script_jwks_fetches_for_test(
+pub fn script_jwks_fetches_for_test(
     jwks_url: &str,
     responses: Vec<Result<Value, JwtJwksFetchFailure>>,
 ) {
@@ -392,9 +388,7 @@ async fn collect_jwks_body(body: Incoming) -> Result<Vec<u8>, JwtJwksFetchFailur
     collect_jwks_body_bounded(body).await
 }
 
-pub(crate) async fn collect_jwks_body_bounded<B>(
-    mut body: B,
-) -> Result<Vec<u8>, JwtJwksFetchFailure>
+pub async fn collect_jwks_body_bounded<B>(mut body: B) -> Result<Vec<u8>, JwtJwksFetchFailure>
 where
     B: Body<Data = Bytes> + Unpin,
     B::Error: std::fmt::Display,

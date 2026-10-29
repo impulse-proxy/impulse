@@ -7,7 +7,18 @@ license.workspace = true
 [dependencies]
 base64.workspace = true
 boring.workspace = true
+bytes.workspace = true
 hmac = "0.12"
+http.workspace = true
+http-body-util.workspace = true
+hyper = { workspace = true, features = ["client", "http1", "http2"] }
+hyper-util = { workspace = true, features = ["client-legacy", "http1", "http2", "tokio"] }
+hyper-rustls.workspace = true
+impulse-config = { path = "../config" }
+impulse-observability = { path = "../observability" }
+log.workspace = true
 serde_json.workspace = true
 sha2 = "0.10"
 subtle.workspace = true
+tokio.workspace = true
+hex = "0.4"

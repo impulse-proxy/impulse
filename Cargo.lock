@@ -1602,10 +1602,21 @@ version = "0.6.0"
 dependencies = [
  "base64",
  "boring",
+ "bytes",
+ "hex",
  "hmac",
+ "http",
+ "http-body-util",
+ "hyper",
+ "hyper-rustls",
+ "hyper-util",
+ "impulse-config",
+ "impulse-observability",
+ "log",
  "serde_json",
  "sha2",
  "subtle",
+ "tokio",
 ]
 
 [[package]]

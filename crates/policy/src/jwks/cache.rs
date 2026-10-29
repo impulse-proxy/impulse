@@ -1,7 +1,7 @@
 use super::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum JwtJwksCacheState {
+pub enum JwtJwksCacheState {
     NeverFetched,
     Fresh,
     Stale,
@@ -11,19 +11,20 @@ pub(super) enum JwtJwksCacheState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct JwtJwksSourceConfig {
-    pub(super) source_identity: String,
-    pub(super) jwks_url: String,
-    pub(super) allowed_algorithms: Vec<JwtAlgorithm>,
-    pub(super) refresh_interval: Duration,
-    pub(super) request_timeout: Duration,
-    pub(super) cache_ttl: Duration,
-    pub(super) stale_if_error: Duration,
-    pub(super) startup_behavior: JwksStartupBehavior,
+pub struct JwtJwksSourceConfig {
+    pub generation: u64,
+    pub source_identity: String,
+    pub jwks_url: String,
+    pub allowed_algorithms: Vec<JwtAlgorithm>,
+    pub refresh_interval: Duration,
+    pub request_timeout: Duration,
+    pub cache_ttl: Duration,
+    pub stale_if_error: Duration,
+    pub startup_behavior: JwksStartupBehavior,
 }
 
 impl JwtJwksSourceConfig {
-    pub(super) fn from_jwt(jwt: &RuntimeJwtAuth) -> Option<Self> {
+    pub fn from_jwt(jwt: &RuntimeJwtAuth) -> Option<Self> {
         let jwks_url = jwt.jwks_url.as_ref()?.to_string();
         let mut allowed_algorithms = jwt
             .allowed_algorithms
@@ -34,6 +35,7 @@ impl JwtJwksSourceConfig {
         allowed_algorithms.sort_by_key(|algorithm| jwt_algorithm_name(*algorithm));
         allowed_algorithms.dedup();
         Some(Self {
+            generation: 0,
             source_identity: jwt_jwks_source_identity(&jwks_url, &allowed_algorithms),
             jwks_url,
             allowed_algorithms,
@@ -51,71 +53,75 @@ impl JwtJwksSourceConfig {
             .max(Duration::from_secs(5))
     }
 
-    pub(super) fn public_endpoint(&self) -> String {
+    pub fn public_endpoint(&self) -> String {
         jwt_jwks_public_endpoint(&self.jwks_url)
     }
 }
 
 #[derive(Debug, Clone)]
-pub(super) struct JwtJwksCacheEntry {
-    pub(super) source: JwtJwksSourceConfig,
-    pub(super) state: JwtJwksCacheState,
-    pub(super) active_keys: Vec<JwtJwksActiveKey>,
-    pub(super) refresh_in_flight: bool,
-    pub(super) last_refresh_started_at: Option<Instant>,
-    pub(super) last_refresh_started_wall: Option<SystemTime>,
-    pub(super) last_refresh_completed_at: Option<Instant>,
-    pub(super) last_refresh_completed_wall: Option<SystemTime>,
-    pub(super) last_success_at: Option<Instant>,
-    pub(super) last_success_wall: Option<SystemTime>,
-    pub(super) last_failure_at: Option<Instant>,
-    pub(super) last_failure_wall: Option<SystemTime>,
-    pub(super) last_error: Option<String>,
-    pub(super) last_failure_reason: Option<JwtJwksFetchFailureReason>,
-    pub(super) next_on_demand_refresh_at: Option<Instant>,
+pub struct JwtJwksCacheEntry {
+    pub source: JwtJwksSourceConfig,
+    pub state: JwtJwksCacheState,
+    pub active_keys: Vec<JwtJwksActiveKey>,
+    pub refresh_in_flight: bool,
+    pub last_refresh_started_at: Option<Instant>,
+    pub last_refresh_started_wall: Option<SystemTime>,
+    pub last_refresh_completed_at: Option<Instant>,
+    pub last_refresh_completed_wall: Option<SystemTime>,
+    pub last_success_at: Option<Instant>,
+    pub last_success_wall: Option<SystemTime>,
+    pub last_failure_at: Option<Instant>,
+    pub last_failure_wall: Option<SystemTime>,
+    pub last_error: Option<String>,
+    pub last_failure_reason: Option<JwtJwksFetchFailureReason>,
+    pub next_on_demand_refresh_at: Option<Instant>,
 }
 
 #[derive(Debug, Clone)]
-pub(super) struct JwtJwksCacheSnapshot {
-    pub(super) source: JwtJwksSourceConfig,
-    pub(super) state: JwtJwksCacheState,
-    pub(super) active_keys: Vec<RuntimeJwtVerificationKey>,
-    pub(super) last_error: Option<String>,
-    pub(super) last_failure_reason: Option<JwtJwksFetchFailureReason>,
-    pub(super) last_success_at: Option<Instant>,
-    pub(super) last_refresh_started_wall: Option<SystemTime>,
-    pub(super) last_success_wall: Option<SystemTime>,
+pub struct JwtJwksCacheSnapshot {
+    pub source: JwtJwksSourceConfig,
+    pub state: JwtJwksCacheState,
+    pub active_keys: Vec<RuntimeJwtVerificationKey>,
+    pub last_error: Option<String>,
+    pub last_failure_reason: Option<JwtJwksFetchFailureReason>,
+    pub last_success_at: Option<Instant>,
+    pub last_refresh_started_wall: Option<SystemTime>,
+    pub last_success_wall: Option<SystemTime>,
 }
 
 #[derive(Debug, Clone)]
-pub(super) struct JwtJwksActiveKey {
-    pub(super) key: RuntimeJwtVerificationKey,
-    pub(super) retained_until: Option<Instant>,
+pub struct JwtJwksActiveKey {
+    pub key: RuntimeJwtVerificationKey,
+    pub retained_until: Option<Instant>,
 }
 
-pub(super) struct JwtJwksSharedCache {
-    pub(super) entries: RwLock<HashMap<String, JwtJwksCacheEntry>>,
+pub struct JwtJwksSharedCache {
+    #[doc(hidden)]
+    pub entries: RwLock<HashMap<String, JwtJwksCacheEntry>>,
 }
 
 static JWT_JWKS_SHARED_CACHE: OnceLock<JwtJwksSharedCache> = OnceLock::new();
+static JWT_JWKS_ACTIVE_GENERATION: AtomicU64 = AtomicU64::new(0);
 pub(super) static JWT_JWKS_HTTP_CLIENT: OnceLock<JwtJwksHttpClient> = OnceLock::new();
-static JWT_JWKS_METRICS_SINK: OnceLock<RwLock<Weak<crate::Metrics>>> = OnceLock::new();
-#[cfg(test)]
+static JWT_JWKS_METRICS_SINK: OnceLock<RwLock<Weak<Metrics>>> = OnceLock::new();
 type JwtJwksFetchScript = Mutex<HashMap<String, VecDeque<Result<Value, JwtJwksFetchFailure>>>>;
-#[cfg(test)]
 pub(super) static JWT_JWKS_FETCH_SCRIPT: OnceLock<JwtJwksFetchScript> = OnceLock::new();
 
 #[allow(dead_code)]
 pub(super) const MAX_JWKS_BODY_BYTES: usize = 256 * 1024;
 
 impl JwtJwksSharedCache {
-    pub(super) fn shared() -> &'static Self {
+    pub fn shared() -> &'static Self {
         JWT_JWKS_SHARED_CACHE.get_or_init(|| Self {
             entries: RwLock::new(HashMap::new()),
         })
     }
 
-    pub(super) fn register_source(&self, source: JwtJwksSourceConfig) {
+    pub fn activate_generation(&self, generation: u64) {
+        JWT_JWKS_ACTIVE_GENERATION.store(generation, Ordering::Release);
+    }
+
+    pub fn register_source(&self, source: JwtJwksSourceConfig) {
         let Ok(mut entries) = self.entries.write() else {
             log::error!(
                 "JWKS cache lock poisoned; skipping source registration source_id={}",
@@ -131,7 +137,7 @@ impl JwtJwksSharedCache {
             .or_insert_with(|| new_jwks_cache_entry(source));
     }
 
-    pub(super) fn register_sources<'a, I>(&self, sources: I)
+    pub fn register_sources<'a, I>(&self, sources: I)
     where
         I: IntoIterator<Item = &'a JwtJwksSourceConfig>,
     {
@@ -150,10 +156,11 @@ impl JwtJwksSharedCache {
         }
     }
 
-    pub(super) fn reconcile_sources<'a, I>(&self, active_sources: I)
+    pub fn reconcile_sources<'a, I>(&self, generation: u64, active_sources: I)
     where
         I: IntoIterator<Item = &'a JwtJwksSourceConfig>,
     {
+        self.activate_generation(generation);
         let active_sources = active_sources
             .into_iter()
             .map(|source| (source.source_identity.clone(), source.clone()))
@@ -171,6 +178,9 @@ impl JwtJwksSharedCache {
             entries
                 .entry(source_identity)
                 .and_modify(|entry| {
+                    if entry.source.generation != source.generation {
+                        entry.refresh_in_flight = false;
+                    }
                     merge_jwks_source_config(&mut entry.source, &source);
                 })
                 .or_insert_with(|| new_jwks_cache_entry(source));
@@ -189,11 +199,7 @@ impl JwtJwksSharedCache {
         }
     }
 
-    pub(super) fn snapshot(
-        &self,
-        source_identity: &str,
-        now: Instant,
-    ) -> Option<JwtJwksCacheSnapshot> {
+    pub fn snapshot(&self, source_identity: &str, now: Instant) -> Option<JwtJwksCacheSnapshot> {
         // A poisoned lock yields `None`, which callers already treat as an
         // unavailable key source and reject rather than admit.
         self.entries
@@ -217,6 +223,11 @@ impl JwtJwksSharedCache {
     }
 
     pub(super) fn begin_refresh(&self, source: &JwtJwksSourceConfig, now: Instant) -> bool {
+        if source.generation != 0
+            && source.generation != JWT_JWKS_ACTIVE_GENERATION.load(Ordering::Acquire)
+        {
+            return false;
+        }
         let Ok(mut entries) = self.entries.write() else {
             log::error!(
                 "JWKS cache lock poisoned; skipping refresh source_id={}",
@@ -238,17 +249,23 @@ impl JwtJwksSharedCache {
 
     pub(super) fn complete_refresh_success(
         &self,
-        source_identity: &str,
+        source: &JwtJwksSourceConfig,
         now: Instant,
         keys: Vec<RuntimeJwtVerificationKey>,
     ) {
+        if source.generation != 0
+            && source.generation != JWT_JWKS_ACTIVE_GENERATION.load(Ordering::Acquire)
+        {
+            return;
+        }
         let Ok(mut entries) = self.entries.write() else {
             log::error!(
-                "JWKS cache lock poisoned; dropping refresh result source={source_identity}"
+                "JWKS cache lock poisoned; dropping refresh result source={}",
+                source.source_identity
             );
             return;
         };
-        let Some(entry) = entries.get_mut(source_identity) else {
+        let Some(entry) = entries.get_mut(&source.source_identity) else {
             return;
         };
         entry.refresh_in_flight = false;
@@ -281,17 +298,23 @@ impl JwtJwksSharedCache {
 
     pub(super) fn complete_refresh_failure(
         &self,
-        source_identity: &str,
+        source: &JwtJwksSourceConfig,
         now: Instant,
         failure: &JwtJwksFetchFailure,
     ) {
+        if source.generation != 0
+            && source.generation != JWT_JWKS_ACTIVE_GENERATION.load(Ordering::Acquire)
+        {
+            return;
+        }
         let Ok(mut entries) = self.entries.write() else {
             log::error!(
-                "JWKS cache lock poisoned; dropping refresh failure source={source_identity}"
+                "JWKS cache lock poisoned; dropping refresh failure source={}",
+                source.source_identity
             );
             return;
         };
-        let Some(entry) = entries.get_mut(source_identity) else {
+        let Some(entry) = entries.get_mut(&source.source_identity) else {
             return;
         };
         entry.refresh_in_flight = false;
@@ -332,15 +355,14 @@ impl JwtJwksSharedCache {
         Some(entry.source.clone())
     }
 
-    #[cfg(test)]
-    pub(super) fn upsert(&self, source_identity: &str, entry: JwtJwksCacheEntry) {
+    #[doc(hidden)]
+    pub fn upsert(&self, source_identity: &str, entry: JwtJwksCacheEntry) {
         self.entries
             .write()
             .expect("jwks shared cache write lock")
             .insert(source_identity.to_string(), entry);
     }
 
-    #[cfg(test)]
     pub(super) fn remove(&self, source_identity: &str) {
         self.entries
             .write()
@@ -369,11 +391,11 @@ fn new_jwks_cache_entry(source: JwtJwksSourceConfig) -> JwtJwksCacheEntry {
     }
 }
 
-pub(super) fn jwt_jwks_metrics_sink() -> &'static RwLock<Weak<crate::Metrics>> {
+pub fn jwt_jwks_metrics_sink() -> &'static RwLock<Weak<Metrics>> {
     JWT_JWKS_METRICS_SINK.get_or_init(|| RwLock::new(Weak::new()))
 }
 
-pub(super) fn current_jwt_jwks_metrics() -> Option<Arc<crate::Metrics>> {
+pub fn current_jwt_jwks_metrics() -> Option<Arc<Metrics>> {
     jwt_jwks_metrics_sink()
         .read()
         .ok()
@@ -381,7 +403,7 @@ pub(super) fn current_jwt_jwks_metrics() -> Option<Arc<crate::Metrics>> {
 }
 
 impl JwtJwksCacheEntry {
-    pub(super) fn active_keys(&self, now: Instant) -> Vec<JwtJwksActiveKey> {
+    pub fn active_keys(&self, now: Instant) -> Vec<JwtJwksActiveKey> {
         self.active_keys
             .iter()
             .filter(|active| active.retained_until.is_none_or(|until| now <= until))
@@ -438,7 +460,7 @@ impl JwtJwksCacheEntry {
         merged
     }
 
-    pub(super) fn effective_state(&self, now: Instant) -> JwtJwksCacheState {
+    pub fn effective_state(&self, now: Instant) -> JwtJwksCacheState {
         if self.active_keys(now).is_empty() {
             return match self.state {
                 JwtJwksCacheState::NeverFetched => JwtJwksCacheState::NeverFetched,
@@ -475,14 +497,14 @@ impl JwtJwksCacheEntry {
         JwtJwksCacheState::EmptyUnusable
     }
 }
-#[cfg(test)]
-pub(crate) fn prime_jwks_cache_for_test(
+pub fn prime_jwks_cache_for_test(
     source_identity: &str,
     stale: bool,
     keys: Vec<RuntimeJwtVerificationKey>,
 ) {
     let cache_key = jwks_test_cache_key(source_identity);
     let source = JwtJwksSourceConfig {
+        generation: 0,
         source_identity: cache_key.clone(),
         jwks_url: source_identity.to_string(),
         allowed_algorithms: vec![JwtAlgorithm::Rs256, JwtAlgorithm::Es256],
@@ -524,10 +546,10 @@ pub(crate) fn prime_jwks_cache_for_test(
     );
 }
 
-#[cfg(test)]
-pub(crate) fn mark_jwks_source_unavailable_for_test(source_identity: &str) {
+pub fn mark_jwks_source_unavailable_for_test(source_identity: &str) {
     let cache_key = jwks_test_cache_key(source_identity);
     let source = JwtJwksSourceConfig {
+        generation: 0,
         source_identity: cache_key.clone(),
         jwks_url: source_identity.to_string(),
         allowed_algorithms: vec![JwtAlgorithm::Rs256, JwtAlgorithm::Es256],
@@ -559,10 +581,10 @@ pub(crate) fn mark_jwks_source_unavailable_for_test(source_identity: &str) {
     );
 }
 
-#[cfg(test)]
-pub(crate) fn mark_jwks_source_invalid_for_test(source_identity: &str) {
+pub fn mark_jwks_source_invalid_for_test(source_identity: &str) {
     let cache_key = jwks_test_cache_key(source_identity);
     let source = JwtJwksSourceConfig {
+        generation: 0,
         source_identity: cache_key.clone(),
         jwks_url: source_identity.to_string(),
         allowed_algorithms: vec![JwtAlgorithm::Rs256, JwtAlgorithm::Es256],
@@ -594,17 +616,14 @@ pub(crate) fn mark_jwks_source_invalid_for_test(source_identity: &str) {
     );
 }
 
-#[cfg(test)]
-pub(crate) fn clear_jwks_cache_for_test(source_identity: &str) {
+pub fn clear_jwks_cache_for_test(source_identity: &str) {
     JwtJwksSharedCache::shared().remove(&jwks_test_cache_key(source_identity));
 }
 
-#[cfg(test)]
-pub(crate) fn jwks_source_identity_for_test(jwks_url: &str) -> String {
+pub fn jwks_source_identity_for_test(jwks_url: &str) -> String {
     jwt_jwks_source_identity(jwks_url, &[])
 }
 
-#[cfg(test)]
 fn jwks_test_cache_key(source_identity: &str) -> String {
     if source_identity.starts_with("https://") {
         jwks_source_identity_for_test(source_identity)
@@ -613,20 +632,17 @@ fn jwks_test_cache_key(source_identity: &str) -> String {
     }
 }
 
-pub(crate) fn runtime_jwks_source_identity(jwt: &RuntimeJwtAuth) -> Option<String> {
+pub fn runtime_jwks_source_identity(jwt: &RuntimeJwtAuth) -> Option<String> {
     JwtJwksSourceConfig::from_jwt(jwt).map(|source| source.source_identity)
 }
 
-pub(super) fn jwt_jwks_source_identity(
-    jwks_url: &str,
-    allowed_algorithms: &[JwtAlgorithm],
-) -> String {
+pub fn jwt_jwks_source_identity(jwks_url: &str, allowed_algorithms: &[JwtAlgorithm]) -> String {
     let _ = allowed_algorithms;
     let digest = Sha256::digest(jwks_url.as_bytes());
     format!("jwks:{}", hex::encode(&digest[..12]))
 }
 
-pub(super) fn jwt_jwks_public_endpoint(jwks_url: &str) -> String {
+pub fn jwt_jwks_public_endpoint(jwks_url: &str) -> String {
     jwks_url
         .split(['?', '#'])
         .next()
@@ -638,6 +654,9 @@ pub(super) fn merge_jwks_source_config(
     existing: &mut JwtJwksSourceConfig,
     incoming: &JwtJwksSourceConfig,
 ) {
+    if incoming.generation != 0 {
+        existing.generation = incoming.generation;
+    }
     let mut merged_algorithms = existing.allowed_algorithms.clone();
     for algorithm in &incoming.allowed_algorithms {
         if !merged_algorithms.contains(algorithm) {
@@ -658,7 +677,7 @@ pub(super) fn merge_jwks_source_config(
     };
 }
 
-pub(super) fn runtime_jwks_sources(config: &RuntimeConfig) -> Vec<JwtJwksSourceConfig> {
+pub fn runtime_jwks_sources(config: &RuntimeConfig) -> Vec<JwtJwksSourceConfig> {
     let mut sources = HashMap::<String, JwtJwksSourceConfig>::new();
     for upstream in config.upstreams.values() {
         let Some(jwt) = upstream.policy.upstream_auth.jwt.as_ref() else {
@@ -676,7 +695,7 @@ pub(super) fn runtime_jwks_sources(config: &RuntimeConfig) -> Vec<JwtJwksSourceC
     sources.sort_by(|left, right| left.source_identity.cmp(&right.source_identity));
     sources
 }
-pub(super) fn jwt_jwks_cache_state_name(state: JwtJwksCacheState) -> &'static str {
+pub fn jwt_jwks_cache_state_name(state: JwtJwksCacheState) -> &'static str {
     match state {
         JwtJwksCacheState::NeverFetched => "never_fetched",
         JwtJwksCacheState::Fresh => "fresh",
@@ -687,7 +706,7 @@ pub(super) fn jwt_jwks_cache_state_name(state: JwtJwksCacheState) -> &'static st
     }
 }
 
-pub(super) fn jwt_jwks_cache_state_usable(state: JwtJwksCacheState) -> bool {
+pub fn jwt_jwks_cache_state_usable(state: JwtJwksCacheState) -> bool {
     matches!(
         state,
         JwtJwksCacheState::Fresh
@@ -697,25 +716,25 @@ pub(super) fn jwt_jwks_cache_state_usable(state: JwtJwksCacheState) -> bool {
     )
 }
 
-pub(super) fn jwt_jwks_cache_stale_window_expired(snapshot: &JwtJwksCacheSnapshot) -> bool {
+pub fn jwt_jwks_cache_stale_window_expired(snapshot: &JwtJwksCacheSnapshot) -> bool {
     matches!(snapshot.state, JwtJwksCacheState::EmptyUnusable) && snapshot.last_success_at.is_some()
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct JwtJwksRuntimeSnapshot {
-    pub(crate) source_id: String,
-    pub(crate) allowed_algorithms: Vec<String>,
-    pub(crate) startup_behavior: &'static str,
-    pub(crate) state: &'static str,
-    pub(crate) active_key_count: usize,
-    pub(crate) age_seconds: Option<u64>,
-    pub(crate) last_refresh_attempt_unix_seconds: Option<u64>,
-    pub(crate) last_refresh_success_unix_seconds: Option<u64>,
-    pub(crate) last_failure_reason: Option<String>,
-    pub(crate) last_error: Option<String>,
+pub struct JwtJwksRuntimeSnapshot {
+    pub source_id: String,
+    pub allowed_algorithms: Vec<String>,
+    pub startup_behavior: &'static str,
+    pub state: &'static str,
+    pub active_key_count: usize,
+    pub age_seconds: Option<u64>,
+    pub last_refresh_attempt_unix_seconds: Option<u64>,
+    pub last_refresh_success_unix_seconds: Option<u64>,
+    pub last_failure_reason: Option<String>,
+    pub last_error: Option<String>,
 }
 
-pub(crate) fn snapshot_runtime_jwks_sources(config: &RuntimeConfig) -> Vec<JwtJwksRuntimeSnapshot> {
+pub fn snapshot_runtime_jwks_sources(config: &RuntimeConfig) -> Vec<JwtJwksRuntimeSnapshot> {
     let now = Instant::now();
     let mut snapshots = runtime_jwks_sources(config)
         .into_iter()

@@ -62,8 +62,6 @@ use crate::{
     },
 };
 
-mod jwks_cache;
-mod jwks_refresh;
 mod jwt;
 mod key_resolution;
 mod startup;
@@ -73,16 +71,21 @@ pub(crate) use impulse_contracts::{
     OverloadDecisionReason, RateLimitedDecision, RequestDecision as AdmissionPolicyDecision,
     UnauthorizedDecision,
 };
-
+use impulse_policy::jwks::*;
+pub(super) use impulse_policy::jwks::{
+    JwtJwksFetchFailure, JwtJwksFetchFailureReason, JwtJwksRuntimeSnapshot,
+    runtime_jwks_source_identity, snapshot_runtime_jwks_sources,
+};
 #[cfg(test)]
-pub(super) use self::jwks_cache::{
+pub(super) use impulse_policy::jwks::{
     clear_jwks_cache_for_test, jwks_source_identity_for_test, mark_jwks_source_invalid_for_test,
     mark_jwks_source_unavailable_for_test, prime_jwks_cache_for_test,
 };
 #[cfg(test)]
-pub(super) use self::jwks_refresh::{
+pub(super) use impulse_policy::jwks::{
     normalize_jwks_document_for_test, script_jwks_fetches_for_test,
 };
+
 #[cfg(test)]
 pub(super) use self::jwt::validated_hs256_jwt_claims;
 #[allow(unused_imports)]
@@ -90,13 +93,7 @@ pub(super) use self::jwt::{
     JwtValidationFailure, JwtValidationFailureReason, ValidatedJwt, jwt_claims_satisfy_rbac,
     validate_jwt_token,
 };
-use self::{jwks_cache::*, jwks_refresh::*, jwt::*, key_resolution::*};
-pub(super) use self::{
-    jwks_cache::{
-        JwtJwksRuntimeSnapshot, runtime_jwks_source_identity, snapshot_runtime_jwks_sources,
-    },
-    jwks_refresh::{JwtJwksFetchFailure, JwtJwksFetchFailureReason},
-};
+use self::{jwt::*, key_resolution::*};
 
 pub(crate) const fn overload_metrics_reason(reason: OverloadDecisionReason) -> OverloadShedReason {
     match reason {
@@ -867,6 +864,7 @@ mod tests {
         allowed_algorithms: Vec<JwtAlgorithm>,
     ) -> JwtJwksSourceConfig {
         JwtJwksSourceConfig {
+            generation: 0,
             source_identity: jwks_source_identity_for_test(jwks_url),
             jwks_url: jwks_url.to_string(),
             allowed_algorithms,
@@ -1772,6 +1770,7 @@ mod tests {
         let rsa = Rsa::generate(2048).expect("rsa key");
         let key = PKey::from_rsa(rsa).expect("rsa pkey");
         let source = JwtJwksSourceConfig {
+            generation: 0,
             source_identity: source_identity.clone(),
             jwks_url: jwks_url.to_string(),
             allowed_algorithms: vec![JwtAlgorithm::Rs256],
@@ -1837,6 +1836,7 @@ mod tests {
         clear_jwks_cache_for_test(jwks_url);
         let source_identity = jwks_source_identity_for_test(jwks_url);
         let source = JwtJwksSourceConfig {
+            generation: 0,
             source_identity: source_identity.clone(),
             jwks_url: jwks_url.to_string(),
             allowed_algorithms: vec![JwtAlgorithm::Rs256],
@@ -2008,7 +2008,7 @@ mod tests {
         cache.register_source(active.clone());
         cache.register_source(removed.clone());
 
-        cache.reconcile_sources([&active]);
+        cache.reconcile_sources(0, [&active]);
 
         assert!(
             cache
@@ -2068,7 +2068,7 @@ mod tests {
         updated.stale_if_error = Duration::from_secs(180);
         updated.startup_behavior = JwksStartupBehavior::RequireReady;
 
-        cache.reconcile_sources([&updated]);
+        cache.reconcile_sources(0, [&updated]);
 
         let entries = cache.entries.read().expect("jwks cache read lock");
         let entry = entries
@@ -2103,6 +2103,7 @@ mod tests {
 
         let key = PKey::from_rsa(Rsa::generate(2048).expect("rsa")).expect("pkey");
         let source = JwtJwksSourceConfig {
+            generation: 0,
             source_identity: source_identity.clone(),
             jwks_url: jwks_url.to_string(),
             allowed_algorithms: vec![JwtAlgorithm::Rs256],
@@ -2180,6 +2181,7 @@ mod tests {
 
         let key = PKey::from_rsa(Rsa::generate(2048).expect("rsa")).expect("pkey");
         let source = JwtJwksSourceConfig {
+            generation: 0,
             source_identity: source_identity.clone(),
             jwks_url: jwks_url.to_string(),
             allowed_algorithms: vec![JwtAlgorithm::Rs256],
@@ -2322,6 +2324,7 @@ mod tests {
         let start = Instant::now();
         let mut entry = JwtJwksCacheEntry {
             source: JwtJwksSourceConfig {
+                generation: 0,
                 source_identity: "transitions".to_string(),
                 jwks_url: "https://issuer.example.com/transitions.json".to_string(),
                 allowed_algorithms: vec![JwtAlgorithm::Rs256],
@@ -2479,6 +2482,7 @@ mod tests {
         let old_key = PKey::from_rsa(Rsa::generate(2048).expect("old rsa")).expect("old pkey");
         let new_key = PKey::from_rsa(Rsa::generate(2048).expect("new rsa")).expect("new pkey");
         let source = JwtJwksSourceConfig {
+            generation: 0,
             source_identity: source_identity.clone(),
             jwks_url: jwks_url.to_string(),
             allowed_algorithms: vec![JwtAlgorithm::Rs256],
@@ -2539,6 +2543,7 @@ mod tests {
         let old_key = PKey::from_rsa(Rsa::generate(2048).expect("old rsa")).expect("old pkey");
         let new_key = PKey::from_rsa(Rsa::generate(2048).expect("new rsa")).expect("new pkey");
         let source = JwtJwksSourceConfig {
+            generation: 0,
             source_identity: source_identity.clone(),
             jwks_url: jwks_url.to_string(),
             allowed_algorithms: vec![JwtAlgorithm::Rs256],
@@ -2603,6 +2608,7 @@ mod tests {
 
         let key = PKey::from_rsa(Rsa::generate(2048).expect("rsa")).expect("pkey");
         let source = JwtJwksSourceConfig {
+            generation: 0,
             source_identity: source_identity.clone(),
             jwks_url: jwks_url.to_string(),
             allowed_algorithms: vec![JwtAlgorithm::Rs256],
