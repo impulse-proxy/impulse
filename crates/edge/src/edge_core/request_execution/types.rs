@@ -9,8 +9,8 @@ use crate::routing::decision::RouteDecisionReason;
 
 pub(crate) type RequestHeaderLookup<'a> = dyn Fn(&str) -> Option<String> + Sync + 'a;
 
-/// Protocol-neutral request data supplied to the shared policy pipeline.
-pub(crate) struct PipelineRequest<'a> {
+/// Protocol-neutral request data supplied to shared edge execution.
+pub(crate) struct RequestExecutionInput<'a> {
     pub(crate) method: &'a str,
     pub(crate) path: &'a str,
     pub(crate) authority: Option<&'a str>,
@@ -19,12 +19,12 @@ pub(crate) struct PipelineRequest<'a> {
 }
 
 #[derive(Clone, Copy)]
-pub(crate) struct PipelineRoute<'a> {
+pub(crate) struct RequestExecutionRoute<'a> {
     pub(super) upstream_name: &'a str,
     pub(super) upstream_policy: &'a RuntimeUpstreamPolicy,
 }
 
-impl<'a> PipelineRoute<'a> {
+impl<'a> RequestExecutionRoute<'a> {
     pub(crate) const fn new(
         upstream_name: &'a str,
         upstream_policy: &'a RuntimeUpstreamPolicy,
@@ -36,10 +36,10 @@ impl<'a> PipelineRoute<'a> {
     }
 }
 
-pub(crate) type PipelineResult<Route> = Result<PipelineResolution<Route>, ProxyError>;
+pub(crate) type RequestExecutionResult<Route> = Result<RequestExecutionState<Route>, ProxyError>;
 
-/// Protocol-neutral policy evaluation paired with its resolved route.
-pub(crate) struct PipelineResolution<Route> {
+/// Protocol-neutral execution state paired with its resolved route.
+pub(crate) struct RequestExecutionState<Route> {
     pub(crate) route: Route,
     pub(crate) policy: ResolvedRequestPolicy,
     pub(crate) admission: RequestDecision,

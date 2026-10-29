@@ -14,9 +14,9 @@ use super::{
     *,
 };
 use crate::{
-    edge_core::request_pipeline::{
-        PipelineRequest, PipelineResolution, PipelineResult, PipelineRoute, TerminalOutcomeGuard,
-        evaluate_pipeline,
+    edge_core::request_execution::{
+        RequestExecutionInput, RequestExecutionResult, RequestExecutionRoute,
+        RequestExecutionState, TerminalOutcomeGuard, execute_request,
     },
     quic_listener::admission::{
         AdmissionPolicyDecision, AdmissionRejectionResponse, admission_rejection_response,
@@ -523,7 +523,7 @@ impl QUICListener {
                 .and_then(|header| std::str::from_utf8(header.value()).ok())
                 .map(str::to_string)
         };
-        let resolved: PipelineResult<ForwardTargetResolution> =
+        let resolved: RequestExecutionResult<ForwardTargetResolution> =
             Self::resolve_forwarding_target(ForwardTargetResolutionInput {
                 request: TargetResolutionRequest::new(
                     method,
@@ -536,14 +536,14 @@ impl QUICListener {
                 observation: ResolutionObservation::new(metrics, request_start.elapsed()),
             })
             .map(|target| {
-                let PipelineResolution {
+                let RequestExecutionState {
                     route: _,
                     policy,
                     admission,
-                } = evaluate_pipeline(
+                } = execute_request(
                     resilience,
-                    PipelineRoute::new(&target.upstream_name, &target.upstream_policy),
-                    PipelineRequest {
+                    RequestExecutionRoute::new(&target.upstream_name, &target.upstream_policy),
+                    RequestExecutionInput {
                         method,
                         path,
                         authority,
@@ -552,7 +552,7 @@ impl QUICListener {
                     },
                 );
 
-                PipelineResolution {
+                RequestExecutionState {
                     route: target,
                     policy,
                     admission,
@@ -560,7 +560,7 @@ impl QUICListener {
             });
 
         let prepared = match resolved {
-            Ok(PipelineResolution {
+            Ok(RequestExecutionState {
                 route:
                     ForwardTargetResolution {
                         upstream_name,

@@ -48,11 +48,12 @@ use rustls::{
 use crate::{
     REQUEST_ID_COUNTER,
     edge_core::{
-        request_pipeline::{
-            PipelineRequest, PipelineRoute, ResolvedRequestPolicy, ResolvedRouteTarget,
-            ResponseCompressionAction, ResponseCompressionInput, ResponseCompressionPolicyInput,
-            RouteResolutionError, TerminalOutcomeGuard, ensure_vary_accept_encoding,
-            evaluate_pipeline, evaluate_response_compression, resolve_route,
+        request_execution::{
+            RequestExecutionInput, RequestExecutionRoute, ResolvedRequestPolicy,
+            ResolvedRouteTarget, ResponseCompressionAction, ResponseCompressionInput,
+            ResponseCompressionPolicyInput, RouteResolutionError, TerminalOutcomeGuard,
+            ensure_vary_accept_encoding, evaluate_response_compression, execute_request,
+            resolve_route,
         },
         request_validation::validate_http_request_parts,
     },
@@ -908,10 +909,10 @@ impl ProxyHttp for PingoraIngressService {
                 .and_then(|value| value.to_str().ok())
                 .map(str::to_owned)
         };
-        let pipeline = evaluate_pipeline(
+        let execution = execute_request(
             &state.resilience,
-            PipelineRoute::new(route.upstream_name.as_ref(), upstream_policy),
-            PipelineRequest {
+            RequestExecutionRoute::new(route.upstream_name.as_ref(), upstream_policy),
+            RequestExecutionInput {
                 method: &validated.method,
                 path: &validated.path,
                 authority: validated.authority.as_deref(),
@@ -929,7 +930,7 @@ impl ProxyHttp for PingoraIngressService {
                 &bridge_headers(&request.headers),
             );
         let external_auth_request =
-            pipeline
+            execution
                 .policy
                 .external_auth
                 .as_ref()
@@ -948,8 +949,8 @@ impl ProxyHttp for PingoraIngressService {
         ctx.content_length = validated.content_length;
         ctx.body_limit_exempt = body_limit_exempt;
 
-        if let Some(response) = admission_rejection_response(&pipeline.admission) {
-            match pipeline.admission {
+        if let Some(response) = admission_rejection_response(&execution.admission) {
+            match execution.admission {
                 AdmissionPolicyDecision::Unauthorized(_) => {
                     ctx.terminal_classification = Some(PingoraTerminalClassification::Admission(
                         AdmissionOutcomeClass::AuthDenied,
@@ -1023,7 +1024,7 @@ impl ProxyHttp for PingoraIngressService {
         }
 
         if let (Some(external_auth), Some(mut auth_request)) = (
-            pipeline.policy.external_auth.as_ref(),
+            execution.policy.external_auth.as_ref(),
             external_auth_request,
         ) {
             let selected = self.select_backend(session, ctx)?;
@@ -1126,13 +1127,13 @@ impl ProxyHttp for PingoraIngressService {
             return Ok(true);
         }
 
-        if pipeline.policy.response_compression.enabled {
+        if execution.policy.response_compression.enabled {
             session.upstream_compression.adjust_level(0);
             session
                 .upstream_compression
                 .adjust_algorithm_level(Algorithm::Gzip, RESPONSE_GZIP_LEVEL);
         }
-        ctx.policy = Some(pipeline.policy);
+        ctx.policy = Some(execution.policy);
         ctx.request_body_replayable = session.is_body_empty();
         Ok(false)
     }

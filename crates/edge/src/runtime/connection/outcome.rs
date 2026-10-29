@@ -1037,8 +1037,8 @@ mod tests {
                 authority: None,
                 start: now,
                 total_request_deadline: now,
-                terminal_outcome: crate::edge_core::request_pipeline::TerminalOutcomeGuard::default(
-                ),
+                terminal_outcome:
+                    crate::edge_core::request_execution::TerminalOutcomeGuard::default(),
             },
             routing: None,
             request_mode: RequestMode::Normal,

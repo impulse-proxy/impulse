@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::{edge_core::request_pipeline::ResolvedRouteTarget, routing::index::RouteIndex};
+use crate::{edge_core::request_execution::ResolvedRouteTarget, routing::index::RouteIndex};
 
 /// Resolves a validated HTTP method, path, and authority through the existing route index.
 pub(crate) fn resolve_route(

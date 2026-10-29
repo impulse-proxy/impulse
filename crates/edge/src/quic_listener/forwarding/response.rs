@@ -10,7 +10,7 @@ use tokio::sync::mpsc::error::TryRecvError;
 
 use super::*;
 use crate::{
-    edge_core::request_pipeline::{
+    edge_core::request_execution::{
         ResponseCompressionAction, ResponseCompressionInput, ResponseCompressionPolicyInput,
         apply_gzip_response_headers, ensure_vary_accept_encoding, evaluate_response_compression,
     },
