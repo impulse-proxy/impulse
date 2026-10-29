@@ -138,7 +138,7 @@ impl QuotaSelectorDimensions {
 }
 
 impl QuotaSelectorKeySpec {
-    pub(crate) fn from_raw_key(value: &str) -> Self {
+    pub fn from_raw_key(value: &str) -> Self {
         let normalized = value.trim().to_ascii_lowercase();
         match normalized.as_str() {
             "path" => Self::Path,
@@ -163,7 +163,7 @@ impl QuotaSelectorKeySpec {
         }
     }
 
-    pub(crate) fn with_legacy_default_fallback(self) -> Self {
+    pub fn with_legacy_default_fallback(self) -> Self {
         Self::LegacyFallback(Box::new(self))
     }
 

@@ -19,6 +19,7 @@ impulse-contracts = { path = "../contracts" }
 impulse-errors = { path = "../errors" }
 impulse-observability = { path = "../observability" }
 log.workspace = true
+redis.workspace = true
 serde_json.workspace = true
 sha2 = "0.10"
 subtle.workspace = true

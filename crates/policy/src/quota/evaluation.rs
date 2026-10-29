@@ -1,6 +1,6 @@
 use super::*;
 
-pub(crate) async fn evaluate_admission_quota(
+pub async fn evaluate_admission_quota(
     runtime: &QuotaRuntime,
     backend: &dyn DistributedQuotaCounterBackend,
     context: &QuotaIdentityContext<'_>,

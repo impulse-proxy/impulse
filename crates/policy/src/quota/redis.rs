@@ -549,7 +549,7 @@ mod tests {
     use std::{collections::HashSet, time::Duration};
 
     use super::*;
-    use crate::resilience::quota::{
+    use crate::quota::{
         QuotaCompositeKey, QuotaIdentityLabels, QuotaPolicyRuntime, QuotaSelectorDimensions,
         QuotaSelectorMatcher,
     };

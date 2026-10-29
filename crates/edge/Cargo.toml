@@ -26,7 +26,6 @@ hyper = { workspace = true, features = ["client", "http1", "http2", "server"] }
 hyper-util = { workspace = true, features = ["client-legacy", "http1", "http2", "tokio"] }
 hyper-rustls.workspace = true
 tokio.workspace = true
-redis.workspace = true
 rand.workspace = true
 hmac = "0.12"
 sha2 = "0.10"

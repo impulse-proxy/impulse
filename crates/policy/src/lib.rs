@@ -11,6 +11,7 @@ mod api_key;
 mod external_auth;
 pub mod jwks;
 mod jwt;
+pub mod quota;
 mod request;
 mod scoped_rate_limit;
 
