@@ -33,7 +33,10 @@ use impulse_config::{
     runtime::{RuntimeConfig, RuntimeJwtAuth, RuntimeJwtVerificationKey, RuntimeUpstreamPolicy},
 };
 use impulse_lb::upstream_pool::UpstreamPool;
-use impulse_policy::{ScopedRateLimitEvaluation, evaluate_scoped_rate_limit};
+use impulse_policy::{
+    ScopedRateLimitEvaluation, evaluate_adaptive_admission, evaluate_brownout_admission,
+    evaluate_scoped_rate_limit,
+};
 use quiche::h3::NameValue;
 use serde_json::Value;
 #[cfg(test)]
@@ -167,7 +170,8 @@ pub(crate) fn evaluate_forwarding_pre_admission_policy(
         return auth;
     }
 
-    let brownout = evaluate_brownout_policy(brownout, inflight_percent, route, retry_after_seconds);
+    let brownout =
+        evaluate_brownout_admission(brownout, inflight_percent, route, retry_after_seconds);
     if brownout != AdmissionPolicyDecision::AdmitReady {
         return brownout;
     }
@@ -249,20 +253,6 @@ pub(super) fn evaluate_scoped_rate_limit_policy(
         | QuotaDecision::FailedClosed(_) => ScopedRateLimitEvaluation::Admit,
     };
     evaluate_scoped_rate_limit(route, evaluation)
-}
-
-pub(super) fn evaluate_brownout_policy(
-    brownout: &BrownoutController,
-    inflight_percent: u8,
-    route: &str,
-    retry_after_seconds: u32,
-) -> AdmissionPolicyDecision {
-    brownout.observe_admission_pressure(inflight_percent);
-    if brownout.route_allowed(route) {
-        return AdmissionPolicyDecision::AdmitReady;
-    }
-
-    overload_decision(OverloadDecisionReason::Brownout, retry_after_seconds)
 }
 
 fn overload_decision(
@@ -355,14 +345,14 @@ pub(super) fn execute_forwarding_post_auth_admission(
     }
 
     let upstream_name = pending_forward.upstream_name.as_ref();
-    let adaptive_permit = match resilience.adaptive_admission.try_acquire() {
-        Some(permit) => permit,
-        None => {
+    let adaptive_permit = match evaluate_adaptive_admission(
+        &resilience.adaptive_admission,
+        resilience.shed_retry_after_seconds,
+    ) {
+        Ok(permit) => permit,
+        Err(overload) => {
             return PostAuthAdmissionExecution::Rejected(PostAuthAdmissionRejection::Overloaded(
-                overloaded(
-                    OverloadDecisionReason::AdaptiveAdmission,
-                    resilience.shed_retry_after_seconds,
-                ),
+                overload,
             ));
         }
     };
@@ -940,7 +930,7 @@ mod tests {
             assert_eq!(unauthorized.www_authenticate, Some("ApiKey"));
             assert_eq!(unauthorized.retry_after_seconds, None);
 
-            let overload = admission_rejection_response(&evaluate_brownout_policy(
+            let overload = admission_rejection_response(&evaluate_brownout_admission(
                 &BrownoutController::new(true, 50, 25, vec![String::from("core")]),
                 90,
                 "api",
@@ -1178,8 +1168,8 @@ mod tests {
         fn brownout_policy_sheds_non_core_routes_and_preserves_core_routes() {
             let brownout = BrownoutController::new(true, 50, 25, vec![String::from("core")]);
 
-            let core = evaluate_brownout_policy(&brownout, 90, "core", 9);
-            let non_core = evaluate_brownout_policy(&brownout, 90, "payments", 9);
+            let core = evaluate_brownout_admission(&brownout, 90, "core", 9);
+            let non_core = evaluate_brownout_admission(&brownout, 90, "payments", 9);
 
             assert_eq!(core, AdmissionPolicyDecision::AdmitReady);
             assert_eq!(

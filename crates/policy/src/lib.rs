@@ -7,7 +7,9 @@
 #![deny(unused_crate_dependencies)]
 #![warn(unreachable_pub)]
 
+mod adaptive_admission;
 mod api_key;
+mod brownout;
 mod external_auth;
 pub mod jwks;
 mod jwt;
@@ -15,7 +17,9 @@ pub mod quota;
 mod request;
 mod scoped_rate_limit;
 
+pub use adaptive_admission::{AdaptiveAdmission, AdaptivePermit, evaluate_adaptive_admission};
 pub use api_key::{ApiKeyPolicyInput, api_key_is_authorized};
+pub use brownout::{BrownoutController, evaluate_brownout_admission};
 pub use external_auth::{
     ExternalAuthChallengeResponse, ExternalAuthCompletion, ExternalAuthDecision,
     ExternalAuthDenyResponse, ExternalAuthExecutionPolicy, ExternalAuthFailureDisposition,
