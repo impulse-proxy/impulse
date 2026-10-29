@@ -1,7 +1,6 @@
 use std::{
     collections::HashSet,
     future::Future,
-    net::SocketAddr,
     pin::Pin,
     sync::{Arc, OnceLock, RwLock, Weak},
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -44,9 +43,16 @@ mod observability;
 mod policy;
 mod redis;
 
+pub(crate) use impulse_policy::{
+    ScopedRateLimitHeaderLookup as QuotaHeaderLookup,
+    ScopedRateLimitIdentity as QuotaIdentityContext,
+    ScopedRateLimitKeyExtraction as RequestKeyExtraction,
+    extract_scoped_rate_limit_key as extract_runtime_request_key,
+};
 pub use memory::{IN_MEMORY_QUOTA_PROTOCOL_VERSION, InMemoryDistributedQuotaCounterStore};
 pub use redis::{REDIS_QUOTA_PROTOCOL_VERSION, RedisDistributedQuotaCounterStore};
 
+pub(crate) use self::evaluation::evaluate_admission_quota;
 #[cfg(test)]
 use self::identity::{canonical_quota_identity_value, compose_quota_key};
 use self::{
@@ -55,9 +61,6 @@ use self::{
         quota_retry_after_seconds, should_attempt_local_fallback,
     },
     observability::observe_quota_policy_outcome,
-};
-pub(crate) use self::{
-    evaluation::evaluate_admission_quota, identity::extract_runtime_request_key,
 };
 
 const LOCAL_FALLBACK_PROTOCOL_VERSION: &str = "degraded-local-fallback/v1";
@@ -112,41 +115,6 @@ pub enum QuotaSelectorKeySpec {
     Cookie(String),
     Query(String),
     LegacyFallback(Box<QuotaSelectorKeySpec>),
-}
-
-pub(crate) type QuotaHeaderLookup<'a> = dyn Fn(&str) -> Option<String> + Sync + 'a;
-
-#[derive(Clone, Copy)]
-pub(crate) struct QuotaIdentityContext<'a> {
-    pub route: Option<&'a str>,
-    pub method: &'a str,
-    pub path: &'a str,
-    pub authority: Option<&'a str>,
-    pub cid_key: Option<&'a str>,
-    pub client_addr: Option<SocketAddr>,
-    pub header_lookup: Option<&'a QuotaHeaderLookup<'a>>,
-}
-
-impl<'a> QuotaIdentityContext<'a> {
-    pub(crate) fn new(
-        route: Option<&'a str>,
-        method: &'a str,
-        path: &'a str,
-        authority: Option<&'a str>,
-        cid_key: Option<&'a str>,
-        client_addr: Option<SocketAddr>,
-        header_lookup: Option<&'a QuotaHeaderLookup<'a>>,
-    ) -> Self {
-        Self {
-            route,
-            method,
-            path,
-            authority,
-            cid_key,
-            client_addr,
-            header_lookup,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -271,13 +239,6 @@ pub struct QuotaIdentityRejection {
     pub policy_name: String,
     pub dimension: QuotaIdentityDimension,
     pub reason: QuotaDenyReason,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum RequestKeyExtraction {
-    Found(String),
-    Missing,
-    Invalid,
 }
 
 impl From<&RuntimeRequestKeySpec> for QuotaSelectorKeySpec {

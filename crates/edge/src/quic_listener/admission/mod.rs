@@ -33,6 +33,7 @@ use impulse_config::{
     runtime::{RuntimeConfig, RuntimeJwtAuth, RuntimeJwtVerificationKey, RuntimeUpstreamPolicy},
 };
 use impulse_lb::upstream_pool::UpstreamPool;
+use impulse_policy::{ScopedRateLimitEvaluation, evaluate_scoped_rate_limit};
 use quiche::h3::NameValue;
 use serde_json::Value;
 #[cfg(test)]
@@ -227,7 +228,7 @@ pub(super) fn evaluate_scoped_rate_limit_policy(
         header_lookup,
     );
 
-    match block_on_admission_future(async {
+    let evaluation = match block_on_admission_future(async {
         evaluate_admission_quota(
             scoped_rate_limits.quota_runtime(),
             scoped_rate_limits,
@@ -237,21 +238,17 @@ pub(super) fn evaluate_scoped_rate_limit_policy(
     })
     .unwrap_or(QuotaDecision::NotApplied)
     {
-        QuotaDecision::Denied(denial) => {
-            AdmissionPolicyDecision::RateLimited(RateLimitedDecision {
-                rule_name: denial.policy_name,
-                route: route.to_string(),
-                status: StatusCode::TOO_MANY_REQUESTS,
-                body: b"request rate limited\n",
-                retry_after_seconds: denial.retry_after_seconds.unwrap_or(1).max(1),
-            })
-        }
+        QuotaDecision::Denied(denial) => ScopedRateLimitEvaluation::Deny {
+            rule_name: denial.policy_name,
+            retry_after_seconds: denial.retry_after_seconds.unwrap_or(1).max(1),
+        },
         QuotaDecision::NotApplied
         | QuotaDecision::Allowed(_)
         | QuotaDecision::ShadowDenied(_)
         | QuotaDecision::FailedOpen(_)
-        | QuotaDecision::FailedClosed(_) => AdmissionPolicyDecision::AdmitReady,
-    }
+        | QuotaDecision::FailedClosed(_) => ScopedRateLimitEvaluation::Admit,
+    };
+    evaluate_scoped_rate_limit(route, evaluation)
 }
 
 pub(super) fn evaluate_brownout_policy(

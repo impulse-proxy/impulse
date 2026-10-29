@@ -12,6 +12,7 @@ mod external_auth;
 pub mod jwks;
 mod jwt;
 mod request;
+mod scoped_rate_limit;
 
 pub use api_key::{ApiKeyPolicyInput, api_key_is_authorized};
 pub use external_auth::{
@@ -31,3 +32,7 @@ pub use jwt::{
     validate_parsed_jwt,
 };
 pub use request::{RequestHeaderLookup, RequestView};
+pub use scoped_rate_limit::{
+    ScopedRateLimitEvaluation, ScopedRateLimitHeaderLookup, ScopedRateLimitIdentity,
+    ScopedRateLimitKeyExtraction, evaluate_scoped_rate_limit, extract_scoped_rate_limit_key,
+};

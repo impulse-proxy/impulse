@@ -1,3 +1,5 @@
+use std::net::SocketAddr;
+
 use sha2::{Digest, Sha256};
 
 use super::*;
@@ -132,29 +134,6 @@ impl QuotaPolicyRuntime {
             dimensions: self.selector.dimensions(),
             labels,
         })
-    }
-}
-
-pub(crate) fn extract_runtime_request_key(
-    spec: &RuntimeRequestKeySpec,
-    context: &QuotaIdentityContext<'_>,
-) -> RequestKeyExtraction {
-    match spec {
-        RuntimeRequestKeySpec::Path => extract_path_value(context.path),
-        RuntimeRequestKeySpec::Authority => extract_authority_value(context.authority),
-        RuntimeRequestKeySpec::Method => extract_method_value(context.method),
-        RuntimeRequestKeySpec::Cid | RuntimeRequestKeySpec::StickyCid => {
-            extract_cid_value(context.cid_key)
-        }
-        RuntimeRequestKeySpec::PeerIp | RuntimeRequestKeySpec::ClientIp => {
-            extract_client_ip_value(context.client_addr)
-        }
-        RuntimeRequestKeySpec::BearerToken => extract_bearer_token_value(context.header_lookup),
-        RuntimeRequestKeySpec::Header(name) => extract_header_value(name, context.header_lookup),
-        RuntimeRequestKeySpec::Cookie(name) => {
-            extract_cookie_key_value(name, context.header_lookup)
-        }
-        RuntimeRequestKeySpec::Query(name) => extract_query_key_value(context.path, name),
     }
 }
 
