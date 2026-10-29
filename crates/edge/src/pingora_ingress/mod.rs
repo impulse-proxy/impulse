@@ -51,6 +51,13 @@ use rustls::{
 use crate::{
     REQUEST_ID_COUNTER,
     edge_core::{
+        body_guardrails::{
+            BodyTimeoutKind, REQUEST_BODY_TOO_LARGE_BODY, RESPONSE_BODY_TOO_LARGE_BODY,
+            RequestBodyGuardrailConfig, RequestBodyGuardrailDecision, RequestBodyGuardrailInput,
+            ResponseBodyGuardrailConfig, ResponseBodyGuardrailDecision, ResponseBodyGuardrailInput,
+            checked_request_body_ingress, checked_response_body_guardrails,
+            evaluate_request_body_timeouts,
+        },
         request_execution::{
             RequestExecutionInput, ResolvedRequestPolicy, ResolvedRouteTarget,
             ResponseCompressionAction, ResponseCompressionInput, ResponseCompressionPolicyInput,
@@ -83,14 +90,6 @@ use crate::{
                 ExternalAuthDecision, ExternalAuthRequest, ExternalAuthStateTransition,
                 PendingHeaderMutation, apply_auth_request_mutations,
                 resolve_external_auth_state_transition,
-            },
-            guardrails::{
-                BodyTimeoutKind, REQUEST_BODY_TOO_LARGE_BODY, RESPONSE_BODY_TOO_LARGE_BODY,
-                RequestBodyGuardrailConfig, RequestBodyGuardrailDecision,
-                RequestBodyGuardrailInput, ResponseBodyGuardrailConfig,
-                ResponseBodyGuardrailDecision, ResponseBodyGuardrailInput,
-                checked_request_body_ingress, checked_response_body_guardrails,
-                evaluate_request_body_timeouts,
             },
             outcome::{
                 AdmissionOutcomeClass, BackendHealthObservationInput, BackendOutcomeTarget,

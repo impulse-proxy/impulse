@@ -30,13 +30,13 @@ use super::{
 use crate::{
     REQUEST_ID_COUNTER,
     cid_radix::CidRadix,
+    edge_core::body_guardrails::{
+        BodyLimitKind, ResponseBodyGuardrailConfig, ResponseBodyGuardrailDecision,
+        ResponseBodyGuardrailInput, checked_response_body_guardrails,
+    },
     quic_listener::forwarding::terminalize_stream,
     runtime::connection::{
         TokenBucket,
-        guardrails::{
-            BodyLimitKind, ResponseBodyGuardrailConfig, ResponseBodyGuardrailDecision,
-            ResponseBodyGuardrailInput, checked_response_body_guardrails,
-        },
         request::{PendingForward, RequestEnvelope},
         stream::{
             AdmissionPermits, AwaitingAuthState, BackendFailureReason, CancellationReason,

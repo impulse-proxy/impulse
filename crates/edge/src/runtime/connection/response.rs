@@ -10,8 +10,8 @@ use pingora_cache::HttpCache;
 use tokio::sync::mpsc;
 
 use crate::{
-    OverloadShedReason,
-    runtime::connection::{guardrails::ResponseBodyGuardrailConfig, stream::TimeoutReason},
+    OverloadShedReason, edge_core::body_guardrails::ResponseBodyGuardrailConfig,
+    runtime::connection::stream::TimeoutReason,
 };
 
 pub(crate) enum ForwardSuccess {

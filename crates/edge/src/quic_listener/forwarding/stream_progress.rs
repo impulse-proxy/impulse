@@ -1,11 +1,13 @@
 use super::{orchestration_service::ForwardingOrchestrationService, *};
-use crate::runtime::connection::{
-    guardrails::{
+use crate::{
+    edge_core::body_guardrails::{
         BodyLimitKind, BodyTimeoutKind, RequestBodyGuardrailConfig, RequestBodyGuardrailDecision,
         RequestBodyGuardrailInput, checked_request_body_ingress, evaluate_request_body_timeouts,
     },
-    response::ForwardingPolicyTelemetry,
-    stream::{CompletionReason, RequestBodyState, TimeoutReason},
+    runtime::connection::{
+        response::ForwardingPolicyTelemetry,
+        stream::{CompletionReason, RequestBodyState, TimeoutReason},
+    },
 };
 
 impl QUICListener {

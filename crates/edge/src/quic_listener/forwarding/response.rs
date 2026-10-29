@@ -10,9 +10,19 @@ use tokio::sync::mpsc::error::TryRecvError;
 
 use super::*;
 use crate::{
-    edge_core::request_execution::{
-        ResponseCompressionAction, ResponseCompressionInput, ResponseCompressionPolicyInput,
-        apply_gzip_response_headers, ensure_vary_accept_encoding, evaluate_response_compression,
+    edge_core::{
+        body_guardrails::{
+            BodyLimitKind, BodyTimeoutKind, ProgressiveEmissionPolicy,
+            RESPONSE_BODY_TOO_LARGE_BODY, ResponseBodyGuardrailConfig,
+            ResponseBodyGuardrailDecision, ResponseBodyGuardrailInput,
+            checked_response_body_guardrails, is_unknown_length_response_prebuffer_reason,
+            response_body_limit_reason, response_chunk_ranges,
+        },
+        request_execution::{
+            ResponseCompressionAction, ResponseCompressionInput, ResponseCompressionPolicyInput,
+            apply_gzip_response_headers, ensure_vary_accept_encoding,
+            evaluate_response_compression,
+        },
     },
     metrics::ResponseCacheOutcome,
     runtime::{
@@ -22,13 +32,6 @@ use crate::{
         },
         connection::{
             auth::ExternalAuthDecision,
-            guardrails::{
-                BodyLimitKind, BodyTimeoutKind, ProgressiveEmissionPolicy,
-                RESPONSE_BODY_TOO_LARGE_BODY, ResponseBodyGuardrailConfig,
-                ResponseBodyGuardrailDecision, ResponseBodyGuardrailInput,
-                checked_response_body_guardrails, is_unknown_length_response_prebuffer_reason,
-                response_body_limit_reason, response_chunk_ranges,
-            },
             response::{
                 ImmediateResponseStart, ResponseBodyPumpPlan, ResponseChunk, ResponseStartDecision,
                 ResponseStartMetadata, ResponseStartObservation,
@@ -570,7 +573,7 @@ impl QUICListener {
 
         let defer_headers_until_body_validated = matches!(
             preflight_guardrail,
-            Ok(crate::runtime::connection::guardrails::EvaluatedResponseBodyGuardrail {
+            Ok(crate::edge_core::body_guardrails::EvaluatedResponseBodyGuardrail {
                 streaming,
                 ..
             }) if matches!(

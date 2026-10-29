@@ -4,17 +4,20 @@ use super::{
     prepare::{RequestFinalizationConfig, RequestRoutingInput, StartedRequestEnvelope},
     *,
 };
-use crate::runtime::connection::{
-    guardrails::{
+use crate::{
+    edge_core::body_guardrails::{
         BodyLimitKind, REQUEST_BODY_TOO_LARGE_BODY, RequestBodyGuardrailConfig,
         RequestBodyGuardrailDecision, RequestBodyGuardrailInput, checked_request_body_ingress,
     },
-    outcome::{
-        BackendOutcomeTarget, RouteOutcomeTarget, observe_admission_outcome,
-        observe_proxy_error_outcome,
-    },
-    stream::{
-        AdmissionPermits, BackendFailureReason, CancellationReason, RejectionReason, TerminalReason,
+    runtime::connection::{
+        outcome::{
+            BackendOutcomeTarget, RouteOutcomeTarget, observe_admission_outcome,
+            observe_proxy_error_outcome,
+        },
+        stream::{
+            AdmissionPermits, BackendFailureReason, CancellationReason, RejectionReason,
+            TerminalReason,
+        },
     },
 };
 

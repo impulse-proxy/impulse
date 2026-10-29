@@ -1,3 +1,5 @@
+//! Protocol-neutral request and response body guardrails.
+
 use std::time::Duration;
 
 pub(crate) const REQUEST_BODY_TOO_LARGE_BODY: &[u8] = b"request body too large\n";
