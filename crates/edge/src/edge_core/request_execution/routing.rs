@@ -31,6 +31,7 @@ pub(crate) fn resolve_route(
 pub(crate) enum RouteResolutionError {
     EmptyMethodOrPath,
     NoRoute,
+    MissingUpstreamPolicy,
 }
 
 #[cfg(test)]

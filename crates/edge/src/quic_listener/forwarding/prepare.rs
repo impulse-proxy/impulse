@@ -15,8 +15,7 @@ use super::{
 };
 use crate::{
     edge_core::request_execution::{
-        RequestExecutionInput, RequestExecutionResult, RequestExecutionRoute,
-        RequestExecutionState, TerminalOutcomeGuard, execute_request,
+        RequestExecutionInput, RequestExecutionState, TerminalOutcomeGuard, execute_request,
     },
     quic_listener::admission::{
         AdmissionPolicyDecision, AdmissionRejectionResponse, admission_rejection_response,
@@ -498,9 +497,7 @@ impl QUICListener {
         let metrics = shared_ctx.metrics.as_ref();
         let resilience = shared_ctx.resilience;
         let resolution_context = ResolutionContext::new(
-            shared_ctx.routing_index,
             shared_ctx.upstream_pools,
-            shared_ctx.upstream_policies,
             shared_ctx.pingora_load_balancing,
             shared_ctx.generation,
             metrics,
@@ -523,7 +520,41 @@ impl QUICListener {
                 .and_then(|header| std::str::from_utf8(header.value()).ok())
                 .map(str::to_string)
         };
-        let resolved: RequestExecutionResult<ForwardTargetResolution> =
+        let request_input = RequestExecutionInput {
+            method,
+            path,
+            authority,
+            peer_address,
+            headers: Some(&lb_header_lookup),
+        };
+        let resolved = execute_request(
+            shared_ctx.routing_index,
+            shared_ctx.upstream_policies,
+            resilience,
+            request_input,
+        )
+        .map_err(|error| {
+            let error = Self::request_resolution_error(path, error);
+            Self::observe_route_resolution_failure(
+                &TargetResolutionRequest::new(
+                    method,
+                    path,
+                    authority,
+                    Some(sticky_cid_key),
+                    Some(&lb_header_lookup),
+                ),
+                &error,
+                metrics,
+                request_start.elapsed(),
+            );
+            error
+        })
+        .and_then(|execution| {
+            let RequestExecutionState {
+                route,
+                policy,
+                admission,
+            } = execution;
             Self::resolve_forwarding_target(ForwardTargetResolutionInput {
                 request: TargetResolutionRequest::new(
                     method,
@@ -532,32 +563,16 @@ impl QUICListener {
                     Some(sticky_cid_key),
                     Some(&lb_header_lookup),
                 ),
+                route,
                 context: resolution_context,
                 observation: ResolutionObservation::new(metrics, request_start.elapsed()),
             })
-            .map(|target| {
-                let RequestExecutionState {
-                    route: _,
-                    policy,
-                    admission,
-                } = execute_request(
-                    resilience,
-                    RequestExecutionRoute::new(&target.upstream_name, &target.upstream_policy),
-                    RequestExecutionInput {
-                        method,
-                        path,
-                        authority,
-                        peer_address,
-                        headers: Some(&lb_header_lookup),
-                    },
-                );
-
-                RequestExecutionState {
-                    route: target,
-                    policy,
-                    admission,
-                }
-            });
+            .map(|target| RequestExecutionState {
+                route: target,
+                policy,
+                admission,
+            })
+        });
 
         let prepared = match resolved {
             Ok(RequestExecutionState {
@@ -565,7 +580,6 @@ impl QUICListener {
                     ForwardTargetResolution {
                         upstream_name,
                         upstream_pool,
-                        upstream_policy: _,
                         route_path_len,
                         route_host_specific,
                         route_reason,

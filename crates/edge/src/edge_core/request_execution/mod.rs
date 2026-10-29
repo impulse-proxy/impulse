@@ -15,8 +15,10 @@ pub(crate) use compression::{
 pub(crate) use execution::execute_request;
 pub(crate) use outcome::TerminalOutcomeGuard;
 pub(crate) use policy::ResolvedRequestPolicy;
-pub(crate) use routing::{RouteResolutionError, resolve_route};
+pub(crate) use routing::RouteResolutionError;
+#[cfg(test)]
+pub(crate) use routing::resolve_route;
 pub(crate) use types::{
-    RequestExecutionInput, RequestExecutionResult, RequestExecutionRoute, RequestExecutionState,
-    RequestHeaderLookup, ResolvedRouteTarget,
+    RequestExecutionInput, RequestExecutionResult, RequestExecutionState, RequestHeaderLookup,
+    ResolvedRouteTarget,
 };

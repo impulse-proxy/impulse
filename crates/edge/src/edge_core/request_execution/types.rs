@@ -1,10 +1,8 @@
 use std::{net::SocketAddr, sync::Arc};
 
-use impulse_config::runtime::RuntimeUpstreamPolicy;
 use impulse_contracts::RequestDecision;
-use impulse_errors::ProxyError;
 
-use super::policy::ResolvedRequestPolicy;
+use super::{policy::ResolvedRequestPolicy, routing::RouteResolutionError};
 use crate::routing::decision::RouteDecisionReason;
 
 pub(crate) type RequestHeaderLookup<'a> = dyn Fn(&str) -> Option<String> + Sync + 'a;
@@ -18,25 +16,8 @@ pub(crate) struct RequestExecutionInput<'a> {
     pub(crate) headers: Option<&'a RequestHeaderLookup<'a>>,
 }
 
-#[derive(Clone, Copy)]
-pub(crate) struct RequestExecutionRoute<'a> {
-    pub(super) upstream_name: &'a str,
-    pub(super) upstream_policy: &'a RuntimeUpstreamPolicy,
-}
-
-impl<'a> RequestExecutionRoute<'a> {
-    pub(crate) const fn new(
-        upstream_name: &'a str,
-        upstream_policy: &'a RuntimeUpstreamPolicy,
-    ) -> Self {
-        Self {
-            upstream_name,
-            upstream_policy,
-        }
-    }
-}
-
-pub(crate) type RequestExecutionResult<Route> = Result<RequestExecutionState<Route>, ProxyError>;
+pub(crate) type RequestExecutionResult =
+    Result<RequestExecutionState<ResolvedRouteTarget>, RouteResolutionError>;
 
 /// Protocol-neutral execution state paired with its resolved route.
 pub(crate) struct RequestExecutionState<Route> {

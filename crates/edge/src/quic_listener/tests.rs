@@ -1006,7 +1006,7 @@ fn test_routing_context(lb_type: &str) -> TestRoutingContext {
 
 #[test]
 fn resolve_backend_round_robin_is_not_pinned_to_first_backend() {
-    let (upstream_pools, upstream_policies, routing_index, _pool, selectors) =
+    let (upstream_pools, _upstream_policies, routing_index, _pool, selectors) =
         test_routing_context("round-robin");
     let metrics = super::Metrics::new(1, vec!["route".to_string()]);
 
@@ -1022,7 +1022,6 @@ fn resolve_backend_round_robin_is_not_pinned_to_first_backend() {
         let resolved = super::QUICListener::resolve_backend_request_for_test(
             &request,
             &upstream_pools,
-            &upstream_policies,
             &routing_index,
             &selectors,
             &metrics,
@@ -1041,7 +1040,7 @@ fn resolve_backend_round_robin_is_not_pinned_to_first_backend() {
 
 #[test]
 fn resolve_backend_skips_unhealthy_backends() {
-    let (upstream_pools, upstream_policies, routing_index, pool, selectors) =
+    let (upstream_pools, _upstream_policies, routing_index, pool, selectors) =
         test_routing_context("round-robin");
     let metrics = super::Metrics::new(1, vec!["route".to_string()]);
     {
@@ -1064,7 +1063,6 @@ fn resolve_backend_skips_unhealthy_backends() {
     let resolved = super::QUICListener::resolve_backend_request_for_test(
         &request,
         &upstream_pools,
-        &upstream_policies,
         &routing_index,
         &selectors,
         &metrics,
@@ -1079,7 +1077,7 @@ fn resolve_backend_skips_unhealthy_backends() {
 
 #[test]
 fn resolve_backend_respects_least_connections_strategy() {
-    let (upstream_pools, upstream_policies, routing_index, pool, selectors) =
+    let (upstream_pools, _upstream_policies, routing_index, pool, selectors) =
         test_routing_context("least-connections");
     let metrics = super::Metrics::new(1, vec!["route".to_string()]);
     {
@@ -1093,7 +1091,6 @@ fn resolve_backend_respects_least_connections_strategy() {
     let resolved = super::QUICListener::resolve_backend_request_for_test(
         &request,
         &upstream_pools,
-        &upstream_policies,
         &routing_index,
         &selectors,
         &metrics,
@@ -1127,11 +1124,9 @@ fn resolve_backend_prefers_method_specific_route() {
     let metrics = super::Metrics::new(1, vec!["route".to_string()]);
     let routing_index = super::RouteIndex::from_runtime_upstreams(&runtime.upstreams);
     let mut upstream_pools = HashMap::new();
-    let mut upstream_policies = HashMap::new();
     for (name, upstream) in &runtime.upstreams {
         let pool = super::upstream_pool_from_runtime(upstream).expect("pool");
         upstream_pools.insert(name.clone(), Arc::new(RwLock::new(pool)));
-        upstream_policies.insert(name.clone(), upstream.policy.clone());
     }
 
     let request =
@@ -1139,7 +1134,6 @@ fn resolve_backend_prefers_method_specific_route() {
     let resolved = super::QUICListener::resolve_backend_request_for_test(
         &request,
         &upstream_pools,
-        &upstream_policies,
         &routing_index,
         &selectors,
         &metrics,
@@ -1152,7 +1146,6 @@ fn resolve_backend_prefers_method_specific_route() {
     let resolved = super::QUICListener::resolve_backend_request_for_test(
         &request,
         &upstream_pools,
-        &upstream_policies,
         &routing_index,
         &selectors,
         &metrics,
@@ -1164,7 +1157,7 @@ fn resolve_backend_prefers_method_specific_route() {
 
 #[test]
 fn resolve_backend_uses_configured_header_lb_key() {
-    let (upstream_pools, upstream_policies, routing_index, _pool, selectors) = {
+    let (upstream_pools, _upstream_policies, routing_index, _pool, selectors) = {
         let mut upstreams = HashMap::new();
         upstreams.insert(
             "api_pool".to_string(),
@@ -1217,7 +1210,6 @@ fn resolve_backend_uses_configured_header_lb_key() {
     let first = super::QUICListener::resolve_backend_request_for_test(
         &first_request,
         &upstream_pools,
-        &upstream_policies,
         &routing_index,
         &selectors,
         &metrics,
@@ -1233,7 +1225,6 @@ fn resolve_backend_uses_configured_header_lb_key() {
     let second = super::QUICListener::resolve_backend_request_for_test(
         &second_request,
         &upstream_pools,
-        &upstream_policies,
         &routing_index,
         &selectors,
         &metrics,

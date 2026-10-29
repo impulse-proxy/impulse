@@ -49,11 +49,10 @@ use crate::{
     REQUEST_ID_COUNTER,
     edge_core::{
         request_execution::{
-            RequestExecutionInput, RequestExecutionRoute, ResolvedRequestPolicy,
-            ResolvedRouteTarget, ResponseCompressionAction, ResponseCompressionInput,
-            ResponseCompressionPolicyInput, RouteResolutionError, TerminalOutcomeGuard,
-            ensure_vary_accept_encoding, evaluate_response_compression, execute_request,
-            resolve_route,
+            RequestExecutionInput, ResolvedRequestPolicy, ResolvedRouteTarget,
+            ResponseCompressionAction, ResponseCompressionInput, ResponseCompressionPolicyInput,
+            RouteResolutionError, TerminalOutcomeGuard, ensure_vary_accept_encoding,
+            evaluate_response_compression, execute_request,
         },
         request_validation::validate_http_request_parts,
     },
@@ -845,48 +844,6 @@ impl ProxyHttp for PingoraIngressService {
             }
         };
 
-        let route = match resolve_route(
-            &state.routing_index,
-            &validated.method,
-            &validated.path,
-            validated.authority.as_deref(),
-        ) {
-            Ok(route) => route,
-            Err(RouteResolutionError::EmptyMethodOrPath) => {
-                write_local_response(
-                    session,
-                    http::StatusCode::BAD_REQUEST,
-                    b"invalid request\n",
-                    None,
-                    None,
-                )
-                .await?;
-                return Ok(true);
-            }
-            Err(RouteResolutionError::NoRoute) => {
-                write_local_response(
-                    session,
-                    http::StatusCode::BAD_GATEWAY,
-                    b"no route\n",
-                    None,
-                    None,
-                )
-                .await?;
-                return Ok(true);
-            }
-        };
-        let Some(upstream_policy) = state.upstream_policies.get(route.upstream_name.as_ref())
-        else {
-            write_local_response(
-                session,
-                http::StatusCode::BAD_GATEWAY,
-                b"no route\n",
-                None,
-                None,
-            )
-            .await?;
-            return Ok(true);
-        };
         let Some(peer_address) = session
             .client_addr()
             .and_then(|address| address.as_inet())
@@ -909,9 +866,10 @@ impl ProxyHttp for PingoraIngressService {
                 .and_then(|value| value.to_str().ok())
                 .map(str::to_owned)
         };
-        let execution = execute_request(
+        let execution = match execute_request(
+            &state.routing_index,
+            &state.upstream_policies,
             &state.resilience,
-            RequestExecutionRoute::new(route.upstream_name.as_ref(), upstream_policy),
             RequestExecutionInput {
                 method: &validated.method,
                 path: &validated.path,
@@ -919,7 +877,32 @@ impl ProxyHttp for PingoraIngressService {
                 peer_address,
                 headers: Some(&header_lookup),
             },
-        );
+        ) {
+            Ok(execution) => execution,
+            Err(RouteResolutionError::EmptyMethodOrPath) => {
+                write_local_response(
+                    session,
+                    http::StatusCode::BAD_REQUEST,
+                    b"invalid request\n",
+                    None,
+                    None,
+                )
+                .await?;
+                return Ok(true);
+            }
+            Err(RouteResolutionError::NoRoute | RouteResolutionError::MissingUpstreamPolicy) => {
+                write_local_response(
+                    session,
+                    http::StatusCode::BAD_GATEWAY,
+                    b"no route\n",
+                    None,
+                    None,
+                )
+                .await?;
+                return Ok(true);
+            }
+        };
+        let route = &execution.route;
         shared
             .metrics
             .policy_observations()
