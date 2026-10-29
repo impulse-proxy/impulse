@@ -12,8 +12,8 @@ use super::*;
 use crate::{
     metrics::ResponseCacheOutcome,
     request_pipeline::{
-        ResponseCompressionAction, ResponseCompressionInput, apply_gzip_response_headers,
-        ensure_vary_accept_encoding, evaluate_response_compression,
+        ResponseCompressionAction, ResponseCompressionInput, ResponseCompressionPolicyInput,
+        apply_gzip_response_headers, ensure_vary_accept_encoding, evaluate_response_compression,
     },
     runtime::{
         cache::{
@@ -538,7 +538,10 @@ impl QUICListener {
                 }
             }
             let compression = evaluate_response_compression(ResponseCompressionInput {
-                policy: &pending_forward.response_compression,
+                policy: ResponseCompressionPolicyInput {
+                    enabled: pending_forward.response_compression.enabled,
+                    minimum_size_bytes: pending_forward.response_compression.minimum_size_bytes,
+                },
                 request_method: &req.method,
                 request_headers: &request_headers,
                 response_status: status,

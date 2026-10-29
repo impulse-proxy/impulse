@@ -6,6 +6,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+#[cfg(test)]
 use impulse_config::{
     config::{
         DistributedQuotaPolicy as RawDistributedQuotaPolicy,
@@ -58,7 +59,6 @@ pub use crate::{
     ScopedRateLimitHeaderLookup as QuotaHeaderLookup,
     ScopedRateLimitIdentity as QuotaIdentityContext,
     ScopedRateLimitKeyExtraction as RequestKeyExtraction,
-    extract_scoped_rate_limit_key as extract_runtime_request_key,
 };
 
 const LOCAL_FALLBACK_PROTOCOL_VERSION: &str = "degraded-local-fallback/v1";
@@ -239,6 +239,7 @@ pub struct QuotaIdentityRejection {
     pub reason: QuotaDenyReason,
 }
 
+#[cfg(test)]
 impl From<&RuntimeRequestKeySpec> for QuotaSelectorKeySpec {
     fn from(value: &RuntimeRequestKeySpec) -> Self {
         match value {
@@ -255,6 +256,27 @@ impl From<&RuntimeRequestKeySpec> for QuotaSelectorKeySpec {
             RuntimeRequestKeySpec::Query(name) => Self::Query(name.clone()),
         }
     }
+}
+
+#[cfg(test)]
+fn extract_runtime_request_key(
+    spec: &RuntimeRequestKeySpec,
+    context: &QuotaIdentityContext<'_>,
+) -> RequestKeyExtraction {
+    let spec = match spec {
+        RuntimeRequestKeySpec::Path => crate::RequestKeySpec::Path,
+        RuntimeRequestKeySpec::Authority => crate::RequestKeySpec::Authority,
+        RuntimeRequestKeySpec::Method => crate::RequestKeySpec::Method,
+        RuntimeRequestKeySpec::Cid => crate::RequestKeySpec::Cid,
+        RuntimeRequestKeySpec::StickyCid => crate::RequestKeySpec::StickyCid,
+        RuntimeRequestKeySpec::PeerIp => crate::RequestKeySpec::PeerIp,
+        RuntimeRequestKeySpec::ClientIp => crate::RequestKeySpec::ClientIp,
+        RuntimeRequestKeySpec::BearerToken => crate::RequestKeySpec::BearerToken,
+        RuntimeRequestKeySpec::Header(name) => crate::RequestKeySpec::Header(name.clone()),
+        RuntimeRequestKeySpec::Cookie(name) => crate::RequestKeySpec::Cookie(name.clone()),
+        RuntimeRequestKeySpec::Query(name) => crate::RequestKeySpec::Query(name.clone()),
+    };
+    crate::extract_scoped_rate_limit_key(&spec, context)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

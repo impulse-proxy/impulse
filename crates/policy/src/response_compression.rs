@@ -1,6 +1,11 @@
 use http::{HeaderMap, HeaderValue, StatusCode, header};
-use impulse_config::runtime::RuntimeResponseCompressionPolicy;
 pub use impulse_observability::{ResponseCompressionAction, ResponseCompressionBypassReason};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ResponseCompressionPolicyInput {
+    pub enabled: bool,
+    pub minimum_size_bytes: usize,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ResponseCompressionEvaluation {
@@ -9,7 +14,7 @@ pub struct ResponseCompressionEvaluation {
 }
 
 pub struct ResponseCompressionInput<'a> {
-    pub policy: &'a RuntimeResponseCompressionPolicy,
+    pub policy: ResponseCompressionPolicyInput,
     pub request_method: &'a str,
     pub request_headers: &'a HeaderMap,
     pub response_status: StatusCode,
@@ -201,8 +206,8 @@ fn header_contains_token(headers: &HeaderMap, name: http::header::HeaderName, to
 mod tests {
     use super::*;
 
-    fn policy() -> RuntimeResponseCompressionPolicy {
-        RuntimeResponseCompressionPolicy {
+    fn policy() -> ResponseCompressionPolicyInput {
+        ResponseCompressionPolicyInput {
             enabled: true,
             minimum_size_bytes: 64,
         }
@@ -225,7 +230,7 @@ mod tests {
         response_headers: &HeaderMap,
     ) -> ResponseCompressionEvaluation {
         evaluate_response_compression(ResponseCompressionInput {
-            policy: &policy(),
+            policy: policy(),
             request_method: method,
             request_headers,
             response_status: status,

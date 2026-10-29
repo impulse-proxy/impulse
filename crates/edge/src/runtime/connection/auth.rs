@@ -181,7 +181,7 @@ pub(crate) fn apply_auth_request_mutations(
 mod tests {
     use std::time::Duration;
 
-    use impulse_config::runtime::{RuntimeExternalAuth, RuntimeExternalAuthFailureMode};
+    use impulse_policy::{ExternalAuthFailureMode, ExternalAuthPolicy};
     use serde_json::json;
 
     use super::*;
@@ -694,12 +694,12 @@ mod tests {
 
         #[test]
         fn external_auth_task_config_tracks_timeout_and_disposition() {
-            let auth = RuntimeExternalAuth::Http {
+            let auth = ExternalAuthPolicy::Http {
                 endpoint: "http://127.0.0.1:9000/auth".to_string(),
                 request_headers: Vec::new(),
                 response_header_allowlist: Vec::new(),
                 timeout: Duration::from_millis(250),
-                failure_mode: RuntimeExternalAuthFailureMode::FailOpen,
+                failure_mode: ExternalAuthFailureMode::FailOpen,
             };
 
             let config = ExternalAuthTaskConfig::from_external_auth(&auth);

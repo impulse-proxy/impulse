@@ -25,11 +25,11 @@ pub use brownout::{BrownoutController, evaluate_brownout_admission};
 pub use external_auth::{
     ExternalAuthChallengeResponse, ExternalAuthCompletion, ExternalAuthDecision,
     ExternalAuthDenyResponse, ExternalAuthExecutionPolicy, ExternalAuthFailureDisposition,
-    ExternalAuthPlan, ExternalAuthRedirectResponse, ExternalAuthResponseMetadata,
-    ExternalAuthResult, ExternalAuthStateTransition, ExternalAuthTaskConfig,
-    allowed_external_auth_headers, canonicalize_external_auth_mutations,
-    evaluate_external_auth_completion, external_auth_allow_mutations,
-    map_http_external_auth_response, merge_external_auth_mutations,
+    ExternalAuthFailureMode, ExternalAuthPlan, ExternalAuthPolicy, ExternalAuthRedirectResponse,
+    ExternalAuthRequestHeader, ExternalAuthResponseMetadata, ExternalAuthResult,
+    ExternalAuthStateTransition, ExternalAuthTaskConfig, allowed_external_auth_headers,
+    canonicalize_external_auth_mutations, evaluate_external_auth_completion,
+    external_auth_allow_mutations, map_http_external_auth_response, merge_external_auth_mutations,
     resolve_external_auth_state_transition,
 };
 pub use jwt::{
@@ -40,18 +40,19 @@ pub use jwt::{
 };
 pub use request::{RequestHeaderLookup, RequestView};
 pub use response_cache::{
-    CanonicalResponseCacheKey, ResponseCacheBypassReason, ResponseCacheKeyInput,
-    ResponseCacheRepresentation, ResponseCacheRequestEligibilityInput,
-    ResponseCacheResponseEligibilityInput, canonical_response_cache_key,
-    evaluate_cache_request_eligibility, evaluate_cache_response_eligibility, response_cache_ttl,
-    route_auth_requires_cache_bypass,
+    CanonicalResponseCacheKey, ResponseCacheAuthInput, ResponseCacheBypassReason,
+    ResponseCacheKeyInput, ResponseCachePolicyInput, ResponseCacheRepresentation,
+    ResponseCacheRequestEligibilityInput, ResponseCacheResponseEligibilityInput,
+    canonical_response_cache_key, evaluate_cache_request_eligibility,
+    evaluate_cache_response_eligibility, response_cache_ttl, route_auth_requires_cache_bypass,
 };
 pub use response_compression::{
     ResponseCompressionAction, ResponseCompressionBypassReason, ResponseCompressionEvaluation,
-    ResponseCompressionInput, apply_gzip_response_headers, ensure_vary_accept_encoding,
-    evaluate_response_compression,
+    ResponseCompressionInput, ResponseCompressionPolicyInput, apply_gzip_response_headers,
+    ensure_vary_accept_encoding, evaluate_response_compression,
 };
 pub use scoped_rate_limit::{
-    ScopedRateLimitEvaluation, ScopedRateLimitHeaderLookup, ScopedRateLimitIdentity,
-    ScopedRateLimitKeyExtraction, evaluate_scoped_rate_limit, extract_scoped_rate_limit_key,
+    RequestKeySpec, ScopedRateLimitEvaluation, ScopedRateLimitHeaderLookup,
+    ScopedRateLimitIdentity, ScopedRateLimitKeyExtraction, evaluate_scoped_rate_limit,
+    extract_scoped_rate_limit_key,
 };

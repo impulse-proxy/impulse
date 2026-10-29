@@ -4,10 +4,23 @@ use std::{
 };
 
 use http::{HeaderMap, header, uri::Authority};
-use impulse_config::runtime::{RuntimeAuthPolicy, RuntimeResponseCachePolicy};
 
 const CACHE_KEY_NAMESPACE: &[u8] = b"impulse-response-cache-v1";
 const SUPPORTED_VARY_HEADER: &str = "accept-encoding";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ResponseCachePolicyInput {
+    pub enabled: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ResponseCacheAuthInput {
+    pub api_key: bool,
+    pub jwt: bool,
+    pub external_auth: bool,
+    pub required_scopes: bool,
+    pub required_roles: bool,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResponseCacheBypassReason {
@@ -27,7 +40,7 @@ pub enum ResponseCacheBypassReason {
 }
 
 pub struct ResponseCacheRequestEligibilityInput<'a> {
-    pub policy: &'a RuntimeResponseCachePolicy,
+    pub policy: ResponseCachePolicyInput,
     pub route_auth_enabled: bool,
     pub method: &'a str,
     pub headers: &'a HeaderMap,
@@ -77,12 +90,12 @@ pub fn evaluate_cache_request_eligibility(
     }
 }
 
-pub fn route_auth_requires_cache_bypass(policy: &RuntimeAuthPolicy) -> bool {
-    policy.api_key.is_some()
-        || policy.jwt.is_some()
-        || policy.external_auth.is_some()
-        || !policy.required_scopes.is_empty()
-        || !policy.required_roles.is_empty()
+pub const fn route_auth_requires_cache_bypass(policy: ResponseCacheAuthInput) -> bool {
+    policy.api_key
+        || policy.jwt
+        || policy.external_auth
+        || policy.required_scopes
+        || policy.required_roles
 }
 
 pub fn evaluate_cache_response_eligibility(
@@ -365,22 +378,14 @@ fn push_component(key: &mut Vec<u8>, component: &[u8]) {
 
 #[cfg(test)]
 mod tests {
-    use impulse_config::runtime::{RuntimeApiKeyAuth, RuntimeResponseCachePolicy};
-
     use super::*;
 
-    fn policy() -> RuntimeResponseCachePolicy {
-        RuntimeResponseCachePolicy {
-            enabled: true,
-            max_bytes: 1024,
-            max_entries: 8,
-            max_object_bytes: 1024,
-            max_ttl_secs: 60,
-        }
+    fn policy() -> ResponseCachePolicyInput {
+        ResponseCachePolicyInput { enabled: true }
     }
 
     fn request_eligibility<'a>(
-        policy: &'a RuntimeResponseCachePolicy,
+        policy: ResponseCachePolicyInput,
         method: &'a str,
         headers: &'a HeaderMap,
     ) -> ResponseCacheRequestEligibilityInput<'a> {
@@ -402,14 +407,14 @@ mod tests {
             let mut headers = HeaderMap::new();
             headers.insert(name, http::HeaderValue::from_static("private"));
             assert!(
-                evaluate_cache_request_eligibility(request_eligibility(&policy, "GET", &headers,))
+                evaluate_cache_request_eligibility(request_eligibility(policy, "GET", &headers,))
                     .is_err()
             );
         }
 
         let headers = HeaderMap::new();
         assert_eq!(
-            evaluate_cache_request_eligibility(request_eligibility(&policy, "HEAD", &headers)),
+            evaluate_cache_request_eligibility(request_eligibility(policy, "HEAD", &headers)),
             Ok(ResponseCacheRepresentation::Head)
         );
         let get = canonical_response_cache_key(ResponseCacheKeyInput {
@@ -438,19 +443,19 @@ mod tests {
 
     #[test]
     fn authenticated_routes_bypass_cache_without_standard_auth_headers() {
-        let auth_policy = RuntimeAuthPolicy {
-            api_key: Some(RuntimeApiKeyAuth {
-                header_name: "x-api-key".to_string(),
-                keys: vec!["tenant-key".to_string()],
-            }),
-            ..RuntimeAuthPolicy::default()
+        let auth_policy = ResponseCacheAuthInput {
+            api_key: true,
+            jwt: false,
+            external_auth: false,
+            required_scopes: false,
+            required_roles: false,
         };
         let policy = policy();
         let headers = HeaderMap::new();
         assert_eq!(
             evaluate_cache_request_eligibility(ResponseCacheRequestEligibilityInput {
-                route_auth_enabled: route_auth_requires_cache_bypass(&auth_policy),
-                ..request_eligibility(&policy, "GET", &headers)
+                route_auth_enabled: route_auth_requires_cache_bypass(auth_policy),
+                ..request_eligibility(policy, "GET", &headers)
             }),
             Err(ResponseCacheBypassReason::Authorization)
         );

@@ -1,6 +1,7 @@
 use super::*;
 
 impl QuotaWindowPolicy {
+    #[cfg(test)]
     fn from_runtime(value: &ConfigRuntimeQuotaWindow) -> Self {
         Self {
             requests: value.requests,
@@ -8,6 +9,7 @@ impl QuotaWindowPolicy {
         }
     }
 
+    #[cfg(test)]
     fn from_raw(value: &RawDistributedQuotaWindow) -> Self {
         Self {
             requests: value.requests.max(1),
@@ -24,6 +26,7 @@ impl QuotaWindowPolicy {
 }
 
 impl QuotaLocalFallbackPolicy {
+    #[cfg(test)]
     pub(super) fn from_runtime(value: &ConfigRuntimeQuotaLocalFallback) -> Self {
         Self {
             key_prefix: value.key_prefix.clone(),
@@ -31,6 +34,7 @@ impl QuotaLocalFallbackPolicy {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn from_raw(value: &impulse_config::config::QuotaLocalFallbackConfig) -> Self {
         Self {
             key_prefix: value.key_prefix.trim().to_string(),
@@ -47,6 +51,7 @@ impl QuotaLocalFallbackPolicy {
 }
 
 impl QuotaPolicyRuntime {
+    #[cfg(test)]
     pub(super) fn from_runtime(value: &ConfigRuntimeQuotaPolicy) -> Self {
         Self {
             name: value.name.clone(),
@@ -60,6 +65,7 @@ impl QuotaPolicyRuntime {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn from_raw(value: &RawDistributedQuotaPolicy) -> Self {
         Self {
             name: value.name.trim().to_string(),
@@ -95,6 +101,7 @@ impl QuotaPolicyRuntime {
 }
 
 impl QuotaSelectorMatcher {
+    #[cfg(test)]
     fn from_raw(value: &RawDistributedQuotaSelector) -> Self {
         Self {
             route: value.route,

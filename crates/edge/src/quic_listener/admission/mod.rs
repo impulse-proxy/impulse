@@ -78,13 +78,28 @@ pub(crate) use impulse_contracts::{
 use impulse_policy::jwks::*;
 pub(super) use impulse_policy::jwks::{
     JwtJwksFetchFailure, JwtJwksFetchFailureReason, JwtJwksRuntimeSnapshot,
-    runtime_jwks_source_identity, snapshot_runtime_jwks_sources,
+    runtime_jwks_source_identity,
 };
 #[cfg(test)]
 pub(super) use impulse_policy::jwks::{
     clear_jwks_cache_for_test, jwks_source_identity_for_test, mark_jwks_source_invalid_for_test,
     mark_jwks_source_unavailable_for_test, prime_jwks_cache_for_test,
 };
+
+fn runtime_jwks_sources(config: &RuntimeConfig) -> Vec<JwtJwksSourceConfig> {
+    merge_jwks_source_configs(config.upstreams.values().filter_map(|upstream| {
+        upstream
+            .policy
+            .upstream_auth
+            .jwt
+            .as_ref()
+            .and_then(JwtJwksSourceConfig::from_jwt)
+    }))
+}
+
+pub(super) fn snapshot_runtime_jwks_sources(config: &RuntimeConfig) -> Vec<JwtJwksRuntimeSnapshot> {
+    snapshot_jwks_sources(runtime_jwks_sources(config))
+}
 #[cfg(test)]
 pub(super) use impulse_policy::jwks::{
     normalize_jwks_document_for_test, script_jwks_fetches_for_test,

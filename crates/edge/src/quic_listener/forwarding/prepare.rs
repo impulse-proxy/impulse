@@ -1,7 +1,7 @@
 use std::{borrow::Cow, collections::VecDeque, convert::Infallible};
 
 use http_body_util::Full;
-use impulse_config::runtime::RuntimeExternalAuth;
+use impulse_policy::ExternalAuthPolicy;
 use smallvec::SmallVec;
 use tokio::{sync::oneshot, task::AbortHandle};
 
@@ -128,7 +128,7 @@ impl DispatchReadyCandidate {
 
 pub(super) struct ExternalAuthCandidate {
     pub(super) request: DispatchReadyCandidate,
-    pub(super) external_auth: RuntimeExternalAuth,
+    pub(super) external_auth: ExternalAuthPolicy,
     pub(super) auth_disposition: ExternalAuthFailureDisposition,
 }
 

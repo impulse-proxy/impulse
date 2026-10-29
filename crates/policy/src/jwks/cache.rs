@@ -677,15 +677,11 @@ pub(super) fn merge_jwks_source_config(
     };
 }
 
-pub fn runtime_jwks_sources(config: &RuntimeConfig) -> Vec<JwtJwksSourceConfig> {
+pub fn merge_jwks_source_configs(
+    configs: impl IntoIterator<Item = JwtJwksSourceConfig>,
+) -> Vec<JwtJwksSourceConfig> {
     let mut sources = HashMap::<String, JwtJwksSourceConfig>::new();
-    for upstream in config.upstreams.values() {
-        let Some(jwt) = upstream.policy.upstream_auth.jwt.as_ref() else {
-            continue;
-        };
-        let Some(source) = JwtJwksSourceConfig::from_jwt(jwt) else {
-            continue;
-        };
+    for source in configs {
         sources
             .entry(source.source_identity.clone())
             .and_modify(|existing| merge_jwks_source_config(existing, &source))
@@ -734,9 +730,11 @@ pub struct JwtJwksRuntimeSnapshot {
     pub last_error: Option<String>,
 }
 
-pub fn snapshot_runtime_jwks_sources(config: &RuntimeConfig) -> Vec<JwtJwksRuntimeSnapshot> {
+pub fn snapshot_jwks_sources(
+    sources: impl IntoIterator<Item = JwtJwksSourceConfig>,
+) -> Vec<JwtJwksRuntimeSnapshot> {
     let now = Instant::now();
-    let mut snapshots = runtime_jwks_sources(config)
+    let mut snapshots = sources
         .into_iter()
         .map(|source| {
             let entry = JwtJwksSharedCache::shared().snapshot(&source.source_identity, now);

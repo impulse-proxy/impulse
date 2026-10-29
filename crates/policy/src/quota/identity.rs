@@ -37,6 +37,7 @@ impl QuotaSelectorMatcher {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn from_runtime(value: &ConfigRuntimeQuotaSelectorMatcher) -> Self {
         Self {
             route: value.route,

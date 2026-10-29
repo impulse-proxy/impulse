@@ -8,7 +8,7 @@ use std::{
 use http_body_util::Full;
 use hyper_rustls::HttpsConnectorBuilder;
 use hyper_util::client::legacy::{Client, connect::HttpConnector};
-use impulse_config::runtime::RuntimeExternalAuth;
+use impulse_policy::{ExternalAuthPolicy, ExternalAuthRequestHeader};
 use serde_json::Value;
 use tokio::{sync::Mutex, task::AbortHandle};
 
@@ -189,7 +189,7 @@ struct OidcExternalAuthInput {
     client_secret: Option<String>,
     audience: Option<String>,
     scopes: Vec<String>,
-    request_headers: Vec<impulse_config::runtime::RuntimeExternalAuthRequestHeader>,
+    request_headers: Vec<ExternalAuthRequestHeader>,
     timeout: Duration,
 }
 
@@ -244,7 +244,7 @@ fn is_unsafe_forwarded_auth_request_header(name: &[u8]) -> bool {
 pub(super) fn append_auth_request_headers(
     builder: &mut http::request::Builder,
     pending_forward: &PendingForward,
-    configured_headers: &[impulse_config::runtime::RuntimeExternalAuthRequestHeader],
+    configured_headers: &[ExternalAuthRequestHeader],
 ) {
     let request = external_auth_request_from_pending_forward(pending_forward);
     append_external_auth_request_headers(builder, &request, configured_headers);
@@ -253,7 +253,7 @@ pub(super) fn append_auth_request_headers(
 fn append_external_auth_request_headers(
     builder: &mut http::request::Builder,
     request: &ExternalAuthRequest,
-    configured_headers: &[impulse_config::runtime::RuntimeExternalAuthRequestHeader],
+    configured_headers: &[ExternalAuthRequestHeader],
 ) {
     for (name, value) in &request.headers {
         if is_unsafe_forwarded_auth_request_header(name.as_str().as_bytes()) {
@@ -389,7 +389,7 @@ async fn send_auth_request(
 
 async fn run_external_auth_with_timeout(
     request: Arc<ExternalAuthRequest>,
-    external_auth: RuntimeExternalAuth,
+    external_auth: ExternalAuthPolicy,
     timeout: Duration,
 ) -> ExternalAuthResult {
     tokio::time::timeout(timeout, run_external_auth(request, external_auth))
@@ -400,7 +400,7 @@ async fn run_external_auth_with_timeout(
 async fn run_http_external_auth(
     request: Arc<ExternalAuthRequest>,
     endpoint: String,
-    request_headers: Vec<impulse_config::runtime::RuntimeExternalAuthRequestHeader>,
+    request_headers: Vec<ExternalAuthRequestHeader>,
     response_header_allowlist: Vec<String>,
     timeout: Duration,
 ) -> ExternalAuthResult {
@@ -565,11 +565,11 @@ async fn run_oidc_external_auth(input: OidcExternalAuthInput) -> ExternalAuthRes
 
 async fn run_external_auth(
     request: Arc<ExternalAuthRequest>,
-    external_auth: RuntimeExternalAuth,
+    external_auth: ExternalAuthPolicy,
 ) -> ExternalAuthResult {
     let timeout = ExternalAuthExecutionPolicy::from_external_auth(&external_auth).timeout;
     match external_auth {
-        RuntimeExternalAuth::Http {
+        ExternalAuthPolicy::Http {
             endpoint,
             request_headers,
             response_header_allowlist,
@@ -584,7 +584,7 @@ async fn run_external_auth(
             )
             .await
         }
-        RuntimeExternalAuth::Oidc {
+        ExternalAuthPolicy::Oidc {
             discovery_url,
             issuer_url,
             client_id,
@@ -612,7 +612,7 @@ async fn run_external_auth(
 
 pub(crate) async fn execute_external_auth_request(
     request: ExternalAuthRequest,
-    external_auth: RuntimeExternalAuth,
+    external_auth: ExternalAuthPolicy,
 ) -> ExternalAuthResult {
     let timeout = ExternalAuthExecutionPolicy::from_external_auth(&external_auth).timeout;
     run_external_auth_with_timeout(Arc::new(request), external_auth, timeout).await
@@ -620,7 +620,7 @@ pub(crate) async fn execute_external_auth_request(
 
 pub(super) fn start_external_auth_task(
     pending_forward: Arc<PendingForward>,
-    external_auth: RuntimeExternalAuth,
+    external_auth: ExternalAuthPolicy,
 ) -> Result<AuthStart, ProxyError> {
     let task_config = ExternalAuthTaskConfig::from_external_auth(&external_auth);
     let request = external_auth_request_from_pending_forward(&pending_forward);
@@ -810,7 +810,7 @@ impl QUICListener {
 #[cfg(test)]
 mod tests {
     use impulse_config::runtime::{
-        RuntimeApiKeyAuth, RuntimeAuthPolicy, RuntimeExternalAuthFailureMode,
+        RuntimeApiKeyAuth, RuntimeAuthPolicy, RuntimeExternalAuth, RuntimeExternalAuthFailureMode,
         RuntimeForwardedHeaderPolicy, RuntimeHostPolicy, RuntimeProtocolPolicy,
         RuntimeUpstreamPolicy,
     };
@@ -956,7 +956,7 @@ mod tests {
         append_auth_request_headers(
             &mut builder,
             &pending_forward,
-            &[impulse_config::runtime::RuntimeExternalAuthRequestHeader {
+            &[ExternalAuthRequestHeader {
                 name: "x-role".to_string(),
                 value: "admin".to_string(),
             }],

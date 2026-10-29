@@ -6,10 +6,10 @@ use std::{
 use async_trait::async_trait;
 use impulse_config::runtime::RuntimeResponseCachePolicy;
 pub use impulse_policy::{
-    ResponseCacheBypassReason, ResponseCacheKeyInput, ResponseCacheRepresentation,
-    ResponseCacheRequestEligibilityInput, ResponseCacheResponseEligibilityInput,
-    evaluate_cache_request_eligibility, evaluate_cache_response_eligibility,
-    route_auth_requires_cache_bypass,
+    ResponseCacheAuthInput, ResponseCacheBypassReason, ResponseCacheKeyInput,
+    ResponseCachePolicyInput, ResponseCacheRepresentation, ResponseCacheRequestEligibilityInput,
+    ResponseCacheResponseEligibilityInput, evaluate_cache_request_eligibility,
+    evaluate_cache_response_eligibility, route_auth_requires_cache_bypass,
 };
 use pingora_cache::{
     HttpCache, MemCache,

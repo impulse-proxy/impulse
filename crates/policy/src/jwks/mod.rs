@@ -29,7 +29,7 @@ use hyper_rustls::HttpsConnectorBuilder;
 use hyper_util::client::legacy::{Client, connect::HttpConnector};
 use impulse_config::{
     config::{JwksStartupBehavior, JwtAlgorithm},
-    runtime::{RuntimeConfig, RuntimeJwtAuth, RuntimeJwtVerificationKey},
+    runtime::{RuntimeJwtAuth, RuntimeJwtVerificationKey},
 };
 use impulse_observability::Metrics;
 use serde_json::Value;
@@ -47,8 +47,8 @@ pub use cache::{
     current_jwt_jwks_metrics, jwks_source_identity_for_test, jwt_jwks_cache_stale_window_expired,
     jwt_jwks_cache_state_name, jwt_jwks_cache_state_usable, jwt_jwks_metrics_sink,
     jwt_jwks_public_endpoint, jwt_jwks_source_identity, mark_jwks_source_invalid_for_test,
-    mark_jwks_source_unavailable_for_test, prime_jwks_cache_for_test, runtime_jwks_source_identity,
-    runtime_jwks_sources, snapshot_runtime_jwks_sources,
+    mark_jwks_source_unavailable_for_test, merge_jwks_source_configs, prime_jwks_cache_for_test,
+    runtime_jwks_source_identity, snapshot_jwks_sources,
 };
 pub use refresh::{
     JwtJwksFetchFailure, JwtJwksFetchFailureReason, collect_jwks_body_bounded,

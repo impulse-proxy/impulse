@@ -1,11 +1,25 @@
 use std::net::SocketAddr;
 
-use impulse_config::runtime::RuntimeRequestKeySpec;
 use impulse_contracts::{RateLimitedDecision, RequestDecision};
 
 const MAX_REQUEST_DERIVED_IDENTITY_BYTES: usize = 256;
 
 pub type ScopedRateLimitHeaderLookup<'a> = dyn Fn(&str) -> Option<String> + Sync + 'a;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RequestKeySpec {
+    Path,
+    Authority,
+    Method,
+    Cid,
+    StickyCid,
+    PeerIp,
+    ClientIp,
+    BearerToken,
+    Header(String),
+    Cookie(String),
+    Query(String),
+}
 
 #[derive(Clone, Copy)]
 pub struct ScopedRateLimitIdentity<'a> {
@@ -50,13 +64,13 @@ pub enum ScopedRateLimitKeyExtraction {
 
 #[must_use]
 pub fn extract_scoped_rate_limit_key(
-    spec: &RuntimeRequestKeySpec,
+    spec: &RequestKeySpec,
     context: &ScopedRateLimitIdentity<'_>,
 ) -> ScopedRateLimitKeyExtraction {
     match spec {
-        RuntimeRequestKeySpec::Path => bounded(path_without_query(context.path)),
-        RuntimeRequestKeySpec::Authority => optional_bounded(context.authority),
-        RuntimeRequestKeySpec::Method => {
+        RequestKeySpec::Path => bounded(path_without_query(context.path)),
+        RequestKeySpec::Authority => optional_bounded(context.authority),
+        RequestKeySpec::Method => {
             let method = context.method.trim();
             if method.is_empty() {
                 ScopedRateLimitKeyExtraction::Missing
@@ -64,17 +78,15 @@ pub fn extract_scoped_rate_limit_key(
                 ScopedRateLimitKeyExtraction::Found(method.to_ascii_uppercase())
             }
         }
-        RuntimeRequestKeySpec::Cid | RuntimeRequestKeySpec::StickyCid => {
-            optional_bounded(context.cid_key)
-        }
-        RuntimeRequestKeySpec::PeerIp | RuntimeRequestKeySpec::ClientIp => context
+        RequestKeySpec::Cid | RequestKeySpec::StickyCid => optional_bounded(context.cid_key),
+        RequestKeySpec::PeerIp | RequestKeySpec::ClientIp => context
             .client_addr
             .map(|address| ScopedRateLimitKeyExtraction::Found(address.ip().to_string()))
             .unwrap_or(ScopedRateLimitKeyExtraction::Missing),
-        RuntimeRequestKeySpec::BearerToken => bearer_token(context.header_lookup),
-        RuntimeRequestKeySpec::Header(name) => header_value(name, context.header_lookup),
-        RuntimeRequestKeySpec::Cookie(name) => cookie_value(name, context.header_lookup),
-        RuntimeRequestKeySpec::Query(name) => query_value(context.path, name),
+        RequestKeySpec::BearerToken => bearer_token(context.header_lookup),
+        RequestKeySpec::Header(name) => header_value(name, context.header_lookup),
+        RequestKeySpec::Cookie(name) => cookie_value(name, context.header_lookup),
+        RequestKeySpec::Query(name) => query_value(context.path, name),
     }
 }
 

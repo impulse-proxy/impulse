@@ -1,9 +1,44 @@
 use std::{collections::HashMap, time::Duration};
 
 use http::{HeaderMap, StatusCode};
-use impulse_config::runtime::{RuntimeExternalAuth, RuntimeExternalAuthFailureMode};
 use impulse_contracts::HeaderMutation;
 use impulse_errors::ProxyError;
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ExternalAuthFailureMode {
+    FailOpen,
+    #[default]
+    FailClosed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExternalAuthRequestHeader {
+    pub name: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExternalAuthPolicy {
+    Http {
+        endpoint: String,
+        request_headers: Vec<ExternalAuthRequestHeader>,
+        response_header_allowlist: Vec<String>,
+        timeout: Duration,
+        failure_mode: ExternalAuthFailureMode,
+    },
+    Oidc {
+        discovery_url: Option<String>,
+        issuer_url: Option<String>,
+        client_id: String,
+        client_secret: Option<String>,
+        audience: Option<String>,
+        scopes: Vec<String>,
+        request_headers: Vec<ExternalAuthRequestHeader>,
+        response_header_allowlist: Vec<String>,
+        timeout: Duration,
+        failure_mode: ExternalAuthFailureMode,
+    },
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExternalAuthFailureDisposition {
@@ -13,10 +48,10 @@ pub enum ExternalAuthFailureDisposition {
 
 impl ExternalAuthFailureDisposition {
     #[must_use]
-    pub fn from_failure_mode(mode: RuntimeExternalAuthFailureMode) -> Self {
+    pub fn from_failure_mode(mode: ExternalAuthFailureMode) -> Self {
         match mode {
-            RuntimeExternalAuthFailureMode::FailOpen => Self::FailOpen,
-            RuntimeExternalAuthFailureMode::FailClosed => Self::FailClosed,
+            ExternalAuthFailureMode::FailOpen => Self::FailOpen,
+            ExternalAuthFailureMode::FailClosed => Self::FailClosed,
         }
     }
 
@@ -29,19 +64,19 @@ impl ExternalAuthFailureDisposition {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ExternalAuthExecutionPolicy {
     pub timeout: Duration,
-    pub failure_mode: RuntimeExternalAuthFailureMode,
+    pub failure_mode: ExternalAuthFailureMode,
 }
 
 impl ExternalAuthExecutionPolicy {
     #[must_use]
-    pub fn from_external_auth(value: &RuntimeExternalAuth) -> Self {
+    pub fn from_external_auth(value: &ExternalAuthPolicy) -> Self {
         match value {
-            RuntimeExternalAuth::Http {
+            ExternalAuthPolicy::Http {
                 timeout,
                 failure_mode,
                 ..
             }
-            | RuntimeExternalAuth::Oidc {
+            | ExternalAuthPolicy::Oidc {
                 timeout,
                 failure_mode,
                 ..
@@ -66,7 +101,7 @@ pub struct ExternalAuthTaskConfig {
 
 impl ExternalAuthTaskConfig {
     #[must_use]
-    pub fn from_external_auth(value: &RuntimeExternalAuth) -> Self {
+    pub fn from_external_auth(value: &ExternalAuthPolicy) -> Self {
         let policy = ExternalAuthExecutionPolicy::from_external_auth(value);
         Self {
             timeout: policy.timeout,
@@ -77,13 +112,13 @@ impl ExternalAuthTaskConfig {
 
 #[derive(Clone, Debug)]
 pub struct ExternalAuthPlan {
-    pub policy: RuntimeExternalAuth,
+    pub policy: ExternalAuthPolicy,
     pub disposition: ExternalAuthFailureDisposition,
 }
 
 impl ExternalAuthPlan {
     #[must_use]
-    pub fn new(policy: RuntimeExternalAuth) -> Self {
+    pub fn new(policy: ExternalAuthPolicy) -> Self {
         Self {
             disposition: ExternalAuthTaskConfig::from_external_auth(&policy).disposition,
             policy,

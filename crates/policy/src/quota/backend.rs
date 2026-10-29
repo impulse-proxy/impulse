@@ -79,6 +79,7 @@ impl QuotaCounterBackend {
         }
     }
 
+    #[cfg(test)]
     fn from_runtime(value: &ConfigRuntimeQuotaCounterBackend) -> Self {
         match value {
             ConfigRuntimeQuotaCounterBackend::InMemory { key_prefix } => Self::InMemory {
@@ -100,6 +101,7 @@ impl QuotaCounterBackend {
         }
     }
 
+    #[cfg(test)]
     fn from_raw(value: &RawQuotaCounterBackend) -> Self {
         match value {
             RawQuotaCounterBackend::InMemory { key_prefix } => Self::InMemory {
@@ -198,16 +200,19 @@ impl QuotaRuntime {
         }
     }
 
+    #[cfg(test)]
     pub fn from_resilience_config(config: &ResilienceConfig) -> Self {
         Self::from_raw_config(&config.quota)
     }
 
+    #[cfg(test)]
     pub fn from_rate_limit_policies(
         rate_limit_policy: &impulse_config::runtime::RuntimeRateLimitPolicy,
     ) -> Self {
         Self::from_runtime_policy_set(&rate_limit_policy.quota)
     }
 
+    #[cfg(test)]
     pub fn from_runtime_policy_set(config: &ConfigRuntimeQuotaPolicySet) -> Self {
         Self {
             enabled: config.enabled,
@@ -236,6 +241,7 @@ impl QuotaRuntime {
         }
     }
 
+    #[cfg(test)]
     fn from_raw_config(config: &RawQuotaPolicyConfig) -> Self {
         Self {
             enabled: config.enabled,
