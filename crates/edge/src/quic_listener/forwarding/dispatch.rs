@@ -163,27 +163,6 @@ impl QUICListener {
                 headers.append(name, value);
             }
         }
-        let cache_control = match headers
-            .get_all(http::header::CACHE_CONTROL)
-            .iter()
-            .map(|value| value.to_str())
-            .collect::<std::result::Result<Vec<_>, _>>()
-        {
-            Ok(values) => values,
-            Err(_) => return bypass(),
-        };
-        let request_disables_cache = cache_control
-            .into_iter()
-            .flat_map(|value| value.split(','))
-            .map(|directive| {
-                directive
-                    .split_once('=')
-                    .map_or(directive, |(name, _)| name)
-            })
-            .any(|directive| {
-                directive.trim().eq_ignore_ascii_case("no-cache")
-                    || directive.trim().eq_ignore_ascii_case("no-store")
-            });
         let Ok(representation) =
             evaluate_cache_request_eligibility(ResponseCacheRequestEligibilityInput {
                 policy: &policy,
@@ -197,9 +176,6 @@ impl QUICListener {
         else {
             return bypass();
         };
-        if request_disables_cache {
-            return bypass();
-        }
         let Some(authority) = pending_forward.authority.as_deref() else {
             return bypass();
         };

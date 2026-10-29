@@ -11,6 +11,7 @@ bytes.workspace = true
 hmac = "0.12"
 http.workspace = true
 http-body-util.workspace = true
+httpdate.workspace = true
 hyper = { workspace = true, features = ["client", "http1", "http2"] }
 hyper-util = { workspace = true, features = ["client-legacy", "http1", "http2", "tokio"] }
 hyper-rustls.workspace = true

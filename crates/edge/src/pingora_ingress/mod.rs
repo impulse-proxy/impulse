@@ -22,9 +22,7 @@ use impulse_errors::{
 };
 use impulse_lb::{alternate_backend::AlternateBackendFailureReason, upstream_pool::UpstreamPool};
 use impulse_transport::{classify_pingora_h1_error, classify_pingora_h2_error};
-use pingora_cache::{
-    CacheKey, CacheMeta, CachePhase, NoCacheReason, RespCacheable, cache_control::CacheControl,
-};
+use pingora_cache::{CacheKey, CacheMeta, CachePhase, NoCacheReason, RespCacheable};
 #[cfg(unix)]
 use pingora_core::server::{Fds, ListenFds};
 use pingora_core::{
@@ -1145,18 +1143,6 @@ impl ProxyHttp for PingoraIngressService {
         };
         let cache_policy = &policy.local_auth_policy.response_cache;
         let is_tunnel = method.eq_ignore_ascii_case("CONNECT");
-        if CacheControl::from_req_headers(session.req_header())
-            .is_some_and(|cache_control| cache_control.no_cache() || cache_control.no_store())
-        {
-            ctx.runtime
-                .shared_state
-                .shared_services()
-                .metrics
-                .ingress_observations()
-                .record_response_cache_outcome(ResponseCacheOutcome::Bypass);
-            ctx.response_cache_bypass_recorded = true;
-            return Ok(());
-        }
         let has_body = !session.is_body_empty();
         let representation =
             evaluate_cache_request_eligibility(ResponseCacheRequestEligibilityInput {

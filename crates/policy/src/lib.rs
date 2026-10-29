@@ -15,6 +15,7 @@ pub mod jwks;
 mod jwt;
 pub mod quota;
 mod request;
+mod response_cache;
 mod scoped_rate_limit;
 
 pub use adaptive_admission::{AdaptiveAdmission, AdaptivePermit, evaluate_adaptive_admission};
@@ -37,6 +38,13 @@ pub use jwt::{
     validate_parsed_jwt,
 };
 pub use request::{RequestHeaderLookup, RequestView};
+pub use response_cache::{
+    CanonicalResponseCacheKey, ResponseCacheBypassReason, ResponseCacheKeyInput,
+    ResponseCacheRepresentation, ResponseCacheRequestEligibilityInput,
+    ResponseCacheResponseEligibilityInput, canonical_response_cache_key,
+    evaluate_cache_request_eligibility, evaluate_cache_response_eligibility, response_cache_ttl,
+    route_auth_requires_cache_bypass,
+};
 pub use scoped_rate_limit::{
     ScopedRateLimitEvaluation, ScopedRateLimitHeaderLookup, ScopedRateLimitIdentity,
     ScopedRateLimitKeyExtraction, evaluate_scoped_rate_limit, extract_scoped_rate_limit_key,
