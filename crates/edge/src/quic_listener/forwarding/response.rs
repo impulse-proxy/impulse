@@ -10,11 +10,11 @@ use tokio::sync::mpsc::error::TryRecvError;
 
 use super::*;
 use crate::{
-    metrics::ResponseCacheOutcome,
-    request_pipeline::{
+    edge_core::request_pipeline::{
         ResponseCompressionAction, ResponseCompressionInput, ResponseCompressionPolicyInput,
         apply_gzip_response_headers, ensure_vary_accept_encoding, evaluate_response_compression,
     },
+    metrics::ResponseCacheOutcome,
     runtime::{
         cache::{
             ResponseCacheResponseEligibilityInput, evaluate_cache_response_eligibility,

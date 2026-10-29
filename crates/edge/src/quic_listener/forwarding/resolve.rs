@@ -9,7 +9,7 @@ use impulse_lb::pingora_backend::PingoraLoadBalancingRuntimeState;
 
 use super::{selection::ForwardingSelectionService, *};
 use crate::{
-    request_pipeline::{RouteResolutionError, resolve_route},
+    edge_core::request_pipeline::{RouteResolutionError, resolve_route},
     runtime::connection::outcome::{RouteOutcomeTarget, observe_proxy_error_outcome},
 };
 

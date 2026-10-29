@@ -53,11 +53,14 @@ use impulse_config::{
 };
 use impulse_edge::{
     BACKEND_TIMEOUT_SECS, MAX_DATAGRAM_SIZE_BYTES, MAX_STREAMS_PER_CONNECTION,
-    MAX_UDP_PAYLOAD_BYTES, PingoraListenerTask, QUIC_IDLE_TIMEOUT_MS, QUIC_INITIAL_MAX_DATA,
+    MAX_UDP_PAYLOAD_BYTES, QUIC_IDLE_TIMEOUT_MS, QUIC_INITIAL_MAX_DATA,
     QUIC_INITIAL_MAX_STREAMS_BIDI, QUIC_INITIAL_MAX_STREAMS_UNI, QUIC_INITIAL_STREAM_DATA,
     REQUEST_TIMEOUT_SECS,
-    runtime::{bundle::RuntimeBundleHandle, listener::QUICListener},
-    spawn_pingora_ingress_listener,
+    runtime::{
+        bundle::RuntimeBundleHandle,
+        ingress::{PingoraListenerTask, spawn_pingora_ingress_listener},
+        listener::QUICListener,
+    },
 };
 use support::{net::local_listener_bind_available, request_path as request_support};
 

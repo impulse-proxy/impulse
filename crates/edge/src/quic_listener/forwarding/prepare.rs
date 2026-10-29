@@ -14,12 +14,12 @@ use super::{
     *,
 };
 use crate::{
-    quic_listener::admission::{
-        AdmissionPolicyDecision, AdmissionRejectionResponse, admission_rejection_response,
-    },
-    request_pipeline::{
+    edge_core::request_pipeline::{
         PipelineRequest, PipelineResolution, PipelineResult, PipelineRoute, TerminalOutcomeGuard,
         evaluate_pipeline,
+    },
+    quic_listener::admission::{
+        AdmissionPolicyDecision, AdmissionRejectionResponse, admission_rejection_response,
     },
     runtime::connection::{
         auth::{

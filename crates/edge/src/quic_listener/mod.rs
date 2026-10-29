@@ -177,7 +177,7 @@ struct ListenerRuntimeSettings {
     new_connections_burst: u32,
 }
 
-type LbHeaderLookup<'a> = crate::request_pipeline::RequestHeaderLookup<'a>;
+type LbHeaderLookup<'a> = crate::edge_core::request_pipeline::RequestHeaderLookup<'a>;
 
 impl QUICListener {
     fn random_reset_token() -> u128 {

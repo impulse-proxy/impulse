@@ -1,8 +1,8 @@
-//! Public API for the Impulse edge runtime.
+//! Protocol-neutral request execution and shared routing for Impulse.
 //!
-//! The crate root exposes the small set of entrypoints that other crates should
-//! depend on directly. Listener orchestration, runtime wiring, and control-plane
-//! mechanics stay behind internal subsystem modules.
+//! Protocol listeners adapt requests into the internal edge core. Listener
+//! startup and process-facing integration are exposed under [`runtime::ingress`]
+//! instead of the crate root.
 #![warn(unreachable_pub)]
 
 #[cfg(test)]
@@ -11,14 +11,13 @@ extern crate self as impulse_edge;
 mod body;
 pub mod cid_radix;
 mod constants;
+mod edge_core;
 mod hash;
 pub mod metrics;
 mod observability;
 mod pingora_ingress;
 mod quic_listener;
-mod request_pipeline;
 pub mod resilience;
-pub mod routing;
 pub mod runtime;
 pub mod watchdog;
 
@@ -29,6 +28,7 @@ pub use constants::{
     QUIC_INITIAL_MAX_STREAMS_BIDI, QUIC_INITIAL_MAX_STREAMS_UNI, QUIC_INITIAL_STREAM_DATA,
     REQUEST_TIMEOUT_SECS, UDP_READ_TIMEOUT_MS,
 };
+pub use edge_core::routing;
 pub(crate) use hash::REQUEST_ID_COUNTER;
 pub use hash::{stable_hash_socket_addr, stable_hash64};
 pub use metrics::{Metrics, OverloadShedReason, RouteOutcome};
@@ -36,10 +36,4 @@ pub use observability::{
     AdmissionDecisionReason, AdmissionOverloadCause, BackendHealthReason, HedgeDecisionReason,
     MetricReasonLabels, OperationalEventContext, RequestOutcomeReason, RetryDecisionReason,
     backend_health_reason,
-};
-pub use pingora_ingress::{PingoraListenerTask, spawn_pingora_ingress_listener};
-pub use quic_listener::{
-    ListenerWorkerGroupConfig, ListenerWorkerRuntimeState, configure_async_runtime,
-    release_shard_queue_bytes, shard_index_for_peer, spawn_listener_worker_group,
-    try_reserve_shard_queue_bytes,
 };

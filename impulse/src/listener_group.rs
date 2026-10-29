@@ -6,12 +6,14 @@ use std::{
 };
 
 use impulse_config::runtime::{ListenerRuntimeConfig, RuntimeConfig};
-use impulse_edge::{
-    ListenerWorkerGroupConfig, ListenerWorkerRuntimeState, PingoraListenerTask,
-    runtime::{
-        bundle::RuntimeBundleHandle, listener::ShutdownSignal, shared_state::SharedRuntimeState,
+use impulse_edge::runtime::{
+    bundle::RuntimeBundleHandle,
+    ingress::{
+        ListenerWorkerGroupConfig, ListenerWorkerRuntimeState, PingoraListenerTask,
+        spawn_listener_worker_group, spawn_pingora_ingress_listener,
     },
-    spawn_listener_worker_group, spawn_pingora_ingress_listener,
+    listener::ShutdownSignal,
+    shared_state::SharedRuntimeState,
 };
 use log::{error, info};
 
@@ -456,7 +458,7 @@ fn group_signature_worker_count(group: &ListenerGroupRuntime) -> usize {
 mod tests {
     use std::{net::SocketAddr, sync::atomic::AtomicUsize};
 
-    use impulse_edge::{
+    use impulse_edge::runtime::ingress::{
         release_shard_queue_bytes, shard_index_for_peer, try_reserve_shard_queue_bytes,
     };
 

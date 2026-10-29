@@ -15,7 +15,7 @@ use tracing::Span;
 
 use crate::{
     OverloadShedReason,
-    request_pipeline::TerminalOutcomeGuard,
+    edge_core::request_pipeline::TerminalOutcomeGuard,
     resilience::{adaptive_admission::AdaptivePermit, route_queue::RouteQueuePermit},
     runtime::connection::{
         auth::{ExternalAuthFailureDisposition, ExternalAuthResult},

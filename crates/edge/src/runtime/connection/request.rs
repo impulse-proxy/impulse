@@ -16,7 +16,7 @@ use tracing::Span;
 
 use crate::{
     Metrics, OverloadShedReason,
-    request_pipeline::TerminalOutcomeGuard,
+    edge_core::request_pipeline::TerminalOutcomeGuard,
     runtime::connection::{
         auth::{ExternalAuthResult, PendingHeaderMutation},
         outcome::{

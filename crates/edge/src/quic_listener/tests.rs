@@ -2108,7 +2108,7 @@ fn make_request_context(start: Instant, method: &str) -> RequestContext {
         authority: None,
         start,
         total_request_deadline: start + std::time::Duration::from_secs(30),
-        terminal_outcome: crate::request_pipeline::TerminalOutcomeGuard::default(),
+        terminal_outcome: crate::edge_core::request_pipeline::TerminalOutcomeGuard::default(),
     }
 }
 

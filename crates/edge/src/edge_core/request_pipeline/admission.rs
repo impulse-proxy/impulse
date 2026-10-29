@@ -1,8 +1,8 @@
 use impulse_contracts::RequestDecision;
 
 use crate::{
+    edge_core::request_pipeline::{PipelineRequest, ResolvedRequestPolicy},
     quic_listener::evaluate_forwarding_pre_admission_policy,
-    request_pipeline::{PipelineRequest, ResolvedRequestPolicy},
     resilience::runtime::RuntimeResilience,
 };
 

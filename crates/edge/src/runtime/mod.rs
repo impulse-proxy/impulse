@@ -10,6 +10,7 @@ pub mod bundle;
 pub mod cache;
 pub(crate) mod connection;
 pub(crate) mod generation;
+pub mod ingress;
 pub mod listener;
 pub mod policy;
 pub mod privilege_drop;

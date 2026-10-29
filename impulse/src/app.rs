@@ -9,13 +9,11 @@ use std::{
 
 use clap::Parser;
 use impulse_config::{runtime::RuntimeConfig, validator::validate as validate_config};
-use impulse_edge::{
-    configure_async_runtime,
-    runtime::{
-        bundle::RuntimeBundleHandle,
-        listener::QUICListener,
-        privilege_drop::{apply_process_privilege_drop, current_process_privilege_state},
-    },
+use impulse_edge::runtime::{
+    bundle::RuntimeBundleHandle,
+    ingress::configure_async_runtime,
+    listener::QUICListener,
+    privilege_drop::{apply_process_privilege_drop, current_process_privilege_state},
 };
 use log::{error, info, warn};
 
