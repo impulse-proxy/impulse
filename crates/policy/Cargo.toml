@@ -5,4 +5,9 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+base64.workspace = true
+boring.workspace = true
+hmac = "0.12"
+serde_json.workspace = true
+sha2 = "0.10"
 subtle.workspace = true

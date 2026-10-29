@@ -8,7 +8,14 @@
 #![warn(unreachable_pub)]
 
 mod api_key;
+mod jwt;
 mod request;
 
 pub use api_key::{ApiKeyPolicyInput, api_key_is_authorized};
+pub use jwt::{
+    JwtAlgorithm, JwtAllowedAlgorithms, JwtClaimsRequirements, JwtPolicyInput,
+    JwtValidationFailure, JwtValidationFailureReason, JwtVerificationKey, ParsedJoseHeader,
+    ParsedJwt, ValidatedJwt, jwt_claims_satisfy_requirements, parse_jose_header, parse_jwt,
+    validate_parsed_jwt,
+};
 pub use request::{RequestHeaderLookup, RequestView};

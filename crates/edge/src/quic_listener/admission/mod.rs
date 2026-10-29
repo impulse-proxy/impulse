@@ -13,14 +13,12 @@ use base64::{Engine as _engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use boring::{
     bn::BigNum,
     ec::{EcGroup, EcKey},
-    ecdsa::EcdsaSig,
-    hash::MessageDigest,
     nid::Nid,
     pkey::{Id as PKeyId, PKey, Public},
-    rsa::{Padding, Rsa},
-    sign::Verifier,
+    rsa::Rsa,
 };
 use bytes::Bytes;
+#[cfg(test)]
 use hmac::{Hmac, Mac};
 use http::StatusCode;
 use http_body_util::{BodyExt, Full, combinators::BoxBody};
@@ -40,7 +38,6 @@ use serde_json::Value;
 #[cfg(test)]
 use serial_test::serial;
 use sha2::{Digest, Sha256};
-use subtle::ConstantTimeEq;
 use tokio::{
     runtime::RuntimeFlavor,
     sync::{OwnedSemaphorePermit, Semaphore, TryAcquireError},

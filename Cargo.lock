@@ -1600,6 +1600,11 @@ dependencies = [
 name = "impulse-policy"
 version = "0.6.0"
 dependencies = [
+ "base64",
+ "boring",
+ "hmac",
+ "serde_json",
+ "sha2",
  "subtle",
 ]
 
