@@ -24,6 +24,9 @@ use crate::runtime::{
     bundle::{ActiveRuntimeGeneration, RuntimeBundleHandle},
     cache::response_cache_storage_limits,
     policy::{ReloadCompatibilityAuthority, TransitionRejection},
+    tls::lifecycle::{
+        record_listener_tls_inventory, rotate_listener_tls_material, stage_listener_tls_rotation,
+    },
 };
 
 mod activate;
@@ -38,26 +41,23 @@ impl QUICListener {
         listener_tls_store: &ListenerTlsReloadStore,
         metrics: &Metrics,
     ) -> Response<Full<Bytes>> {
-        let mut staged = Vec::with_capacity(listener_runtime_configs.len());
-        let mut failures = Vec::new();
-        for (listener_label, listener_config) in listener_runtime_configs {
-            let reloaded_state = match Self::build_listener_tls_reload_state(listener_config) {
-                Ok(mut state) => {
-                    state.last_reload_status = "cert_reload_applied".to_string();
-                    state
-                }
-                Err(err) => {
-                    failures.push(json!({
-                        "listener": listener_label,
-                        "status": "failed",
-                        "reason": "listener_tls_invalid",
-                        "error": err.to_string(),
-                    }));
-                    continue;
-                }
-            };
-            staged.push((listener_label.clone(), reloaded_state));
-        }
+        let staged_rotation = stage_listener_tls_rotation(
+            listener_runtime_configs,
+            Self::build_listener_tls_reload_state,
+        );
+        let failures = staged_rotation
+            .failures
+            .into_iter()
+            .map(|(listener, error)| {
+                json!({
+                    "listener": listener,
+                    "status": "failed",
+                    "reason": "listener_tls_invalid",
+                    "error": error.to_string(),
+                })
+            })
+            .collect::<Vec<_>>();
+        let staged = staged_rotation.states;
 
         if !failures.is_empty() {
             metrics
@@ -78,7 +78,7 @@ impl QUICListener {
             );
         }
 
-        let generations = match listener_tls_store.replace_listeners(&staged) {
+        let generations = match rotate_listener_tls_material(listener_tls_store, &staged) {
             Ok(generations) => generations,
             Err(err) => {
                 metrics
@@ -103,11 +103,7 @@ impl QUICListener {
         let mut reloaded = Vec::with_capacity(staged.len());
         let mut last_loaded_at_unix_ms = 0u64;
         for (listener_label, reloaded_state) in staged {
-            Self::update_listener_tls_expiry_metrics(
-                metrics,
-                &listener_label,
-                &reloaded_state.inventory,
-            );
+            record_listener_tls_inventory(metrics, &listener_label, &reloaded_state.inventory);
             last_loaded_at_unix_ms = last_loaded_at_unix_ms.max(reloaded_state.loaded_at_unix_ms);
             reloaded.push(json!({
                 "listener": listener_label,

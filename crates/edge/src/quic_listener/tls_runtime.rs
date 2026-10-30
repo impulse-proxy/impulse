@@ -453,18 +453,11 @@ impl QUICListener {
         current_generation: u64,
         listener_tls_store: &ListenerTlsReloadStore,
     ) -> Result<Option<u64>, ProxyError> {
-        let next_generation = listener_tls_store
-            .generation(listener_label)
-            .ok_or_else(|| {
-                ProxyError::Transport(format!(
-                    "missing TLS reload state for listener '{}'",
-                    listener_label
-                ))
-            })?;
-        if next_generation == current_generation {
-            return Ok(None);
-        }
-        Ok(Some(next_generation))
+        crate::runtime::tls::lifecycle::listener_tls_generation_if_changed(
+            listener_label,
+            current_generation,
+            listener_tls_store,
+        )
     }
 
     fn sync_tls_reload_state_if_needed(&mut self) -> Result<(), ProxyError> {
@@ -1064,49 +1057,8 @@ impl QUICListener {
         })
     }
 
-    pub(super) fn build_listener_tls_reload_store(
-        config: &RuntimeConfig,
-    ) -> Result<ListenerTlsReloadStore, ProxyError> {
-        let mut listeners = HashMap::new();
-        for listener_config in config.listener_runtime_configs() {
-            let listener_label = Self::listener_label(&listener_config);
-            let state = Self::build_listener_tls_reload_state(&listener_config)?;
-            listeners.insert(listener_label, state);
-        }
-        Ok(ListenerTlsReloadStore::new(listeners))
-    }
-
     pub(super) fn listener_label(config: &ListenerRuntimeConfig) -> String {
-        format!(
-            "{}:{}",
-            config.listen.listen.address, config.listen.listen.port
-        )
-    }
-
-    pub(super) fn update_listener_tls_expiry_metrics(
-        metrics: &Metrics,
-        listener_label: &str,
-        inventory: &ListenerTlsInventory,
-    ) {
-        let mut certs = Vec::with_capacity(inventory.sni_identities.len() + 1);
-        certs.push((
-            "__default__".to_string(),
-            inventory.default_identity.metadata.not_after_unix_seconds,
-        ));
-        certs.extend(
-            inventory
-                .sni_identities
-                .iter()
-                .map(|(server_name, identity)| {
-                    (
-                        server_name.clone(),
-                        identity.metadata.not_after_unix_seconds,
-                    )
-                }),
-        );
-        metrics
-            .ingress_observations()
-            .replace_downstream_tls_cert_expiry(listener_label, certs);
+        crate::runtime::tls::lifecycle::listener_label(config)
     }
 
     pub(super) fn classify_downstream_tls_cert_selection<'a>(

@@ -22,6 +22,10 @@ use crate::{
         generation::StartupOwnedRuntimeState,
         listener::{QUICListener, ShutdownSignal},
         shared_state::SharedRuntimeState,
+        tls::lifecycle::{
+            create_listener_tls_store, record_listener_tls_inventory,
+            record_listener_tls_store_inventory,
+        },
     },
 };
 
@@ -118,17 +122,17 @@ impl QUICListener {
     ) -> Result<SharedRuntimeState, ProxyError> {
         let listener_tls_store = match carried.as_ref() {
             Some(carried) => Arc::clone(&carried.listener_tls_store),
-            None => Arc::new(Self::build_listener_tls_reload_store(config)?),
+            None => Arc::new(create_listener_tls_store(
+                config,
+                Self::build_listener_tls_reload_state,
+            )?),
         };
         let shared_state =
             RuntimeBuilder::build(config, carried, generation, Arc::clone(&listener_tls_store))?;
-        for (listener_label, inventory) in listener_tls_store.snapshot() {
-            Self::update_listener_tls_expiry_metrics(
-                &shared_state.shared_services().metrics,
-                &listener_label,
-                &inventory,
-            );
-        }
+        record_listener_tls_store_inventory(
+            &shared_state.shared_services().metrics,
+            &listener_tls_store,
+        );
         Self::update_runtime_secret_lifecycle_metrics(
             &shared_state.shared_services().metrics,
             config,
@@ -439,7 +443,7 @@ impl QUICListener {
             if let Ok(state) = Self::build_listener_tls_reload_state(&listener) {
                 latest_listener_load_unix_seconds =
                     latest_listener_load_unix_seconds.max(state.loaded_at_unix_ms / 1_000);
-                Self::update_listener_tls_expiry_metrics(metrics, &label, &state.inventory);
+                record_listener_tls_inventory(metrics, &label, &state.inventory);
             }
         }
 
