@@ -3,9 +3,6 @@ use std::fmt;
 /// Stable identifier assigned to one downstream request.
 pub type RequestId = u64;
 
-/// Stable identifier for a published or staged runtime generation.
-pub type GenerationId = u64;
-
 /// Protocol used by a downstream request to enter the runtime.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum IngressProtocol {

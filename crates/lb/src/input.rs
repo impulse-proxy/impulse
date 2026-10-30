@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use impulse_contracts::GenerationId;
+use impulse_runtime::GenerationId;
 
 /// Validated backend data required by load-balancing implementations.
 #[derive(Clone, Debug, Eq, PartialEq)]

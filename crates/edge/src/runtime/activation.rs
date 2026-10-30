@@ -6,8 +6,8 @@
 //! activation services should consume these types rather than inventing
 //! endpoint-local request/result payloads.
 
-pub use impulse_contracts::GenerationId;
 pub use impulse_observability::{RuntimeOperationOutcomeReason, RuntimeRejectionReason};
+pub use impulse_runtime::GenerationId;
 use serde::{Deserialize, Serialize};
 
 use crate::runtime::policy::{TransitionRejection, TransitionRejectionKind};

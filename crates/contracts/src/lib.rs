@@ -13,7 +13,7 @@ mod outcome;
 mod request;
 mod tunnel;
 
-pub use identity::{BackendIdentity, GenerationId, IngressProtocol, RequestId};
+pub use identity::{BackendIdentity, IngressProtocol, RequestId};
 pub use outcome::{
     AdmissionOutcomeKind, AlternateBackendFailureReason, BackendFailureReason,
     BackendHealthObservationOutcome, BackendHealthObservationSource, CancellationReason,

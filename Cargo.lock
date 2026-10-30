@@ -1538,6 +1538,7 @@ dependencies = [
  "impulse-lb",
  "impulse-observability",
  "impulse-policy",
+ "impulse-runtime",
  "impulse-transport",
  "impulse-utils",
  "libc",
@@ -1583,6 +1584,7 @@ dependencies = [
  "criterion",
  "impulse-config",
  "impulse-contracts",
+ "impulse-runtime",
  "pingora-error",
  "pingora-load-balancing",
 ]
@@ -1620,6 +1622,13 @@ dependencies = [
  "sha2",
  "subtle",
  "tokio",
+]
+
+[[package]]
+name = "impulse-runtime"
+version = "0.6.0"
+dependencies = [
+ "log",
 ]
 
 [[package]]
