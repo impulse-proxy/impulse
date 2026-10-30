@@ -3,7 +3,6 @@
 mod admission;
 mod compression;
 mod execution;
-mod outcome;
 mod policy;
 mod routing;
 mod types;
@@ -13,7 +12,6 @@ pub(crate) use compression::{
     apply_gzip_response_headers, ensure_vary_accept_encoding, evaluate_response_compression,
 };
 pub(crate) use execution::execute_request;
-pub(crate) use outcome::TerminalOutcomeGuard;
 pub(crate) use policy::ResolvedRequestPolicy;
 pub(crate) use routing::RouteResolutionError;
 #[cfg(test)]

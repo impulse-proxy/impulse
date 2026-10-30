@@ -14,8 +14,9 @@ use super::{
     *,
 };
 use crate::{
-    edge_core::request_execution::{
-        RequestExecutionInput, RequestExecutionState, TerminalOutcomeGuard, execute_request,
+    edge_core::{
+        request_completion::RequestCompletion,
+        request_execution::{RequestExecutionInput, RequestExecutionState, execute_request},
     },
     quic_listener::admission::{
         AdmissionPolicyDecision, AdmissionRejectionResponse, admission_rejection_response,
@@ -431,7 +432,7 @@ impl QUICListener {
                     authority: authority.map(str::to_string),
                     start: request_start,
                     total_request_deadline: request_start,
-                    terminal_outcome: TerminalOutcomeGuard::default(),
+                    completion: RequestCompletion::default(),
                 },
                 request_mode,
                 request_body: request_mode.initial_body_state(),
@@ -607,22 +608,23 @@ impl QUICListener {
                 match admission {
                     AdmissionPolicyDecision::AdmitReady => {}
                     AdmissionPolicyDecision::Unauthorized(_) => {
-                        intake.state.context.terminal_outcome.record();
                         metrics.policy_observations().inc_policy_denied();
-                        let _ = observe_admission_outcome(
-                            metrics,
-                            RouteOutcomeTarget {
-                                route: &upstream_name,
-                            },
-                            Some(BackendOutcomeTarget {
-                                upstream: &upstream_name,
-                                backend_addr: Some(backend_addr.as_str()),
-                                backend_index: Some(backend_index),
-                            }),
-                            request_start.elapsed(),
-                            http::StatusCode::UNAUTHORIZED,
-                            AdmissionOutcomeClass::AuthDenied,
-                        );
+                        let _ = intake.state.context.completion.complete_with(|| {
+                            observe_admission_outcome(
+                                metrics,
+                                RouteOutcomeTarget {
+                                    route: &upstream_name,
+                                },
+                                Some(BackendOutcomeTarget {
+                                    upstream: &upstream_name,
+                                    backend_addr: Some(backend_addr.as_str()),
+                                    backend_index: Some(backend_index),
+                                }),
+                                request_start.elapsed(),
+                                http::StatusCode::UNAUTHORIZED,
+                                AdmissionOutcomeClass::AuthDenied,
+                            )
+                        });
                         warn!(
                             "admission denied: upstream={} reason=auth_denied",
                             upstream_name
@@ -648,22 +650,23 @@ impl QUICListener {
                         )));
                     }
                     AdmissionPolicyDecision::RateLimited(decision) => {
-                        intake.state.context.terminal_outcome.record();
                         metrics.policy_observations().inc_request_rate_limited();
-                        let _ = observe_admission_outcome(
-                            metrics,
-                            RouteOutcomeTarget {
-                                route: &upstream_name,
-                            },
-                            Some(BackendOutcomeTarget {
-                                upstream: &upstream_name,
-                                backend_addr: Some(backend_addr.as_str()),
-                                backend_index: Some(backend_index),
-                            }),
-                            request_start.elapsed(),
-                            http::StatusCode::TOO_MANY_REQUESTS,
-                            AdmissionOutcomeClass::RateLimited,
-                        );
+                        let _ = intake.state.context.completion.complete_with(|| {
+                            observe_admission_outcome(
+                                metrics,
+                                RouteOutcomeTarget {
+                                    route: &upstream_name,
+                                },
+                                Some(BackendOutcomeTarget {
+                                    upstream: &upstream_name,
+                                    backend_addr: Some(backend_addr.as_str()),
+                                    backend_index: Some(backend_index),
+                                }),
+                                request_start.elapsed(),
+                                http::StatusCode::TOO_MANY_REQUESTS,
+                                AdmissionOutcomeClass::RateLimited,
+                            )
+                        });
                         warn!(
                             "admission denied: upstream={} reason=rate_limited rule={}",
                             decision.route, decision.rule_name
@@ -689,27 +692,28 @@ impl QUICListener {
                         )));
                     }
                     AdmissionPolicyDecision::Overloaded(decision) => {
-                        intake.state.context.terminal_outcome.record();
-                        let _ = observe_admission_outcome(
-                            metrics,
-                            RouteOutcomeTarget {
-                                route: &upstream_name,
-                            },
-                            Some(BackendOutcomeTarget {
-                                upstream: &upstream_name,
-                                backend_addr: Some(backend_addr.as_str()),
-                                backend_index: Some(backend_index),
-                            }),
-                            request_start.elapsed(),
-                            http::StatusCode::SERVICE_UNAVAILABLE,
-                            AdmissionOutcomeClass::OverloadShed {
-                                reason: Some(
-                                    crate::quic_listener::admission::overload_metrics_reason(
-                                        decision.reason,
+                        let _ = intake.state.context.completion.complete_with(|| {
+                            observe_admission_outcome(
+                                metrics,
+                                RouteOutcomeTarget {
+                                    route: &upstream_name,
+                                },
+                                Some(BackendOutcomeTarget {
+                                    upstream: &upstream_name,
+                                    backend_addr: Some(backend_addr.as_str()),
+                                    backend_index: Some(backend_index),
+                                }),
+                                request_start.elapsed(),
+                                http::StatusCode::SERVICE_UNAVAILABLE,
+                                AdmissionOutcomeClass::OverloadShed {
+                                    reason: Some(
+                                        crate::quic_listener::admission::overload_metrics_reason(
+                                            decision.reason,
+                                        ),
                                     ),
-                                ),
-                            },
-                        );
+                                },
+                            )
+                        });
                         let Some(response) = rejection_response.as_ref() else {
                             warn!(
                                 "admission rejection response missing: upstream={} reason=overloaded",
@@ -795,7 +799,7 @@ impl QUICListener {
                 })
             }
             Err(err) => {
-                intake.state.context.terminal_outcome.record();
+                intake.state.context.completion.complete();
                 let (status, body): (http::StatusCode, &[u8]) = match &err {
                     ProxyError::Bridge(_) => (http::StatusCode::BAD_REQUEST, b"invalid request\n"),
                     ProxyError::Transport(_) | ProxyError::Pool(_) => {

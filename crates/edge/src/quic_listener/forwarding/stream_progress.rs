@@ -262,21 +262,23 @@ impl QUICListener {
                     }
                 ) {
                     metrics.request_observations().inc_timeout();
-                    let _ = crate::runtime::connection::outcome::observe_proxy_error_outcome(
-                        metrics,
-                        crate::runtime::connection::outcome::RouteOutcomeTarget {
-                            route: req.upstream_name.as_deref().unwrap_or("unrouted"),
-                        },
-                        Some(crate::runtime::connection::outcome::BackendOutcomeTarget {
-                            upstream: req.upstream_name.as_deref().unwrap_or("unrouted"),
-                            backend_addr: req.backend_addr.as_deref(),
-                            backend_index: req.backend_index,
-                        }),
-                        req.start.elapsed(),
-                        Some(http::StatusCode::REQUEST_TIMEOUT),
-                        &ProxyError::Timeout,
-                        None,
-                    );
+                    let _ = req.complete_with(|| {
+                        crate::runtime::connection::outcome::observe_proxy_error_outcome(
+                            metrics,
+                            crate::runtime::connection::outcome::RouteOutcomeTarget {
+                                route: req.upstream_name.as_deref().unwrap_or("unrouted"),
+                            },
+                            Some(crate::runtime::connection::outcome::BackendOutcomeTarget {
+                                upstream: req.upstream_name.as_deref().unwrap_or("unrouted"),
+                                backend_addr: req.backend_addr.as_deref(),
+                                backend_index: req.backend_index,
+                            }),
+                            req.start.elapsed(),
+                            Some(http::StatusCode::REQUEST_TIMEOUT),
+                            &ProxyError::Timeout,
+                            None,
+                        )
+                    });
                     let _ = Self::send_simple_response(
                         h3,
                         quic,
@@ -288,7 +290,6 @@ impl QUICListener {
                         .adaptive_admission
                         .observe(req.start.elapsed(), true);
                     if let Some(req) = streams.get_mut(&stream_id) {
-                        req.mark_terminal_outcome_recorded();
                         terminalize_stream(
                             req,
                             TerminalReason::TimedOut(TimeoutReason::RequestBodyIdle),

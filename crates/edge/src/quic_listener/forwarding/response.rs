@@ -1419,9 +1419,10 @@ impl QUICListener {
                     }
                 }
                 req.response_status = Some(metadata.status.as_u16());
-                req.mark_terminal_outcome_recorded();
+                let _ = req.complete_with(|| {
+                    Self::observe_response_start_transition(req, &observation, shared_ctx)
+                });
                 req.transition_streaming_to_completed(CompletionReason::ImmediateResponse, metrics);
-                Self::observe_response_start_transition(req, &observation, shared_ctx);
                 Ok(true)
             }
             ResponseStartDecision::StreamingPrebuilt {
@@ -1447,8 +1448,9 @@ impl QUICListener {
                         state_err.attempted(),
                     );
                 }
-                Self::observe_response_start_transition(req, &observation, shared_ctx);
-                req.mark_terminal_outcome_recorded();
+                let _ = req.complete_with(|| {
+                    Self::observe_response_start_transition(req, &observation, shared_ctx)
+                });
                 Ok(false)
             }
             ResponseStartDecision::StreamingBodyPump {
@@ -1491,8 +1493,9 @@ impl QUICListener {
                         state_err.attempted(),
                     );
                 }
-                Self::observe_response_start_transition(req, &observation, shared_ctx);
-                req.mark_terminal_outcome_recorded();
+                let _ = req.complete_with(|| {
+                    Self::observe_response_start_transition(req, &observation, shared_ctx)
+                });
                 Ok(false)
             }
             ResponseStartDecision::BackendFailure(err) => Err(err),

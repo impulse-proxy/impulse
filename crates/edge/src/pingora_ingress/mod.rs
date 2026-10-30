@@ -57,10 +57,11 @@ use crate::{
             checked_request_body_ingress, checked_response_body_guardrails,
             evaluate_request_body_timeouts,
         },
+        request_completion::RequestCompletion,
         request_execution::{
             RequestExecutionInput, ResolvedRequestPolicy, ResolvedRouteTarget,
             ResponseCompressionAction, ResponseCompressionPolicyInput, RouteResolutionError,
-            TerminalOutcomeGuard, execute_request,
+            execute_request,
         },
         request_validation::validate_http_request_parts,
         response_processing::{
@@ -113,7 +114,7 @@ pub(crate) struct PingoraRequestContext {
     pub(crate) route: Option<ResolvedRouteTarget>,
     pub(crate) policy: Option<ResolvedRequestPolicy>,
     auth_header_mutations: Vec<PendingHeaderMutation>,
-    pub(crate) terminal_outcome: TerminalOutcomeGuard,
+    pub(crate) completion: RequestCompletion,
     started_at: Instant,
     terminal_classification: Option<PingoraTerminalClassification>,
     method: Option<String>,
@@ -148,7 +149,7 @@ enum PingoraTerminalClassification {
 
 impl Drop for PingoraRequestContext {
     fn drop(&mut self) {
-        self.terminal_outcome.record();
+        self.completion.complete();
         self.drain.active_requests.fetch_sub(1, Ordering::AcqRel);
     }
 }
@@ -829,7 +830,7 @@ impl ProxyHttp for PingoraIngressService {
             route: None,
             policy: None,
             auth_header_mutations: Vec::new(),
-            terminal_outcome: TerminalOutcomeGuard::default(),
+            completion: RequestCompletion::default(),
             started_at: Instant::now(),
             terminal_classification: None,
             method: None,
@@ -1862,7 +1863,7 @@ impl ProxyHttp for PingoraIngressService {
     }
 
     async fn logging(&self, session: &mut Session, error: Option<&Error>, ctx: &mut Self::CTX) {
-        if !ctx.terminal_outcome.record() {
+        if !ctx.completion.complete() {
             return;
         }
 

@@ -713,20 +713,22 @@ impl QUICListener {
                 req.response_status = Some(decision.status().as_u16());
                 metrics.policy_observations().inc_policy_denied();
                 metrics.policy_observations().inc_external_auth_denied();
-                let _ = observe_admission_outcome(
-                    metrics,
-                    RouteOutcomeTarget {
-                        route: req.upstream_name.as_deref().unwrap_or("unrouted"),
-                    },
-                    Some(BackendOutcomeTarget {
-                        upstream: req.upstream_name.as_deref().unwrap_or("unrouted"),
-                        backend_addr: req.backend_addr.as_deref(),
-                        backend_index: req.backend_index,
-                    }),
-                    req.start.elapsed(),
-                    decision.status(),
-                    AdmissionOutcomeClass::AuthDenied,
-                );
+                let _ = req.complete_with(|| {
+                    observe_admission_outcome(
+                        metrics,
+                        RouteOutcomeTarget {
+                            route: req.upstream_name.as_deref().unwrap_or("unrouted"),
+                        },
+                        Some(BackendOutcomeTarget {
+                            upstream: req.upstream_name.as_deref().unwrap_or("unrouted"),
+                            backend_addr: req.backend_addr.as_deref(),
+                            backend_index: req.backend_index,
+                        }),
+                        req.start.elapsed(),
+                        decision.status(),
+                        AdmissionOutcomeClass::AuthDenied,
+                    )
+                });
                 warn!(
                     "admission denied: request_id={} upstream={} reason=auth_denied status={}",
                     req.request_id,
@@ -734,7 +736,6 @@ impl QUICListener {
                     req.response_status.unwrap_or(0)
                 );
                 Self::send_external_auth_decision_response(h3, quic, stream_id, &decision)?;
-                req.mark_terminal_outcome_recorded();
                 req.transition_to_terminal_with_cleanup(
                     TerminalReason::Rejected(RejectionReason::AuthDenied),
                     metrics,
@@ -756,22 +757,23 @@ impl QUICListener {
                     );
                 }
                 req.response_status = Some(status.as_u16());
-                let _ = observe_admission_outcome(
-                    metrics,
-                    RouteOutcomeTarget {
-                        route: req.upstream_name.as_deref().unwrap_or("unrouted"),
-                    },
-                    Some(BackendOutcomeTarget {
-                        upstream: req.upstream_name.as_deref().unwrap_or("unrouted"),
-                        backend_addr: req.backend_addr.as_deref(),
-                        backend_index: req.backend_index,
-                    }),
-                    req.start.elapsed(),
-                    status,
-                    AdmissionOutcomeClass::Failed { timed_out: false },
-                );
+                let _ = req.complete_with(|| {
+                    observe_admission_outcome(
+                        metrics,
+                        RouteOutcomeTarget {
+                            route: req.upstream_name.as_deref().unwrap_or("unrouted"),
+                        },
+                        Some(BackendOutcomeTarget {
+                            upstream: req.upstream_name.as_deref().unwrap_or("unrouted"),
+                            backend_addr: req.backend_addr.as_deref(),
+                            backend_index: req.backend_index,
+                        }),
+                        req.start.elapsed(),
+                        status,
+                        AdmissionOutcomeClass::Failed { timed_out: false },
+                    )
+                });
                 Self::send_simple_response(h3, quic, stream_id, status, body)?;
-                req.mark_terminal_outcome_recorded();
                 req.transition_to_terminal_with_cleanup(
                     TerminalReason::Rejected(RejectionReason::AuthUnavailable),
                     metrics,
@@ -781,22 +783,23 @@ impl QUICListener {
             ExternalAuthStateTransition::TimedOutAuth { status, body } => {
                 metrics.policy_observations().inc_external_auth_timeout();
                 req.response_status = Some(status.as_u16());
-                let _ = observe_admission_outcome(
-                    metrics,
-                    RouteOutcomeTarget {
-                        route: req.upstream_name.as_deref().unwrap_or("unrouted"),
-                    },
-                    Some(BackendOutcomeTarget {
-                        upstream: req.upstream_name.as_deref().unwrap_or("unrouted"),
-                        backend_addr: req.backend_addr.as_deref(),
-                        backend_index: req.backend_index,
-                    }),
-                    req.start.elapsed(),
-                    status,
-                    AdmissionOutcomeClass::Failed { timed_out: true },
-                );
+                let _ = req.complete_with(|| {
+                    observe_admission_outcome(
+                        metrics,
+                        RouteOutcomeTarget {
+                            route: req.upstream_name.as_deref().unwrap_or("unrouted"),
+                        },
+                        Some(BackendOutcomeTarget {
+                            upstream: req.upstream_name.as_deref().unwrap_or("unrouted"),
+                            backend_addr: req.backend_addr.as_deref(),
+                            backend_index: req.backend_index,
+                        }),
+                        req.start.elapsed(),
+                        status,
+                        AdmissionOutcomeClass::Failed { timed_out: true },
+                    )
+                });
                 Self::send_simple_response(h3, quic, stream_id, status, body)?;
-                req.mark_terminal_outcome_recorded();
                 req.transition_to_terminal_with_cleanup(
                     TerminalReason::TimedOut(TimeoutReason::ExternalAuth),
                     metrics,

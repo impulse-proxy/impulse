@@ -2099,7 +2099,7 @@ fn make_request_context(start: Instant, method: &str) -> RequestContext {
         authority: None,
         start,
         total_request_deadline: start + std::time::Duration::from_secs(30),
-        terminal_outcome: crate::edge_core::request_execution::TerminalOutcomeGuard::default(),
+        completion: crate::edge_core::request_completion::RequestCompletion::default(),
     }
 }
 
@@ -2197,7 +2197,7 @@ fn make_dispatch_ready_envelope(
         retry_count: 0,
         error_kind: None,
         terminal_overload_reason: None,
-        terminal_outcome: context.terminal_outcome.clone(),
+        completion: context.completion.clone(),
         empty_request_body_runtime: RequestBodyRuntime::empty(start),
         execution: RequestExecutionState::DispatchReady(DispatchReadyState {
             context,
@@ -2332,7 +2332,7 @@ fn abort_stream_waiting_for_auth_clears_async_auth_state() {
             authority: req.authority.clone(),
             start: req.start,
             total_request_deadline: req.total_request_deadline,
-            terminal_outcome: req.terminal_outcome.clone(),
+            completion: req.completion.clone(),
         },
         routing: RoutingSnapshot {
             backend_addr: "http://127.0.0.1:8080".into(),

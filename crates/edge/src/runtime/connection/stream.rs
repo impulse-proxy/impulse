@@ -15,7 +15,7 @@ use tracing::Span;
 
 use crate::{
     OverloadShedReason,
-    edge_core::request_execution::TerminalOutcomeGuard,
+    edge_core::request_completion::RequestCompletion,
     resilience::{adaptive_admission::AdaptivePermit, route_queue::RouteQueuePermit},
     runtime::connection::{
         auth::{ExternalAuthFailureDisposition, ExternalAuthResult},
@@ -205,7 +205,7 @@ pub struct RequestContext {
     pub authority: Option<String>,
     pub start: Instant,
     pub total_request_deadline: Instant,
-    pub(crate) terminal_outcome: TerminalOutcomeGuard,
+    pub(crate) completion: RequestCompletion,
 }
 
 #[derive(Debug, Clone)]
