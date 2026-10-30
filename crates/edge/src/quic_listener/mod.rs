@@ -101,7 +101,6 @@ mod connection;
 mod control_api;
 mod control_plane;
 mod forwarding;
-mod load_balancing;
 mod metrics;
 mod pingora_health;
 mod protocol;
@@ -110,7 +109,6 @@ mod runtime_state;
 mod shutdown;
 mod startup;
 mod tls_runtime;
-mod transport;
 mod validation;
 mod workers;
 
@@ -135,10 +133,6 @@ pub(crate) use forwarding::{
 use forwarding::{
     ForwardingExecutionCtx, ForwardingSharedCtx, H3RequestHandlingConfig, StreamProgressConfig,
 };
-pub(crate) use load_balancing::{
-    backend_inputs as load_balancing_backend_inputs,
-    strategy_input as load_balancing_strategy_input, upstream_pool as upstream_pool_from_runtime,
-};
 pub(in crate::quic_listener) use protocol::{
     can_poll_upstream_result, collect_h3_trailers, is_connect_method, is_tunnel_response,
 };
@@ -157,6 +151,10 @@ pub use workers::{
     spawn_listener_worker_group, try_reserve_shard_queue_bytes,
 };
 use x509_parser::{extensions::GeneralName, parse_x509_certificate};
+
+pub(crate) use crate::runtime::subsystem_mapping::{
+    load_balancing_backend_inputs, load_balancing_strategy_input, upstream_pool_from_runtime,
+};
 
 struct ListenerRuntimeSettings {
     backend_timeout: Duration,

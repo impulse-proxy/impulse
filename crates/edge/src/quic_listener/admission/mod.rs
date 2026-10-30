@@ -548,9 +548,7 @@ pub(super) fn api_key_is_authorized(
     header_lookup: Option<&LbHeaderLookup<'_>>,
 ) -> bool {
     impulse_policy::api_key_is_authorized(
-        policy.upstream_auth.api_key.as_ref().map(|api_key| {
-            impulse_policy::ApiKeyPolicyInput::new(&api_key.header_name, &api_key.keys)
-        }),
+        crate::runtime::subsystem_mapping::api_key_policy_input(&policy.upstream_auth),
         header_lookup,
     )
 }

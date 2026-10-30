@@ -21,9 +21,9 @@ use crate::{
     observability::{HedgeDecisionReason, RetryDecisionReason},
     runtime::{
         cache::{
-            ResponseCacheAuthInput, ResponseCacheKeyInput, ResponseCachePolicyInput,
-            ResponseCacheRequestEligibilityInput, canonical_response_cache_key,
-            evaluate_cache_request_eligibility, route_auth_requires_cache_bypass,
+            ResponseCacheKeyInput, ResponseCacheRequestEligibilityInput,
+            canonical_response_cache_key, evaluate_cache_request_eligibility,
+            route_auth_requires_cache_bypass,
         },
         connection::{request::PendingForward, response::ForwardingPolicyTelemetry},
     },
@@ -165,9 +165,7 @@ impl QUICListener {
         }
         let Ok(representation) =
             evaluate_cache_request_eligibility(ResponseCacheRequestEligibilityInput {
-                policy: ResponseCachePolicyInput {
-                    enabled: policy.enabled,
-                },
+                policy: crate::runtime::subsystem_mapping::response_cache_policy_input(&policy),
                 route_auth_enabled,
                 method: pending_forward.method.as_ref(),
                 headers: &headers,
@@ -592,13 +590,11 @@ impl QUICListener {
             .map(|policy| {
                 (
                     policy.response_cache.clone(),
-                    route_auth_requires_cache_bypass(ResponseCacheAuthInput {
-                        api_key: policy.upstream_auth.api_key.is_some(),
-                        jwt: policy.upstream_auth.jwt.is_some(),
-                        external_auth: policy.upstream_auth.external_auth.is_some(),
-                        required_scopes: !policy.upstream_auth.required_scopes.is_empty(),
-                        required_roles: !policy.upstream_auth.required_roles.is_empty(),
-                    }),
+                    route_auth_requires_cache_bypass(
+                        crate::runtime::subsystem_mapping::response_cache_auth_input(
+                            &policy.upstream_auth,
+                        ),
+                    ),
                 )
             });
         let trace_span_for_upstream = req.trace_span.clone();

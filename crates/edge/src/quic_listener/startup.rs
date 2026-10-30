@@ -17,8 +17,7 @@ use socket2::{Domain, Protocol, Socket, Type};
 use tokio::sync::Semaphore;
 
 use super::{
-    load_balancing_backend_inputs, load_balancing_strategy_input,
-    transport::upstream_transport_inputs, upstream_pool_from_runtime,
+    load_balancing_backend_inputs, load_balancing_strategy_input, upstream_pool_from_runtime,
 };
 use crate::{
     Metrics,
@@ -36,6 +35,7 @@ use crate::{
         generation::{RuntimeGenerationState, RuntimeSharedServices, StartupOwnedRuntimeState},
         listener::{QUICListener, ShutdownSignal},
         shared_state::SharedRuntimeState,
+        subsystem_mapping::upstream_transport_inputs,
         tasks::RuntimeTaskRegistry,
     },
     watchdog::{config::WatchdogRuntimeConfig, coordinator::WatchdogCoordinator},

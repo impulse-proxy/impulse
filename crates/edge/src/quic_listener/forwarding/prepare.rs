@@ -229,44 +229,11 @@ impl PendingForward {
         &'a self,
         endpoint: &'a BackendEndpoint,
     ) -> impulse_bridge::request::RequestBuildTarget<'a> {
-        impulse_bridge::request::RequestBuildTarget {
-            endpoint: impulse_bridge::UpstreamTargetInput {
-                scheme: match endpoint.scheme() {
-                    BackendScheme::Http => impulse_bridge::UpstreamScheme::Http,
-                    BackendScheme::Https => impulse_bridge::UpstreamScheme::Https,
-                },
-                authority: endpoint.authority(),
-            },
-            policies: impulse_bridge::request::RequestBuildPolicies {
-                host_policy: impulse_bridge::HostPolicyInput {
-                    mode: match self.host_policy.mode {
-                        impulse_config::config::UpstreamHostPolicyMode::PassThrough => {
-                            impulse_bridge::HostPolicyMode::PassThrough
-                        }
-                        impulse_config::config::UpstreamHostPolicyMode::Rewrite => {
-                            impulse_bridge::HostPolicyMode::Rewrite
-                        }
-                        impulse_config::config::UpstreamHostPolicyMode::Upstream => {
-                            impulse_bridge::HostPolicyMode::Upstream
-                        }
-                    },
-                    rewrite_host: self.host_policy.host.as_deref(),
-                },
-                forwarded_header_policy: impulse_bridge::ForwardingPolicyInput {
-                    mode: match self.forwarded_header_policy.mode {
-                        impulse_config::config::ForwardedHeaderPolicyMode::Preserve => {
-                            impulse_bridge::ForwardedHeaderMode::Preserve
-                        }
-                        impulse_config::config::ForwardedHeaderPolicyMode::Append => {
-                            impulse_bridge::ForwardedHeaderMode::Append
-                        }
-                        impulse_config::config::ForwardedHeaderPolicyMode::Overwrite => {
-                            impulse_bridge::ForwardedHeaderMode::Overwrite
-                        }
-                    },
-                },
-            },
-        }
+        crate::runtime::subsystem_mapping::bridge_request_target(
+            endpoint,
+            &self.host_policy,
+            &self.forwarded_header_policy,
+        )
     }
 
     fn request_build_input<'a>(

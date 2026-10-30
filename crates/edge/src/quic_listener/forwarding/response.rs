@@ -451,10 +451,9 @@ impl QUICListener {
                     request_headers.append(name, value);
                 }
             }
-            ResponseCompressionPolicyInput {
-                enabled: pending_forward.response_compression.enabled,
-                minimum_size_bytes: pending_forward.response_compression.minimum_size_bytes,
-            }
+            crate::runtime::subsystem_mapping::response_compression_policy_input(
+                &pending_forward.response_compression,
+            )
         } else {
             ResponseCompressionPolicyInput {
                 enabled: false,

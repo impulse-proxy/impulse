@@ -61,8 +61,7 @@ use crate::{
         request_completion::RequestCompletion,
         request_execution::{
             RequestExecutionInput, ResolvedRequestPolicy, ResolvedRouteTarget,
-            ResponseCompressionAction, ResponseCompressionPolicyInput, RouteResolutionError,
-            execute_request,
+            ResponseCompressionAction, RouteResolutionError, execute_request,
         },
         request_validation::validate_http_request_parts,
         response_processing::{
@@ -81,8 +80,7 @@ use crate::{
     runtime::{
         bundle::{RuntimeBundle, RuntimeBundleHandle},
         cache::{
-            BoundedPingoraMemoryCache, ResponseCacheAuthInput, ResponseCacheKeyInput,
-            ResponseCachePolicyInput, ResponseCacheRepresentation,
+            BoundedPingoraMemoryCache, ResponseCacheKeyInput, ResponseCacheRepresentation,
             ResponseCacheRequestEligibilityInput, canonical_response_cache_key,
             evaluate_cache_request_eligibility, route_auth_requires_cache_bypass,
         },
@@ -214,10 +212,9 @@ impl PingoraIngressService {
             constraints: pingora_response_constraints(tunnel_response),
             request_method: method,
             request_headers: &session.req_header().headers,
-            compression: ResponseCompressionPolicyInput {
-                enabled: policy.response_compression.enabled,
-                minimum_size_bytes: policy.response_compression.minimum_size_bytes,
-            },
+            compression: crate::runtime::subsystem_mapping::response_compression_policy_input(
+                &policy.response_compression,
+            ),
             cache_max_ttl_secs: ctx
                 .response_cache_representation
                 .is_some()
@@ -1186,28 +1183,14 @@ impl ProxyHttp for PingoraIngressService {
         let has_body = !session.is_body_empty();
         let representation =
             evaluate_cache_request_eligibility(ResponseCacheRequestEligibilityInput {
-                policy: ResponseCachePolicyInput {
-                    enabled: cache_policy.enabled,
-                },
-                route_auth_enabled: route_auth_requires_cache_bypass(ResponseCacheAuthInput {
-                    api_key: policy.local_auth_policy.upstream_auth.api_key.is_some(),
-                    jwt: policy.local_auth_policy.upstream_auth.jwt.is_some(),
-                    external_auth: policy
-                        .local_auth_policy
-                        .upstream_auth
-                        .external_auth
-                        .is_some(),
-                    required_scopes: !policy
-                        .local_auth_policy
-                        .upstream_auth
-                        .required_scopes
-                        .is_empty(),
-                    required_roles: !policy
-                        .local_auth_policy
-                        .upstream_auth
-                        .required_roles
-                        .is_empty(),
-                }),
+                policy: crate::runtime::subsystem_mapping::response_cache_policy_input(
+                    cache_policy,
+                ),
+                route_auth_enabled: route_auth_requires_cache_bypass(
+                    crate::runtime::subsystem_mapping::response_cache_auth_input(
+                        &policy.local_auth_policy.upstream_auth,
+                    ),
+                ),
                 method,
                 headers: &session.req_header().headers,
                 has_body,
@@ -1519,44 +1502,11 @@ impl ProxyHttp for PingoraIngressService {
             .headers
             .get("traceparent")
             .and_then(|value| value.to_str().ok());
-        let target = impulse_bridge::request::RequestBuildTarget {
-            endpoint: impulse_bridge::UpstreamTargetInput {
-                scheme: match endpoint.scheme() {
-                    BackendScheme::Http => impulse_bridge::UpstreamScheme::Http,
-                    BackendScheme::Https => impulse_bridge::UpstreamScheme::Https,
-                },
-                authority: endpoint.authority(),
-            },
-            policies: impulse_bridge::request::RequestBuildPolicies {
-                host_policy: impulse_bridge::HostPolicyInput {
-                    mode: match policy.host_policy.mode {
-                        impulse_config::config::UpstreamHostPolicyMode::PassThrough => {
-                            impulse_bridge::HostPolicyMode::PassThrough
-                        }
-                        impulse_config::config::UpstreamHostPolicyMode::Rewrite => {
-                            impulse_bridge::HostPolicyMode::Rewrite
-                        }
-                        impulse_config::config::UpstreamHostPolicyMode::Upstream => {
-                            impulse_bridge::HostPolicyMode::Upstream
-                        }
-                    },
-                    rewrite_host: policy.host_policy.host.as_deref(),
-                },
-                forwarded_header_policy: impulse_bridge::ForwardingPolicyInput {
-                    mode: match policy.forwarded_header_policy.mode {
-                        impulse_config::config::ForwardedHeaderPolicyMode::Preserve => {
-                            impulse_bridge::ForwardedHeaderMode::Preserve
-                        }
-                        impulse_config::config::ForwardedHeaderPolicyMode::Append => {
-                            impulse_bridge::ForwardedHeaderMode::Append
-                        }
-                        impulse_config::config::ForwardedHeaderPolicyMode::Overwrite => {
-                            impulse_bridge::ForwardedHeaderMode::Overwrite
-                        }
-                    },
-                },
-            },
-        };
+        let target = crate::runtime::subsystem_mapping::bridge_request_target(
+            endpoint,
+            &policy.host_policy,
+            &policy.forwarded_header_policy,
+        );
         let auth_header_mutations = ctx
             .auth_header_mutations
             .iter()

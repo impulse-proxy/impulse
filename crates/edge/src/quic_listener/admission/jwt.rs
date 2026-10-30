@@ -29,7 +29,10 @@ pub(crate) fn validate_jwt_token(
     jwt: &RuntimeJwtAuth,
     now: SystemTime,
 ) -> Result<ValidatedJwt, JwtValidationFailure> {
-    let parsed = impulse_policy::parse_jwt(token, allowed_algorithms(jwt))?;
+    let parsed = impulse_policy::parse_jwt(
+        token,
+        crate::runtime::subsystem_mapping::jwt_allowed_algorithms(jwt),
+    )?;
     let algorithm = config_algorithm(parsed.algorithm());
     let key = match JwtKeyResolver::new(jwt, algorithm, parsed.kid()).resolve() {
         JwtKeyResolution::Found(resolved) | JwtKeyResolution::StaleButUsable(resolved) => {
@@ -49,7 +52,12 @@ pub(crate) fn validate_jwt_token(
             return Err(JwtValidationFailure::new(reason));
         }
     };
-    let validated = impulse_policy::validate_parsed_jwt(parsed, key, jwt_policy(jwt), now)?;
+    let validated = impulse_policy::validate_parsed_jwt(
+        parsed,
+        key,
+        crate::runtime::subsystem_mapping::jwt_policy_input(jwt),
+        now,
+    )?;
     Ok(ValidatedJwt {
         algorithm: config_algorithm(validated.algorithm),
         claims: validated.claims,
@@ -186,25 +194,6 @@ fn all_algorithms() -> impulse_policy::JwtAllowedAlgorithms {
         hs256: true,
         rs256: true,
         es256: true,
-    }
-}
-
-fn allowed_algorithms(jwt: &RuntimeJwtAuth) -> impulse_policy::JwtAllowedAlgorithms {
-    impulse_policy::JwtAllowedAlgorithms {
-        hs256: jwt.allowed_algorithms.contains(&JwtAlgorithm::Hs256),
-        rs256: jwt.allowed_algorithms.contains(&JwtAlgorithm::Rs256),
-        es256: jwt.allowed_algorithms.contains(&JwtAlgorithm::Es256),
-    }
-}
-
-fn jwt_policy(jwt: &RuntimeJwtAuth) -> impulse_policy::JwtPolicyInput<'_> {
-    impulse_policy::JwtPolicyInput {
-        allowed_algorithms: allowed_algorithms(jwt),
-        issuer: jwt.issuer.as_deref(),
-        issuers: &jwt.issuers,
-        audience: jwt.audience.as_deref(),
-        audiences: &jwt.audiences,
-        clock_skew_seconds: jwt.clock_skew.as_secs(),
     }
 }
 
