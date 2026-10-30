@@ -378,9 +378,14 @@ impl QUICListener {
             .tunnel
             .await
             .map_err(|_| ProxyError::Transport("upstream tunnel task stopped".into()))??;
+        let (mode, io, completion) = tunnel.into_parts();
+        if mode != TunnelMode::Websocket {
+            let detail = "WebSocket exchange returned a CONNECT tunnel lease";
+            completion.fail(ProxyError::Protocol(detail.into()));
+            return Err(ProxyError::Protocol(detail.into()));
+        }
         let (chunk_tx, chunk_rx) = mpsc::channel(RESPONSE_CHUNK_CHANNEL_CAPACITY);
         let fut = async move {
-            let (io, completion) = tunnel.into_parts();
             let (mut reader, mut writer) = tokio::io::split(io);
             let write_fut = async {
                 while let Some(chunk) = body_rx.recv().await {

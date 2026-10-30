@@ -1,5 +1,6 @@
 use bytes::Bytes;
 use hyper::http::{HeaderMap, Method, StatusCode, Uri, Version};
+use impulse_contracts::TunnelMode;
 use impulse_errors::ProxyError;
 use tokio::{
     io::{AsyncRead, AsyncWrite},
@@ -74,17 +75,33 @@ pub trait UpstreamTunnelIo: AsyncRead + AsyncWrite + Send + Unpin {}
 impl<T> UpstreamTunnelIo for T where T: AsyncRead + AsyncWrite + Send + Unpin {}
 
 pub struct UpstreamTunnel {
+    mode: TunnelMode,
     io: Box<dyn UpstreamTunnelIo>,
     lifecycle: UpstreamExchangeLifecycle,
 }
 
 impl UpstreamTunnel {
-    pub(crate) fn new(io: Box<dyn UpstreamTunnelIo>, lifecycle: UpstreamExchangeLifecycle) -> Self {
-        Self { io, lifecycle }
+    pub(crate) fn new(
+        mode: TunnelMode,
+        io: Box<dyn UpstreamTunnelIo>,
+        lifecycle: UpstreamExchangeLifecycle,
+    ) -> Self {
+        Self {
+            mode,
+            io,
+            lifecycle,
+        }
     }
 
-    pub fn into_parts(self) -> (Box<dyn UpstreamTunnelIo>, UpstreamTunnelCompletion) {
+    pub fn into_parts(
+        self,
+    ) -> (
+        TunnelMode,
+        Box<dyn UpstreamTunnelIo>,
+        UpstreamTunnelCompletion,
+    ) {
         (
+            self.mode,
             self.io,
             UpstreamTunnelCompletion {
                 lifecycle: self.lifecycle,

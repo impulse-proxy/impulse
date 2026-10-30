@@ -5,6 +5,7 @@ use http::StatusCode;
 pub use impulse_contracts::CompletionReason;
 pub(crate) use impulse_contracts::{
     BackendFailureReason, CancellationReason, RejectionReason, TerminalReason, TimeoutReason,
+    TunnelMode,
 };
 use impulse_errors::ProxyError;
 use tokio::{
@@ -46,13 +47,6 @@ pub enum StreamAdmissionState {
     ReadyToForward,
     /// Request was denied by admission/auth checks and should not be forwarded.
     Denied,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TunnelMode {
-    None,
-    Connect,
-    Websocket,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

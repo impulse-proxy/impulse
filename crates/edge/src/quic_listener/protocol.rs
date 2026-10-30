@@ -74,14 +74,15 @@ pub(in crate::quic_listener) fn is_bodyless_request_mode(
 }
 
 pub(in crate::quic_listener) fn is_tunnel_mode(tunnel_mode: TunnelMode) -> bool {
-    tunnel_mode != TunnelMode::None
+    tunnel_mode.is_tunnel()
 }
 
 pub(in crate::quic_listener) fn is_tunnel_response(
     tunnel_mode: TunnelMode,
+    method: &str,
     status: StatusCode,
 ) -> bool {
-    is_tunnel_mode(tunnel_mode) && status.is_success()
+    tunnel_mode.established_by(method, status)
 }
 
 #[cfg(test)]

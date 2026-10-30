@@ -4,6 +4,7 @@ use std::{
 };
 
 use hyper::{Method, http::Version};
+use impulse_contracts::TunnelMode;
 use impulse_errors::ProxyError;
 use pingora_core::{
     Error, InternalError, Result,
@@ -260,10 +261,16 @@ impl PingoraH1UpstreamSession {
         let tunnel_response =
             self.session().was_upgraded() || (self.connect_request && head.status.is_success());
         if tunnel_response {
+            let tunnel_mode = if self.connect_request {
+                TunnelMode::Connect
+            } else {
+                TunnelMode::Websocket
+            };
             let (frames, body) = upstream_response_body_channel();
             drop(frames);
             let (tunnel_sender, tunnel) = oneshot::channel();
             let _ = tunnel_sender.send(Ok(UpstreamTunnel::new(
+                tunnel_mode,
                 Box::new(self.into_tunnel()),
                 lifecycle,
             )));

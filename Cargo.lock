@@ -1631,6 +1631,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "impulse-contracts",
  "impulse-errors",
  "pingora-core",
  "pingora-http",

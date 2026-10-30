@@ -15,6 +15,7 @@ use impulse_bridge::response::{
     normalize_response_trailers,
 };
 use impulse_config::{backend_endpoint::BackendScheme, runtime::ListenerRuntimeConfig};
+use impulse_contracts::TunnelMode;
 use impulse_errors::{
     BridgeError, PoolError, ProxyError, RetryAttemptTelemetryReason, RetryPolicyDecision,
     classify_upstream_proxy_error, is_idempotent_method,
@@ -123,7 +124,7 @@ pub(crate) struct PingoraRequestContext {
     content_length: Option<usize>,
     body_bytes_received: usize,
     request_body_last_progress_at: Instant,
-    body_limit_exempt: bool,
+    tunnel_mode: TunnelMode,
     response_body_bytes_received: usize,
     response_body_started_at: Option<Instant>,
     response_body_last_progress_at: Option<Instant>,
@@ -196,10 +197,9 @@ impl PingoraIngressService {
                 "Pingora ingress request filter did not validate a method",
             )
         })?;
-        let tunnel_response = ctx.body_limit_exempt
-            && (upstream_response.status == http::StatusCode::SWITCHING_PROTOCOLS
-                || (method.eq_ignore_ascii_case("CONNECT")
-                    && upstream_response.status.is_success()));
+        let tunnel_response = ctx
+            .tunnel_mode
+            .established_by(method, upstream_response.status);
         let body_mode = if tunnel_response {
             ResponseBodyMode::TunnelSuccess
         } else if method.eq_ignore_ascii_case("HEAD") {
@@ -839,7 +839,7 @@ impl ProxyHttp for PingoraIngressService {
             content_length: None,
             body_bytes_received: 0,
             request_body_last_progress_at: Instant::now(),
-            body_limit_exempt: false,
+            tunnel_mode: TunnelMode::None,
             response_body_bytes_received: 0,
             response_body_started_at: None,
             response_body_last_progress_at: None,
@@ -957,11 +957,13 @@ impl ProxyHttp for PingoraIngressService {
             .metrics
             .policy_observations()
             .set_brownout_active(state.resilience.brownout.is_active());
-        let body_limit_exempt = validated.method.eq_ignore_ascii_case("CONNECT")
-            || impulse_bridge::websocket::legacy_websocket_upgrade_requested(
-                &validated.method,
-                &bridge_headers(&request.headers),
-            );
+        let tunnel_mode = if validated.websocket_tunnel {
+            TunnelMode::Websocket
+        } else if validated.method.eq_ignore_ascii_case("CONNECT") {
+            TunnelMode::Connect
+        } else {
+            TunnelMode::None
+        };
         let external_auth_request =
             execution
                 .policy
@@ -980,7 +982,7 @@ impl ProxyHttp for PingoraIngressService {
         ctx.path = Some(validated.path);
         ctx.authority = validated.authority;
         ctx.content_length = validated.content_length;
-        ctx.body_limit_exempt = body_limit_exempt;
+        ctx.tunnel_mode = tunnel_mode;
 
         if let Some(response) = admission_rejection_response(&execution.admission) {
             match execution.admission {
@@ -1040,7 +1042,7 @@ impl ProxyHttp for PingoraIngressService {
                 buffered_bytes: 0,
                 next_chunk_bytes: 0,
                 declared_content_length: ctx.content_length,
-                exempt_from_body_size_cap: body_limit_exempt,
+                exempt_from_body_size_cap: tunnel_mode.is_tunnel(),
             },
         )
         .is_err()
@@ -1180,7 +1182,7 @@ impl ProxyHttp for PingoraIngressService {
             return Ok(());
         };
         let cache_policy = &policy.local_auth_policy.response_cache;
-        let is_tunnel = method.eq_ignore_ascii_case("CONNECT");
+        let is_tunnel = ctx.tunnel_mode == TunnelMode::Connect;
         let has_body = !session.is_body_empty();
         let representation =
             evaluate_cache_request_eligibility(ResponseCacheRequestEligibilityInput {
@@ -1209,7 +1211,7 @@ impl ProxyHttp for PingoraIngressService {
                 method,
                 headers: &session.req_header().headers,
                 has_body,
-                is_upgrade: ctx.body_limit_exempt && !is_tunnel,
+                is_upgrade: ctx.tunnel_mode == TunnelMode::Websocket,
                 is_tunnel,
             });
         let Ok(representation) = representation else {
@@ -1325,7 +1327,7 @@ impl ProxyHttp for PingoraIngressService {
                 buffered_bytes: 0,
                 next_chunk_bytes: body.as_ref().map_or(0, Bytes::len),
                 declared_content_length: ctx.content_length,
-                exempt_from_body_size_cap: ctx.body_limit_exempt,
+                exempt_from_body_size_cap: ctx.tunnel_mode.is_tunnel(),
             },
         );
         if let RequestBodyGuardrailDecision::Timeout { kind } = timeout {
@@ -1363,7 +1365,7 @@ impl ProxyHttp for PingoraIngressService {
                 buffered_bytes: 0,
                 next_chunk_bytes: body.as_ref().map_or(0, Bytes::len),
                 declared_content_length: ctx.content_length,
-                exempt_from_body_size_cap: ctx.body_limit_exempt,
+                exempt_from_body_size_cap: ctx.tunnel_mode.is_tunnel(),
             },
         );
         match next {
@@ -1409,7 +1411,7 @@ impl ProxyHttp for PingoraIngressService {
             .map_err(|error| {
                 Error::because(InternalError, "backend peer creation failed", error)
             })?;
-        if ctx.body_limit_exempt {
+        if ctx.tunnel_mode.is_tunnel() {
             peer.options.alpn = ALPN::H1;
         }
         let body_idle = ctx
@@ -1669,10 +1671,9 @@ impl ProxyHttp for PingoraIngressService {
                 "Pingora ingress request filter did not validate a method",
             )
         })?;
-        let tunnel_response = ctx.body_limit_exempt
-            && (upstream_response.status == http::StatusCode::SWITCHING_PROTOCOLS
-                || (method.eq_ignore_ascii_case("CONNECT")
-                    && upstream_response.status.is_success()));
+        let tunnel_response = ctx
+            .tunnel_mode
+            .established_by(method, upstream_response.status);
         let content_length = ctx.response_content_length.or_else(|| {
             upstream_response
                 .headers
@@ -2103,7 +2104,7 @@ fn handle_pingora_proxy_failure(
         ctx.request_body_replayable && retry_safe,
         false,
         false,
-        ctx.body_limit_exempt,
+        ctx.tunnel_mode.is_tunnel(),
     );
     let decision = retry.retry_after_error(
         &proxy_error,

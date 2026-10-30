@@ -13,6 +13,7 @@ pingora-core = { workspace = true, features = ["rustls"] }
 pingora-http.workspace = true
 rustls-pki-types.workspace = true
 impulse-errors = { path = "../errors" }
+impulse-contracts = { path = "../contracts" }
 
 [dev-dependencies]
 http-body-util.workspace = true

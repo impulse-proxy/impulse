@@ -429,7 +429,7 @@ impl QUICListener {
             } => (status, headers, None, Some(response_chunk_rx), None, false),
         };
         let request_mode = req.request_mode();
-        let tunnel_response = is_tunnel_response(req.tunnel_mode, status);
+        let tunnel_response = is_tunnel_response(req.tunnel_mode, &req.method, status);
         let response_body_mode = if tunnel_response {
             ResponseBodyMode::TunnelSuccess
         } else if request_mode.suppresses_response_body() {

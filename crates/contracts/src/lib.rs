@@ -11,6 +11,7 @@
 mod identity;
 mod outcome;
 mod request;
+mod tunnel;
 
 pub use identity::{BackendIdentity, GenerationId, IngressProtocol, RequestId};
 pub use outcome::{
@@ -26,3 +27,4 @@ pub use request::{
     OverloadDecision, OverloadDecisionReason, RateLimitedDecision, RequestDecision,
     UnauthorizedDecision,
 };
+pub use tunnel::TunnelMode;
