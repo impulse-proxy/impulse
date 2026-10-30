@@ -13,7 +13,10 @@ use super::{
 };
 use crate::{
     resilience::quota::QuotaRuntime,
-    runtime::{bundle::RuntimeBundleHandle, shared_state::SharedRuntimeState},
+    runtime::{
+        backend::coordination::spawn_pingora_discovery_refresh, bundle::RuntimeBundleHandle,
+        shared_state::SharedRuntimeState,
+    },
     watchdog::{
         config::WatchdogRuntimeConfig,
         service::run_watchdog_service,
@@ -68,7 +71,8 @@ impl QUICListener {
             Self::register_jwt_jwks_metrics(&runtime.metrics());
             QuotaRuntime::register_metrics(&runtime.metrics());
             let task_registry = runtime.generation_tasks();
-            Self::spawn_pingora_discovery_refresh(
+            spawn_pingora_discovery_refresh(
+                runtime_handle(),
                 runtime.runtime_config(),
                 runtime.transport_pool(),
                 runtime.backend_dns_resolver(),

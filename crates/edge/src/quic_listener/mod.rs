@@ -96,7 +96,6 @@ use crate::{
 
 mod admission;
 mod async_runtime;
-mod backend_resolution;
 mod connection;
 mod control_api;
 mod control_plane;

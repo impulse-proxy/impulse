@@ -1,7 +1,13 @@
-use std::{sync::Mutex, time::Duration};
+use std::{
+    future::Future,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
-use log::warn;
-use tokio::{sync::oneshot, task::AbortHandle};
+use log::{error, warn};
+use tokio::{runtime::Handle, sync::oneshot, task::AbortHandle};
+
+use crate::Metrics;
 
 pub struct RuntimeTaskRegistry {
     state: Mutex<RuntimeTaskRegistryState>,
@@ -27,6 +33,38 @@ impl RuntimeTaskRegistry {
         } else {
             state.tasks.push(task);
         }
+    }
+
+    pub(crate) fn spawn_supervised<F>(
+        &self,
+        handle: &Handle,
+        task_name: &'static str,
+        metrics: Option<Arc<Metrics>>,
+        future: F,
+    ) where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        let task_name = task_name.to_string();
+        let (completion_tx, completion_rx) = oneshot::channel();
+        let join = handle.spawn(future);
+        let abort = join.abort_handle();
+        handle.spawn(async move {
+            match join.await {
+                Ok(()) => {}
+                Err(task_error) => {
+                    if let Some(metrics) = metrics {
+                        metrics.runtime_observations().inc_runtime_panic();
+                    }
+                    if task_error.is_panic() {
+                        error!("Background task '{}' panicked", task_name);
+                    } else {
+                        warn!("Background task '{}' cancelled", task_name);
+                    }
+                }
+            }
+            let _ = completion_tx.send(());
+        });
+        self.register(RuntimeTaskRegistration::new(abort, completion_rx));
     }
 
     fn begin_generation_retirement(&self) -> Vec<oneshot::Receiver<()>> {

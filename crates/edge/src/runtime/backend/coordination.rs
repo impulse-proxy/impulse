@@ -1,14 +1,19 @@
 use std::{
     net::SocketAddr,
+    sync::Arc,
     time::{Duration, SystemTime},
 };
 
-use impulse_config::runtime::{RuntimeBackendAddressKind, RuntimeBackendTlsPolicy};
+use impulse_config::runtime::{RuntimeBackendAddressKind, RuntimeBackendTlsPolicy, RuntimeConfig};
 use impulse_lb::pingora_backend::SharedPingoraLoadBalancingRuntimeState;
+use impulse_transport::{SharedDnsResolver, UpstreamTransportPool};
 use log::{debug, error, info, warn};
 
-use super::*;
-use crate::metrics::{DiscoveryRefreshUpdate, PingoraDiscoveryRefreshOutcome};
+use crate::{
+    Metrics,
+    metrics::{DiscoveryRefreshUpdate, PingoraDiscoveryRefreshOutcome},
+    runtime::tasks::RuntimeTaskRegistry,
+};
 
 const DNS_REFRESH_CONCURRENCY: usize = 8;
 
@@ -19,78 +24,76 @@ struct PingoraDnsRefreshTarget {
     authority_port: u16,
 }
 
-impl QUICListener {
-    pub(super) fn spawn_pingora_discovery_refresh(
-        config: &RuntimeConfig,
-        transport_pool: Arc<UpstreamTransportPool>,
-        backend_dns_resolver: SharedDnsResolver,
-        pingora_load_balancing: SharedPingoraLoadBalancingRuntimeState<RuntimeBackendTlsPolicy>,
-        metrics: Arc<Metrics>,
-        task_registry: Arc<RuntimeTaskRegistry>,
-    ) {
-        if !config.policies.transport.backend_dns.refresh_enabled {
-            return;
-        }
-
-        let backends = config
-            .upstreams
-            .values()
-            .flat_map(|upstream| upstream.backends.iter())
-            .filter(|backend| backend.endpoint.address_kind == RuntimeBackendAddressKind::Hostname)
-            .map(|backend| PingoraDnsRefreshTarget {
-                configured_address: backend.endpoint.configured_address.clone(),
-                authority_host: backend.endpoint.authority_host.clone(),
-                authority_port: backend.endpoint.authority_port,
-            })
-            .collect::<Vec<_>>();
-        if backends.is_empty() {
-            debug!("backend DNS refresh disabled: no hostname-based backends configured");
-            return;
-        }
-
-        let interval_ms: u64 = config
-            .policies
-            .transport
-            .backend_dns
-            .refresh_interval
-            .as_millis()
-            .try_into()
-            .unwrap_or(u64::MAX)
-            .max(1);
-        let lookup_timeout = config.policies.timeouts.backend_connect;
-        let handle = match runtime_handle() {
-            Some(handle) => handle,
-            None => {
-                error!("Backend DNS refresh disabled: no Tokio runtime available");
-                return;
-            }
-        };
-
-        let task_metrics = Arc::clone(&metrics);
-        let registration = spawn_supervised_async_task(
-            &handle,
-            "pingora-service-discovery",
-            Some(metrics),
-            async move {
-                let mut ticker = tokio::time::interval(Duration::from_millis(interval_ms));
-                ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-
-                loop {
-                    ticker.tick().await;
-                    refresh_pingora_backends(
-                        &backends,
-                        lookup_timeout,
-                        Arc::clone(&transport_pool),
-                        backend_dns_resolver.clone(),
-                        Arc::clone(&pingora_load_balancing),
-                        Arc::clone(&task_metrics),
-                    )
-                    .await;
-                }
-            },
-        );
-        task_registry.register(registration);
+pub(crate) fn spawn_pingora_discovery_refresh(
+    runtime_handle: Option<tokio::runtime::Handle>,
+    config: &RuntimeConfig,
+    transport_pool: Arc<UpstreamTransportPool>,
+    backend_dns_resolver: SharedDnsResolver,
+    pingora_load_balancing: SharedPingoraLoadBalancingRuntimeState<RuntimeBackendTlsPolicy>,
+    metrics: Arc<Metrics>,
+    task_registry: Arc<RuntimeTaskRegistry>,
+) {
+    if !config.policies.transport.backend_dns.refresh_enabled {
+        return;
     }
+
+    let backends = config
+        .upstreams
+        .values()
+        .flat_map(|upstream| upstream.backends.iter())
+        .filter(|backend| backend.endpoint.address_kind == RuntimeBackendAddressKind::Hostname)
+        .map(|backend| PingoraDnsRefreshTarget {
+            configured_address: backend.endpoint.configured_address.clone(),
+            authority_host: backend.endpoint.authority_host.clone(),
+            authority_port: backend.endpoint.authority_port,
+        })
+        .collect::<Vec<_>>();
+    if backends.is_empty() {
+        debug!("backend DNS refresh disabled: no hostname-based backends configured");
+        return;
+    }
+
+    let interval_ms: u64 = config
+        .policies
+        .transport
+        .backend_dns
+        .refresh_interval
+        .as_millis()
+        .try_into()
+        .unwrap_or(u64::MAX)
+        .max(1);
+    let lookup_timeout = config.policies.timeouts.backend_connect;
+    let handle = match runtime_handle {
+        Some(handle) => handle,
+        None => {
+            error!("Backend DNS refresh disabled: no Tokio runtime available");
+            return;
+        }
+    };
+
+    let task_metrics = Arc::clone(&metrics);
+    task_registry.spawn_supervised(
+        &handle,
+        "pingora-service-discovery",
+        Some(metrics),
+        async move {
+            let mut ticker = tokio::time::interval(Duration::from_millis(interval_ms));
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+            loop {
+                ticker.tick().await;
+                refresh_pingora_backends(
+                    &backends,
+                    lookup_timeout,
+                    Arc::clone(&transport_pool),
+                    backend_dns_resolver.clone(),
+                    Arc::clone(&pingora_load_balancing),
+                    Arc::clone(&task_metrics),
+                )
+                .await;
+            }
+        },
+    );
 }
 
 async fn refresh_pingora_backends(
