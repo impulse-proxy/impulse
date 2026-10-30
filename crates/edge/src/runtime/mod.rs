@@ -6,6 +6,7 @@
 
 pub mod activation;
 pub mod backend;
+pub(crate) mod builder;
 pub mod bundle;
 pub mod cache;
 pub(crate) mod connection;
