@@ -7,53 +7,20 @@ use std::{
     time::Duration,
 };
 
-use impulse_config::runtime::{ListenerRuntimeConfig, RuntimeConfig};
+use impulse_config::runtime::RuntimeConfig;
 use impulse_errors::ProxyError;
 use log::{info, warn};
 
 use crate::runtime::{
     activation::{GenerationChangeEvent, GenerationHistoryEntry},
     cache::BoundedPingoraMemoryCache,
-    generation::{
-        RuntimeGenerationState, RuntimeGenerationView, RuntimeSharedServices,
-        StartupOwnedRuntimeState,
-    },
+    generation::{RuntimeGenerationView, StartupOwnedRuntimeState},
     policy::RuntimeLifecycleState,
     shared_state::SharedRuntimeState,
 };
 
-/// The fully assembled runtime generation published to listener workers.
-///
-/// A bundle is the canonical boundary between configuration/build time and live
-/// worker execution: startup-owned state, generation-owned state, and shared
-/// services are packaged together and swapped as one unit.
-#[derive(Clone)]
-pub struct RuntimeBundle {
-    pub generation: u64,
-    pub startup: StartupOwnedRuntimeState,
-    pub runtime_config: RuntimeConfig,
-    pub shared_state: Arc<SharedRuntimeState>,
-}
-
-impl RuntimeBundle {
-    pub fn startup(&self) -> &StartupOwnedRuntimeState {
-        &self.startup
-    }
-
-    pub fn generation_view(&self) -> RuntimeGenerationView<'_> {
-        RuntimeGenerationView {
-            generation: self.generation,
-            startup: &self.startup,
-            runtime_config: &self.runtime_config,
-            shared: self.shared_state.shared_services(),
-            state: self.shared_state.generation_state(),
-        }
-    }
-
-    pub fn listener_runtime_config(&self, label: &str) -> Option<ListenerRuntimeConfig> {
-        self.generation_view().listener_runtime_config(label)
-    }
-}
+pub type RuntimeBundle =
+    impulse_runtime::RuntimeBundle<StartupOwnedRuntimeState, RuntimeConfig, SharedRuntimeState>;
 
 fn bounded_response_cache(runtime: &RuntimeBundle) -> Option<&'static BoundedPingoraMemoryCache> {
     let state = runtime.shared_state.generation_state();
@@ -100,48 +67,11 @@ fn response_cache_namespaces_compatible(current: &RuntimeBundle, next: &RuntimeB
         })
 }
 
-/// Read-only view of the generation currently installed in the process.
-///
-/// This wrapper gives callers stable access to the active bundle without
-/// exposing the swap mechanism itself.
-#[derive(Clone)]
-pub struct ActiveRuntimeGeneration {
-    bundle: Arc<RuntimeBundle>,
-}
-
-impl ActiveRuntimeGeneration {
-    pub fn bundle(&self) -> &RuntimeBundle {
-        self.bundle.as_ref()
-    }
-
-    pub fn generation(&self) -> u64 {
-        self.bundle.generation
-    }
-
-    pub fn startup(&self) -> &StartupOwnedRuntimeState {
-        &self.bundle.startup
-    }
-
-    pub fn runtime_config(&self) -> &RuntimeConfig {
-        &self.bundle.runtime_config
-    }
-
-    pub fn shared_services(&self) -> &RuntimeSharedServices {
-        self.bundle.shared_state.shared_services()
-    }
-
-    pub fn state(&self) -> &RuntimeGenerationState {
-        self.bundle.shared_state.generation_state()
-    }
-
-    pub fn view(&self) -> RuntimeGenerationView<'_> {
-        self.bundle.generation_view()
-    }
-
-    pub fn listener_runtime_config(&self, label: &str) -> Option<ListenerRuntimeConfig> {
-        self.bundle.listener_runtime_config(label)
-    }
-}
+pub type ActiveRuntimeGeneration = impulse_runtime::ActiveRuntimeGeneration<
+    StartupOwnedRuntimeState,
+    RuntimeConfig,
+    SharedRuntimeState,
+>;
 
 const MAX_ARCHIVED_RUNTIME_GENERATIONS: usize = 8;
 const MAX_GENERATION_HISTORY_ENTRIES: usize = 32;
@@ -300,7 +230,7 @@ impl RuntimeBundleHandle {
         &self,
     ) -> (ActiveRuntimeGeneration, u64) {
         let (bundle, namespace) = self.current_with_response_cache_namespace();
-        (ActiveRuntimeGeneration { bundle }, namespace)
+        (ActiveRuntimeGeneration::new(bundle), namespace)
     }
 
     /// The shared process lifecycle state machine (Phase 6). All clones of this
@@ -349,9 +279,7 @@ impl RuntimeBundleHandle {
     }
 
     pub fn current_view(&self) -> ActiveRuntimeGeneration {
-        ActiveRuntimeGeneration {
-            bundle: self.current(),
-        }
+        ActiveRuntimeGeneration::new(self.current())
     }
 
     pub fn current_generation(&self) -> u64 {
@@ -476,15 +404,15 @@ impl RuntimeBundleHandle {
     /// The swap replaces the whole [`RuntimeBundle`] pointer. By ownership class
     /// (see [`crate::runtime::policy::OwnedRuntimeState`]):
     ///
-    /// - **Generation-owned** ([`RuntimeGenerationState`]): fully replaced. The
+    /// - **Generation-owned** ([`crate::runtime::generation::RuntimeGenerationState`]): fully replaced. The
     ///   old generation's state is retired below.
     /// - **Startup-owned** ([`StartupOwnedRuntimeState`]): the caller
     ///   (`build_runtime_reload_plan`) carries the current values forward, and the
     ///   reload validator has already rejected any startup-owned change as
     ///   restart-required, so the swap must not observe a change here.
-    /// - **Process-shared** ([`RuntimeSharedServices`]): logically one instance
+    /// - **Process-shared** ([`crate::runtime::generation::RuntimeSharedServices`]): logically one instance
     ///   per process; in the current implementation the reload rebuilds it (see
-    ///   the note on `RuntimeSharedServices`).
+    ///   the note on `crate::runtime::generation::RuntimeSharedServices`).
     ///
     /// The active generation is only mutated at the single `mem::replace`; every
     /// failure path before it leaves the running generation intact.

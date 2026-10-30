@@ -1,5 +1,8 @@
 use std::sync::Arc;
 
+use impulse_config::runtime::ListenerRuntimeConfig;
+use impulse_runtime::RuntimeStateView;
+
 use crate::runtime::generation::{RuntimeGenerationState, RuntimeSharedServices};
 
 /// Shared runtime services plus the currently published generation-owned state.
@@ -74,5 +77,26 @@ impl SharedRuntimeState {
             )
             .summary();
         (summary.healthy_backends, summary.total_backends)
+    }
+}
+
+impl RuntimeStateView for SharedRuntimeState {
+    type SharedServices = RuntimeSharedServices;
+    type GenerationState = RuntimeGenerationState;
+    type ListenerConfig = ListenerRuntimeConfig;
+
+    fn shared_services(&self) -> &Self::SharedServices {
+        self.shared_services()
+    }
+
+    fn generation_state(&self) -> &Self::GenerationState {
+        self.generation_state()
+    }
+
+    fn listener_runtime_config(&self, label: &str) -> Option<Self::ListenerConfig> {
+        self.generation_state
+            .listener_runtime_configs
+            .get(label)
+            .cloned()
     }
 }

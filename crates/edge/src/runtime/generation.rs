@@ -147,17 +147,9 @@ impl OwnedRuntimeState for RuntimeGenerationState {
     const OWNERSHIP: OperationalOwnership = OperationalOwnership::GenerationOwned;
 }
 
-#[derive(Clone, Copy)]
-pub struct RuntimeGenerationView<'a> {
-    pub generation: u64,
-    pub startup: &'a StartupOwnedRuntimeState,
-    pub runtime_config: &'a RuntimeConfig,
-    pub shared: &'a RuntimeSharedServices,
-    pub state: &'a RuntimeGenerationState,
-}
-
-impl<'a> RuntimeGenerationView<'a> {
-    pub fn listener_runtime_config(&self, label: &str) -> Option<ListenerRuntimeConfig> {
-        self.state.listener_runtime_configs.get(label).cloned()
-    }
-}
+pub type RuntimeGenerationView<'a> = impulse_runtime::RuntimeGenerationView<
+    'a,
+    StartupOwnedRuntimeState,
+    RuntimeConfig,
+    crate::runtime::shared_state::SharedRuntimeState,
+>;
