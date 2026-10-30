@@ -1,10 +1,13 @@
 use std::{
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{Duration, SystemTime},
 };
 
 use async_trait::async_trait;
-use impulse_config::runtime::RuntimeResponseCachePolicy;
+use impulse_config::runtime::{RuntimeConfig, RuntimeResponseCachePolicy};
 pub use impulse_policy::{
     ResponseCacheAuthInput, ResponseCacheBypassReason, ResponseCacheKeyInput,
     ResponseCachePolicyInput, ResponseCacheRepresentation, ResponseCacheRequestEligibilityInput,
@@ -24,6 +27,83 @@ use pingora_http::ResponseHeader;
 use crate::{Metrics, metrics::ResponseCacheOutcome};
 
 const CACHE_LOCK_AGE_TIMEOUT: Duration = Duration::from_secs(60);
+
+#[derive(Clone)]
+pub(crate) struct RuntimeCacheStorage {
+    cache: Option<&'static BoundedPingoraMemoryCache>,
+    namespace: Arc<AtomicU64>,
+}
+
+impl RuntimeCacheStorage {
+    pub(crate) fn new(config: &RuntimeConfig, generation: u64, metrics: Arc<Metrics>) -> Self {
+        let cache = combined_storage_policy(config).map(|policy| {
+            Box::leak(Box::new(BoundedPingoraMemoryCache::new(&policy, metrics)))
+                as &'static BoundedPingoraMemoryCache
+        });
+        Self {
+            cache,
+            namespace: Arc::new(AtomicU64::new(generation)),
+        }
+    }
+
+    pub(crate) fn cache(&self) -> Option<&'static BoundedPingoraMemoryCache> {
+        self.cache
+    }
+
+    pub(crate) fn namespace(&self) -> u64 {
+        self.namespace.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn namespaces_compatible(
+        &self,
+        current: &RuntimeConfig,
+        next: &RuntimeConfig,
+    ) -> bool {
+        let current = current
+            .upstreams
+            .iter()
+            .filter(|(_, upstream)| upstream.policy.response_cache.enabled)
+            .collect::<Vec<_>>();
+        let next_count = next
+            .upstreams
+            .values()
+            .filter(|upstream| upstream.policy.response_cache.enabled)
+            .count();
+
+        current.len() == next_count
+            && current.into_iter().all(|(name, upstream)| {
+                next.upstreams
+                    .get(name)
+                    .filter(|candidate| candidate.policy.response_cache.enabled)
+                    .is_some_and(|candidate| {
+                        upstream.route == candidate.route && upstream.policy == candidate.policy
+                    })
+            })
+    }
+
+    pub(crate) fn rotate_namespace(&self, generation: u64) {
+        self.namespace.store(generation, Ordering::Release);
+    }
+}
+
+pub(crate) fn response_cache_storage_limits(config: &RuntimeConfig) -> Option<(usize, usize)> {
+    combined_storage_policy(config).map(|policy| (policy.max_bytes, policy.max_entries))
+}
+
+fn combined_storage_policy(config: &RuntimeConfig) -> Option<RuntimeResponseCachePolicy> {
+    let mut policies = config
+        .upstreams
+        .values()
+        .map(|upstream| upstream.policy.response_cache.clone());
+    let mut storage_policy = policies.next()?;
+    for policy in policies {
+        storage_policy.max_bytes = storage_policy.max_bytes.max(policy.max_bytes);
+        storage_policy.max_entries = storage_policy.max_entries.max(policy.max_entries);
+        storage_policy.max_object_bytes =
+            storage_policy.max_object_bytes.max(policy.max_object_bytes);
+    }
+    Some(storage_policy)
+}
 
 pub struct BoundedPingoraMemoryCache {
     storage: MemCache,

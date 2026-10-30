@@ -22,6 +22,7 @@ use crate::runtime::{
         RollbackRequest, RollbackResult, RuntimeActivationService, RuntimeRejectionReason,
     },
     bundle::{ActiveRuntimeGeneration, RuntimeBundleHandle},
+    cache::response_cache_storage_limits,
     policy::{ReloadCompatibilityAuthority, TransitionRejection},
 };
 
@@ -489,25 +490,8 @@ impl QUICListener {
     ) -> Result<(), Vec<TransitionRejection>> {
         let mut authority = ReloadCompatibilityAuthority::new();
 
-        let cache_storage_limits = |runtime: &RuntimeBundle| {
-            runtime.runtime_config.upstreams.values().fold(
-                None,
-                |limits: Option<(usize, usize)>, upstream| {
-                    let policy = &upstream.policy.response_cache;
-                    Some(limits.map_or(
-                        (policy.max_bytes, policy.max_entries),
-                        |(max_bytes, max_entries)| {
-                            (
-                                max_bytes.max(policy.max_bytes),
-                                max_entries.max(policy.max_entries),
-                            )
-                        },
-                    ))
-                },
-            )
-        };
-        let current_cache_limits = cache_storage_limits(current);
-        let next_cache_limits = cache_storage_limits(next);
+        let current_cache_limits = response_cache_storage_limits(&current.runtime_config);
+        let next_cache_limits = response_cache_storage_limits(&next.runtime_config);
         authority.note_restart_required_change(
             "upstreams[].cache.max_bytes",
             &current_cache_limits.map(|limits| limits.0),

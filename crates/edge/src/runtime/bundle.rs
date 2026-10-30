@@ -1,9 +1,6 @@
 use std::{
     collections::VecDeque,
-    sync::{
-        Arc, RwLock,
-        atomic::{AtomicU64, Ordering},
-    },
+    sync::{Arc, RwLock},
     time::Duration,
 };
 
@@ -13,7 +10,7 @@ use log::{info, warn};
 
 use crate::runtime::{
     activation::{GenerationChangeEvent, GenerationHistoryEntry},
-    cache::BoundedPingoraMemoryCache,
+    cache::{BoundedPingoraMemoryCache, RuntimeCacheStorage},
     generation::{RuntimeGenerationView, StartupOwnedRuntimeState},
     policy::RuntimeLifecycleState,
     shared_state::SharedRuntimeState,
@@ -22,51 +19,6 @@ use crate::runtime::{
 
 pub type RuntimeBundle =
     impulse_runtime::RuntimeBundle<StartupOwnedRuntimeState, RuntimeConfig, SharedRuntimeState>;
-
-fn bounded_response_cache(runtime: &RuntimeBundle) -> Option<&'static BoundedPingoraMemoryCache> {
-    let state = runtime.shared_state.generation_state();
-    let mut policies = state
-        .upstream_policies
-        .values()
-        .map(|policy| policy.response_cache.clone());
-    let mut storage_policy = policies.next()?;
-    for policy in policies {
-        storage_policy.max_bytes = storage_policy.max_bytes.max(policy.max_bytes);
-        storage_policy.max_entries = storage_policy.max_entries.max(policy.max_entries);
-        storage_policy.max_object_bytes =
-            storage_policy.max_object_bytes.max(policy.max_object_bytes);
-    }
-    Some(Box::leak(Box::new(BoundedPingoraMemoryCache::new(
-        &storage_policy,
-        Arc::clone(&runtime.shared_state.shared_services().metrics),
-    ))))
-}
-
-fn response_cache_namespaces_compatible(current: &RuntimeBundle, next: &RuntimeBundle) -> bool {
-    let current = current
-        .runtime_config
-        .upstreams
-        .iter()
-        .filter(|(_, upstream)| upstream.policy.response_cache.enabled)
-        .collect::<Vec<_>>();
-    let next_count = next
-        .runtime_config
-        .upstreams
-        .values()
-        .filter(|upstream| upstream.policy.response_cache.enabled)
-        .count();
-
-    current.len() == next_count
-        && current.into_iter().all(|(name, upstream)| {
-            next.runtime_config
-                .upstreams
-                .get(name)
-                .filter(|candidate| candidate.policy.response_cache.enabled)
-                .is_some_and(|candidate| {
-                    upstream.route == candidate.route && upstream.policy == candidate.policy
-                })
-        })
-}
 
 pub type ActiveRuntimeGeneration = impulse_runtime::ActiveRuntimeGeneration<
     StartupOwnedRuntimeState,
@@ -176,8 +128,7 @@ impl RuntimeGenerationRecord {
 #[derive(Clone)]
 pub struct RuntimeBundleHandle {
     inner: Arc<RwLock<Arc<RuntimeBundle>>>,
-    response_cache: Option<&'static BoundedPingoraMemoryCache>,
-    response_cache_namespace: Arc<AtomicU64>,
+    response_cache: RuntimeCacheStorage,
     history: Arc<RwLock<VecDeque<RuntimeGenerationRecord>>>,
     generation_history: Arc<RwLock<VecDeque<GenerationHistoryEntry>>>,
     generation_events: Arc<RwLock<VecDeque<GenerationChangeEvent>>>,
@@ -192,12 +143,14 @@ impl RuntimeBundleHandle {
         // here (see `begin_drain`/`begin_shutdown`).
         let lifecycle = RuntimeLifecycleState::new();
         let _ = lifecycle.mark_running();
-        let response_cache = bounded_response_cache(&bundle);
-        let response_cache_namespace = bundle.generation;
+        let response_cache = RuntimeCacheStorage::new(
+            &bundle.runtime_config,
+            bundle.generation,
+            Arc::clone(&bundle.shared_state.shared_services().metrics),
+        );
         let handle = Self {
             inner: Arc::new(RwLock::new(Arc::new(bundle))),
             response_cache,
-            response_cache_namespace: Arc::new(AtomicU64::new(response_cache_namespace)),
             history: Arc::new(RwLock::new(VecDeque::new())),
             generation_history: Arc::new(RwLock::new(VecDeque::new())),
             generation_events: Arc::new(RwLock::new(VecDeque::new())),
@@ -213,7 +166,7 @@ impl RuntimeBundleHandle {
     }
 
     pub(crate) fn response_cache(&self) -> Option<&'static BoundedPingoraMemoryCache> {
-        self.response_cache
+        self.response_cache.cache()
     }
 
     pub(crate) fn current_with_response_cache_namespace(&self) -> (Arc<RuntimeBundle>, u64) {
@@ -221,10 +174,7 @@ impl RuntimeBundleHandle {
             .inner
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        (
-            Arc::clone(&guard),
-            self.response_cache_namespace.load(Ordering::Acquire),
-        )
+        (Arc::clone(&guard), self.response_cache.namespace())
     }
 
     pub(crate) fn current_view_with_response_cache_namespace(
@@ -471,8 +421,9 @@ impl RuntimeBundleHandle {
                     expected_generation, previous_generation
                 )));
             }
-            let rotate_response_cache_namespace =
-                !response_cache_namespaces_compatible(guard.as_ref(), &bundle);
+            let rotate_response_cache_namespace = !self
+                .response_cache
+                .namespaces_compatible(&guard.runtime_config, &bundle.runtime_config);
             activate_transport_pool_generation(
                 bundle
                     .shared_state
@@ -486,8 +437,7 @@ impl RuntimeBundleHandle {
             // new readers; existing readers keep their clone until it drains.
             let previous = std::mem::replace(&mut *guard, Arc::new(bundle));
             if rotate_response_cache_namespace {
-                self.response_cache_namespace
-                    .store(generation, Ordering::Release);
+                self.response_cache.rotate_namespace(generation);
             }
             previous
         };
