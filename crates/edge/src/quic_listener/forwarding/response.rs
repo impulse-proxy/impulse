@@ -1,4 +1,4 @@
-use std::{sync::Arc, time::SystemTime};
+use std::sync::Arc;
 
 use bytes::Bytes;
 use impulse_errors::{UpstreamProxyErrorKind, classify_upstream_proxy_error};
@@ -19,27 +19,21 @@ use crate::{
             response_body_limit_reason, response_chunk_ranges,
         },
         request_execution::{
-            ResponseCompressionAction, ResponseCompressionInput, ResponseCompressionPolicyInput,
-            apply_gzip_response_headers, ensure_vary_accept_encoding,
-            evaluate_response_compression,
+            ResponseCompressionAction, ResponseCompressionPolicyInput, apply_gzip_response_headers,
+        },
+        response_processing::{
+            ResponseCacheDecision, ResponseProcessingInput, ResponseProcessingResult,
+            process_response,
         },
     },
     metrics::ResponseCacheOutcome,
-    runtime::{
-        cache::{
-            ResponseCacheResponseEligibilityInput, evaluate_cache_response_eligibility,
-            response_cache_ttl,
+    runtime::connection::{
+        auth::ExternalAuthDecision,
+        response::{
+            ImmediateResponseStart, ResponseBodyPumpPlan, ResponseChunk, ResponseStartDecision,
+            ResponseStartMetadata, ResponseStartObservation,
         },
-        connection::{
-            auth::ExternalAuthDecision,
-            response::{
-                ImmediateResponseStart, ResponseBodyPumpPlan, ResponseChunk, ResponseStartDecision,
-                ResponseStartMetadata, ResponseStartObservation,
-            },
-            stream::{
-                BackendFailureReason, CompletionReason, ResponseEmissionState, TimeoutReason,
-            },
-        },
+        stream::{BackendFailureReason, CompletionReason, ResponseEmissionState, TimeoutReason},
     },
 };
 
@@ -66,19 +60,21 @@ fn prepare_response_cache(
     )>,
     status: http::StatusCode,
     headers: &http::HeaderMap,
+    decision: ResponseCacheDecision,
     metrics: &Metrics,
 ) -> Option<HttpCache> {
-    let (mut cache, policy) = cache_miss?;
-    if status != http::StatusCode::OK
-        || evaluate_cache_response_eligibility(ResponseCacheResponseEligibilityInput { headers })
-            .is_err()
-    {
+    let (mut cache, _policy) = cache_miss?;
+    let ResponseCacheDecision::Store {
+        stored_at,
+        fresh_until,
+    } = decision
+    else {
         metrics
             .ingress_observations()
             .record_response_cache_outcome(ResponseCacheOutcome::Rejection);
         cache.disable(NoCacheReason::OriginNotCache);
         return None;
-    }
+    };
     let Ok(mut response) = ResponseHeader::build(status, Some(headers.len())) else {
         metrics
             .ingress_observations()
@@ -95,22 +91,7 @@ fn prepare_response_cache(
             return None;
         }
     }
-    let now = SystemTime::now();
-    let Some(ttl) = response_cache_ttl(&response, policy.max_ttl_secs, now) else {
-        metrics
-            .ingress_observations()
-            .record_response_cache_outcome(ResponseCacheOutcome::Rejection);
-        cache.disable(NoCacheReason::OriginNotCache);
-        return None;
-    };
-    let Some(fresh_until) = now.checked_add(ttl) else {
-        metrics
-            .ingress_observations()
-            .record_response_cache_outcome(ResponseCacheOutcome::Rejection);
-        cache.disable(NoCacheReason::StorageError);
-        return None;
-    };
-    cache.set_cache_meta(CacheMeta::new(fresh_until, now, 0, 0, response));
+    cache.set_cache_meta(CacheMeta::new(fresh_until, stored_at, 0, 0, response));
     Some(cache)
 }
 
@@ -460,23 +441,51 @@ impl QUICListener {
             .get(http::header::CONTENT_LENGTH)
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.parse::<usize>().ok());
-        let normalized_response = normalize_upstream_response(ResponseNormalizationInput {
-            upstream: impulse_bridge::response::UpstreamResponseView {
-                status,
-                headers: &resp_headers,
-            },
+        let mut request_headers = http::HeaderMap::new();
+        let compression_policy = if let Some(pending_forward) = req.pending_forward() {
+            for header in pending_forward.original_request_headers() {
+                if let (Ok(name), Ok(value)) = (
+                    http::header::HeaderName::from_bytes(header.name()),
+                    http::HeaderValue::from_bytes(header.value()),
+                ) {
+                    request_headers.append(name, value);
+                }
+            }
+            ResponseCompressionPolicyInput {
+                enabled: pending_forward.response_compression.enabled,
+                minimum_size_bytes: pending_forward.response_compression.minimum_size_bytes,
+            }
+        } else {
+            ResponseCompressionPolicyInput {
+                enabled: false,
+                minimum_size_bytes: 0,
+            }
+        };
+        let processed_response = process_response(ResponseProcessingInput {
+            status,
+            upstream_headers: &resp_headers,
             body_mode: response_body_mode,
             constraints: ResponseProtocolConstraints {
                 protocol: ResponseNormalizationProtocol::Http3,
                 preserve_upgrade: false,
             },
+            request_method: &req.method,
+            request_headers: &request_headers,
+            compression: compression_policy,
+            cache_max_ttl_secs: cache_miss.as_ref().map(|(_, policy)| policy.max_ttl_secs),
+            now: std::time::SystemTime::now(),
         });
-        let body_forwarding_enabled = matches!(
-            normalized_response.emission.body,
-            ResponseBodyPolicy::Forward
-        );
-        let progressive_body_emission_allowed =
-            !normalized_response.emission.emit_end_stream_on_headers;
+        let ResponseProcessingResult {
+            headers: mut response_headers,
+            body_forwarding_enabled,
+            emit_end_stream_on_headers,
+            compression,
+            cache,
+        } = processed_response;
+        if matches!(compression.action, ResponseCompressionAction::Gzip) {
+            apply_gzip_response_headers(&mut response_headers);
+        }
+        let progressive_body_emission_allowed = !emit_end_stream_on_headers;
         let response_guardrails = ResponseBodyGuardrailConfig {
             idle_timeout: progress_config.backend_body_idle_timeout,
             total_timeout: progress_config.backend_body_total_timeout,
@@ -525,43 +534,14 @@ impl QUICListener {
             };
         }
 
-        let mut response_headers = http::HeaderMap::new();
-        for header in normalized_response.headers {
-            response_headers.append(header.name, header.value);
-        }
-        let mut compress_response = false;
-        if let Some(pending_forward) = req.pending_forward() {
-            let mut request_headers = http::HeaderMap::new();
-            for header in pending_forward.original_request_headers() {
-                if let (Ok(name), Ok(value)) = (
-                    http::header::HeaderName::from_bytes(header.name()),
-                    http::HeaderValue::from_bytes(header.value()),
-                ) {
-                    request_headers.append(name, value);
-                }
-            }
-            let compression = evaluate_response_compression(ResponseCompressionInput {
-                policy: ResponseCompressionPolicyInput {
-                    enabled: pending_forward.response_compression.enabled,
-                    minimum_size_bytes: pending_forward.response_compression.minimum_size_bytes,
-                },
-                request_method: &req.method,
-                request_headers: &request_headers,
-                response_status: status,
-                response_headers: &resp_headers,
-            });
+        if req.pending_forward().is_some() {
             metrics
                 .ingress_observations()
                 .record_response_compression_outcome(compression.action);
-            compress_response = matches!(compression.action, ResponseCompressionAction::Gzip);
-            if compress_response {
-                apply_gzip_response_headers(&mut response_headers);
-            } else if compression.vary_accept_encoding {
-                ensure_vary_accept_encoding(&mut response_headers);
-            }
         }
+        let compress_response = matches!(compression.action, ResponseCompressionAction::Gzip);
         let mut response_cache =
-            prepare_response_cache(cache_miss, status, &response_headers, metrics);
+            prepare_response_cache(cache_miss, status, &response_headers, cache, metrics);
         let mut headers: Vec<(Vec<u8>, Vec<u8>)> = response_headers
             .iter()
             .map(|(name, value)| (name.as_str().as_bytes().to_vec(), value.as_bytes().to_vec()))
@@ -586,7 +566,7 @@ impl QUICListener {
             backend_used: !cache_hit,
         };
 
-        if normalized_response.emission.emit_end_stream_on_headers {
+        if emit_end_stream_on_headers {
             if let Some(cache) = response_cache.take() {
                 let mut cache_fill = ResponseCacheFill::new(Some(cache));
                 let _ = spawn_async_task(

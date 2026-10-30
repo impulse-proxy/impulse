@@ -4,16 +4,15 @@ use std::{
         Arc, Mutex, RwLock,
         atomic::{AtomicUsize, Ordering},
     },
-    time::{Duration, Instant, SystemTime},
+    time::{Duration, Instant},
 };
 
 use async_trait::async_trait;
 use bytes::Bytes;
 use http_body_util::{Full, combinators::BoxBody};
 use impulse_bridge::response::{
-    ResponseBodyMode, ResponseBodyPolicy, ResponseNormalizationInput,
-    ResponseNormalizationProtocol, ResponseProtocolConstraints, UpstreamResponseView,
-    normalize_response_trailers, normalize_upstream_response,
+    ResponseBodyMode, ResponseNormalizationProtocol, ResponseProtocolConstraints,
+    normalize_response_trailers,
 };
 use impulse_config::{backend_endpoint::BackendScheme, runtime::ListenerRuntimeConfig};
 use impulse_errors::{
@@ -60,11 +59,14 @@ use crate::{
         },
         request_execution::{
             RequestExecutionInput, ResolvedRequestPolicy, ResolvedRouteTarget,
-            ResponseCompressionAction, ResponseCompressionInput, ResponseCompressionPolicyInput,
-            RouteResolutionError, TerminalOutcomeGuard, ensure_vary_accept_encoding,
-            evaluate_response_compression, execute_request,
+            ResponseCompressionAction, ResponseCompressionPolicyInput, RouteResolutionError,
+            TerminalOutcomeGuard, execute_request,
         },
         request_validation::validate_http_request_parts,
+        response_processing::{
+            ResponseCacheDecision, ResponseProcessingInput, ResponseProcessingResult,
+            process_response,
+        },
     },
     metrics::ResponseCacheOutcome,
     quic_listener::{
@@ -79,10 +81,8 @@ use crate::{
         cache::{
             BoundedPingoraMemoryCache, ResponseCacheAuthInput, ResponseCacheKeyInput,
             ResponseCachePolicyInput, ResponseCacheRepresentation,
-            ResponseCacheRequestEligibilityInput, ResponseCacheResponseEligibilityInput,
-            canonical_response_cache_key, evaluate_cache_request_eligibility,
-            evaluate_cache_response_eligibility, response_cache_ttl,
-            route_auth_requires_cache_bypass,
+            ResponseCacheRequestEligibilityInput, canonical_response_cache_key,
+            evaluate_cache_request_eligibility, route_auth_requires_cache_bypass,
         },
         connection::{
             PerSourceTokenBucket, TokenBucket,
@@ -129,7 +129,7 @@ pub(crate) struct PingoraRequestContext {
     response_body_suppressed: bool,
     response_body_limit_exempt: bool,
     response_content_length: Option<usize>,
-    response_compression_vary: bool,
+    response_processing: Option<ResponseProcessingResult>,
     response_cache_representation: Option<ResponseCacheRepresentation>,
     response_cache_bypass_recorded: bool,
     request_body_replayable: bool,
@@ -178,6 +178,53 @@ pub(crate) struct PingoraIngressService {
 }
 
 impl PingoraIngressService {
+    fn process_response_head(
+        session: &Session,
+        upstream_response: &ResponseHeader,
+        ctx: &PingoraRequestContext,
+    ) -> Result<ResponseProcessingResult> {
+        let policy = ctx.policy.as_ref().ok_or_else(|| {
+            Error::explain(
+                InternalError,
+                "Pingora ingress request filter did not resolve a request policy",
+            )
+        })?;
+        let method = ctx.method.as_deref().ok_or_else(|| {
+            Error::explain(
+                InternalError,
+                "Pingora ingress request filter did not validate a method",
+            )
+        })?;
+        let tunnel_response = ctx.body_limit_exempt
+            && (upstream_response.status == http::StatusCode::SWITCHING_PROTOCOLS
+                || (method.eq_ignore_ascii_case("CONNECT")
+                    && upstream_response.status.is_success()));
+        let body_mode = if tunnel_response {
+            ResponseBodyMode::TunnelSuccess
+        } else if method.eq_ignore_ascii_case("HEAD") {
+            ResponseBodyMode::HeadRequest
+        } else {
+            ResponseBodyMode::Normal
+        };
+        Ok(process_response(ResponseProcessingInput {
+            status: upstream_response.status,
+            upstream_headers: &upstream_response.headers,
+            body_mode,
+            constraints: pingora_response_constraints(tunnel_response),
+            request_method: method,
+            request_headers: &session.req_header().headers,
+            compression: ResponseCompressionPolicyInput {
+                enabled: policy.response_compression.enabled,
+                minimum_size_bytes: policy.response_compression.minimum_size_bytes,
+            },
+            cache_max_ttl_secs: ctx
+                .response_cache_representation
+                .is_some()
+                .then_some(policy.local_auth_policy.response_cache.max_ttl_secs),
+            now: std::time::SystemTime::now(),
+        }))
+    }
+
     fn select_backend(
         &self,
         session: &Session,
@@ -798,7 +845,7 @@ impl ProxyHttp for PingoraIngressService {
             response_body_suppressed: false,
             response_body_limit_exempt: false,
             response_content_length: None,
-            response_compression_vary: false,
+            response_processing: None,
             response_cache_representation: None,
             response_cache_bypass_recorded: false,
             request_body_replayable: false,
@@ -1218,11 +1265,19 @@ impl ProxyHttp for PingoraIngressService {
 
     fn response_cache_filter(
         &self,
-        _session: &Session,
+        session: &Session,
         response: &ResponseHeader,
         ctx: &mut Self::CTX,
     ) -> Result<RespCacheable> {
-        let Some(policy) = ctx.policy.as_ref() else {
+        let processed = match ctx.response_processing.clone() {
+            Some(processed) => processed,
+            None => Self::process_response_head(session, response, ctx)?,
+        };
+        let ResponseCacheDecision::Store {
+            stored_at,
+            fresh_until,
+        } = processed.cache
+        else {
             ctx.runtime
                 .shared_state
                 .shared_services()
@@ -1233,51 +1288,16 @@ impl ProxyHttp for PingoraIngressService {
                 "impulse_policy",
             )));
         };
-        if response.status != http::StatusCode::OK
-            || evaluate_cache_response_eligibility(ResponseCacheResponseEligibilityInput {
-                headers: &response.headers,
-            })
-            .is_err()
-        {
-            ctx.runtime
-                .shared_state
-                .shared_services()
-                .metrics
-                .ingress_observations()
-                .record_response_cache_outcome(ResponseCacheOutcome::Rejection);
-            return Ok(RespCacheable::Uncacheable(NoCacheReason::Custom(
-                "impulse_policy",
-            )));
+        let mut normalized = ResponseHeader::build(response.status, Some(processed.headers.len()))?;
+        for (name, value) in &processed.headers {
+            normalized.append_header(name.clone(), value.clone())?;
         }
-        let now = SystemTime::now();
-        let Some(ttl) = response_cache_ttl(
-            response,
-            policy.local_auth_policy.response_cache.max_ttl_secs,
-            now,
-        ) else {
-            ctx.runtime
-                .shared_state
-                .shared_services()
-                .metrics
-                .ingress_observations()
-                .record_response_cache_outcome(ResponseCacheOutcome::Rejection);
-            return Ok(RespCacheable::Uncacheable(NoCacheReason::OriginNotCache));
-        };
-        let Some(fresh_until) = now.checked_add(ttl) else {
-            ctx.runtime
-                .shared_state
-                .shared_services()
-                .metrics
-                .ingress_observations()
-                .record_response_cache_outcome(ResponseCacheOutcome::Rejection);
-            return Ok(RespCacheable::Uncacheable(NoCacheReason::OriginNotCache));
-        };
         Ok(RespCacheable::Cacheable(CacheMeta::new(
             fresh_until,
-            now,
+            stored_at,
             0,
             0,
-            response.clone(),
+            normalized,
         )))
     }
 
@@ -1602,46 +1622,28 @@ impl ProxyHttp for PingoraIngressService {
         if upstream_response.status.is_informational() {
             return Ok(());
         }
-        let policy = ctx.policy.as_ref().ok_or_else(|| {
-            Error::explain(
-                InternalError,
-                "Pingora ingress request filter did not resolve a request policy",
-            )
-        })?;
-        let method = ctx.method.as_deref().ok_or_else(|| {
-            Error::explain(
-                InternalError,
-                "Pingora ingress request filter did not validate a method",
-            )
-        })?;
         ctx.response_content_length = upstream_response
             .headers
             .get(http::header::CONTENT_LENGTH)
             .and_then(|value| value.to_str().ok())
             .and_then(|value| value.parse::<usize>().ok());
-        let compression = evaluate_response_compression(ResponseCompressionInput {
-            policy: ResponseCompressionPolicyInput {
-                enabled: policy.response_compression.enabled,
-                minimum_size_bytes: policy.response_compression.minimum_size_bytes,
-            },
-            request_method: method,
-            request_headers: &session.req_header().headers,
-            response_status: upstream_response.status,
-            response_headers: &upstream_response.headers,
-        });
+        let processed = Self::process_response_head(session, upstream_response, ctx)?;
         ctx.runtime
             .shared_state
             .shared_services()
             .metrics
             .ingress_observations()
-            .record_response_compression_outcome(compression.action);
-        ctx.response_compression_vary = compression.vary_accept_encoding;
+            .record_response_compression_outcome(processed.compression.action);
         session.upstream_compression.adjust_level(0);
-        if matches!(compression.action, ResponseCompressionAction::Gzip) {
+        if matches!(
+            processed.compression.action,
+            ResponseCompressionAction::Gzip
+        ) {
             session
                 .upstream_compression
                 .adjust_algorithm_level(Algorithm::Gzip, RESPONSE_GZIP_LEVEL);
         }
+        ctx.response_processing = Some(processed);
         Ok(())
     }
 
@@ -1670,13 +1672,6 @@ impl ProxyHttp for PingoraIngressService {
             && (upstream_response.status == http::StatusCode::SWITCHING_PROTOCOLS
                 || (method.eq_ignore_ascii_case("CONNECT")
                     && upstream_response.status.is_success()));
-        let body_mode = if tunnel_response {
-            ResponseBodyMode::TunnelSuccess
-        } else if method.eq_ignore_ascii_case("HEAD") {
-            ResponseBodyMode::HeadRequest
-        } else {
-            ResponseBodyMode::Normal
-        };
         let content_length = ctx.response_content_length.or_else(|| {
             upstream_response
                 .headers
@@ -1684,15 +1679,16 @@ impl ProxyHttp for PingoraIngressService {
                 .and_then(|value| value.to_str().ok())
                 .and_then(|value| value.parse::<usize>().ok())
         });
-        let normalized = normalize_upstream_response(ResponseNormalizationInput {
-            upstream: UpstreamResponseView {
-                status: upstream_response.status,
-                headers: &upstream_response.headers,
-            },
-            body_mode,
-            constraints: pingora_response_constraints(tunnel_response),
-        });
-        let body_suppressed = matches!(normalized.emission.body, ResponseBodyPolicy::Suppress);
+        let current_response = Self::process_response_head(session, upstream_response, ctx)?;
+        let mut processed = ctx
+            .response_processing
+            .clone()
+            .unwrap_or_else(|| current_response.clone());
+        processed.headers = current_response.headers;
+        if upstream_response.status != http::StatusCode::NOT_MODIFIED {
+            ctx.response_processing = Some(processed.clone());
+        }
+        let body_suppressed = !processed.body_forwarding_enabled;
         let max_response_body_bytes = ctx
             .runtime
             .runtime_config
@@ -1715,7 +1711,7 @@ impl ProxyHttp for PingoraIngressService {
                 next_chunk_bytes: 0,
                 declared_content_length: content_length,
                 headers_emitted: false,
-                progressive_emission_allowed: !normalized.emission.emit_end_stream_on_headers,
+                progressive_emission_allowed: !processed.emit_end_stream_on_headers,
                 body_forwarding_enabled: !body_suppressed,
                 exempt_from_body_size_cap: tunnel_response,
             },
@@ -1743,19 +1739,8 @@ impl ProxyHttp for PingoraIngressService {
         for name in existing_headers {
             upstream_response.remove_header(&name);
         }
-        for header in normalized.headers {
-            upstream_response.append_header(header.name, header.value)?;
-        }
-        if ctx.response_compression_vary {
-            let mut vary_headers = http::HeaderMap::new();
-            for value in upstream_response.headers.get_all(http::header::VARY).iter() {
-                vary_headers.append(http::header::VARY, value.clone());
-            }
-            ensure_vary_accept_encoding(&mut vary_headers);
-            upstream_response.remove_header(&http::header::VARY);
-            for value in vary_headers.get_all(http::header::VARY).iter() {
-                upstream_response.append_header(http::header::VARY, value.clone())?;
-            }
+        for (name, value) in processed.headers {
+            upstream_response.append_header(name, value)?;
         }
         ctx.response_body_bytes_received = 0;
         ctx.response_body_started_at = Some(now);
