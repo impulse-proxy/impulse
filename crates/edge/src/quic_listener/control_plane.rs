@@ -7,7 +7,6 @@ use log::error;
 use super::{
     QUICListener, runtime_handle,
     runtime_state::{ControlPlaneStartup, WatchdogServiceCtx},
-    spawn_supervised_async_task,
 };
 use crate::{
     resilience::quota::QuotaRuntime,
@@ -143,13 +142,12 @@ impl QUICListener {
             }
         };
 
-        let registration = spawn_supervised_async_task(
+        spawn_state.task_registry.spawn_supervised(
             &handle,
             "watchdog",
             Some(Arc::clone(&spawn_state.service.metrics)),
             run_watchdog_service(spawn_state.service),
         );
-        spawn_state.task_registry.register(registration);
     }
 
     pub(super) fn watchdog_spawn_state(service_ctx: WatchdogServiceCtx) -> WatchdogSpawnState {

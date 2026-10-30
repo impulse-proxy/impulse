@@ -96,7 +96,7 @@ impl QUICListener {
 
         for source in sources {
             let task_source = source.clone();
-            let registration = spawn_supervised_async_task(
+            task_registry.spawn_supervised(
                 &handle,
                 "jwks-refresh",
                 None,
@@ -134,7 +134,6 @@ impl QUICListener {
                     }
                 },
             );
-            task_registry.register(registration);
         }
     }
 }

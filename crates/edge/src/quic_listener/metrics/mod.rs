@@ -19,7 +19,6 @@ use super::{
     runtime_endpoint::RuntimeConnectionSlotGuard,
     runtime_handle,
     runtime_state::{ControlPlaneStartup, MetricsServiceCtx},
-    spawn_supervised_async_task,
 };
 use crate::Metrics;
 

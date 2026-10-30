@@ -35,6 +35,7 @@ pub(super) struct ControlPlaneRuntimeView {
     listener_runtime_configs: Arc<HashMap<String, ListenerRuntimeConfig>>,
     backend_health_checks: Arc<HashMap<String, impulse_config::runtime::RuntimeBackendHealthCheck>>,
     generation_tasks: Arc<RuntimeTaskRegistry>,
+    process_tasks: Arc<RuntimeTaskRegistry>,
     listener_tls_store: Arc<ListenerTlsReloadStore>,
     primary_listener_label: Option<String>,
     control_api_security: Arc<ControlApiSecurityPolicy>,
@@ -60,6 +61,7 @@ impl ControlPlaneRuntimeView {
             listener_runtime_configs: Arc::clone(&generation.listener_runtime_configs),
             backend_health_checks: Arc::clone(&generation.backend_health_checks),
             generation_tasks: Arc::clone(&generation.generation_tasks),
+            process_tasks: Arc::clone(&shared.process_tasks),
             listener_tls_store: Arc::clone(&shared.listener_tls_store),
             primary_listener_label: runtime_config
                 .primary_listener_runtime_config()
@@ -84,6 +86,7 @@ impl ControlPlaneRuntimeView {
             listener_runtime_configs: Arc::clone(&view.state.listener_runtime_configs),
             backend_health_checks: Arc::clone(&view.state.backend_health_checks),
             generation_tasks: Arc::clone(&view.state.generation_tasks),
+            process_tasks: Arc::clone(&view.shared.process_tasks),
             listener_tls_store: Arc::clone(&view.shared.listener_tls_store),
             primary_listener_label: view
                 .runtime_config
@@ -146,6 +149,10 @@ impl ControlPlaneRuntimeView {
 
     pub(super) fn generation_tasks(&self) -> Arc<RuntimeTaskRegistry> {
         Arc::clone(&self.generation_tasks)
+    }
+
+    pub(super) fn process_tasks(&self) -> Arc<RuntimeTaskRegistry> {
+        Arc::clone(&self.process_tasks)
     }
 
     pub(super) fn listener_tls_store(&self) -> Arc<ListenerTlsReloadStore> {

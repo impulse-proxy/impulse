@@ -23,7 +23,7 @@ impl RuntimeTaskRegistry {
         }
     }
 
-    pub(crate) fn register(&self, task: RuntimeTaskRegistration) {
+    fn register(&self, task: RuntimeTaskRegistration) {
         let mut state = match self.state.lock() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
@@ -42,6 +42,19 @@ impl RuntimeTaskRegistry {
         metrics: Option<Arc<Metrics>>,
         future: F,
     ) where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        let _ = self.spawn_supervised_task(handle, task_name, metrics, future);
+    }
+
+    fn spawn_supervised_task<F>(
+        &self,
+        handle: &Handle,
+        task_name: &'static str,
+        metrics: Option<Arc<Metrics>>,
+        future: F,
+    ) -> AbortHandle
+    where
         F: Future<Output = ()> + Send + 'static,
     {
         let task_name = task_name.to_string();
@@ -64,10 +77,24 @@ impl RuntimeTaskRegistry {
             }
             let _ = completion_tx.send(());
         });
-        self.register(RuntimeTaskRegistration::new(abort, completion_rx));
+        self.register(RuntimeTaskRegistration::new(abort.clone(), completion_rx));
+        abort
     }
 
-    fn begin_generation_retirement(&self) -> Vec<oneshot::Receiver<()>> {
+    #[cfg(test)]
+    pub(crate) fn spawn_supervised_for_test<F>(
+        &self,
+        handle: &Handle,
+        task_name: &'static str,
+        future: F,
+    ) -> AbortHandle
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        self.spawn_supervised_task(handle, task_name, None, future)
+    }
+
+    fn begin_retirement(&self) -> Vec<oneshot::Receiver<()>> {
         let mut state = match self.state.lock() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
@@ -86,14 +113,11 @@ impl RuntimeTaskRegistry {
             .collect()
     }
 
-    pub(crate) fn abort_generation(&self) {
-        let _ = self.begin_generation_retirement();
+    pub(crate) fn cancel(&self) {
+        let _ = self.begin_retirement();
     }
 
-    async fn wait_for_generation_retirement(
-        completions: Vec<oneshot::Receiver<()>>,
-        timeout: Duration,
-    ) {
+    async fn wait_for_retirement(completions: Vec<oneshot::Receiver<()>>, timeout: Duration) {
         if completions.is_empty() {
             return;
         }
@@ -115,8 +139,8 @@ impl RuntimeTaskRegistry {
         }
     }
 
-    pub(crate) fn retire_generation(&self, timeout: Duration) {
-        let completions = self.begin_generation_retirement();
+    pub(crate) fn drain(&self, timeout: Duration) {
+        let completions = self.begin_retirement();
         if completions.is_empty() {
             return;
         }
@@ -124,7 +148,7 @@ impl RuntimeTaskRegistry {
         match tokio::runtime::Handle::try_current() {
             Ok(handle) => {
                 handle.spawn(async move {
-                    Self::wait_for_generation_retirement(completions, timeout).await;
+                    Self::wait_for_retirement(completions, timeout).await;
                 });
             }
             Err(_) => {
@@ -138,7 +162,7 @@ impl RuntimeTaskRegistry {
 
 impl Drop for RuntimeTaskRegistry {
     fn drop(&mut self) {
-        self.abort_generation();
+        self.cancel();
     }
 }
 
@@ -147,13 +171,13 @@ struct RuntimeTaskRegistryState {
     tasks: Vec<RuntimeTaskRegistration>,
 }
 
-pub(crate) struct RuntimeTaskRegistration {
+struct RuntimeTaskRegistration {
     abort: AbortHandle,
     completion: oneshot::Receiver<()>,
 }
 
 impl RuntimeTaskRegistration {
-    pub(crate) fn new(abort: AbortHandle, completion: oneshot::Receiver<()>) -> Self {
+    fn new(abort: AbortHandle, completion: oneshot::Receiver<()>) -> Self {
         Self { abort, completion }
     }
 }
@@ -219,7 +243,7 @@ mod tests {
             let active_task =
                 spawn_registered_task(&active_generation, Arc::clone(&active_completed));
 
-            retired_generation.retire_generation(Duration::from_millis(50));
+            retired_generation.drain(Duration::from_millis(50));
             tokio::time::sleep(Duration::from_millis(20)).await;
 
             assert!(

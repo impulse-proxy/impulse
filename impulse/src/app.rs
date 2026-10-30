@@ -266,6 +266,7 @@ async fn run(
     // shutting down; ensure the lifecycle reflects it before draining workers.
     runtime_bundle.lifecycle().begin_shutdown();
     shutdown_listener_groups(&mut listener_groups, &mut worker_failed).await;
+    runtime_bundle.retire_background_tasks(Duration::from_secs(5));
     // Workers are drained and joined: the shutdown transition is complete.
     runtime_bundle.lifecycle().finish_shutdown();
 

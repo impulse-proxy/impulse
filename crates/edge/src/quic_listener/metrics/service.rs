@@ -15,6 +15,7 @@ impl QUICListener {
         startup: &ControlPlaneStartup<'_>,
     ) -> Result<(), ProxyError> {
         let service_ctx = startup.metrics_service_ctx();
+        let task_registry = startup.runtime_view().process_tasks();
         let startup_state = service_ctx.current_state();
         if startup.runtime_bundle.is_none() && !startup_state.endpoint.enabled {
             return Ok(());
@@ -66,7 +67,7 @@ impl QUICListener {
             None
         };
 
-        spawn_supervised_async_task(
+        task_registry.spawn_supervised(
             &handle,
             "metrics-endpoint",
             Some(Arc::clone(&startup_state.metrics)),

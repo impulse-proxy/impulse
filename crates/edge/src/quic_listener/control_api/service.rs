@@ -77,7 +77,7 @@ impl QUICListener {
             None
         };
 
-        spawn_supervised_async_task(
+        startup.runtime_view().process_tasks().spawn_supervised(
             &handle,
             "control-api-endpoint",
             Some(startup_state.metrics()),

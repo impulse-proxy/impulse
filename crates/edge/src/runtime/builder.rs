@@ -337,6 +337,10 @@ impl RuntimeBuilder {
                 &WatchdogRuntimeConfig::from(&config.policies.admission.watchdog),
             )),
         };
+        let process_tasks = carried
+            .as_ref()
+            .map(|carried| Arc::clone(&carried.process_tasks))
+            .unwrap_or_else(|| Arc::new(RuntimeTaskRegistry::new()));
         Ok(SharedRuntimeState::from_parts(
             RuntimeSharedServices {
                 listener_tls_store,
@@ -346,6 +350,7 @@ impl RuntimeBuilder {
                 backend_dns_resolver,
                 metrics,
                 watchdog,
+                process_tasks,
             },
             RuntimeGenerationState {
                 listener_runtime_configs: Arc::new(listener_runtime_configs),

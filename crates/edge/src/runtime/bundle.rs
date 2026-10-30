@@ -237,6 +237,20 @@ impl RuntimeBundleHandle {
         self.current_view().generation()
     }
 
+    pub fn retire_background_tasks(&self, timeout: Duration) {
+        let current = self.current();
+        current
+            .shared_state
+            .generation_state()
+            .generation_tasks
+            .drain(timeout);
+        current
+            .shared_state
+            .shared_services()
+            .process_tasks
+            .drain(timeout);
+    }
+
     pub fn with_current_generation<R>(&self, f: impl FnOnce(ActiveRuntimeGeneration) -> R) -> R {
         f(self.current_view())
     }
@@ -388,7 +402,7 @@ impl RuntimeBundleHandle {
         let next_tasks = Arc::clone(&bundle.shared_state.generation_state().generation_tasks);
 
         if let Some(rejection) = self.lifecycle.check_reload_allowed().rejection() {
-            next_tasks.abort_generation();
+            next_tasks.cancel();
             warn!(
                 "runtime reload commit rejected in lifecycle phase {:?}: refusing to install generation {}",
                 self.lifecycle.phase(),
@@ -405,7 +419,7 @@ impl RuntimeBundleHandle {
             let mut guard = match self.inner.write() {
                 Ok(guard) => guard,
                 Err(_) => {
-                    next_tasks.abort_generation();
+                    next_tasks.cancel();
                     return Err(ProxyError::Transport(
                         "runtime bundle lock poisoned".to_string(),
                     ));
@@ -415,7 +429,7 @@ impl RuntimeBundleHandle {
             if let Some(expected_generation) = expected_generation
                 && previous_generation != expected_generation
             {
-                next_tasks.abort_generation();
+                next_tasks.cancel();
                 return Err(ProxyError::Transport(format!(
                     "runtime generation conflict: expected active generation {}, found {}",
                     expected_generation, previous_generation
@@ -448,7 +462,7 @@ impl RuntimeBundleHandle {
             .shared_state
             .generation_state()
             .generation_tasks
-            .retire_generation(Duration::from_secs(5));
+            .drain(Duration::from_secs(5));
         drain_transport_pool_generation(
             previous
                 .shared_state
@@ -588,10 +602,9 @@ mod tests {
     };
     use rcgen::{Certificate, CertificateParams, SanType};
     use tempfile::tempdir;
-    use tokio::sync::oneshot;
 
     use super::*;
-    use crate::runtime::{listener::QUICListener, tasks::RuntimeTaskRegistration};
+    use crate::runtime::listener::QUICListener;
 
     fn write_test_cert_for_name(dir: &Path, cert_name: &str, dns_name: &str) -> (String, String) {
         let mut params = CertificateParams::new(vec![dns_name.to_string()]);
@@ -765,13 +778,11 @@ mod tests {
         assert_eq!(handle.current_generation(), 1);
     }
 
-    struct CompletionSignal(Option<oneshot::Sender<()>>);
+    struct CompletionSignal(Arc<AtomicBool>);
 
     impl Drop for CompletionSignal {
         fn drop(&mut self) {
-            if let Some(sender) = self.0.take() {
-                let _ = sender.send(());
-            }
+            self.0.store(true, Ordering::Release);
         }
     }
 
@@ -779,23 +790,18 @@ mod tests {
         bundle: &RuntimeBundle,
         completed: Arc<AtomicBool>,
     ) -> tokio::task::AbortHandle {
-        let (completion_tx, completion_rx) = oneshot::channel();
-        let task = tokio::spawn(async move {
-            let _completion = CompletionSignal(Some(completion_tx));
-            future::pending::<()>().await;
-        });
-        let abort = task.abort_handle();
-        let join = task;
-        tokio::spawn(async move {
-            let _ = join.await;
-            completed.store(true, Ordering::Release);
-        });
         bundle
             .shared_state
             .generation_state()
             .generation_tasks
-            .register(RuntimeTaskRegistration::new(abort.clone(), completion_rx));
-        abort
+            .spawn_supervised_for_test(
+                &tokio::runtime::Handle::current(),
+                "test-generation-task",
+                async move {
+                    let _completion = CompletionSignal(completed);
+                    future::pending::<()>().await;
+                },
+            )
     }
 
     mod runtime_generation_view_ownership {

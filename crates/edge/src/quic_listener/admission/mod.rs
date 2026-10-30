@@ -48,7 +48,7 @@ use tokio::{
     task::block_in_place,
 };
 
-use super::{LbHeaderLookup, QUICListener, runtime_handle, spawn_supervised_async_task};
+use super::{LbHeaderLookup, QUICListener, runtime_handle};
 use crate::{
     RouteOutcome,
     metrics::OverloadShedReason,

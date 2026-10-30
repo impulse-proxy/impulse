@@ -55,7 +55,7 @@ impl OwnedRuntimeState for StartupOwnedRuntimeState {
 /// `backend_resolution_store`) legitimately track the active config and are
 /// rebuilt per generation on reload. The genuinely process-scoped services -
 /// [`Self::listener_tls_store`], [`Self::watchdog`], and
-/// [`Self::backend_dns_resolver`] - carry state that must
+/// [`Self::backend_dns_resolver`], and [`Self::process_tasks`] - carry state that must
 /// survive a reload (an in-flight watchdog restart/drain; the DNS cache) and are
 /// therefore carried forward across generations by [`CarriedProcessSharedServices`]
 /// rather than reconstructed. See `build_shared_state` for how the reload path
@@ -78,6 +78,8 @@ pub struct RuntimeSharedServices {
     /// Watchdog coordinator (heartbeat/restart signaling). Process-scoped: carried
     /// across reloads so an in-flight restart/drain is not silently reset.
     pub watchdog: Arc<WatchdogCoordinator>,
+    /// Process-scoped background tasks that survive generation replacement.
+    pub process_tasks: Arc<RuntimeTaskRegistry>,
 }
 
 /// The genuinely process-scoped services carried forward from the active
@@ -95,6 +97,8 @@ pub struct CarriedProcessSharedServices {
     pub watchdog: Arc<WatchdogCoordinator>,
     /// The live DNS resolver, preserving its cache across the reload.
     pub backend_dns_resolver: SharedDnsResolver,
+    /// Process-scoped background task owner.
+    pub process_tasks: Arc<RuntimeTaskRegistry>,
 }
 
 impl CarriedProcessSharedServices {
@@ -104,6 +108,7 @@ impl CarriedProcessSharedServices {
             listener_tls_store: Arc::clone(&shared.listener_tls_store),
             watchdog: Arc::clone(&shared.watchdog),
             backend_dns_resolver: shared.backend_dns_resolver.clone(),
+            process_tasks: Arc::clone(&shared.process_tasks),
         }
     }
 }
