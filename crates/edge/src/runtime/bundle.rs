@@ -17,6 +17,7 @@ use crate::runtime::{
     generation::{RuntimeGenerationView, StartupOwnedRuntimeState},
     policy::RuntimeLifecycleState,
     shared_state::SharedRuntimeState,
+    transport::{activate_transport_pool_generation, drain_transport_pool_generation},
 };
 
 pub type RuntimeBundle =
@@ -472,11 +473,14 @@ impl RuntimeBundleHandle {
             }
             let rotate_response_cache_namespace =
                 !response_cache_namespaces_compatible(guard.as_ref(), &bundle);
-            bundle
-                .shared_state
-                .shared_services()
-                .transport_pool
-                .rotate_pingora_pool(generation);
+            activate_transport_pool_generation(
+                bundle
+                    .shared_state
+                    .shared_services()
+                    .transport_pool
+                    .as_ref(),
+                generation,
+            );
             // --- old-generation teardown boundary: BEGIN ---
             // The previous bundle's generation-owned state is now unreachable to
             // new readers; existing readers keep their clone until it drains.
@@ -495,11 +499,13 @@ impl RuntimeBundleHandle {
             .generation_state()
             .generation_tasks
             .retire_generation(Duration::from_secs(5));
-        previous
-            .shared_state
-            .shared_services()
-            .transport_pool
-            .drain_pingora_pool();
+        drain_transport_pool_generation(
+            previous
+                .shared_state
+                .shared_services()
+                .transport_pool
+                .as_ref(),
+        );
         // --- old-generation teardown boundary: END ---
         info!(
             "runtime generation swap committed: {} -> {} (lifecycle phase {:?})",

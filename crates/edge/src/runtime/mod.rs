@@ -19,3 +19,4 @@ pub mod shared_state;
 pub(crate) mod subsystem_mapping;
 pub(crate) mod tasks;
 pub(crate) mod tls;
+pub(crate) mod transport;

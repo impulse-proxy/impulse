@@ -11,7 +11,7 @@ use impulse_errors::ProxyError;
 use impulse_lb::pingora_backend::{
     GenerationBackendView, HealthRegistry, PingoraLoadBalancingRuntimeState, map_validated_backend,
 };
-use impulse_transport::{PingoraBackendHealthIdentity, UpstreamTransportPool};
+use impulse_transport::PingoraBackendHealthIdentity;
 use log::{debug, info, warn};
 use tokio::sync::Semaphore;
 
@@ -31,6 +31,7 @@ use crate::{
         },
         tasks::RuntimeTaskRegistry,
         tls::store::ListenerTlsReloadStore,
+        transport::create_transport_pool,
     },
     watchdog::{config::WatchdogRuntimeConfig, coordinator::WatchdogCoordinator},
 };
@@ -189,13 +190,10 @@ impl RuntimeBuilder {
         let backend_lifecycle = Arc::new(BackendLifecycleCoordinator::new(Arc::clone(
             &backend_resolution_store,
         )));
-        let transport_pool = Arc::new(
-            UpstreamTransportPool::new(
-                upstream_transport_inputs(config),
-                backend_dns_resolver.clone(),
-            )
-            .map_err(ProxyError::Tls)?,
-        );
+        let transport_pool = create_transport_pool(
+            upstream_transport_inputs(config),
+            backend_dns_resolver.clone(),
+        )?;
         let mut upstream_pools = HashMap::new();
         let mut upstream_inflight = HashMap::new();
         let mut pingora_selectors = Vec::with_capacity(config.upstreams.len());
