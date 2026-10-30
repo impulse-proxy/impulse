@@ -7,4 +7,5 @@ pub(crate) mod body_guardrails;
 pub(crate) mod request_execution;
 pub(crate) mod request_validation;
 pub(crate) mod response_processing;
+pub(crate) mod retry;
 pub mod routing;

@@ -1,16 +1,10 @@
 use std::sync::{Arc, RwLock};
 
 use impulse_config::runtime::RuntimeBackendTlsPolicy;
-use impulse_errors::{
-    HedgePolicyDecision, HedgePolicyFacts, HedgePrimaryState, PoolError, ProxyError,
-    RetryPolicyDecision, RetryPolicyFacts, classify_retryability, evaluate_hedge_policy,
-    evaluate_retry_policy,
-};
+use impulse_errors::{PoolError, ProxyError};
 use impulse_lb::{
     BackendSelectionInput,
-    alternate_backend::{
-        AlternateBackendDecision, AlternateBackendFailureReason, choose_alternate_backend,
-    },
+    alternate_backend::{AlternateBackendDecision, choose_alternate_backend},
     pingora_backend::GenerationSelector,
     upstream_pool::UpstreamPool,
 };
@@ -21,18 +15,12 @@ use super::{
 };
 use crate::{
     Metrics,
-    resilience::{
-        circuit_breaker::{CircuitBreakerPermit, CircuitBreakers},
-        retry_budget::RetryBudget,
-    },
+    resilience::circuit_breaker::{CircuitBreakerPermit, CircuitBreakers},
 };
 
-/// Selects an eligible backend and builds retry/hedge policy inputs without
-/// coupling those decisions to an upstream wire protocol.
+/// Selects an eligible backend without coupling the choice to an upstream wire protocol.
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct ForwardingSelectionService;
-
-pub(crate) const MAX_UPSTREAM_RETRY_ATTEMPTS: u8 = 1;
 
 pub(crate) struct BackendCandidate {
     pub(crate) address: String,
@@ -189,93 +177,5 @@ impl ForwardingSelectionService {
         circuit_breakers
             .allow_request(backend)
             .ok_or_else(|| ProxyError::Pool(PoolError::CircuitOpen(backend.to_string())))
-    }
-
-    pub(super) fn retry_budget_available(
-        primary_err: &ProxyError,
-        route_name: &str,
-        retry_budget: &RetryBudget,
-    ) -> bool {
-        matches!(primary_err, ProxyError::Pool(PoolError::CircuitOpen(_)))
-            || retry_budget.allow_retry(route_name).is_ok()
-    }
-}
-
-/// Retry and hedge facts derived before dispatch begins.
-#[derive(Clone, Copy)]
-pub(crate) struct RetryCoordinator {
-    method_idempotent: bool,
-    bodyless_mode: bool,
-    hedge_method_allowed: bool,
-    hedge_configured: bool,
-    hedge_tunnel_request: bool,
-}
-
-impl RetryCoordinator {
-    pub(crate) const fn new(
-        method_idempotent: bool,
-        bodyless_mode: bool,
-        hedge_method_allowed: bool,
-        hedge_configured: bool,
-        hedge_tunnel_request: bool,
-    ) -> Self {
-        Self {
-            method_idempotent,
-            bodyless_mode,
-            hedge_method_allowed,
-            hedge_configured,
-            hedge_tunnel_request,
-        }
-    }
-
-    pub(super) fn hedge_before_delay(
-        self,
-        alternate_backend_available: bool,
-        alternate_backend_failure: Option<AlternateBackendFailureReason>,
-    ) -> HedgePolicyDecision {
-        evaluate_hedge_policy(HedgePolicyFacts {
-            hedging_configured: self.hedge_configured,
-            method_allowed: self.hedge_method_allowed,
-            request_body_replayable: self.bodyless_mode,
-            tunnel_request: self.hedge_tunnel_request,
-            alternate_backend_available,
-            alternate_backend_failure,
-            budget_available: false,
-            primary_state: HedgePrimaryState::InFlightBeforeDelay,
-        })
-    }
-
-    pub(super) fn hedge_after_delay(self, budget_available: bool) -> HedgePolicyDecision {
-        evaluate_hedge_policy(HedgePolicyFacts {
-            hedging_configured: self.hedge_configured,
-            method_allowed: self.hedge_method_allowed,
-            request_body_replayable: self.bodyless_mode,
-            tunnel_request: self.hedge_tunnel_request,
-            alternate_backend_available: true,
-            alternate_backend_failure: None,
-            budget_available,
-            primary_state: HedgePrimaryState::InFlightAfterDelay,
-        })
-    }
-
-    pub(crate) fn retry_after_error(
-        self,
-        primary_err: &ProxyError,
-        retry_count: u8,
-        max_attempts: u8,
-        budget_available: bool,
-        alternate_backend_available: bool,
-        alternate_backend_failure: Option<AlternateBackendFailureReason>,
-    ) -> RetryPolicyDecision {
-        evaluate_retry_policy(RetryPolicyFacts {
-            retryability: classify_retryability(primary_err),
-            method_idempotent: self.method_idempotent,
-            request_body_replayable: self.bodyless_mode,
-            attempt_count: retry_count,
-            max_attempts,
-            budget_available,
-            alternate_backend_available,
-            alternate_backend_failure,
-        })
     }
 }

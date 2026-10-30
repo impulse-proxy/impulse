@@ -14,11 +14,9 @@ use impulse_transport::{
 };
 use pingora_cache::{HitStatus, HttpCache, NoCacheReason, lock::LockWaitOutcome};
 
-use super::{
-    selection::{ForwardingSelectionService, MAX_UPSTREAM_RETRY_ATTEMPTS, RetryCoordinator},
-    *,
-};
+use super::{selection::ForwardingSelectionService, *};
 use crate::{
+    edge_core::retry::RetryCoordinator,
     metrics::ResponseCacheOutcome,
     observability::{HedgeDecisionReason, RetryDecisionReason},
     runtime::{
@@ -503,12 +501,8 @@ impl QUICListener {
         let retry_decision = policy.retry_after_error(
             &primary_err,
             policy_telemetry.retry.count,
-            MAX_UPSTREAM_RETRY_ATTEMPTS,
-            ForwardingSelectionService::retry_budget_available(
-                &primary_err,
-                route_name,
-                retry_budget,
-            ),
+            route_name,
+            retry_budget,
             alternate_backend_available,
             alternate_backend_failure,
         );
@@ -739,11 +733,7 @@ impl QUICListener {
                                     result?
                                 } else {
                                     match policy.hedge_after_delay(
-                                        ForwardingSelectionService::retry_budget_available(
-                                            &ProxyError::Timeout,
-                                            route_name,
-                                            retry_budget,
-                                        ),
+                                        retry_budget.allow_retry(route_name).is_ok(),
                                     ) {
                                         HedgePolicyDecision::Hedge { reason } => {
                                             policy_telemetry.hedge.record_trigger(reason);

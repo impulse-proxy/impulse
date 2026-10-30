@@ -24,9 +24,7 @@ pub(in crate::quic_listener) use self::resolve::{
 pub(crate) use self::{
     auth::execute_external_auth_request,
     resolve::TargetResolutionRequest,
-    selection::{
-        BackendCandidate, ForwardingSelectionService, MAX_UPSTREAM_RETRY_ATTEMPTS, RetryCoordinator,
-    },
+    selection::{BackendCandidate, ForwardingSelectionService},
 };
 use super::*;
 use crate::runtime::cache::BoundedPingoraMemoryCache;

@@ -17,7 +17,7 @@ use impulse_bridge::response::{
 use impulse_config::{backend_endpoint::BackendScheme, runtime::ListenerRuntimeConfig};
 use impulse_errors::{
     BridgeError, PoolError, ProxyError, RetryAttemptTelemetryReason, RetryPolicyDecision,
-    RetryPolicyDenialReason, classify_upstream_proxy_error, is_idempotent_method,
+    classify_upstream_proxy_error, is_idempotent_method,
 };
 use impulse_lb::{
     BackendSelectionInput, alternate_backend::AlternateBackendFailureReason,
@@ -67,12 +67,12 @@ use crate::{
             ResponseCacheDecision, ResponseProcessingInput, ResponseProcessingResult,
             process_response,
         },
+        retry::RetryCoordinator,
     },
     metrics::ResponseCacheOutcome,
     quic_listener::{
         AdmissionPolicyDecision, BackendCandidate, ForwardingSelectionService,
-        MAX_UPSTREAM_RETRY_ATTEMPTS, RetryCoordinator, TargetResolutionRequest,
-        admission_rejection_response, evaluate_post_auth_quota_policy,
+        TargetResolutionRequest, admission_rejection_response, evaluate_post_auth_quota_policy,
         execute_external_auth_request,
     },
     resilience::quota::QuotaIdentityContext,
@@ -2107,23 +2107,18 @@ fn handle_pingora_proxy_failure(
     let decision = retry.retry_after_error(
         &proxy_error,
         ctx.retry_count,
-        MAX_UPSTREAM_RETRY_ATTEMPTS,
-        true,
+        route_name,
+        &ctx.runtime
+            .shared_state
+            .generation_state()
+            .resilience
+            .retry_budget,
         retry_backend.is_some(),
         alternate_failure,
     );
     let metrics = &ctx.runtime.shared_state.shared_services().metrics;
     let retrying = match decision {
-        RetryPolicyDecision::Retry { reason }
-            if ctx
-                .runtime
-                .shared_state
-                .generation_state()
-                .resilience
-                .retry_budget
-                .allow_retry(route_name)
-                .is_ok() =>
-        {
+        RetryPolicyDecision::Retry { reason } => {
             metrics
                 .policy_observations()
                 .inc_retry_attempt(RetryAttemptTelemetryReason::from(reason));
@@ -2131,13 +2126,6 @@ fn handle_pingora_proxy_failure(
             ctx.retry_backend = retry_backend;
             error.set_retry(true);
             true
-        }
-        RetryPolicyDecision::Retry { .. } => {
-            metrics
-                .policy_observations()
-                .inc_retry_denied(RetryPolicyDenialReason::BudgetDenied);
-            error.set_retry(false);
-            false
         }
         RetryPolicyDecision::DoNotRetry { denial } => {
             if let Some(denial) = denial {
