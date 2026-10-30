@@ -5,16 +5,18 @@ use impulse_errors::ProxyError;
 use log::error;
 
 use super::{
-    QUICListener,
-    pingora_health::PingoraHealthServiceInput,
-    runtime_handle,
+    QUICListener, runtime_handle,
     runtime_state::{ControlPlaneStartup, WatchdogServiceCtx},
     spawn_supervised_async_task,
 };
 use crate::{
     resilience::quota::QuotaRuntime,
     runtime::{
-        backend::coordination::spawn_pingora_discovery_refresh, bundle::RuntimeBundleHandle,
+        backend::{
+            coordination::spawn_pingora_discovery_refresh,
+            health_service::{PingoraHealthServiceInput, spawn_pingora_health_service},
+        },
+        bundle::RuntimeBundleHandle,
         shared_state::SharedRuntimeState,
     },
     watchdog::{
@@ -86,15 +88,18 @@ impl QUICListener {
                 pingora_load_balancing.generation(),
                 Arc::clone(&task_registry),
             );
-            Self::spawn_pingora_health_service(PingoraHealthServiceInput {
-                generation: pingora_load_balancing.generation(),
-                transport_pool: runtime.transport_pool(),
-                backend_health_checks: runtime.backend_health_checks(),
-                pingora_load_balancing,
-                backend_lifecycle: runtime.backend_lifecycle(),
-                metrics: runtime.metrics(),
-                generation_tasks: Arc::clone(&task_registry),
-            });
+            spawn_pingora_health_service(
+                runtime_handle(),
+                PingoraHealthServiceInput {
+                    generation: pingora_load_balancing.generation(),
+                    transport_pool: runtime.transport_pool(),
+                    backend_health_checks: runtime.backend_health_checks(),
+                    pingora_load_balancing,
+                    backend_lifecycle: runtime.backend_lifecycle(),
+                    metrics: runtime.metrics(),
+                    generation_tasks: Arc::clone(&task_registry),
+                },
+            );
             Self::spawn_watchdog_service(WatchdogServiceCtx::new(runtime, task_registry));
         });
     }

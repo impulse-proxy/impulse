@@ -101,7 +101,6 @@ mod control_api;
 mod control_plane;
 mod forwarding;
 mod metrics;
-mod pingora_health;
 mod protocol;
 mod runtime_endpoint;
 mod runtime_state;

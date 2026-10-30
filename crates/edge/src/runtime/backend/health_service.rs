@@ -21,7 +21,6 @@ use impulse_transport::UpstreamTransportPool;
 use pingora_core::{Error, ErrorType, Result as PingoraResult};
 use pingora_http::RequestHeader;
 
-use super::{QUICListener, runtime_handle, spawn_supervised_async_task};
 use crate::{
     Metrics,
     runtime::{
@@ -58,15 +57,15 @@ struct ImpulsePingoraHealthCheck {
     metrics: Arc<Metrics>,
 }
 
-pub(super) struct PingoraHealthServiceInput {
-    pub(super) generation: u64,
-    pub(super) transport_pool: Arc<UpstreamTransportPool>,
-    pub(super) backend_health_checks: Arc<HashMap<String, RuntimeBackendHealthCheck>>,
-    pub(super) pingora_load_balancing:
+pub(crate) struct PingoraHealthServiceInput {
+    pub(crate) generation: u64,
+    pub(crate) transport_pool: Arc<UpstreamTransportPool>,
+    pub(crate) backend_health_checks: Arc<HashMap<String, RuntimeBackendHealthCheck>>,
+    pub(crate) pingora_load_balancing:
         SharedPingoraLoadBalancingRuntimeState<RuntimeBackendTlsPolicy>,
-    pub(super) backend_lifecycle: Arc<BackendLifecycleCoordinator>,
-    pub(super) metrics: Arc<Metrics>,
-    pub(super) generation_tasks: Arc<RuntimeTaskRegistry>,
+    pub(crate) backend_lifecycle: Arc<BackendLifecycleCoordinator>,
+    pub(crate) metrics: Arc<Metrics>,
+    pub(crate) generation_tasks: Arc<RuntimeTaskRegistry>,
 }
 
 impl ImpulsePingoraHealthCheck {
@@ -321,51 +320,51 @@ impl PingoraHealthCheck for ImpulsePingoraHealthCheck {
     }
 }
 
-impl QUICListener {
-    pub(super) fn spawn_pingora_health_service(input: PingoraHealthServiceInput) {
-        let PingoraHealthServiceInput {
-            generation,
-            transport_pool,
-            backend_health_checks,
-            pingora_load_balancing,
-            backend_lifecycle,
-            metrics,
-            generation_tasks,
-        } = input;
-        let Some(frequency) = backend_health_checks
-            .values()
-            .map(|health| health.interval)
-            .min()
-        else {
-            return;
-        };
-        let registry = pingora_load_balancing.health_registry();
-        registry.set_health_check(Box::new(ImpulsePingoraHealthCheck::new(
-            generation,
-            pingora_load_balancing.upstream_pools(),
-            backend_health_checks.as_ref(),
-            transport_pool,
-            backend_lifecycle,
-            metrics.clone(),
-        )));
+pub(crate) fn spawn_pingora_health_service(
+    runtime_handle: Option<tokio::runtime::Handle>,
+    input: PingoraHealthServiceInput,
+) {
+    let PingoraHealthServiceInput {
+        generation,
+        transport_pool,
+        backend_health_checks,
+        pingora_load_balancing,
+        backend_lifecycle,
+        metrics,
+        generation_tasks,
+    } = input;
+    let Some(frequency) = backend_health_checks
+        .values()
+        .map(|health| health.interval)
+        .min()
+    else {
+        return;
+    };
+    let registry = pingora_load_balancing.health_registry();
+    registry.set_health_check(Box::new(ImpulsePingoraHealthCheck::new(
+        generation,
+        pingora_load_balancing.upstream_pools(),
+        backend_health_checks.as_ref(),
+        transport_pool,
+        backend_lifecycle,
+        metrics.clone(),
+    )));
 
-        let Some(handle) = runtime_handle() else {
-            log::error!("Pingora health service disabled: no Tokio runtime available");
-            return;
-        };
-        let mut service = HealthCheckService::new(registry);
-        service.health_check_frequency = Some(frequency);
-        service.parallel_health_check = true;
-        let (shutdown_tx, shutdown_watch) = tokio::sync::watch::channel(false);
-        let registration = spawn_supervised_async_task(
-            &handle,
-            "pingora-health-service",
-            Some(metrics),
-            async move {
-                service.run(shutdown_watch, None).await;
-                drop(shutdown_tx);
-            },
-        );
-        generation_tasks.register(registration);
-    }
+    let Some(handle) = runtime_handle else {
+        log::error!("Pingora health service disabled: no Tokio runtime available");
+        return;
+    };
+    let mut service = HealthCheckService::new(registry);
+    service.health_check_frequency = Some(frequency);
+    service.parallel_health_check = true;
+    let (shutdown_tx, shutdown_watch) = tokio::sync::watch::channel(false);
+    generation_tasks.spawn_supervised(
+        &handle,
+        "pingora-health-service",
+        Some(metrics),
+        async move {
+            service.run(shutdown_watch, None).await;
+            drop(shutdown_tx);
+        },
+    );
 }
