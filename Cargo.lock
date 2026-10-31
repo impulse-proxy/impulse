@@ -1578,6 +1578,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "impulse-http3-ingress"
+version = "0.6.0"
+
+[[package]]
 name = "impulse-lb"
 version = "0.6.0"
 dependencies = [

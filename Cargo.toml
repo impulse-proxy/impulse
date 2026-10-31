@@ -5,6 +5,7 @@ members = [
     "crates/runtime",
     "crates/policy",
     "crates/observability",
+    "crates/http3-ingress",
     "crates/pingora-ingress",
     "crates/config",
     "crates/utils",
