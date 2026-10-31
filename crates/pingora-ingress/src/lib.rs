@@ -29,11 +29,16 @@ use rustls::server::{ResolvesServerCert, danger::ClientCertVerifier};
 
 mod request;
 mod response;
+mod tunnel;
 
 pub use request::{PingoraRequestContext, apply_normalized_request_headers};
 pub use response::{
     apply_normalized_response_headers, build_response_header, write_downstream_response,
     write_error_response, write_local_response,
+};
+pub use tunnel::{
+    classify_tunnel, configure_tunnel_peer, configure_tunnel_proxy, tunnel_cache_flags,
+    tunnel_response_established,
 };
 
 #[async_trait]

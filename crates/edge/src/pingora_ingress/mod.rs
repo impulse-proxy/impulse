@@ -12,7 +12,6 @@ use impulse_bridge::response::{
     normalize_response_trailers,
 };
 use impulse_config::{backend_endpoint::BackendScheme, runtime::ListenerRuntimeConfig};
-use impulse_contracts::TunnelMode;
 use impulse_errors::{
     BridgeError, PoolError, ProxyError, RetryAttemptTelemetryReason, RetryPolicyDecision,
     classify_upstream_proxy_error, is_idempotent_method,
@@ -25,8 +24,10 @@ pub use impulse_pingora_ingress::PingoraListenerTask;
 use impulse_pingora_ingress::{
     ConnectionAdmission, PingoraDrainState, PingoraListenerConfig,
     PingoraRequestContext as IngressRequestContext, apply_normalized_request_headers,
-    apply_normalized_response_headers, build_response_header, create_listener_service,
-    spawn_listener, write_downstream_response, write_error_response, write_local_response,
+    apply_normalized_response_headers, build_response_header, classify_tunnel,
+    configure_tunnel_peer, configure_tunnel_proxy, create_listener_service, spawn_listener,
+    tunnel_cache_flags, tunnel_response_established, write_downstream_response,
+    write_error_response, write_local_response,
 };
 use impulse_transport::{classify_pingora_h1_error, classify_pingora_h2_error};
 use pingora_cache::{CacheKey, CacheMeta, CachePhase, NoCacheReason, RespCacheable};
@@ -179,9 +180,8 @@ impl PingoraIngressService {
                 "Pingora ingress request filter did not validate a method",
             )
         })?;
-        let tunnel_response = ctx
-            .tunnel_mode
-            .established_by(method, upstream_response.status);
+        let tunnel_response =
+            tunnel_response_established(ctx.tunnel_mode, method, upstream_response.status);
         let body_mode = if tunnel_response {
             ResponseBodyMode::TunnelSuccess
         } else if method.eq_ignore_ascii_case("HEAD") {
@@ -603,9 +603,7 @@ fn pingora_ingress_service_for_listener(
             drain: Arc::clone(&drain),
         },
     );
-    let mut options = HttpServerOptions::default();
-    options.allow_connect_method_proxying = true;
-    proxy.server_options = Some(options);
+    configure_tunnel_proxy(&mut proxy);
     let service = create_listener_service(
         PingoraConnectionLimitedApp {
             proxy: Arc::new(PingoraRequestDeadlineApp {
@@ -748,13 +746,7 @@ impl ProxyHttp for PingoraIngressService {
             .metrics
             .policy_observations()
             .set_brownout_active(state.resilience.brownout.is_active());
-        let tunnel_mode = if validated.websocket_tunnel {
-            TunnelMode::Websocket
-        } else if validated.method.eq_ignore_ascii_case("CONNECT") {
-            TunnelMode::Connect
-        } else {
-            TunnelMode::None
-        };
+        let tunnel_mode = classify_tunnel(&validated.method, validated.websocket_tunnel);
         let external_auth_request =
             execution
                 .policy
@@ -973,7 +965,7 @@ impl ProxyHttp for PingoraIngressService {
             return Ok(());
         };
         let cache_policy = &policy.local_auth_policy.response_cache;
-        let is_tunnel = ctx.tunnel_mode == TunnelMode::Connect;
+        let (is_upgrade, is_tunnel) = tunnel_cache_flags(ctx.tunnel_mode);
         let has_body = !session.is_body_empty();
         let representation =
             evaluate_cache_request_eligibility(ResponseCacheRequestEligibilityInput {
@@ -988,7 +980,7 @@ impl ProxyHttp for PingoraIngressService {
                 method,
                 headers: &session.req_header().headers,
                 has_body,
-                is_upgrade: ctx.tunnel_mode == TunnelMode::Websocket,
+                is_upgrade,
                 is_tunnel,
             });
         let Ok(representation) = representation else {
@@ -1185,9 +1177,7 @@ impl ProxyHttp for PingoraIngressService {
             .map_err(|error| {
                 Error::because(InternalError, "backend peer creation failed", error)
             })?;
-        if ctx.tunnel_mode.is_tunnel() {
-            peer.options.alpn = ALPN::H1;
-        }
+        configure_tunnel_peer(ctx.tunnel_mode, &mut peer);
         let body_idle = ctx
             .runtime
             .runtime_config
@@ -1405,9 +1395,8 @@ impl ProxyHttp for PingoraIngressService {
                 "Pingora ingress request filter did not validate a method",
             )
         })?;
-        let tunnel_response = ctx
-            .tunnel_mode
-            .established_by(method, upstream_response.status);
+        let tunnel_response =
+            tunnel_response_established(ctx.tunnel_mode, method, upstream_response.status);
         let content_length = ctx.response_content_length.or_else(|| {
             upstream_response
                 .headers
