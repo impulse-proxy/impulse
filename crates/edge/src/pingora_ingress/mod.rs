@@ -23,13 +23,13 @@ use impulse_lb::{
 pub use impulse_pingora_ingress::PingoraListenerTask;
 use impulse_pingora_ingress::{
     ConnectionAdmission, PingoraDrainState, PingoraListenerConfig,
-    PingoraRequestContext as IngressRequestContext, apply_normalized_request_headers,
-    apply_normalized_response_headers, build_response_header, classify_tunnel,
-    configure_tunnel_peer, configure_tunnel_proxy, create_listener_service, spawn_listener,
-    tunnel_cache_flags, tunnel_response_established, write_downstream_response,
-    write_error_response, write_local_response,
+    PingoraRequestContext as IngressRequestContext, PingoraUpstreamProtocol,
+    apply_normalized_request_headers, apply_normalized_response_headers, build_response_header,
+    classify_pingora_proxy_error, classify_tunnel, configure_tunnel_peer, configure_tunnel_proxy,
+    create_listener_service, pingora_peer_protocol, spawn_listener, tunnel_cache_flags,
+    tunnel_response_established, write_downstream_response, write_error_response,
+    write_local_response,
 };
-use impulse_transport::{classify_pingora_h1_error, classify_pingora_h2_error};
 use pingora_cache::{CacheKey, CacheMeta, CachePhase, NoCacheReason, RespCacheable};
 use pingora_core::{
     Error, HTTPStatus, InternalError, Result,
@@ -40,7 +40,7 @@ use pingora_core::{
     },
     server::{ShutdownWatch, configuration::ServerConf},
     services::listening::Service,
-    upstreams::peer::{ALPN, HttpPeer},
+    upstreams::peer::HttpPeer,
 };
 use pingora_http::{RequestHeader, ResponseHeader};
 use pingora_proxy::{HttpProxy, ProxyHttp, Session, http_proxy};
@@ -1199,13 +1199,7 @@ impl ProxyHttp for PingoraIngressService {
         ctx: &mut Self::CTX,
         error: Box<Error>,
     ) -> Box<Error> {
-        handle_pingora_proxy_failure(
-            ctx,
-            error,
-            matches!(peer.options.alpn, ALPN::H2),
-            false,
-            true,
-        )
+        handle_pingora_proxy_failure(ctx, error, pingora_peer_protocol(peer), false, true)
     }
 
     fn error_while_proxy(
@@ -1219,7 +1213,7 @@ impl ProxyHttp for PingoraIngressService {
         handle_pingora_proxy_failure(
             ctx,
             error,
-            matches!(peer.options.alpn, ALPN::H2),
+            pingora_peer_protocol(peer),
             reused,
             session.response_written().is_none(),
         )
@@ -1736,7 +1730,7 @@ impl ProxyHttp for PingoraIngressService {
 fn handle_pingora_proxy_failure(
     ctx: &mut PingoraRequestContext,
     mut error: Box<Error>,
-    h2: bool,
+    protocol: PingoraUpstreamProtocol,
     reused: bool,
     retry_safe: bool,
 ) -> Box<Error> {
@@ -1749,11 +1743,7 @@ fn handle_pingora_proxy_failure(
         return error;
     }
     selected.failure_handled = true;
-    let proxy_error = if h2 {
-        classify_pingora_h2_error(&error, reused)
-    } else {
-        classify_pingora_h1_error(&error)
-    };
+    let proxy_error = classify_pingora_proxy_error(&error, protocol, reused);
     if let Some(selected) = ctx.selected_backend.as_mut() {
         selected.finish_status = Some(if matches!(proxy_error, ProxyError::Timeout) {
             http::StatusCode::SERVICE_UNAVAILABLE.as_u16()

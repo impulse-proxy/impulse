@@ -1606,6 +1606,7 @@ dependencies = [
  "bytes",
  "http",
  "impulse-contracts",
+ "impulse-errors",
  "pingora-core",
  "pingora-http",
  "pingora-proxy",

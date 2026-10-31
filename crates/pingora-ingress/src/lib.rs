@@ -27,10 +27,12 @@ use pingora_core::{
 };
 use rustls::server::{ResolvesServerCert, danger::ClientCertVerifier};
 
+mod error;
 mod request;
 mod response;
 mod tunnel;
 
+pub use error::{PingoraUpstreamProtocol, classify_pingora_proxy_error, pingora_peer_protocol};
 pub use request::{PingoraRequestContext, apply_normalized_request_headers};
 pub use response::{
     apply_normalized_response_headers, build_response_header, write_downstream_response,

@@ -9,6 +9,7 @@ async-trait.workspace = true
 bytes.workspace = true
 http.workspace = true
 impulse-contracts = { path = "../contracts" }
+impulse-errors = { path = "../errors" }
 pingora-core = { workspace = true, features = ["connection_filter", "rustls"] }
 pingora-http.workspace = true
 pingora-proxy.workspace = true
