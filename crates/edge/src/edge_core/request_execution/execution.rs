@@ -8,28 +8,50 @@ use super::{
 };
 use crate::{resilience::runtime::RuntimeResilience, routing::index::RouteIndex};
 
-/// Resolves routing, policy, and admission for a protocol-neutral request.
-pub(crate) fn execute_request(
-    routing_index: &RouteIndex,
-    upstream_policies: &HashMap<String, RuntimeUpstreamPolicy>,
-    resilience: &RuntimeResilience,
-    request: RequestExecutionInput<'_>,
-) -> RequestExecutionResult {
-    let route = resolve_route(
-        routing_index,
-        request.method,
-        request.path,
-        request.authority,
-    )?;
-    let upstream_policy = upstream_policies
-        .get(route.upstream_name.as_ref())
-        .ok_or(super::RouteResolutionError::MissingUpstreamPolicy)?;
-    let policy = resolve_policy(upstream_policy);
-    let admission = evaluate_admission(resilience, &policy, route.upstream_name.as_ref(), &request);
+/// Borrowed protocol-neutral request executor for one runtime generation.
+pub(crate) struct EdgeRequestService<'a> {
+    routing_index: &'a RouteIndex,
+    upstream_policies: &'a HashMap<String, RuntimeUpstreamPolicy>,
+    resilience: &'a RuntimeResilience,
+}
 
-    Ok(RequestExecutionState {
-        route,
-        policy,
-        admission,
-    })
+impl<'a> EdgeRequestService<'a> {
+    pub(crate) fn new(
+        routing_index: &'a RouteIndex,
+        upstream_policies: &'a HashMap<String, RuntimeUpstreamPolicy>,
+        resilience: &'a RuntimeResilience,
+    ) -> Self {
+        Self {
+            routing_index,
+            upstream_policies,
+            resilience,
+        }
+    }
+
+    /// Resolves routing, policy, and admission for a protocol-neutral request.
+    pub(crate) fn execute(&self, request: RequestExecutionInput<'_>) -> RequestExecutionResult {
+        let route = resolve_route(
+            self.routing_index,
+            request.method,
+            request.path,
+            request.authority,
+        )?;
+        let upstream_policy = self
+            .upstream_policies
+            .get(route.upstream_name.as_ref())
+            .ok_or(super::RouteResolutionError::MissingUpstreamPolicy)?;
+        let policy = resolve_policy(upstream_policy);
+        let admission = evaluate_admission(
+            self.resilience,
+            &policy,
+            route.upstream_name.as_ref(),
+            &request,
+        );
+
+        Ok(RequestExecutionState {
+            route,
+            policy,
+            admission,
+        })
+    }
 }

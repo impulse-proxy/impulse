@@ -11,7 +11,7 @@ pub(crate) use compression::{
     ResponseCompressionAction, ResponseCompressionInput, ResponseCompressionPolicyInput,
     apply_gzip_response_headers, ensure_vary_accept_encoding, evaluate_response_compression,
 };
-pub(crate) use execution::execute_request;
+pub(crate) use execution::EdgeRequestService;
 pub(crate) use policy::ResolvedRequestPolicy;
 pub(crate) use routing::RouteResolutionError;
 #[cfg(test)]

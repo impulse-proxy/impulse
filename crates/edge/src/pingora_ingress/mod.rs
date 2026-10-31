@@ -60,8 +60,8 @@ use crate::{
         },
         request_completion::RequestCompletion,
         request_execution::{
-            RequestExecutionInput, ResolvedRequestPolicy, ResolvedRouteTarget,
-            ResponseCompressionAction, RouteResolutionError, execute_request,
+            EdgeRequestService, RequestExecutionInput, ResolvedRequestPolicy, ResolvedRouteTarget,
+            ResponseCompressionAction, RouteResolutionError,
         },
         request_validation::validate_http_request_parts,
         response_processing::{
@@ -706,18 +706,18 @@ impl ProxyHttp for PingoraIngressService {
                 .and_then(|value| value.to_str().ok())
                 .map(str::to_owned)
         };
-        let execution = match execute_request(
+        let request_service = EdgeRequestService::new(
             &state.routing_index,
             &state.upstream_policies,
             &state.resilience,
-            RequestExecutionInput {
-                method: &validated.method,
-                path: &validated.path,
-                authority: validated.authority.as_deref(),
-                peer_address,
-                headers: Some(&header_lookup),
-            },
-        ) {
+        );
+        let execution = match request_service.execute(RequestExecutionInput {
+            method: &validated.method,
+            path: &validated.path,
+            authority: validated.authority.as_deref(),
+            peer_address,
+            headers: Some(&header_lookup),
+        }) {
             Ok(execution) => execution,
             Err(RouteResolutionError::EmptyMethodOrPath) => {
                 write_local_response(

@@ -16,7 +16,7 @@ use super::{
 use crate::{
     edge_core::{
         request_completion::RequestCompletion,
-        request_execution::{RequestExecutionInput, RequestExecutionState, execute_request},
+        request_execution::{EdgeRequestService, RequestExecutionInput, RequestExecutionState},
     },
     quic_listener::admission::{
         AdmissionPolicyDecision, AdmissionRejectionResponse, admission_rejection_response,
@@ -495,52 +495,53 @@ impl QUICListener {
             peer_address,
             headers: Some(&lb_header_lookup),
         };
-        let resolved = execute_request(
+        let request_service = EdgeRequestService::new(
             shared_ctx.routing_index,
             shared_ctx.upstream_policies,
             resilience,
-            request_input,
-        )
-        .map_err(|error| {
-            let error = Self::request_resolution_error(path, error);
-            Self::observe_route_resolution_failure(
-                &TargetResolutionRequest::new(
-                    method,
-                    path,
-                    authority,
-                    Some(sticky_cid_key),
-                    Some(&lb_header_lookup),
-                ),
-                &error,
-                metrics,
-                request_start.elapsed(),
-            );
-            error
-        })
-        .and_then(|execution| {
-            let RequestExecutionState {
-                route,
-                policy,
-                admission,
-            } = execution;
-            Self::resolve_forwarding_target(ForwardTargetResolutionInput {
-                request: TargetResolutionRequest::new(
-                    method,
-                    path,
-                    authority,
-                    Some(sticky_cid_key),
-                    Some(&lb_header_lookup),
-                ),
-                route,
-                context: resolution_context,
-                observation: ResolutionObservation::new(metrics, request_start.elapsed()),
+        );
+        let resolved = request_service
+            .execute(request_input)
+            .map_err(|error| {
+                let error = Self::request_resolution_error(path, error);
+                Self::observe_route_resolution_failure(
+                    &TargetResolutionRequest::new(
+                        method,
+                        path,
+                        authority,
+                        Some(sticky_cid_key),
+                        Some(&lb_header_lookup),
+                    ),
+                    &error,
+                    metrics,
+                    request_start.elapsed(),
+                );
+                error
             })
-            .map(|target| RequestExecutionState {
-                route: target,
-                policy,
-                admission,
-            })
-        });
+            .and_then(|execution| {
+                let RequestExecutionState {
+                    route,
+                    policy,
+                    admission,
+                } = execution;
+                Self::resolve_forwarding_target(ForwardTargetResolutionInput {
+                    request: TargetResolutionRequest::new(
+                        method,
+                        path,
+                        authority,
+                        Some(sticky_cid_key),
+                        Some(&lb_header_lookup),
+                    ),
+                    route,
+                    context: resolution_context,
+                    observation: ResolutionObservation::new(metrics, request_start.elapsed()),
+                })
+                .map(|target| RequestExecutionState {
+                    route: target,
+                    policy,
+                    admission,
+                })
+            });
 
         let prepared = match resolved {
             Ok(RequestExecutionState {
