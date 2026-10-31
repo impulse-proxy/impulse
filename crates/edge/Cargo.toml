@@ -15,6 +15,7 @@ impulse-contracts = { path = "../contracts" }
 impulse-runtime = { path = "../runtime" }
 impulse-policy = { path = "../policy" }
 impulse-observability = { path = "../observability" }
+impulse-pingora-ingress = { path = "../pingora-ingress" }
 impulse-lb = { path = "../lb" }
 impulse-bridge = { path = "../bridge" }
 impulse-transport = { path = "../transport" }

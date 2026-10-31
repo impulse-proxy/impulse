@@ -15,13 +15,11 @@ use impulse_config::{
     runtime::{ListenerRuntimeConfig, RuntimeConfig},
     validator::validate,
 };
-use pingora_core::{
-    listeners::ConnectionFilter, server::configuration::ServerConf,
-    services::Service as PingoraService,
-};
+use impulse_pingora_ingress::ConnectionAdmission;
+use pingora_core::{server::configuration::ServerConf, services::Service as PingoraService};
 
 use super::{
-    PingoraConnectionAdmissionState, PingoraConnectionFilter, PingoraListenerTask,
+    PingoraConnectionAdmissionState, PingoraListenerTask, PingoraRuntimeConnectionAdmission,
     pingora_ingress_services, spawn_pingora_ingress_listener,
 };
 use crate::runtime::{
@@ -167,9 +165,9 @@ fn connection_admission_config(
 fn test_connection_filter(
     runtime: &Arc<RuntimeBundleHandle>,
     listener: &ListenerRuntimeConfig,
-) -> PingoraConnectionFilter {
+) -> PingoraRuntimeConnectionAdmission {
     let policy = &listener.policies.transport;
-    PingoraConnectionFilter {
+    PingoraRuntimeConnectionAdmission {
         runtime: runtime.as_ref().clone(),
         listener_label: format!(
             "{}:{}",

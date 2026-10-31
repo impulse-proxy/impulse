@@ -1537,6 +1537,7 @@ dependencies = [
  "impulse-errors",
  "impulse-lb",
  "impulse-observability",
+ "impulse-pingora-ingress",
  "impulse-policy",
  "impulse-runtime",
  "impulse-transport",
@@ -1600,6 +1601,12 @@ dependencies = [
 [[package]]
 name = "impulse-pingora-ingress"
 version = "0.6.0"
+dependencies = [
+ "async-trait",
+ "pingora-core",
+ "rustls",
+ "tokio",
+]
 
 [[package]]
 name = "impulse-policy"
