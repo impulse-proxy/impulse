@@ -23,8 +23,9 @@ use impulse_lb::{
 };
 pub use impulse_pingora_ingress::PingoraListenerTask;
 use impulse_pingora_ingress::{
-    ConnectionAdmission, PingoraDrainState, PingoraListenerConfig, create_listener_service,
-    spawn_listener,
+    ConnectionAdmission, PingoraDrainState, PingoraListenerConfig,
+    PingoraRequestContext as IngressRequestContext, apply_normalized_request_headers,
+    create_listener_service, spawn_listener,
 };
 use impulse_transport::{classify_pingora_h1_error, classify_pingora_h2_error};
 use pingora_cache::{CacheKey, CacheMeta, CachePhase, NoCacheReason, RespCacheable};
@@ -106,46 +107,29 @@ use crate::{
 
 const RESPONSE_GZIP_LEVEL: u32 = 6;
 
-pub(crate) struct PingoraRequestContext {
+pub(crate) struct PingoraEdgeRequestState {
     pub(crate) runtime: Arc<RuntimeBundle>,
     response_cache_namespace: u64,
     pub(crate) route: Option<ResolvedRouteTarget>,
     pub(crate) policy: Option<ResolvedRequestPolicy>,
     auth_header_mutations: Vec<PendingHeaderMutation>,
     pub(crate) completion: RequestCompletion,
-    started_at: Instant,
     terminal_classification: Option<PingoraTerminalClassification>,
-    method: Option<String>,
-    path: Option<String>,
-    authority: Option<String>,
-    content_length: Option<usize>,
-    body_bytes_received: usize,
-    request_body_last_progress_at: Instant,
-    tunnel_mode: TunnelMode,
-    response_body_bytes_received: usize,
-    response_body_started_at: Option<Instant>,
-    response_body_last_progress_at: Option<Instant>,
-    response_body_suppressed: bool,
-    response_body_limit_exempt: bool,
-    response_content_length: Option<usize>,
     response_processing: Option<ResponseProcessingResult>,
     response_cache_representation: Option<ResponseCacheRepresentation>,
     response_cache_bypass_recorded: bool,
-    request_body_replayable: bool,
-    retry_count: u8,
-    retry_backend: Option<(String, usize)>,
-    lb_key: Option<String>,
-    request_id: impulse_contracts::RequestId,
     selected_backend: Option<PingoraSelectedBackend>,
     drain: Arc<PingoraDrainState>,
 }
+
+pub(crate) type PingoraRequestContext = IngressRequestContext<PingoraEdgeRequestState>;
 
 enum PingoraTerminalClassification {
     Admission(AdmissionOutcomeClass),
     Error(ProxyError),
 }
 
-impl Drop for PingoraRequestContext {
+impl Drop for PingoraEdgeRequestState {
     fn drop(&mut self) {
         self.completion.complete();
         self.drain.request_finished();
@@ -646,39 +630,23 @@ impl ProxyHttp for PingoraIngressService {
         self.drain.request_started();
         let (runtime, response_cache_namespace) =
             self.runtime.current_with_response_cache_namespace();
-        PingoraRequestContext {
-            runtime,
-            response_cache_namespace,
-            route: None,
-            policy: None,
-            auth_header_mutations: Vec::new(),
-            completion: RequestCompletion::default(),
-            started_at: Instant::now(),
-            terminal_classification: None,
-            method: None,
-            path: None,
-            authority: None,
-            content_length: None,
-            body_bytes_received: 0,
-            request_body_last_progress_at: Instant::now(),
-            tunnel_mode: TunnelMode::None,
-            response_body_bytes_received: 0,
-            response_body_started_at: None,
-            response_body_last_progress_at: None,
-            response_body_suppressed: false,
-            response_body_limit_exempt: false,
-            response_content_length: None,
-            response_processing: None,
-            response_cache_representation: None,
-            response_cache_bypass_recorded: false,
-            request_body_replayable: false,
-            retry_count: 0,
-            retry_backend: None,
-            lb_key: None,
-            request_id: REQUEST_ID_COUNTER.fetch_add(1, Ordering::Relaxed),
-            selected_backend: None,
-            drain: Arc::clone(&self.drain),
-        }
+        IngressRequestContext::new(
+            PingoraEdgeRequestState {
+                runtime,
+                response_cache_namespace,
+                route: None,
+                policy: None,
+                auth_header_mutations: Vec::new(),
+                completion: RequestCompletion::default(),
+                terminal_classification: None,
+                response_processing: None,
+                response_cache_representation: None,
+                response_cache_bypass_recorded: false,
+                selected_backend: None,
+                drain: Arc::clone(&self.drain),
+            },
+            REQUEST_ID_COUNTER.fetch_add(1, Ordering::Relaxed),
+        )
     }
 
     async fn request_filter(&self, session: &mut Session, ctx: &mut Self::CTX) -> Result<bool> {
@@ -1380,14 +1348,7 @@ impl ProxyHttp for PingoraIngressService {
             )
         })?;
 
-        let existing_headers = upstream_request.headers.keys().cloned().collect::<Vec<_>>();
-        for name in existing_headers {
-            upstream_request.remove_header(&name);
-        }
-        for (name, value) in normalized.headers() {
-            upstream_request.append_header(name.clone(), value.clone())?;
-        }
-        Ok(())
+        apply_normalized_request_headers(upstream_request, normalized.headers())
     }
 
     async fn adjust_upstream_modules(

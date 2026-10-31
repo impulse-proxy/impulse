@@ -27,6 +27,10 @@ use pingora_core::{
 };
 use rustls::server::{ResolvesServerCert, danger::ClientCertVerifier};
 
+mod request;
+
+pub use request::{PingoraRequestContext, apply_normalized_request_headers};
+
 #[async_trait]
 pub trait ConnectionAdmission: fmt::Debug + Send + Sync {
     async fn should_accept(&self, address: Option<&SocketAddr>) -> bool;
