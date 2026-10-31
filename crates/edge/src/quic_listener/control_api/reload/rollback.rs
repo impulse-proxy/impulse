@@ -104,7 +104,7 @@ impl QUICListener {
                 expected_active_generation: payload.expected_active_generation,
                 requested_at_ms: crate::watchdog::time::now_millis(),
             };
-            move || RuntimeActivationService::rollback_generation(&runtime_bundle_handle, request)
+            move || RuntimeSupervisor::rollback_generation(&runtime_bundle_handle, request)
         })
         .await
         else {

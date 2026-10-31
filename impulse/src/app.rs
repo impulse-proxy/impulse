@@ -10,10 +10,9 @@ use std::{
 use clap::Parser;
 use impulse_config::{runtime::RuntimeConfig, validator::validate as validate_config};
 use impulse_edge::runtime::{
-    bundle::RuntimeBundleHandle,
     ingress::configure_async_runtime,
-    listener::QUICListener,
     privilege_drop::{apply_process_privilege_drop, current_process_privilege_state},
+    supervisor::RuntimeSupervisor,
 };
 use log::{error, info, warn};
 
@@ -151,29 +150,23 @@ async fn run(
         tracing_config.sample_ratio,
     );
 
-    let runtime_bundle =
-        match QUICListener::build_runtime_bundle(config_path, log_config, &runtime_config) {
-            Ok(bundle) => bundle,
-            Err(e) => {
-                error!("Failed to initialize shared runtime state: {}", e);
-                std::process::exit(1);
-            }
-        };
-    let shared_state = Arc::clone(&runtime_bundle.shared_state);
-    let runtime_bundle = Arc::new(RuntimeBundleHandle::new(runtime_bundle));
-
     let worker_count = runtime_config.performance.worker_threads.max(1);
     let shard_count = runtime_config.performance.packet_shards_per_worker.max(1);
     let effective_worker_count = worker_count.saturating_mul(shard_count);
-    if let Err(err) = QUICListener::spawn_control_plane_tasks_with_runtime_bundle(
+    let supervisor = match RuntimeSupervisor::start(
+        config_path,
+        log_config,
         &runtime_config,
-        &shared_state,
-        Arc::clone(&runtime_bundle),
         effective_worker_count,
     ) {
-        error!("Failed to initialize control-plane tasks: {}", err);
-        std::process::exit(1);
-    }
+        Ok(supervisor) => supervisor,
+        Err(err) => {
+            error!("Failed to initialize runtime supervisor: {}", err);
+            std::process::exit(1);
+        }
+    };
+    let shared_state = supervisor.shared_state();
+    let runtime_bundle = supervisor.runtime();
 
     let binds_privileged_port = runtime_config
         .listeners
@@ -194,7 +187,7 @@ async fn run(
         wait_for_shutdown_signal().await;
         // Drive the runtime lifecycle state machine: Running/Draining ->
         // ShuttingDown. This also gates any concurrent reload commit (Phase 6).
-        shutdown_lifecycle.lifecycle().begin_shutdown();
+        RuntimeSupervisor::begin_shutdown(&shutdown_lifecycle);
         shutdown_flag.store(true, Ordering::Relaxed);
     });
 
@@ -252,7 +245,7 @@ async fn run(
             .watchdog
             .restart_requested()
         {
-            runtime_bundle.lifecycle().begin_drain();
+            RuntimeSupervisor::begin_drain(&runtime_bundle);
         }
 
         if worker_failed {
@@ -264,11 +257,9 @@ async fn run(
 
     // Whether we exited via signal or a worker failure, the process is now
     // shutting down; ensure the lifecycle reflects it before draining workers.
-    runtime_bundle.lifecycle().begin_shutdown();
+    RuntimeSupervisor::begin_shutdown(&runtime_bundle);
     shutdown_listener_groups(&mut listener_groups, &mut worker_failed).await;
-    runtime_bundle.retire_background_tasks(Duration::from_secs(5));
-    // Workers are drained and joined: the shutdown transition is complete.
-    runtime_bundle.lifecycle().finish_shutdown();
+    RuntimeSupervisor::complete_shutdown(&runtime_bundle, Duration::from_secs(5));
 
     let panic_count = runtime_guard::panic_count();
     if panic_count > 0 {

@@ -18,9 +18,10 @@ use super::{
 use crate::runtime::{
     activation::{
         ActivationRequest, ActivationResult, RejectedChangeKind, ReloadConfigInput, ReloadPlan,
-        RollbackRequest, RollbackResult, RuntimeActivationService, RuntimeRejectionReason,
+        RollbackRequest, RollbackResult, RuntimeRejectionReason,
     },
     bundle::RuntimeBundleHandle,
+    supervisor::RuntimeSupervisor,
     tls::lifecycle::{
         record_listener_tls_inventory, rotate_listener_tls_material, stage_listener_tls_rotation,
     },

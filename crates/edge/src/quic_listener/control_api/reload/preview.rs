@@ -71,7 +71,7 @@ impl QUICListener {
         let Some(plan) = Self::run_control_api_blocking({
             let runtime_bundle_handle = Arc::clone(&runtime_bundle_handle);
             move || {
-                RuntimeActivationService::preview_reload(
+                RuntimeSupervisor::preview_reload(
                     &runtime_bundle_handle,
                     activation_request,
                     reload_input,

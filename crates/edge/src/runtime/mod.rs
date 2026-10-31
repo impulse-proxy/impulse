@@ -17,6 +17,7 @@ pub mod policy;
 pub mod privilege_drop;
 pub mod shared_state;
 pub(crate) mod subsystem_mapping;
+pub mod supervisor;
 pub(crate) mod tasks;
 pub(crate) mod tls;
 pub(crate) mod transport;
