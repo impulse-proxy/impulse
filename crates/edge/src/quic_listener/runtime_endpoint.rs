@@ -47,7 +47,7 @@ impl QUICListener {
             .map_err(|err| format!("failed to register {context} listener {}: {}", bind, err))
     }
 
-    pub(super) fn probe_tcp_bind(bind: &str, context: &str) -> Result<(), String> {
+    pub(crate) fn probe_tcp_bind(bind: &str, context: &str) -> Result<(), String> {
         std::net::TcpListener::bind(bind)
             .map(|_| ())
             .map_err(|err| format!("failed to bind {context} {bind}: {err}"))

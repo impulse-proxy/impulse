@@ -39,6 +39,15 @@ use crate::{
 pub(crate) struct RuntimeBuilder;
 
 impl RuntimeBuilder {
+    pub(crate) fn rebuild_generation(
+        config: &RuntimeConfig,
+        carried: CarriedProcessSharedServices,
+        generation: u64,
+    ) -> Result<SharedRuntimeState, ProxyError> {
+        let listener_tls_store = Arc::clone(&carried.listener_tls_store);
+        Self::build(config, Some(carried), generation, listener_tls_store)
+    }
+
     pub(crate) fn build(
         config: &RuntimeConfig,
         carried: Option<CarriedProcessSharedServices>,

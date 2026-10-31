@@ -1,10 +1,9 @@
 //! Canonical activation, preview, and rollback contract for runtime generations.
 //!
-//! This module intentionally contains *only* the typed domain vocabulary for
-//! config validation, reload preview, activation, rollback, and history. It does
-//! not perform any runtime mutation itself. Control-plane handlers and future
-//! activation services should consume these types rather than inventing
-//! endpoint-local request/result payloads.
+//! This module owns staged planning, compatibility validation, publication,
+//! rollback, and generation history together with their typed contracts.
+//! Control-plane handlers translate requests and responses without owning
+//! runtime mutation.
 
 pub use impulse_observability::{RuntimeOperationOutcomeReason, RuntimeRejectionReason};
 pub use impulse_runtime::GenerationId;
@@ -12,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::runtime::policy::{TransitionRejection, TransitionRejectionKind};
 
+pub(crate) mod compatibility;
 mod diff;
 mod history;
 mod planning;

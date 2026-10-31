@@ -31,7 +31,7 @@ use impulse_bridge::response::{
 };
 use impulse_config::{
     backend_endpoint::{BackendEndpoint, BackendScheme},
-    config::ClientAuth,
+    config::{ClientAuth, ControlApi as ControlApiConfig},
     runtime::{
         ListenerRuntimeConfig, RuntimeConfig, RuntimeListenerTls, RuntimeTlsIdentity,
         RuntimeUpstreamPolicy,

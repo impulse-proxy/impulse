@@ -937,7 +937,7 @@ impl QUICListener {
         Self::build_client_cert_verifier(&listener_tls.client_auth, client_auth_ca.as_ref(), true)
     }
 
-    pub(in crate::quic_listener) fn build_control_api_server_tls_config(
+    pub(crate) fn build_control_api_server_tls_config(
         config: &ListenerRuntimeConfig,
         client_auth: &ControlApiClientAuthPolicy,
     ) -> Result<Arc<RustlsServerConfig>, ProxyError> {
@@ -999,6 +999,15 @@ impl QUICListener {
         Ok(Arc::new(tls_config))
     }
 
+    pub(crate) fn preflight_control_api_server_tls_config(
+        config: &ListenerRuntimeConfig,
+        control_api: &ControlApiConfig,
+        metrics: Arc<Metrics>,
+    ) -> Result<(), ProxyError> {
+        let security = ControlApiSecurityPolicy::from_config(control_api, metrics);
+        Self::build_control_api_server_tls_config(config, &security.client_auth).map(|_| ())
+    }
+
     fn validate_loaded_sni_identity(
         server_name: &str,
         identity: &LoadedListenerIdentity,
@@ -1057,7 +1066,7 @@ impl QUICListener {
         })
     }
 
-    pub(super) fn listener_label(config: &ListenerRuntimeConfig) -> String {
+    pub(crate) fn listener_label(config: &ListenerRuntimeConfig) -> String {
         crate::runtime::tls::lifecycle::listener_label(config)
     }
 
