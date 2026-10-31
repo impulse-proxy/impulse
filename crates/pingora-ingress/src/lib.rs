@@ -28,8 +28,13 @@ use pingora_core::{
 use rustls::server::{ResolvesServerCert, danger::ClientCertVerifier};
 
 mod request;
+mod response;
 
 pub use request::{PingoraRequestContext, apply_normalized_request_headers};
+pub use response::{
+    apply_normalized_response_headers, build_response_header, write_downstream_response,
+    write_error_response, write_local_response,
+};
 
 #[async_trait]
 pub trait ConnectionAdmission: fmt::Debug + Send + Sync {

@@ -6,9 +6,11 @@ license.workspace = true
 
 [dependencies]
 async-trait.workspace = true
+bytes.workspace = true
 http.workspace = true
 impulse-contracts = { path = "../contracts" }
 pingora-core = { workspace = true, features = ["connection_filter", "rustls"] }
 pingora-http.workspace = true
+pingora-proxy.workspace = true
 rustls.workspace = true
 tokio.workspace = true

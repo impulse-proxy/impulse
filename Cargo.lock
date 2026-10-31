@@ -1603,10 +1603,12 @@ name = "impulse-pingora-ingress"
 version = "0.6.0"
 dependencies = [
  "async-trait",
+ "bytes",
  "http",
  "impulse-contracts",
  "pingora-core",
  "pingora-http",
+ "pingora-proxy",
  "rustls",
  "tokio",
 ]

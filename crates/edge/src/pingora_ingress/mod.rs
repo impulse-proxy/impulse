@@ -25,7 +25,8 @@ pub use impulse_pingora_ingress::PingoraListenerTask;
 use impulse_pingora_ingress::{
     ConnectionAdmission, PingoraDrainState, PingoraListenerConfig,
     PingoraRequestContext as IngressRequestContext, apply_normalized_request_headers,
-    create_listener_service, spawn_listener,
+    apply_normalized_response_headers, build_response_header, create_listener_service,
+    spawn_listener, write_downstream_response, write_error_response, write_local_response,
 };
 use impulse_transport::{classify_pingora_h1_error, classify_pingora_h2_error};
 use pingora_cache::{CacheKey, CacheMeta, CachePhase, NoCacheReason, RespCacheable};
@@ -1067,10 +1068,7 @@ impl ProxyHttp for PingoraIngressService {
                 "impulse_policy",
             )));
         };
-        let mut normalized = ResponseHeader::build(response.status, Some(processed.headers.len()))?;
-        for (name, value) in &processed.headers {
-            normalized.append_header(name.clone(), value.clone())?;
-        }
+        let normalized = build_response_header(response.status, &processed.headers)?;
         Ok(RespCacheable::Cacheable(CacheMeta::new(
             fresh_until,
             stored_at,
@@ -1113,12 +1111,12 @@ impl ProxyHttp for PingoraIngressService {
                 BodyTimeoutKind::Idle => "request body idle timeout",
                 BodyTimeoutKind::Total => "request body total timeout",
             };
-            session
-                .respond_error_with_body(
-                    http::StatusCode::REQUEST_TIMEOUT.as_u16(),
-                    Bytes::from(format!("{detail}\n")),
-                )
-                .await?;
+            write_error_response(
+                session,
+                http::StatusCode::REQUEST_TIMEOUT,
+                Bytes::from(format!("{detail}\n")),
+            )
+            .await?;
             return Error::e_explain(HTTPStatus(408), detail);
         }
         let max_request_body_bytes = ctx
@@ -1153,12 +1151,12 @@ impl ProxyHttp for PingoraIngressService {
                 Ok(())
             }
             Err(_) => {
-                session
-                    .respond_error_with_body(
-                        http::StatusCode::PAYLOAD_TOO_LARGE.as_u16(),
-                        Bytes::from_static(REQUEST_BODY_TOO_LARGE_BODY),
-                    )
-                    .await?;
+                write_error_response(
+                    session,
+                    http::StatusCode::PAYLOAD_TOO_LARGE,
+                    Bytes::from_static(REQUEST_BODY_TOO_LARGE_BODY),
+                )
+                .await?;
                 Error::e_explain(HTTPStatus(413), "request body too large")
             }
         }
@@ -1460,26 +1458,16 @@ impl ProxyHttp for PingoraIngressService {
                 Some(PingoraTerminalClassification::Error(ProxyError::Pool(
                     PoolError::BackendOverloaded("response body limit exceeded".into()),
                 )));
-            session
-                .respond_error_with_body(
-                    http::StatusCode::SERVICE_UNAVAILABLE.as_u16(),
-                    Bytes::from_static(RESPONSE_BODY_TOO_LARGE_BODY),
-                )
-                .await?;
+            write_error_response(
+                session,
+                http::StatusCode::SERVICE_UNAVAILABLE,
+                Bytes::from_static(RESPONSE_BODY_TOO_LARGE_BODY),
+            )
+            .await?;
             return Error::e_explain(HTTPStatus(503), "upstream response body too large");
         }
 
-        let existing_headers = upstream_response
-            .headers
-            .keys()
-            .cloned()
-            .collect::<Vec<_>>();
-        for name in existing_headers {
-            upstream_response.remove_header(&name);
-        }
-        for (name, value) in processed.headers {
-            upstream_response.append_header(name, value)?;
-        }
+        apply_normalized_response_headers(upstream_response, &processed.headers)?;
         ctx.response_body_bytes_received = 0;
         ctx.response_body_started_at = Some(now);
         ctx.response_body_last_progress_at = Some(now);
@@ -1991,61 +1979,7 @@ async fn write_external_auth_decision_response(
             )),
         ),
     };
-    let mut response = ResponseHeader::build(status, Some(headers.len() + 3))?;
-    let mut has_content_type = false;
-    let mut has_content_length = false;
-    for (name, value) in headers {
-        let (Ok(name), Ok(value)) = (
-            http::header::HeaderName::from_bytes(name.as_bytes()),
-            http::header::HeaderValue::from_str(value),
-        ) else {
-            continue;
-        };
-        has_content_type |= name == http::header::CONTENT_TYPE;
-        has_content_length |= name == http::header::CONTENT_LENGTH;
-        response.append_header(name, value)?;
-    }
-    if let Some((name, value)) = extra_header {
-        response.append_header(name, value)?;
-    }
-    if !has_content_type {
-        response.insert_header(
-            http::header::CONTENT_TYPE,
-            http::HeaderValue::from_static("text/plain"),
-        )?;
-    }
-    if !has_content_length {
-        response.insert_header(http::header::CONTENT_LENGTH, body.len().to_string())?;
-    }
-    session
-        .write_response_header(Box::new(response), false)
-        .await?;
-    session
-        .write_response_body(Some(Bytes::copy_from_slice(body)), true)
-        .await
-}
-
-async fn write_local_response(
-    session: &mut Session,
-    status: http::StatusCode,
-    body: &'static [u8],
-    www_authenticate: Option<&'static str>,
-    retry_after_seconds: Option<u32>,
-) -> Result<()> {
-    let mut response = ResponseHeader::build(status, Some(3))?;
-    response.insert_header(http::header::CONTENT_LENGTH, body.len().to_string())?;
-    if let Some(challenge) = www_authenticate {
-        response.insert_header(http::header::WWW_AUTHENTICATE, challenge)?;
-    }
-    if let Some(seconds) = retry_after_seconds {
-        response.insert_header(http::header::RETRY_AFTER, seconds.to_string())?;
-    }
-    session
-        .write_response_header(Box::new(response), false)
-        .await?;
-    session
-        .write_response_body(Some(Bytes::from_static(body)), true)
-        .await
+    write_downstream_response(session, status, headers, body, extra_header).await
 }
 
 #[cfg(test)]
