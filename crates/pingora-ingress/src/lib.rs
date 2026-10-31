@@ -30,6 +30,7 @@ use rustls::server::{ResolvesServerCert, danger::ClientCertVerifier};
 mod error;
 mod request;
 mod response;
+mod service;
 mod tunnel;
 
 pub use error::{PingoraUpstreamProtocol, classify_pingora_proxy_error, pingora_peer_protocol};
@@ -38,6 +39,7 @@ pub use response::{
     apply_normalized_response_headers, build_response_header, write_downstream_response,
     write_error_response, write_local_response,
 };
+pub use service::{PingoraIngressAdapter, PingoraRequestService};
 pub use tunnel::{
     classify_tunnel, configure_tunnel_peer, configure_tunnel_proxy, tunnel_cache_flags,
     tunnel_response_established,

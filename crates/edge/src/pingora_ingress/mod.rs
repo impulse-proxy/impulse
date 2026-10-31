@@ -22,8 +22,8 @@ use impulse_lb::{
 };
 pub use impulse_pingora_ingress::PingoraListenerTask;
 use impulse_pingora_ingress::{
-    ConnectionAdmission, PingoraDrainState, PingoraListenerConfig,
-    PingoraRequestContext as IngressRequestContext, PingoraUpstreamProtocol,
+    ConnectionAdmission, PingoraDrainState, PingoraIngressAdapter, PingoraListenerConfig,
+    PingoraRequestContext as IngressRequestContext, PingoraRequestService, PingoraUpstreamProtocol,
     apply_normalized_request_headers, apply_normalized_response_headers, build_response_header,
     classify_pingora_proxy_error, classify_tunnel, configure_tunnel_peer, configure_tunnel_proxy,
     create_listener_service, pingora_peer_protocol, spawn_listener, tunnel_cache_flags,
@@ -43,7 +43,7 @@ use pingora_core::{
     upstreams::peer::HttpPeer,
 };
 use pingora_http::{RequestHeader, ResponseHeader};
-use pingora_proxy::{HttpProxy, ProxyHttp, Session, http_proxy};
+use pingora_proxy::{HttpProxy, Session, http_proxy};
 use quiche::h3::NameValue;
 use rustls::{
     server::{ClientHello, ResolvesServerCert},
@@ -156,13 +156,13 @@ impl Drop for PingoraSelectedBackend {
     }
 }
 
-pub(crate) struct PingoraIngressService {
+pub(crate) struct PingoraEdgeRequestService {
     runtime: RuntimeBundleHandle,
     response_cache: Option<&'static BoundedPingoraMemoryCache>,
     drain: Arc<PingoraDrainState>,
 }
 
-impl PingoraIngressService {
+impl PingoraEdgeRequestService {
     fn process_response_head(
         session: &Session,
         upstream_response: &ResponseHeader,
@@ -330,7 +330,7 @@ pub(crate) struct PingoraConnectionLimitedApp {
 }
 
 struct PingoraRequestDeadlineApp {
-    proxy: Arc<HttpProxy<PingoraIngressService>>,
+    proxy: Arc<HttpProxy<PingoraIngressAdapter<PingoraEdgeRequestService>>>,
     runtime: RuntimeBundleHandle,
     listener_label: String,
 }
@@ -597,11 +597,11 @@ fn pingora_ingress_service_for_listener(
     let drain = Arc::new(PingoraDrainState::default());
     let mut proxy = http_proxy(
         configuration,
-        PingoraIngressService {
+        PingoraIngressAdapter::new(PingoraEdgeRequestService {
             runtime: runtime.clone(),
             response_cache,
             drain: Arc::clone(&drain),
-        },
+        }),
     );
     configure_tunnel_proxy(&mut proxy);
     let service = create_listener_service(
@@ -622,10 +622,10 @@ fn pingora_ingress_service_for_listener(
 }
 
 #[async_trait]
-impl ProxyHttp for PingoraIngressService {
-    type CTX = PingoraRequestContext;
+impl PingoraRequestService for PingoraEdgeRequestService {
+    type Context = PingoraRequestContext;
 
-    fn new_ctx(&self) -> Self::CTX {
+    fn new_context(&self) -> Self::Context {
         self.drain.request_started();
         let (runtime, response_cache_namespace) =
             self.runtime.current_with_response_cache_namespace();
@@ -648,7 +648,7 @@ impl ProxyHttp for PingoraIngressService {
         )
     }
 
-    async fn request_filter(&self, session: &mut Session, ctx: &mut Self::CTX) -> Result<bool> {
+    async fn request_filter(&self, session: &mut Session, ctx: &mut Self::Context) -> Result<bool> {
         let runtime = Arc::clone(&ctx.runtime);
         let state = runtime.shared_state.generation_state();
         let shared = runtime.shared_state.shared_services();
@@ -956,7 +956,7 @@ impl ProxyHttp for PingoraIngressService {
         Ok(false)
     }
 
-    fn request_cache_filter(&self, session: &mut Session, ctx: &mut Self::CTX) -> Result<()> {
+    fn request_cache_filter(&self, session: &mut Session, ctx: &mut Self::Context) -> Result<()> {
         let (Some(cache), Some(policy), Some(method)) = (
             self.response_cache,
             ctx.policy.as_ref(),
@@ -998,7 +998,7 @@ impl ProxyHttp for PingoraIngressService {
         Ok(())
     }
 
-    fn cache_key_callback(&self, session: &Session, ctx: &mut Self::CTX) -> Result<CacheKey> {
+    fn cache_key_callback(&self, session: &Session, ctx: &mut Self::Context) -> Result<CacheKey> {
         let representation = ctx.response_cache_representation.ok_or_else(|| {
             Error::explain(InternalError, "response cache representation is missing")
         })?;
@@ -1039,7 +1039,7 @@ impl ProxyHttp for PingoraIngressService {
         &self,
         session: &Session,
         response: &ResponseHeader,
-        ctx: &mut Self::CTX,
+        ctx: &mut Self::Context,
     ) -> Result<RespCacheable> {
         let processed = match ctx.response_processing.clone() {
             Some(processed) => processed,
@@ -1075,7 +1075,7 @@ impl ProxyHttp for PingoraIngressService {
         session: &mut Session,
         body: &mut Option<Bytes>,
         _end_of_stream: bool,
-        ctx: &mut Self::CTX,
+        ctx: &mut Self::Context,
     ) -> Result<()> {
         let now = Instant::now();
         let timeouts = &ctx.runtime.runtime_config.policies.timeouts;
@@ -1157,7 +1157,7 @@ impl ProxyHttp for PingoraIngressService {
     async fn upstream_peer(
         &self,
         session: &mut Session,
-        ctx: &mut Self::CTX,
+        ctx: &mut Self::Context,
     ) -> Result<Box<HttpPeer>> {
         if ctx.retry_backend.is_some() || ctx.selected_backend.is_none() {
             ctx.selected_backend = Some(self.select_backend(session, ctx)?);
@@ -1196,7 +1196,7 @@ impl ProxyHttp for PingoraIngressService {
         &self,
         _session: &mut Session,
         peer: &HttpPeer,
-        ctx: &mut Self::CTX,
+        ctx: &mut Self::Context,
         error: Box<Error>,
     ) -> Box<Error> {
         handle_pingora_proxy_failure(ctx, error, pingora_peer_protocol(peer), false, true)
@@ -1207,7 +1207,7 @@ impl ProxyHttp for PingoraIngressService {
         peer: &HttpPeer,
         session: &mut Session,
         error: Box<Error>,
-        ctx: &mut Self::CTX,
+        ctx: &mut Self::Context,
         reused: bool,
     ) -> Box<Error> {
         handle_pingora_proxy_failure(
@@ -1223,7 +1223,7 @@ impl ProxyHttp for PingoraIngressService {
         &self,
         session: &mut Session,
         upstream_request: &mut RequestHeader,
-        ctx: &mut Self::CTX,
+        ctx: &mut Self::Context,
     ) -> Result<()> {
         let policy = ctx.policy.as_ref().ok_or_else(|| {
             Error::explain(
@@ -1338,7 +1338,7 @@ impl ProxyHttp for PingoraIngressService {
         session: &mut Session,
         upstream_response: &ResponseHeader,
         _end_of_stream: bool,
-        ctx: &mut Self::CTX,
+        ctx: &mut Self::Context,
     ) -> Result<()> {
         if upstream_response.status.is_informational() {
             return Ok(());
@@ -1372,7 +1372,7 @@ impl ProxyHttp for PingoraIngressService {
         &self,
         session: &mut Session,
         upstream_response: &mut ResponseHeader,
-        ctx: &mut Self::CTX,
+        ctx: &mut Self::Context,
     ) -> Result<()> {
         let now = Instant::now();
         let timeouts = &ctx.runtime.runtime_config.policies.timeouts;
@@ -1465,7 +1465,7 @@ impl ProxyHttp for PingoraIngressService {
         _session: &mut Session,
         body: &mut Option<Bytes>,
         _end_of_stream: bool,
-        ctx: &mut Self::CTX,
+        ctx: &mut Self::Context,
     ) -> Result<Option<Duration>> {
         if ctx.response_body_suppressed {
             *body = None;
@@ -1557,7 +1557,7 @@ impl ProxyHttp for PingoraIngressService {
         &self,
         _session: &mut Session,
         upstream_trailers: &mut http::HeaderMap,
-        ctx: &mut Self::CTX,
+        ctx: &mut Self::Context,
     ) -> Result<()> {
         let normalized = normalize_response_trailers(
             upstream_trailers,
@@ -1570,7 +1570,7 @@ impl ProxyHttp for PingoraIngressService {
         Ok(())
     }
 
-    async fn logging(&self, session: &mut Session, error: Option<&Error>, ctx: &mut Self::CTX) {
+    async fn logging(&self, session: &mut Session, error: Option<&Error>, ctx: &mut Self::Context) {
         if !ctx.completion.complete() {
             return;
         }
