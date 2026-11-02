@@ -36,18 +36,18 @@ struct ListenerGroupSignature {
     client_auth_ca_file: Option<String>,
 }
 
-pub struct PingoraServiceHandle {
+pub(crate) struct PingoraServiceHandle {
     task: PingoraListenerTask,
 }
 
-pub struct Http3ServiceHandle {
+pub(crate) struct Http3ServiceHandle {
     shutdown: ShutdownSignal,
     worker_handles: Vec<thread::JoinHandle<Result<(), String>>>,
 }
 
-pub struct IngressServiceHandles {
-    pub pingora: PingoraServiceHandle,
-    pub http3: Http3ServiceHandle,
+pub(crate) struct IngressServiceHandles {
+    pingora: PingoraServiceHandle,
+    http3: Http3ServiceHandle,
     signature: ListenerGroupSignature,
     worker_index_base: usize,
     failed_activation_generation: Option<u64>,
@@ -129,7 +129,7 @@ impl IngressServiceHandles {
     }
 }
 
-pub async fn shutdown_listener_groups(
+pub(crate) async fn shutdown_listener_groups(
     listener_groups: &mut Vec<IngressServiceHandles>,
     worker_failed: &mut bool,
 ) {
@@ -175,7 +175,7 @@ fn listener_group_signature(config: &ListenerRuntimeConfig) -> ListenerGroupSign
     }
 }
 
-pub async fn start_ingress_service_handles(
+pub(crate) async fn start_ingress_service_handles(
     listener_config: ListenerRuntimeConfig,
     worker_shared: Arc<SharedRuntimeState>,
     runtime_bundle: Arc<RuntimeBundleHandle>,
@@ -226,7 +226,10 @@ pub async fn start_ingress_service_handles(
 /// does not overlap any live group's range. Ranges freed when groups retire are
 /// reused, so indices stay bounded across reloads instead of growing without
 /// limit (which would push worker/metrics slots past the metrics capacity).
-pub fn allocate_worker_index_base(groups: &[IngressServiceHandles], worker_count: usize) -> usize {
+pub(crate) fn allocate_worker_index_base(
+    groups: &[IngressServiceHandles],
+    worker_count: usize,
+) -> usize {
     let mut ranges: Vec<(usize, usize)> = groups
         .iter()
         .map(|g| {
@@ -388,7 +391,7 @@ pub(super) async fn reconcile_listener_groups(
     }
 }
 
-pub async fn collect_finished_listener_groups(
+pub(crate) async fn collect_finished_listener_groups(
     groups: &mut Vec<IngressServiceHandles>,
     worker_failed: &mut bool,
 ) {
@@ -421,7 +424,7 @@ fn join_worker_handle(handle: thread::JoinHandle<Result<(), String>>, worker_fai
     }
 }
 
-pub fn log_listener_startup(
+pub(crate) fn log_listener_startup(
     runtime_config: &RuntimeConfig,
     listener_groups: &[IngressServiceHandles],
 ) {

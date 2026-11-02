@@ -4,17 +4,12 @@ use std::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
-    time::Duration,
 };
 
 use clap::Parser;
 use impulse_config::{runtime::RuntimeConfig, validator::validate as validate_config};
 use impulse_edge::runtime::{
     ingress::configure_async_runtime,
-    listener_group::{
-        allocate_worker_index_base, collect_finished_listener_groups, log_listener_startup,
-        shutdown_listener_groups,
-    },
     privilege_drop::{apply_process_privilege_drop, current_process_privilege_state},
     supervisor::RuntimeSupervisor,
 };
@@ -158,15 +153,6 @@ async fn run(
             std::process::exit(1);
         }
     };
-    let runtime_bundle = supervisor.runtime();
-    let operations = match supervisor.start_operations(&runtime_config, effective_worker_count) {
-        Ok(operations) => operations,
-        Err(err) => {
-            error!("Failed to start operational services: {}", err);
-            std::process::exit(1);
-        }
-    };
-
     let binds_privileged_port = runtime_config
         .listeners
         .iter()
@@ -181,90 +167,47 @@ async fn run(
 
     let shutdown = Arc::new(AtomicBool::new(false));
     let shutdown_flag = shutdown.clone();
-    let shutdown_lifecycle = Arc::clone(&runtime_bundle);
+    let shutdown_handle = supervisor.signal_handle();
     tokio::spawn(async move {
         wait_for_shutdown_signal().await;
-        // Drive the runtime lifecycle state machine: Running/Draining ->
-        // ShuttingDown. This also gates any concurrent reload commit (Phase 6).
-        RuntimeSupervisor::begin_shutdown(&shutdown_lifecycle);
+        shutdown_handle.request_shutdown();
         shutdown_flag.store(true, Ordering::Relaxed);
     });
 
-    let mut ingress_services = Vec::new();
-    let mut worker_failed = false;
-    for listener_config in runtime_config.listener_runtime_configs() {
-        if shutdown.load(Ordering::Relaxed) {
-            break;
+    let mut services = match supervisor
+        .start_services(&runtime_config, effective_worker_count, shutdown.as_ref())
+        .await
+    {
+        Ok(services) => services,
+        Err(err) => {
+            error!("Failed to start runtime services: {}", err);
+            std::process::exit(1);
         }
+    };
+    let mut process_failed = !services.startup_succeeded();
 
-        let worker_count = listener_config.performance.worker_threads.max(1);
-        let worker_index_base = allocate_worker_index_base(&ingress_services, worker_count);
-        match supervisor
-            .start_ingress_services(listener_config, worker_index_base)
-            .await
-        {
-            Ok(group) => {
-                ingress_services.push(group);
-            }
-            Err(err) => {
-                error!("{}", err);
-                worker_failed = true;
-                break;
-            }
-        }
-    }
-
-    if !shutdown.load(Ordering::Relaxed) && !worker_failed {
-        log_listener_startup(&runtime_config, &ingress_services);
+    if !shutdown.load(Ordering::Relaxed) && !process_failed {
         if let Err(err) = apply_privilege_drop(privilege_state, &runtime_config) {
             error!("{}", err);
-            worker_failed = true;
+            process_failed = true;
         }
     }
 
-    while !shutdown.load(Ordering::Relaxed) && !worker_failed {
-        collect_finished_listener_groups(&mut ingress_services, &mut worker_failed).await;
-        if worker_failed {
-            break;
-        }
+    if !process_failed {
         supervisor
-            .reconcile_listener_groups(&mut ingress_services, &mut worker_failed)
+            .supervise_services(&mut services, shutdown.as_ref())
             .await;
-
-        // Reflect a watchdog-requested drain in the runtime lifecycle: once the
-        // watchdog asks for a restart, workers begin draining, so move the process
-        // Running -> Draining (idempotent while already draining). This keeps the
-        // lifecycle state machine an accurate transition table for drain, not just
-        // reload/shutdown (Phase 6).
-        if runtime_bundle
-            .current_view()
-            .shared_services()
-            .watchdog
-            .restart_requested()
-        {
-            RuntimeSupervisor::begin_drain(&runtime_bundle);
-        }
-
-        if worker_failed {
-            break;
-        }
-
-        tokio::time::sleep(Duration::from_millis(100)).await;
     }
 
-    // Whether we exited via signal or a worker failure, the process is now
-    // shutting down; ensure the lifecycle reflects it before draining workers.
-    RuntimeSupervisor::begin_shutdown(&runtime_bundle);
-    shutdown_listener_groups(&mut ingress_services, &mut worker_failed).await;
-    operations.shutdown(Duration::from_secs(5));
+    process_failed |= supervisor.shutdown_services(services).await;
 
     let panic_count = runtime_guard::panic_count();
     if panic_count > 0 {
-        worker_failed = true;
+        process_failed = true;
         error!("Process captured {} panic(s) via panic hook", panic_count);
     }
 
-    if worker_failed {
+    if process_failed {
         impulse_utils::telemetry::init::shutdown_tracing();
         std::process::exit(1);
     }

@@ -13,7 +13,7 @@ pub(crate) mod connection;
 pub(crate) mod generation;
 pub mod ingress;
 pub mod listener;
-pub mod listener_group;
+pub(crate) mod listener_group;
 pub(crate) mod operations;
 pub mod policy;
 pub mod privilege_drop;
