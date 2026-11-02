@@ -190,7 +190,7 @@ enum RouteResolutionFailureKind {
     Other,
 }
 
-impl QUICListener {
+impl Http3Service {
     fn classify_route_resolution_transport_reason(reason: &str) -> RouteResolutionFailureKind {
         if reason.starts_with("no route for ") {
             return RouteResolutionFailureKind::NoRoute;
@@ -604,7 +604,7 @@ mod tests {
             None,
         );
 
-        let route = QUICListener::resolve_route_target(&request, &context, &routing_index)
+        let route = Http3Service::resolve_route_target(&request, &context, &routing_index)
             .expect("resolved route");
 
         assert_eq!(route.upstream_name, "method_host");
@@ -640,11 +640,11 @@ mod tests {
             None,
             None,
         );
-        let first = match QUICListener::resolve_route_target(&request, &context, &routing_index) {
+        let first = match Http3Service::resolve_route_target(&request, &context, &routing_index) {
             Err(err) => err,
             Ok(_) => panic!("expected unrouted resolution failure"),
         };
-        let second = match QUICListener::resolve_route_target(&request, &context, &routing_index) {
+        let second = match Http3Service::resolve_route_target(&request, &context, &routing_index) {
             Err(err) => err,
             Ok(_) => panic!("expected unrouted resolution failure"),
         };
@@ -652,7 +652,7 @@ mod tests {
         assert_eq!(first.to_string(), second.to_string());
         assert_eq!(first.to_string(), "transport error: no route for /missing");
 
-        let (status, body) = QUICListener::route_resolution_error_response(&first);
+        let (status, body) = Http3Service::route_resolution_error_response(&first);
         assert_eq!(status, http::StatusCode::BAD_GATEWAY);
         assert_eq!(body, b"no route\n");
     }
@@ -701,7 +701,7 @@ mod tests {
             request.authority,
         )
         .expect("resolved route");
-        let resolved = QUICListener::resolve_forwarding_target(ForwardTargetResolutionInput {
+        let resolved = Http3Service::resolve_forwarding_target(ForwardTargetResolutionInput {
             request,
             route,
             context,
@@ -716,12 +716,12 @@ mod tests {
     #[test]
     fn route_resolution_error_response_maps_missing_pool_and_empty_request_stably() {
         let missing_pool = ProxyError::Transport("pool not found: payments".to_string());
-        let (status, body) = QUICListener::route_resolution_error_response(&missing_pool);
+        let (status, body) = Http3Service::route_resolution_error_response(&missing_pool);
         assert_eq!(status, http::StatusCode::BAD_GATEWAY);
         assert_eq!(body, b"no pool\n");
 
         let other = ProxyError::Transport("empty method or path".to_string());
-        let (status, body) = QUICListener::route_resolution_error_response(&other);
+        let (status, body) = Http3Service::route_resolution_error_response(&other);
         assert_eq!(status, http::StatusCode::BAD_GATEWAY);
         assert_eq!(body, b"route/backend resolution failed\n");
     }

@@ -25,7 +25,7 @@ use impulse_edge::{
     QUIC_INITIAL_MAX_STREAMS_BIDI, QUIC_INITIAL_MAX_STREAMS_UNI, QUIC_INITIAL_STREAM_DATA,
     runtime::{
         bundle::RuntimeBundleHandle,
-        listener::QUICListener as RuntimeListener,
+        listener::Http3Service as RuntimeListener,
         policy::{LifecycleTransitionResult, RuntimeLifecyclePhase},
     },
 };

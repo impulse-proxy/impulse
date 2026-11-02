@@ -331,7 +331,7 @@ impl PendingForward {
     }
 }
 
-impl QUICListener {
+impl Http3Service {
     fn build_request_intake(descriptor: IntakeRequestDescriptor<'_>) -> IntakeRequestCandidate {
         let IntakeRequestDescriptor {
             quic_trace_id,

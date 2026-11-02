@@ -604,7 +604,7 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
-    use crate::runtime::listener::QUICListener;
+    use crate::runtime::listener::Http3Service;
 
     fn write_test_cert_for_name(dir: &Path, cert_name: &str, dns_name: &str) -> (String, String) {
         let mut params = CertificateParams::new(vec![dns_name.to_string()]);
@@ -694,7 +694,7 @@ mod tests {
         config: &ImpulseConfigConfig,
     ) -> RuntimeBundle {
         let runtime_config = RuntimeConfig::from_config(config).expect("runtime config");
-        let mut bundle = QUICListener::build_runtime_bundle(
+        let mut bundle = Http3Service::build_runtime_bundle(
             config_path.to_string(),
             config.log.clone(),
             &runtime_config,

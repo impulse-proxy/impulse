@@ -10,7 +10,7 @@ use impulse_lb::{
 };
 
 use super::{
-    super::QUICListener,
+    super::Http3Service,
     resolve::{BackendSelection, TargetResolutionRequest},
 };
 use crate::{
@@ -43,7 +43,7 @@ impl ForwardingSelectionService {
                     .inc_pingora_lb_selector_failure();
                 ProxyError::Transport("upstream pool lock poisoned".into())
             })?;
-            let lb_key = QUICListener::resolve_lb_key_for_runtime_request(
+            let lb_key = Http3Service::resolve_lb_key_for_runtime_request(
                 pool.lb_strategy(),
                 pool.lb_key_spec(),
                 request,

@@ -33,7 +33,7 @@ mod preview;
 pub(super) mod request_body;
 pub(super) mod rollback;
 
-impl QUICListener {
+impl Http3Service {
     pub(super) fn reload_listener_certs(
         listener_runtime_configs: &HashMap<String, ListenerRuntimeConfig>,
         listener_tls_store: &ListenerTlsReloadStore,
@@ -463,7 +463,7 @@ mod tests {
         let oversized = vec![b'a'; MAX_CONTROL_API_JSON_BODY_BYTES + 1];
 
         let response =
-            QUICListener::collect_control_api_json_body_bounded(Full::new(Bytes::from(oversized)))
+            Http3Service::collect_control_api_json_body_bounded(Full::new(Bytes::from(oversized)))
                 .await
                 .expect_err("oversized control-plane JSON body must be rejected");
         let response = *response;

@@ -20,7 +20,7 @@ use crate::{
         bundle::{RuntimeBundle, RuntimeBundleHandle},
         connection::{PerSourceTokenBucket, TokenBucket},
         generation::StartupOwnedRuntimeState,
-        listener::{QUICListener, ShutdownSignal},
+        listener::{Http3Service, ShutdownSignal},
         shared_state::SharedRuntimeState,
         tls::lifecycle::{
             create_listener_tls_store, record_listener_tls_inventory,
@@ -29,7 +29,7 @@ use crate::{
     },
 };
 
-impl QUICListener {
+impl Http3Service {
     pub(super) fn listener_runtime_settings(
         config: &ListenerRuntimeConfig,
     ) -> ListenerRuntimeSettings {

@@ -3,16 +3,14 @@ use std::{sync::Arc, time::Duration};
 use impulse_config::{config::Log, runtime::RuntimeConfig};
 use impulse_errors::ProxyError;
 
-use crate::{
-    quic_listener::QUICListener,
-    runtime::{
-        activation::{
-            ActivationRequest, ActivationResult, ReloadConfigInput, ReloadPlan, RollbackRequest,
-            RollbackResult, RuntimeActivationService,
-        },
-        bundle::RuntimeBundleHandle,
-        shared_state::SharedRuntimeState,
+use crate::runtime::{
+    activation::{
+        ActivationRequest, ActivationResult, ReloadConfigInput, ReloadPlan, RollbackRequest,
+        RollbackResult, RuntimeActivationService,
     },
+    bundle::RuntimeBundleHandle,
+    listener::Http3Service,
+    shared_state::SharedRuntimeState,
 };
 
 pub struct RuntimeSupervisor {
@@ -27,10 +25,10 @@ impl RuntimeSupervisor {
         runtime_config: &RuntimeConfig,
         worker_count: usize,
     ) -> Result<Self, ProxyError> {
-        let bundle = QUICListener::build_runtime_bundle(config_path, log_config, runtime_config)?;
+        let bundle = Http3Service::build_runtime_bundle(config_path, log_config, runtime_config)?;
         let shared_state = Arc::clone(&bundle.shared_state);
         let runtime = Arc::new(RuntimeBundleHandle::new(bundle));
-        QUICListener::spawn_control_plane_tasks_with_runtime_bundle(
+        Http3Service::spawn_control_plane_tasks_with_runtime_bundle(
             runtime_config,
             &shared_state,
             Arc::clone(&runtime),

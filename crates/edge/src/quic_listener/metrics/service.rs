@@ -10,7 +10,7 @@ pub(super) struct MetricsEndpointBinding {
     active_connections: Arc<AtomicUsize>,
 }
 
-impl QUICListener {
+impl Http3Service {
     pub(in crate::quic_listener) fn spawn_metrics_endpoint(
         startup: &ControlPlaneStartup<'_>,
     ) -> Result<(), ProxyError> {

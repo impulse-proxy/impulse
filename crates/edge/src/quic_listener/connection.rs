@@ -1,6 +1,6 @@
 use super::*;
 
-impl impulse_http3_ingress::ConnectionAdmissionAdapter for QUICListener {
+impl impulse_http3_ingress::ConnectionAdmissionAdapter for Http3Service {
     fn draining(&self) -> bool {
         self.draining
     }
@@ -111,7 +111,7 @@ pub(super) fn maybe_log_quic_connection_error(
     log_quic_connection_error(source, peer, trace_id, err);
 }
 
-impl QUICListener {
+impl Http3Service {
     pub(super) fn clear_connection_registry(&mut self) {
         self.connections.clear();
         self.cid_routes.clear();

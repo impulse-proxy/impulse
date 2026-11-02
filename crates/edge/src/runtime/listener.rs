@@ -33,7 +33,7 @@ use crate::{
 /// per-listener limits needed by a running worker. Runtime generation assembly
 /// happens in [`crate::runtime::bundle`]; request execution details live under
 /// [`crate::runtime::connection`].
-pub struct QUICListener {
+pub struct Http3Service {
     pub socket: UdpSocket,
     pub local_addr: SocketAddr,
     pub config: ListenerRuntimeConfig,
@@ -86,7 +86,7 @@ pub struct QUICListener {
     pub(crate) source_conn_rate_limiter: crate::runtime::connection::PerSourceTokenBucket,
 }
 
-impl QUICListener {
+impl Http3Service {
     pub fn connections(&self) -> &HashMap<Arc<[u8]>, QuicConnection> {
         &self.connections
     }

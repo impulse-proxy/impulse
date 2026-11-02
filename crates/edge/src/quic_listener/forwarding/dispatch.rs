@@ -136,7 +136,7 @@ fn alternate_backend_policy_state(
     )
 }
 
-impl QUICListener {
+impl Http3Service {
     async fn lookup_h3_response_cache(input: H3CacheLookupInput<'_>) -> H3CacheLookup {
         let H3CacheLookupInput {
             cache_store,

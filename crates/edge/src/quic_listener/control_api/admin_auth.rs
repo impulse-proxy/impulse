@@ -81,7 +81,7 @@ enum AuthenticationOutcome {
     Invalid(&'static str),
 }
 
-impl QUICListener {
+impl Http3Service {
     pub(super) fn control_api_request_route_for<B>(
         req: &::http::Request<B>,
         paths: &ControlApiPaths,

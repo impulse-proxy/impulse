@@ -249,24 +249,24 @@ mod tests {
 
     #[test]
     fn internal_pool_errors_are_classified_as_control_plane_only() {
-        assert!(QUICListener::is_internal_pool_control_error(
+        assert!(Http3Service::is_internal_pool_control_error(
             &PoolError::InflightLimiterClosed
         ));
-        assert!(QUICListener::is_internal_pool_control_error(
+        assert!(Http3Service::is_internal_pool_control_error(
             &PoolError::UnknownBackend("missing".to_string())
         ));
     }
 
     #[test]
     fn backend_overload_is_not_classified_as_internal_pool_error() {
-        assert!(!QUICListener::is_internal_pool_control_error(
+        assert!(!Http3Service::is_internal_pool_control_error(
             &PoolError::BackendOverloaded("busy".to_string())
         ));
     }
 
     #[test]
     fn circuit_open_is_not_classified_as_internal_pool_error() {
-        assert!(!QUICListener::is_internal_pool_control_error(
+        assert!(!Http3Service::is_internal_pool_control_error(
             &PoolError::CircuitOpen("open".to_string())
         ));
     }
@@ -1248,7 +1248,7 @@ mod tests {
         let client_addr = "203.0.113.9:443".parse().expect("client addr");
 
         assert_eq!(
-            QUICListener::resolve_lb_key(
+            Http3Service::resolve_lb_key(
                 "",
                 Some("peer_ip"),
                 lb_key_request_parts(
@@ -1264,7 +1264,7 @@ mod tests {
             "203.0.113.9"
         );
         assert_eq!(
-            QUICListener::resolve_lb_key(
+            Http3Service::resolve_lb_key(
                 "",
                 Some("bearer_token"),
                 lb_key_request_parts(
@@ -1294,7 +1294,7 @@ mod tests {
         let client_addr = "203.0.113.9:443".parse().expect("client addr");
 
         let assert_key = |spec: &str, expected: &str| {
-            let resolved = QUICListener::resolve_lb_key(
+            let resolved = Http3Service::resolve_lb_key(
                 "",
                 Some(spec),
                 lb_key_request_parts(
@@ -1326,7 +1326,7 @@ mod tests {
 
     #[test]
     fn canonical_lb_key_resolver_unifies_default_and_sticky_cid_fallbacks() {
-        let sticky = QUICListener::resolve_lb_key(
+        let sticky = Http3Service::resolve_lb_key(
             "sticky-cid",
             Some("header:x-user-id"),
             lb_key_request_parts(
@@ -1344,7 +1344,7 @@ mod tests {
             super::lb_key::LbKeySource::StickyCidFallback
         ));
 
-        let authority_default = QUICListener::resolve_lb_key(
+        let authority_default = Http3Service::resolve_lb_key(
             "",
             Some("header:x-user-id"),
             lb_key_request_parts(
@@ -1362,14 +1362,14 @@ mod tests {
             super::lb_key::LbKeySource::DefaultFallback
         ));
 
-        let path_default = QUICListener::resolve_lb_key(
+        let path_default = Http3Service::resolve_lb_key(
             "",
             Some("header:x-user-id"),
             lb_key_request_parts("GET", "/resource", None, None, None, None),
         );
         assert_eq!(path_default.value, "/resource");
 
-        let method_default = QUICListener::resolve_lb_key(
+        let method_default = Http3Service::resolve_lb_key(
             "",
             Some("header:x-user-id"),
             lb_key_request_parts("GET", "", None, None, None, None),
@@ -1398,7 +1398,7 @@ mod tests {
             Some(&lookup),
         );
 
-        let direct_header = QUICListener::resolve_lb_key(
+        let direct_header = Http3Service::resolve_lb_key(
             "",
             Some("header:x-user-id"),
             lb_key_request_parts(
@@ -1410,7 +1410,7 @@ mod tests {
                 Some(&lookup),
             ),
         );
-        let routed_header = QUICListener::resolve_lb_key_for_runtime_request(
+        let routed_header = Http3Service::resolve_lb_key_for_runtime_request(
             impulse_lb::LoadBalancingStrategy::RoundRobin,
             Some(&impulse_lb::RequestKeyInput::Header(
                 "x-user-id".to_string(),
@@ -1423,7 +1423,7 @@ mod tests {
             super::lb_key::LbKeySource::ConfiguredSpec
         ));
 
-        let direct_sticky = QUICListener::resolve_lb_key(
+        let direct_sticky = Http3Service::resolve_lb_key(
             "sticky-cid",
             Some("header:x-missing"),
             lb_key_request_parts(
@@ -1435,7 +1435,7 @@ mod tests {
                 Some(&lookup),
             ),
         );
-        let routed_sticky = QUICListener::resolve_lb_key_for_runtime_request(
+        let routed_sticky = Http3Service::resolve_lb_key_for_runtime_request(
             impulse_lb::LoadBalancingStrategy::StickyCid,
             Some(&impulse_lb::RequestKeyInput::Header(
                 "x-missing".to_string(),
@@ -1480,7 +1480,7 @@ mod tests {
         let client_addr = "198.51.100.10:443".parse().expect("client addr");
 
         assert_eq!(
-            QUICListener::resolve_scoped_rate_limit_key(
+            Http3Service::resolve_scoped_rate_limit_key(
                 &client_rule,
                 "api",
                 "GET",
@@ -1493,7 +1493,7 @@ mod tests {
             Some("198.51.100.10")
         );
         assert_eq!(
-            QUICListener::resolve_scoped_rate_limit_key(
+            Http3Service::resolve_scoped_rate_limit_key(
                 &token_rule,
                 "api",
                 "GET",
@@ -1525,7 +1525,7 @@ mod tests {
         let client_addr = "198.51.100.10:443".parse().expect("client addr");
 
         assert_eq!(
-            QUICListener::resolve_scoped_rate_limit_key(
+            Http3Service::resolve_scoped_rate_limit_key(
                 &tenant_rule,
                 "api",
                 "GET",
@@ -1541,7 +1541,7 @@ mod tests {
 
     #[test]
     fn resolve_lb_key_uses_sticky_cid_before_default_fallback() {
-        let resolved = QUICListener::resolve_lb_key(
+        let resolved = Http3Service::resolve_lb_key(
             "sticky-cid",
             Some("header:x-user-id"),
             lb_key_request_parts(

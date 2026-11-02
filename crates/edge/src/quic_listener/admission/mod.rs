@@ -48,7 +48,7 @@ use tokio::{
     task::block_in_place,
 };
 
-use super::{LbHeaderLookup, QUICListener, runtime_handle};
+use super::{Http3Service, LbHeaderLookup, runtime_handle};
 use crate::{
     RouteOutcome,
     metrics::OverloadShedReason,
@@ -564,7 +564,7 @@ pub(super) fn jwt_is_authorized(
     else {
         return false;
     };
-    let Some(token) = QUICListener::bearer_token_from_authorization_value(&raw) else {
+    let Some(token) = Http3Service::bearer_token_from_authorization_value(&raw) else {
         return false;
     };
     let claims = match validate_jwt_token(token.as_str(), jwt, SystemTime::now()) {
@@ -1823,7 +1823,7 @@ mod tests {
         });
 
         let error =
-            QUICListener::initialize_jwks_startup(&runtime_config).expect_err("startup must fail");
+            Http3Service::initialize_jwks_startup(&runtime_config).expect_err("startup must fail");
 
         assert!(error.to_string().contains("startup_behavior=require_ready"));
         clear_jwks_cache_for_test(jwks_url);
@@ -1924,7 +1924,7 @@ mod tests {
         })
         .expect("runtime config without jwks");
 
-        QUICListener::initialize_jwks_startup(&runtime_config).expect("preflight without jwks");
+        Http3Service::initialize_jwks_startup(&runtime_config).expect("preflight without jwks");
 
         let snapshot = JwtJwksSharedCache::shared()
             .snapshot(&source_identity, Instant::now())

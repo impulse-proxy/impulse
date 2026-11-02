@@ -21,7 +21,7 @@ use crate::{
     },
 };
 
-impl QUICListener {
+impl Http3Service {
     pub(super) fn materialize_forward_after_auth(
         stream_id: u64,
         req: &mut RequestEnvelope,

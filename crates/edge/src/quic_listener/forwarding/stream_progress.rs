@@ -10,7 +10,7 @@ use crate::{
     },
 };
 
-impl QUICListener {
+impl Http3Service {
     pub(in crate::quic_listener) fn push_request_chunk(
         req: &mut RequestEnvelope,
         chunk: Bytes,

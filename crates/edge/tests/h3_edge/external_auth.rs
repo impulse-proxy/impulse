@@ -140,7 +140,7 @@ async fn external_auth_allow_injects_headers_and_forwards() {
         vec!["x-user-id".to_string()],
     );
 
-    let listener = QUICListener::new(config).expect("listener");
+    let listener = Http3Service::new(config).expect("listener");
     let (addr, stop, handle) = spawn_listener_loop(listener);
     let response = run_h3_client_request(addr, "GET", "/", &[], None).expect("h3 response");
     stop_listener_loop(stop, handle);
@@ -177,7 +177,7 @@ async fn external_auth_deny_returns_denial_response_and_headers() {
         vec!["x-auth-reason".to_string()],
     );
 
-    let listener = QUICListener::new(config).expect("listener");
+    let listener = Http3Service::new(config).expect("listener");
     let (addr, stop, handle) = spawn_listener_loop(listener);
     let response = run_h3_client_request(addr, "GET", "/", &[], None).expect("h3 response");
     stop_listener_loop(stop, handle);
@@ -216,7 +216,7 @@ async fn external_auth_challenge_returns_www_authenticate_and_body() {
         vec!["x-auth-reason".to_string()],
     );
 
-    let listener = QUICListener::new(config).expect("listener");
+    let listener = Http3Service::new(config).expect("listener");
     let (addr, stop, handle) = spawn_listener_loop(listener);
     let response = run_h3_client_request(addr, "GET", "/", &[], None).expect("h3 response");
     stop_listener_loop(stop, handle);
@@ -258,7 +258,7 @@ async fn external_auth_redirect_preserves_location() {
         vec![],
     );
 
-    let listener = QUICListener::new(config).expect("listener");
+    let listener = Http3Service::new(config).expect("listener");
     let (addr, stop, handle) = spawn_listener_loop(listener);
     let response = run_h3_client_request(addr, "GET", "/", &[], None).expect("h3 response");
     stop_listener_loop(stop, handle);
@@ -293,7 +293,7 @@ async fn external_auth_transport_error_fail_closed_returns_unavailable() {
     );
     drop(unused_listener);
 
-    let listener = QUICListener::new(config).expect("listener");
+    let listener = Http3Service::new(config).expect("listener");
     let (addr, stop, handle) = spawn_listener_loop(listener);
     let response = run_h3_client_request(addr, "GET", "/", &[], None).expect("h3 response");
     stop_listener_loop(stop, handle);
@@ -326,7 +326,7 @@ async fn external_auth_timeout_fail_closed_returns_gateway_timeout() {
         vec![],
     );
 
-    let listener = QUICListener::new(config).expect("listener");
+    let listener = Http3Service::new(config).expect("listener");
     let (addr, stop, handle) = spawn_listener_loop(listener);
     let response = run_h3_client_request(addr, "GET", "/", &[], None).expect("h3 response");
     stop_listener_loop(stop, handle);
@@ -359,7 +359,7 @@ async fn external_auth_timeout_fail_open_allows_backend() {
         vec![],
     );
 
-    let listener = QUICListener::new(config).expect("listener");
+    let listener = Http3Service::new(config).expect("listener");
     let (addr, stop, handle) = spawn_listener_loop(listener);
     let response = run_h3_client_request(addr, "GET", "/", &[], None).expect("h3 response");
     stop_listener_loop(stop, handle);
@@ -440,7 +440,7 @@ async fn oidc_external_auth_uses_discovery_and_introspection() {
         ExternalAuthFailureMode::FailClosed,
     );
 
-    let listener = QUICListener::new(config).expect("listener");
+    let listener = Http3Service::new(config).expect("listener");
     let (addr, stop, handle) = spawn_listener_loop(listener);
     let response = run_h3_client_request(
         addr,
@@ -517,7 +517,7 @@ async fn request_body_is_buffered_while_auth_is_pending() {
         vec!["x-user-id".to_string()],
     );
 
-    let listener = QUICListener::new(config).expect("listener");
+    let listener = Http3Service::new(config).expect("listener");
     let (addr, stop, handle) = spawn_listener_loop(listener);
     let response = run_h3_client_request(
         addr,
@@ -568,7 +568,7 @@ async fn client_disconnect_during_pending_auth_leaves_no_connection_state() {
         vec![],
     );
 
-    let mut listener = QUICListener::new(config).expect("listener");
+    let mut listener = Http3Service::new(config).expect("listener");
     let server_addr = listener.socket.local_addr().expect("listener addr");
     let client = thread::spawn(move || {
         send_h3_request_and_close(server_addr, "GET", "/", &[])
@@ -709,7 +709,7 @@ async fn run_auth_loop_benchmark(
         );
     }
 
-    let listener = QUICListener::new(config).expect("listener");
+    let listener = Http3Service::new(config).expect("listener");
     let (addr, stop, handle, report_rx) = spawn_listener_loop_with_report(listener);
 
     let warmup = run_h3_client_request(addr, "GET", "/", &[], None).expect("warmup response");

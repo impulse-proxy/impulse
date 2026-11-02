@@ -6,7 +6,7 @@ use super::{
     *,
 };
 
-impl QUICListener {
+impl Http3Service {
     pub(super) async fn handle_control_api_request(
         mut req: Request<Incoming>,
         state: &ControlApiState,

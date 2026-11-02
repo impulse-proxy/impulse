@@ -8,7 +8,7 @@ fn connection_flood_is_rate_limited() {
     let dir = tempdir().expect("tempdir");
     let (cert, key) = write_test_certs(&dir);
     let config = make_config_with_rate_limit(0, cert, key, "127.0.0.1:1".to_string(), 1, 1);
-    let mut listener = QUICListener::new(config).expect("listener");
+    let mut listener = Http3Service::new(config).expect("listener");
     let addr = listener.socket.local_addr().unwrap();
 
     const FLOOD_COUNT: usize = 10;
@@ -39,7 +39,7 @@ fn active_connection_cap_rejects_excess_initial_packets() {
     let mut config =
         make_config_with_rate_limit(0, cert, key, "127.0.0.1:1".to_string(), 10_000, 10_000);
     config.performance.max_active_connections = 1;
-    let mut listener = QUICListener::new(config).expect("listener");
+    let mut listener = Http3Service::new(config).expect("listener");
     let addr = listener.socket.local_addr().unwrap();
 
     const FLOOD_COUNT: usize = 8;
@@ -72,7 +72,7 @@ fn draining_mode_rejects_initial_when_no_connections_exist() {
     let dir = tempdir().expect("tempdir");
     let (cert, key) = write_test_certs(&dir);
     let config = make_config_with_rate_limit(0, cert, key, "127.0.0.1:1".to_string(), 10_000, 20);
-    let mut listener = QUICListener::new(config).expect("listener");
+    let mut listener = Http3Service::new(config).expect("listener");
     let addr = listener.socket.local_addr().unwrap();
 
     listener.start_draining();
@@ -92,7 +92,7 @@ fn draining_mode_rejects_new_initial_after_existing_connection() {
     let dir = tempdir().expect("tempdir");
     let (cert, key) = write_test_certs(&dir);
     let config = make_config_with_rate_limit(0, cert, key, "127.0.0.1:1".to_string(), 10_000, 20);
-    let mut listener = QUICListener::new(config).expect("listener");
+    let mut listener = Http3Service::new(config).expect("listener");
     let addr = listener.socket.local_addr().unwrap();
 
     let first = build_initial_packet(addr);
@@ -129,7 +129,7 @@ fn normal_traffic_below_rate_limit_is_unaffected() {
     let dir = tempdir().expect("tempdir");
     let (cert, key) = write_test_certs(&dir);
     let config = make_config_with_rate_limit(0, cert, key, "127.0.0.1:1".to_string(), 10_000, 20);
-    let mut listener = QUICListener::new(config).expect("listener");
+    let mut listener = Http3Service::new(config).expect("listener");
     let addr = listener.socket.local_addr().unwrap();
 
     const REQUEST_COUNT: usize = 5;

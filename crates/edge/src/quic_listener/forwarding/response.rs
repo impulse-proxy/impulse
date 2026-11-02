@@ -265,7 +265,7 @@ fn response_headers_with_defaults_and_extra(
     )
 }
 
-impl QUICListener {
+impl Http3Service {
     #[allow(clippy::too_many_arguments)]
     fn fail_response_start_state_transition(
         stream_id: u64,
@@ -2084,12 +2084,12 @@ mod tests {
 
     #[test]
     fn deferred_response_start_chunk_moves_headers_only_for_deferred_metadata() {
-        let deferred = QUICListener::into_deferred_response_start_chunk(ResponseStartMetadata {
+        let deferred = Http3Service::into_deferred_response_start_chunk(ResponseStartMetadata {
             status: http::StatusCode::OK,
             headers: vec![(b"x-test".to_vec(), b"1".to_vec())],
             headers_deferred: true,
         });
-        let immediate = QUICListener::into_deferred_response_start_chunk(ResponseStartMetadata {
+        let immediate = Http3Service::into_deferred_response_start_chunk(ResponseStartMetadata {
             status: http::StatusCode::OK,
             headers: vec![(b"x-test".to_vec(), b"1".to_vec())],
             headers_deferred: false,

@@ -484,7 +484,7 @@ impl AdminAuditAuthn {
     }
 }
 
-impl QUICListener {
+impl Http3Service {
     // The audit event is a flat record; passing its fields individually keeps the
     // ~24 emission sites readable rather than forcing a builder at each one.
     #[allow(clippy::too_many_arguments)]
@@ -946,7 +946,7 @@ mod tests {
     #[test]
     fn admin_audit_failure_class_serializes_low_cardinality_category() {
         assert_eq!(
-            QUICListener::control_api_audit_failure_class(
+            Http3Service::control_api_audit_failure_class(
                 AdminAuditEventType::RuntimeValidate,
                 AdminAuditResult::Failed,
                 Some("invalid_request_body"),
@@ -954,7 +954,7 @@ mod tests {
             Some(AdminAuditFailureClass::RequestValidation)
         );
         assert_eq!(
-            QUICListener::control_api_audit_failure_class(
+            Http3Service::control_api_audit_failure_class(
                 AdminAuditEventType::Auth,
                 AdminAuditResult::Denied,
                 Some("invalid_bearer_token"),
@@ -962,7 +962,7 @@ mod tests {
             Some(AdminAuditFailureClass::Authentication)
         );
         assert_eq!(
-            QUICListener::control_api_audit_failure_class(
+            Http3Service::control_api_audit_failure_class(
                 AdminAuditEventType::RuntimeRestart,
                 AdminAuditResult::Failed,
                 Some("watchdog_disabled"),

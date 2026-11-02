@@ -642,7 +642,7 @@ pub(super) fn start_external_auth_task(
     })
 }
 
-impl QUICListener {
+impl Http3Service {
     pub(super) fn complete_auth_result(
         stream_id: u64,
         req: &mut RequestEnvelope,

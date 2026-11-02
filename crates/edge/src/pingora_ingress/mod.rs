@@ -102,7 +102,7 @@ use crate::{
                 observe_status_outcome,
             },
         },
-        listener::QUICListener,
+        listener::Http3Service,
         tls::store::ListenerTlsReloadStore,
     },
 };
@@ -553,7 +553,7 @@ fn pingora_ingress_service_for_listener(
             transport_policy.new_connections_burst,
         ),
     });
-    let tls_state = QUICListener::build_listener_tls_reload_state(&listener).map_err(|error| {
+    let tls_state = Http3Service::build_listener_tls_reload_state(&listener).map_err(|error| {
         Error::because(
             InternalError,
             format!("failed to prepare Pingora ingress TLS for '{listener_label}'"),
@@ -569,7 +569,7 @@ fn pingora_ingress_service_for_listener(
                 error,
             )
         })?;
-    let client_certificate_verifier = QUICListener::build_listener_client_cert_verifier(
+    let client_certificate_verifier = Http3Service::build_listener_client_cert_verifier(
         &listener.listen.tls,
     )
     .map_err(|error| {

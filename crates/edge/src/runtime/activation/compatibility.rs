@@ -1,12 +1,10 @@
 use std::sync::Arc;
 
-use crate::{
-    quic_listener::QUICListener,
-    runtime::{
-        bundle::{ActiveRuntimeGeneration, RuntimeBundle},
-        cache::response_cache_storage_limits,
-        policy::{ReloadCompatibilityAuthority, TransitionRejection},
-    },
+use crate::runtime::{
+    bundle::{ActiveRuntimeGeneration, RuntimeBundle},
+    cache::response_cache_storage_limits,
+    listener::Http3Service,
+    policy::{ReloadCompatibilityAuthority, TransitionRejection},
 };
 
 pub(crate) fn evaluate_runtime_reload_compatibility(
@@ -46,7 +44,7 @@ pub(crate) fn validate_runtime_reload_compatibility(
     }
 
     for (label, listener_config) in next_listeners.iter() {
-        if let Err(error) = QUICListener::build_listener_tls_reload_state(listener_config) {
+        if let Err(error) = Http3Service::build_listener_tls_reload_state(listener_config) {
             return Some(TransitionRejection::resource_preflight_failed(
                 "Pingora listener TLS",
                 label,
@@ -58,9 +56,9 @@ pub(crate) fn validate_runtime_reload_compatibility(
         }
         let worker_count = listener_config.performance.worker_threads.max(1);
         let bind_result = if worker_count > 1 {
-            QUICListener::bind_reuseport_sockets(listener_config, worker_count).map(|_| ())
+            Http3Service::bind_reuseport_sockets(listener_config, worker_count).map(|_| ())
         } else {
-            QUICListener::bind_socket(listener_config, false).map(|_| ())
+            Http3Service::bind_socket(listener_config, false).map(|_| ())
         };
         if let Err(error) = bind_result {
             return Some(TransitionRejection::resource_preflight_failed(
@@ -74,7 +72,7 @@ pub(crate) fn validate_runtime_reload_compatibility(
             "{}:{}",
             listener_config.listen.listen.address, listener_config.listen.listen.port
         );
-        if let Err(error) = QUICListener::probe_tcp_bind(&bind, "Pingora listener") {
+        if let Err(error) = Http3Service::probe_tcp_bind(&bind, "Pingora listener") {
             return Some(TransitionRejection::resource_preflight_failed(
                 "Pingora listener",
                 label,
@@ -99,7 +97,7 @@ pub(crate) fn validate_control_api_reload_compatibility(
             "runtime reload rejected: no effective listeners configured for control API TLS",
         ));
     };
-    let primary_listener_label = QUICListener::listener_label(&listener_config);
+    let primary_listener_label = Http3Service::listener_label(&listener_config);
     if next
         .shared_state
         .shared_services()
@@ -112,7 +110,7 @@ pub(crate) fn validate_control_api_reload_compatibility(
         )));
     }
 
-    if let Err(error) = QUICListener::preflight_control_api_server_tls_config(
+    if let Err(error) = Http3Service::preflight_control_api_server_tls_config(
         &listener_config,
         next_control_api,
         Arc::clone(&next.shared_state.shared_services().metrics),
@@ -130,7 +128,7 @@ pub(crate) fn validate_control_api_reload_compatibility(
         || current_control_api.port != next_control_api.port;
     if bind_changed {
         let bind = format!("{}:{}", next_control_api.address, next_control_api.port);
-        if let Err(error) = QUICListener::probe_tcp_bind(&bind, "control API endpoint") {
+        if let Err(error) = Http3Service::probe_tcp_bind(&bind, "control API endpoint") {
             return Some(TransitionRejection::resource_preflight_failed(
                 "control API endpoint",
                 bind,
@@ -156,7 +154,7 @@ pub(crate) fn validate_metrics_reload_compatibility(
         || current_metrics.port != next_metrics.port;
     if bind_changed {
         let bind = format!("{}:{}", next_metrics.address, next_metrics.port);
-        if let Err(error) = QUICListener::probe_tcp_bind(&bind, "metrics endpoint") {
+        if let Err(error) = Http3Service::probe_tcp_bind(&bind, "metrics endpoint") {
             return Some(TransitionRejection::resource_preflight_failed(
                 "metrics endpoint",
                 bind,
@@ -170,12 +168,12 @@ pub(crate) fn validate_metrics_reload_compatibility(
                 "runtime reload rejected: no effective listeners configured for metrics TLS",
             ));
         };
-        if let Err(error) = QUICListener::preflight_control_api_server_tls_config(
+        if let Err(error) = Http3Service::preflight_control_api_server_tls_config(
             &listener_config,
             &next.runtime_config.observability.control_api,
             Arc::clone(&next.shared_state.shared_services().metrics),
         ) {
-            let label = QUICListener::listener_label(&listener_config);
+            let label = Http3Service::listener_label(&listener_config);
             return Some(TransitionRejection::resource_preflight_failed(
                 "metrics TLS",
                 label,

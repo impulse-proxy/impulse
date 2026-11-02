@@ -1,6 +1,6 @@
 use super::*;
 
-impl QUICListener {
+impl Http3Service {
     pub(crate) fn register_jwt_jwks_metrics(metrics: &Arc<crate::Metrics>) {
         if let Ok(mut sink) = jwt_jwks_metrics_sink().write() {
             *sink = Arc::downgrade(metrics);
@@ -73,7 +73,7 @@ impl QUICListener {
         .map_err(impulse_errors::ProxyError::Transport)
     }
 }
-impl QUICListener {
+impl Http3Service {
     pub(crate) fn spawn_jwks_refresh(
         config: &RuntimeConfig,
         generation: u64,

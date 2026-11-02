@@ -273,7 +273,7 @@ pub fn resource_domain(field_path: &str) -> Option<&'static ResourceDomain> {
 /// It accumulates typed [`TransitionRejection`]s as a validator walks the config
 /// domains, so that "what can reload live" and the rejection wording for each
 /// class of problem live in exactly one place. Call sites that own runtime types
-/// (`RuntimeBundle`, `QUICListener`) feed it the *outcome* of each per-domain
+/// (`RuntimeBundle`, `Http3Service`) feed it the *outcome* of each per-domain
 /// comparison or preflight; the authority owns the *rule* (which
 /// [`ReloadCapability`] applies) and the *message*.
 ///

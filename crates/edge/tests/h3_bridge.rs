@@ -59,7 +59,7 @@ use impulse_edge::{
     runtime::{
         bundle::RuntimeBundleHandle,
         ingress::{PingoraListenerTask, spawn_pingora_ingress_listener},
-        listener::QUICListener,
+        listener::Http3Service,
     },
 };
 use support::{net::local_listener_bind_available, request_path as request_support};
@@ -271,30 +271,30 @@ type ListenerTaskGuard = request_support::ListenerTaskGuard;
 fn make_listener_with_pingora(
     rt: &tokio::runtime::Runtime,
     config: Config,
-) -> (QUICListener, PingoraListenerTask) {
+) -> (Http3Service, PingoraListenerTask) {
     let runtime_config = RuntimeConfig::from_config(&config).expect("runtime config");
     let listener_config = runtime_config
         .listener_runtime_configs()
         .into_iter()
         .next()
         .expect("listener runtime config");
-    let bundle = QUICListener::build_runtime_bundle(
+    let bundle = Http3Service::build_runtime_bundle(
         "h3-bridge-test".to_string(),
         config.log.clone(),
         &runtime_config,
     )
     .expect("runtime bundle");
     let shared_state = Arc::clone(&bundle.shared_state);
-    QUICListener::spawn_control_plane_tasks(&runtime_config, &shared_state, 1)
+    Http3Service::spawn_control_plane_tasks(&runtime_config, &shared_state, 1)
         .expect("control plane tasks");
     let runtime_bundle = Arc::new(RuntimeBundleHandle::new(bundle));
     let runtime_guard = rt.enter();
     let pingora_listener = spawn_pingora_ingress_listener(runtime_bundle, listener_config.clone())
         .expect("Pingora listener");
     drop(runtime_guard);
-    let socket = QUICListener::bind_socket(&listener_config, false).expect("bind socket");
+    let socket = Http3Service::bind_socket(&listener_config, false).expect("bind socket");
     let listener =
-        QUICListener::new_with_socket_and_shared_state(listener_config, socket, shared_state)
+        Http3Service::new_with_socket_and_shared_state(listener_config, socket, shared_state)
             .expect("listener with shared state");
     (listener, pingora_listener)
 }
@@ -2062,7 +2062,7 @@ fn draining_rejects_new_connections() {
     let rt = tokio::runtime::Runtime::new().expect("runtime");
     let backend_addr = rt.block_on(start_h2_backend());
     let config = make_config(0, backend_addr.to_string(), cert, key);
-    let listener = QUICListener::new(config).expect("failed to create listener");
+    let listener = Http3Service::new(config).expect("failed to create listener");
     let listen_addr = listener.socket.local_addr().unwrap();
 
     let listener = Arc::new(Mutex::new(listener));
@@ -2192,7 +2192,7 @@ fn draining_forces_close_after_configured_timeout() {
     )));
     let mut config = make_config(0, backend_addr.to_string(), cert, key);
     config.performance.shutdown_drain_timeout_ms = 120;
-    let mut listener = QUICListener::new(config).expect("failed to create listener");
+    let mut listener = Http3Service::new(config).expect("failed to create listener");
     let listen_addr = listener.socket.local_addr().unwrap();
 
     let client_thread = thread::spawn(move || {
@@ -2253,7 +2253,7 @@ fn slow_response_consumer_does_not_hang() {
     let rt = tokio::runtime::Runtime::new().expect("runtime");
     let backend_addr = rt.block_on(start_h2_backend_with_regression_routes());
     let config = make_config(0, backend_addr.to_string(), cert, key);
-    let listener = QUICListener::new(config).expect("failed to create listener");
+    let listener = Http3Service::new(config).expect("failed to create listener");
     let listen_addr = listener.socket.local_addr().unwrap();
     let _listener_task = ListenerTaskGuard::spawn(&rt, listener);
 
@@ -2283,7 +2283,7 @@ fn slow_stream_does_not_block_fast_stream() {
     let rt = tokio::runtime::Runtime::new().expect("runtime");
     let backend_addr = rt.block_on(start_h2_backend_with_regression_routes());
     let config = make_config(0, backend_addr.to_string(), cert, key);
-    let listener = QUICListener::new(config).expect("failed to create listener");
+    let listener = Http3Service::new(config).expect("failed to create listener");
     let listen_addr = listener.socket.local_addr().unwrap();
     let _listener_task = ListenerTaskGuard::spawn(&rt, listener);
 
@@ -2317,7 +2317,7 @@ fn finished_stream_does_not_block_other_stream_progress() {
     let rt = tokio::runtime::Runtime::new().expect("runtime");
     let backend_addr = rt.block_on(start_h2_backend_with_regression_routes());
     let config = make_config(0, backend_addr.to_string(), cert, key);
-    let listener = QUICListener::new(config).expect("failed to create listener");
+    let listener = Http3Service::new(config).expect("failed to create listener");
     let listen_addr = listener.socket.local_addr().unwrap();
     let _listener_task = ListenerTaskGuard::spawn(&rt, listener);
 
@@ -2353,7 +2353,7 @@ fn response_body_is_streamed_progressively() {
     let rt = tokio::runtime::Runtime::new().expect("runtime");
     let backend_addr = rt.block_on(start_h2_backend_with_regression_routes());
     let config = make_config(0, backend_addr.to_string(), cert, key);
-    let listener = QUICListener::new(config).expect("failed to create listener");
+    let listener = Http3Service::new(config).expect("failed to create listener");
     let listen_addr = listener.socket.local_addr().unwrap();
     let _listener_task = ListenerTaskGuard::spawn(&rt, listener);
 
@@ -2394,7 +2394,7 @@ fn error_status_mapping_parity_is_preserved() {
 
     let backend_addr = rt.block_on(start_h2_backend_with_regression_routes());
     let config = make_config(0, backend_addr.to_string(), cert.clone(), key.clone());
-    let listener = QUICListener::new(config).expect("failed to create listener");
+    let listener = Http3Service::new(config).expect("failed to create listener");
     let listen_addr = listener.socket.local_addr().unwrap();
     let _listener_task = ListenerTaskGuard::spawn(&rt, listener);
 
@@ -2423,7 +2423,7 @@ fn error_status_mapping_parity_is_preserved() {
     // Separate listener with unreachable backend to validate transport mapping.
     let transport_config = make_config(0, "127.0.0.1:1".to_string(), cert, key);
     let transport_listener =
-        QUICListener::new(transport_config).expect("failed to create transport listener");
+        Http3Service::new(transport_config).expect("failed to create transport listener");
     let transport_addr = transport_listener.socket.local_addr().unwrap();
     let _transport_task = ListenerTaskGuard::spawn(&rt, transport_listener);
 
@@ -2460,7 +2460,7 @@ fn metrics_endpoint_exposes_route_slo_metrics() {
     config.observability.metrics.path = "/metrics".to_string();
 
     let _enter = rt.enter();
-    let listener = QUICListener::new(config).expect("failed to create listener");
+    let listener = Http3Service::new(config).expect("failed to create listener");
     drop(_enter);
     let listen_addr = listener.socket.local_addr().unwrap();
     let _listener_task = ListenerTaskGuard::spawn(&rt, listener);
@@ -2515,7 +2515,7 @@ fn global_inflight_limit_sheds_excess_requests() {
     config.performance.global_inflight_limit = 1;
     config.performance.per_upstream_inflight_limit = 64;
 
-    let listener = QUICListener::new(config).expect("failed to create listener");
+    let listener = Http3Service::new(config).expect("failed to create listener");
     let listen_addr = listener.socket.local_addr().unwrap();
     let _listener_task = ListenerTaskGuard::spawn(&rt, listener);
 
@@ -2564,7 +2564,7 @@ fn route_queue_global_cap_sheds_excess_requests() {
     config.resilience.route_queue.default_cap = 64;
     config.resilience.route_queue.global_cap = 1;
 
-    let listener = QUICListener::new(config).expect("failed to create listener");
+    let listener = Http3Service::new(config).expect("failed to create listener");
     let listen_addr = listener.socket.local_addr().unwrap();
     let _listener_task = ListenerTaskGuard::spawn(&rt, listener);
 
@@ -2610,7 +2610,7 @@ fn protocol_policy_denies_disallowed_method() {
     let mut config = make_config(0, backend_addr.to_string(), cert, key);
     config.resilience.protocol.allowed_methods = vec!["GET".to_string()];
 
-    let listener = QUICListener::new(config).expect("failed to create listener");
+    let listener = Http3Service::new(config).expect("failed to create listener");
     let listen_addr = listener.socket.local_addr().unwrap();
     let _listener_task = ListenerTaskGuard::spawn(&rt, listener);
 
@@ -2644,7 +2644,7 @@ fn protocol_policy_denies_blocked_path_prefix() {
     let mut config = make_config(0, backend_addr.to_string(), cert, key);
     config.resilience.protocol.denied_path_prefixes = vec!["/admin".to_string()];
 
-    let listener = QUICListener::new(config).expect("failed to create listener");
+    let listener = Http3Service::new(config).expect("failed to create listener");
     let listen_addr = listener.socket.local_addr().unwrap();
     let _listener_task = ListenerTaskGuard::spawn(&rt, listener);
 
@@ -2685,7 +2685,7 @@ fn upstream_api_key_auth_rejects_missing_key_and_allows_valid_key() {
             required_roles: Vec::new(),
         };
 
-    let listener = QUICListener::new(config).expect("failed to create listener");
+    let listener = Http3Service::new(config).expect("failed to create listener");
     let listen_addr = listener.socket.local_addr().unwrap();
     let _listener_task = ListenerTaskGuard::spawn(&rt, listener);
 
@@ -2758,7 +2758,7 @@ fn upstream_jwt_auth_rejects_missing_token_and_allows_valid_token() {
             required_roles: Vec::new(),
         };
 
-    let listener = QUICListener::new(config).expect("failed to create listener");
+    let listener = Http3Service::new(config).expect("failed to create listener");
     let listen_addr = listener.socket.local_addr().unwrap();
     let _listener_task = ListenerTaskGuard::spawn(&rt, listener);
 
@@ -2826,7 +2826,7 @@ fn upstream_inflight_limit_sheds_excess_requests() {
     config.performance.global_inflight_limit = 64;
     config.performance.per_upstream_inflight_limit = 1;
 
-    let listener = QUICListener::new(config).expect("failed to create listener");
+    let listener = Http3Service::new(config).expect("failed to create listener");
     let listen_addr = listener.socket.local_addr().unwrap();
     let _listener_task = ListenerTaskGuard::spawn(&rt, listener);
 
@@ -2874,7 +2874,7 @@ fn backend_pool_inflight_limit_sheds_excess_requests() {
     config.performance.per_upstream_inflight_limit = 64;
     config.performance.per_backend_inflight_limit = 1;
 
-    let listener = QUICListener::new(config).expect("failed to create listener");
+    let listener = Http3Service::new(config).expect("failed to create listener");
     let listen_addr = listener.socket.local_addr().unwrap();
     let _listener_task = ListenerTaskGuard::spawn(&rt, listener);
 
@@ -2921,7 +2921,7 @@ fn backend_timeout_respects_configured_performance_value() {
     config.performance.backend_timeout_ms = 150;
     config.performance.backend_connect_timeout_ms = 150;
 
-    let listener = QUICListener::new(config).expect("failed to create listener");
+    let listener = Http3Service::new(config).expect("failed to create listener");
     let listen_addr = listener.socket.local_addr().unwrap();
     let _listener_task = ListenerTaskGuard::spawn(&rt, listener);
 
@@ -2960,7 +2960,7 @@ fn chaos_high_jitter_remains_responsive() {
     let mut config = make_config(0, backend_addr.to_string(), cert, key);
     config.performance.backend_timeout_ms = 1_500;
 
-    let listener = QUICListener::new(config).expect("failed to create listener");
+    let listener = Http3Service::new(config).expect("failed to create listener");
     let listen_addr = listener.socket.local_addr().unwrap();
     let _listener_task = ListenerTaskGuard::spawn(&rt, listener);
 
@@ -2998,7 +2998,7 @@ fn chaos_packet_loss_like_timeout_maps_to_recoverable_response() {
     config.performance.backend_timeout_ms = 120;
     config.performance.backend_connect_timeout_ms = 120;
 
-    let listener = QUICListener::new(config).expect("failed to create listener");
+    let listener = Http3Service::new(config).expect("failed to create listener");
     let listen_addr = listener.socket.local_addr().unwrap();
     let _listener_task = ListenerTaskGuard::spawn(&rt, listener);
 
@@ -3038,7 +3038,7 @@ fn chaos_backend_flapping_is_stable_under_concurrency() {
     let mut config = make_config(0, backend_addr.to_string(), cert, key);
     config.performance.backend_timeout_ms = 500;
 
-    let listener = QUICListener::new(config).expect("failed to create listener");
+    let listener = Http3Service::new(config).expect("failed to create listener");
     let listen_addr = listener.socket.local_addr().unwrap();
     let _listener_task = ListenerTaskGuard::spawn(&rt, listener);
 
@@ -3086,7 +3086,7 @@ fn stream_cap_rejects_excess_concurrent_streams() {
     // stream reaches the application guard (rather than being dropped at the
     // QUIC layer with StreamLimit).
     config.performance.quic_initial_max_streams_bidi = (MAX_STREAMS_PER_CONNECTION as u64) + 10;
-    let listener = QUICListener::new(config).expect("failed to create listener");
+    let listener = Http3Service::new(config).expect("failed to create listener");
     let listen_addr = listener.socket.local_addr().unwrap();
     let _listener_task = ListenerTaskGuard::spawn(&rt, listener);
 
@@ -3177,7 +3177,7 @@ fn response_body_cap_returns_503_on_declared_length_breach() {
     config.performance.max_response_body_bytes = 1024;
     config.performance.unknown_length_response_prebuffer_bytes = 1024;
 
-    let listener = QUICListener::new(config).expect("failed to create listener");
+    let listener = Http3Service::new(config).expect("failed to create listener");
     let listen_addr = listener.socket.local_addr().unwrap();
     let _listener_task = ListenerTaskGuard::spawn(&rt, listener);
 
@@ -3366,7 +3366,7 @@ fn response_body_cap_returns_503_on_unknown_length_breach() {
     config.performance.max_response_body_bytes = 1024;
     config.performance.unknown_length_response_prebuffer_bytes = 1024;
 
-    let listener = QUICListener::new(config).expect("failed to create listener");
+    let listener = Http3Service::new(config).expect("failed to create listener");
     let listen_addr = listener.socket.local_addr().unwrap();
     let _listener_task = ListenerTaskGuard::spawn(&rt, listener);
 
@@ -3719,7 +3719,7 @@ fn teardown_client_reset_before_upstream_response() {
     // Single inflight slot: a leaked permit means the follow-up is rejected.
     config.performance.global_inflight_limit = 1;
 
-    let listener = QUICListener::new(config).expect("listener");
+    let listener = Http3Service::new(config).expect("listener");
     let listen_addr = listener.socket.local_addr().unwrap();
     let _guard = ListenerTaskGuard::spawn(&rt, listener);
 
@@ -3811,7 +3811,7 @@ fn teardown_client_reset_during_response_streaming() {
     // Short QUIC idle timeout so the server tears down the abandoned stream fast.
     config.performance.quic_max_idle_timeout_ms = 300;
 
-    let listener = QUICListener::new(config).expect("listener");
+    let listener = Http3Service::new(config).expect("listener");
     let listen_addr = listener.socket.local_addr().unwrap();
     let _guard = ListenerTaskGuard::spawn(&rt, listener);
 
@@ -3949,7 +3949,7 @@ fn teardown_upstream_timeout_cleans_up_stream() {
     config.performance.backend_timeout_ms = 200;
     config.performance.backend_connect_timeout_ms = 200;
 
-    let listener = QUICListener::new(config).expect("listener");
+    let listener = Http3Service::new(config).expect("listener");
     let listen_addr = listener.socket.local_addr().unwrap();
     let _guard = ListenerTaskGuard::spawn(&rt, listener);
 

@@ -7,7 +7,7 @@ use impulse_config::{
     config::{Backend, Config, Upstream, UpstreamTls},
     validator::validate,
 };
-use impulse_edge::runtime::listener::QUICListener;
+use impulse_edge::runtime::listener::Http3Service;
 use rcgen::{Certificate, CertificateParams, SanType};
 use serial_test::serial;
 use tempfile::{TempDir, tempdir};
@@ -144,7 +144,7 @@ fn http_only_upstream_starts_and_forwards_requests_end_to_end() {
     );
 
     validate(&config).expect("http-only config should validate");
-    let listener = QUICListener::new(config).expect("listener");
+    let listener = Http3Service::new(config).expect("listener");
     let listen_addr = listener.socket.local_addr().expect("listen addr");
     let _listener_task = request_support::ListenerTaskGuard::spawn(&rt, listener);
 
@@ -189,7 +189,7 @@ fn http_only_upstream_retries_bodyless_requests_on_alternate_backend() {
     config.performance.backend_timeout_ms = 100;
 
     validate(&config).expect("config should validate");
-    let listener = QUICListener::new(config).expect("listener");
+    let listener = Http3Service::new(config).expect("listener");
     let listen_addr = listener.socket.local_addr().expect("listen addr");
     let _listener_task = request_support::ListenerTaskGuard::spawn(&rt, listener);
 
@@ -246,7 +246,7 @@ fn mixed_http_and_https_upstreams_route_by_scheme() {
     let config = make_config(cert, key, upstreams, UpstreamTls::default());
 
     validate(&config).expect("mixed config should validate");
-    let listener = QUICListener::new(config).expect("listener");
+    let listener = Http3Service::new(config).expect("listener");
     let listen_addr = listener.socket.local_addr().expect("listen addr");
     let _listener_task = request_support::ListenerTaskGuard::spawn(&rt, listener);
 

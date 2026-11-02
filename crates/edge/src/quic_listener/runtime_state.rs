@@ -65,7 +65,7 @@ impl ControlPlaneRuntimeView {
             listener_tls_store: Arc::clone(&shared.listener_tls_store),
             primary_listener_label: runtime_config
                 .primary_listener_runtime_config()
-                .map(|listener| crate::quic_listener::QUICListener::listener_label(&listener)),
+                .map(|listener| crate::quic_listener::Http3Service::listener_label(&listener)),
             control_api_security: Arc::new(ControlApiSecurityPolicy::from_config(
                 &runtime_config.observability.control_api,
                 Arc::clone(&shared.metrics),
@@ -91,7 +91,7 @@ impl ControlPlaneRuntimeView {
             primary_listener_label: view
                 .runtime_config
                 .primary_listener_runtime_config()
-                .map(|listener| crate::quic_listener::QUICListener::listener_label(&listener)),
+                .map(|listener| crate::quic_listener::Http3Service::listener_label(&listener)),
             control_api_security: Arc::new(ControlApiSecurityPolicy::from_config(
                 &view.runtime_config.observability.control_api,
                 Arc::clone(&view.shared.metrics),
@@ -325,7 +325,7 @@ pub struct ListenerWorkerRuntimeState {
 
 impl ListenerWorkerRuntimeState {
     pub fn listener_label(&self) -> String {
-        crate::quic_listener::QUICListener::listener_label(&self.listener_config)
+        crate::quic_listener::Http3Service::listener_label(&self.listener_config)
     }
 }
 
@@ -335,12 +335,12 @@ pub(super) fn initialize_listener_from_runtime(
     startup_shared_state: Arc<SharedRuntimeState>,
     runtime_bundle: Option<Arc<RuntimeBundleHandle>>,
     shutdown: crate::runtime::listener::ShutdownSignal,
-) -> Result<crate::runtime::listener::QUICListener, ProxyError> {
+) -> Result<crate::runtime::listener::Http3Service, ProxyError> {
     let listener_label =
-        crate::quic_listener::QUICListener::listener_label(startup_listener_config);
+        crate::quic_listener::Http3Service::listener_label(startup_listener_config);
     if let Some(runtime_bundle) = runtime_bundle {
         let listener =
-            crate::quic_listener::QUICListener::new_with_socket_and_runtime_bundle_and_shutdown(
+            crate::quic_listener::Http3Service::new_with_socket_and_runtime_bundle_and_shutdown(
                 &listener_label,
                 socket,
                 runtime_bundle,
@@ -350,7 +350,7 @@ pub(super) fn initialize_listener_from_runtime(
     }
 
     let listener =
-        crate::quic_listener::QUICListener::new_with_socket_and_shared_state_and_shutdown(
+        crate::quic_listener::Http3Service::new_with_socket_and_shared_state_and_shutdown(
             startup_listener_config.clone(),
             socket,
             startup_shared_state,

@@ -5,7 +5,7 @@ use std::sync::{
 
 use tokio::runtime::Handle;
 
-use super::QUICListener;
+use super::Http3Service;
 
 pub(super) struct RuntimeConnectionSlotGuard {
     active_connections: Arc<AtomicUsize>,
@@ -23,7 +23,7 @@ impl Drop for RuntimeConnectionSlotGuard {
     }
 }
 
-impl QUICListener {
+impl Http3Service {
     pub(super) fn bind_tcp_listener(
         bind: &str,
         handle: Option<&Handle>,

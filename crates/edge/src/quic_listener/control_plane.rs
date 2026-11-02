@@ -5,7 +5,7 @@ use impulse_errors::ProxyError;
 use log::error;
 
 use super::{
-    QUICListener, runtime_handle,
+    Http3Service, runtime_handle,
     runtime_state::{ControlPlaneStartup, WatchdogServiceCtx},
 };
 use crate::{
@@ -25,7 +25,7 @@ use crate::{
     },
 };
 
-impl QUICListener {
+impl Http3Service {
     pub fn spawn_control_plane_tasks(
         config: &RuntimeConfig,
         shared_state: &SharedRuntimeState,

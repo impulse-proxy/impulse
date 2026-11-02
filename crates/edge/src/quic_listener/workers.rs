@@ -8,33 +8,33 @@ use impulse_http3_ingress::{PacketWorker, PacketWorkerObserver, spawn_packet_wor
 
 use crate::{
     quic_listener::runtime_state::{ListenerWorkerRuntimeState, initialize_listener_from_runtime},
-    runtime::{listener::QUICListener, shared_state::SharedRuntimeState},
+    runtime::{listener::Http3Service, shared_state::SharedRuntimeState},
 };
 
-impl PacketWorker for QUICListener {
+impl PacketWorker for Http3Service {
     fn process_datagram(
         &mut self,
         peer: std::net::SocketAddr,
         local_addr: std::net::SocketAddr,
         packet: &mut [u8],
     ) {
-        QUICListener::process_datagram(self, peer, local_addr, packet);
+        self.process_datagram(peer, local_addr, packet);
     }
 
     fn poll(&mut self) {
-        QUICListener::poll(self);
+        self.poll();
     }
 
     fn poll_idle(&mut self) {
-        QUICListener::poll_idle(self);
+        self.poll_idle();
     }
 
     fn drain_with_active_polls(&mut self) {
-        QUICListener::drain_with_active_polls(self);
+        self.drain_with_active_polls();
     }
 
     fn drain_with_idle_polls(&mut self) {
-        QUICListener::drain_with_idle_polls(self);
+        self.drain_with_idle_polls();
     }
 }
 
@@ -58,9 +58,9 @@ pub fn spawn_listener_worker_group(
     runtime: ListenerWorkerRuntimeState,
 ) -> Result<Vec<thread::JoinHandle<Result<(), String>>>, String> {
     let sockets = if config.worker_count > 1 || runtime.listener_config.performance.reuseport {
-        QUICListener::bind_reuseport_sockets(&runtime.listener_config, config.worker_count)
+        Http3Service::bind_reuseport_sockets(&runtime.listener_config, config.worker_count)
     } else {
-        QUICListener::bind_socket(&runtime.listener_config, false).map(|socket| vec![socket])
+        Http3Service::bind_socket(&runtime.listener_config, false).map(|socket| vec![socket])
     }
     .map_err(|error| format!("failed to bind UDP listener sockets: {error}"))?;
 

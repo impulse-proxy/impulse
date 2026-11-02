@@ -1,6 +1,6 @@
 use super::*;
 
-impl QUICListener {
+impl Http3Service {
     pub(super) fn handle_metrics_request_for<B>(
         req: &::http::Request<B>,
         metrics_path: &str,
@@ -89,7 +89,7 @@ mod tests {
 
     #[tokio::test]
     async fn metrics_endpoint_accepts_configured_metrics_path_with_stable_prometheus_response() {
-        let response = QUICListener::handle_metrics_request_for(
+        let response = Http3Service::handle_metrics_request_for(
             &metrics_request(Method::GET, "/metrics"),
             "/metrics",
             Arc::new(Metrics::default()),
@@ -117,7 +117,7 @@ mod tests {
 
     #[tokio::test]
     async fn metrics_endpoint_rejects_unsupported_paths_with_stable_not_found_shape() {
-        let response = QUICListener::handle_metrics_request_for(
+        let response = Http3Service::handle_metrics_request_for(
             &metrics_request(Method::GET, "/metrics-missing"),
             "/metrics",
             Arc::new(Metrics::default()),
@@ -138,7 +138,7 @@ mod tests {
 
     #[tokio::test]
     async fn metrics_endpoint_rejects_unsupported_methods_without_service_loop_coupling() {
-        let response = QUICListener::handle_metrics_request_for(
+        let response = Http3Service::handle_metrics_request_for(
             &metrics_request(Method::POST, "/metrics"),
             "/metrics",
             Arc::new(Metrics::default()),

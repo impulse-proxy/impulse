@@ -98,7 +98,7 @@ fn extract_query_param(path: &str, param: &str) -> Option<String> {
     None
 }
 
-impl QUICListener {
+impl Http3Service {
     pub(in crate::quic_listener::forwarding) fn resolve_lb_key_for_runtime_request(
         lb_strategy: LoadBalancingStrategy,
         lb_key_spec: Option<&RequestKeyInput>,
@@ -314,7 +314,7 @@ impl QUICListener {
 }
 
 #[cfg(test)]
-impl QUICListener {
+impl Http3Service {
     pub(crate) fn resolve_scoped_rate_limit_key(
         rule: &crate::resilience::scoped_rate_limit::ScopedRateLimitRule,
         route: &str,
@@ -384,7 +384,7 @@ mod tests {
         RequestKeyInput as RuntimeRequestKeySpec,
     };
 
-    use super::{LbKeyRequestParts, LbKeySource, QUICListener, ResolvedLbKey};
+    use super::{Http3Service, LbKeyRequestParts, LbKeySource, ResolvedLbKey};
 
     fn request_parts_with_headers(
         method: &'static str,
@@ -421,7 +421,7 @@ mod tests {
             HashMap::new(),
         );
         assert_resolved(
-            QUICListener::resolve_lb_key_for_runtime_input(
+            Http3Service::resolve_lb_key_for_runtime_input(
                 RuntimeLoadBalancingStrategy::ConsistentHash,
                 Some(&RuntimeRequestKeySpec::Header("x-user-id".to_string())),
                 &header_request,
@@ -439,7 +439,7 @@ mod tests {
             HashMap::new(),
         );
         assert_resolved(
-            QUICListener::resolve_lb_key_for_runtime_input(
+            Http3Service::resolve_lb_key_for_runtime_input(
                 RuntimeLoadBalancingStrategy::ConsistentHash,
                 Some(&RuntimeRequestKeySpec::Header("x-user-id".to_string())),
                 &path_request,
@@ -451,7 +451,7 @@ mod tests {
         let method_request =
             request_parts_with_headers("POST", "", None, None, None, HashMap::new());
         assert_resolved(
-            QUICListener::resolve_lb_key_for_runtime_input(
+            Http3Service::resolve_lb_key_for_runtime_input(
                 RuntimeLoadBalancingStrategy::ConsistentHash,
                 Some(&RuntimeRequestKeySpec::Header("x-user-id".to_string())),
                 &method_request,
@@ -469,7 +469,7 @@ mod tests {
             HashMap::new(),
         );
         assert_resolved(
-            QUICListener::resolve_lb_key_for_runtime_input(
+            Http3Service::resolve_lb_key_for_runtime_input(
                 RuntimeLoadBalancingStrategy::StickyCid,
                 Some(&RuntimeRequestKeySpec::Header("x-user-id".to_string())),
                 &sticky_request,
@@ -494,7 +494,7 @@ mod tests {
             headers,
         );
 
-        let direct = QUICListener::resolve_lb_key(
+        let direct = Http3Service::resolve_lb_key(
             "consistent-hash",
             Some("cookie:session"),
             LbKeyRequestParts::new(
@@ -506,7 +506,7 @@ mod tests {
                 request.header_lookup,
             ),
         );
-        let runtime = QUICListener::resolve_lb_key_for_runtime_input(
+        let runtime = Http3Service::resolve_lb_key_for_runtime_input(
             RuntimeLoadBalancingStrategy::ConsistentHash,
             Some(&RuntimeRequestKeySpec::Cookie("session".to_string())),
             &request,
@@ -541,12 +541,12 @@ mod tests {
             ]),
         );
 
-        let first_header = QUICListener::resolve_lb_key_for_runtime_input(
+        let first_header = Http3Service::resolve_lb_key_for_runtime_input(
             RuntimeLoadBalancingStrategy::ConsistentHash,
             Some(&RuntimeRequestKeySpec::Header("x-user-id".to_string())),
             &first,
         );
-        let second_header = QUICListener::resolve_lb_key_for_runtime_input(
+        let second_header = Http3Service::resolve_lb_key_for_runtime_input(
             RuntimeLoadBalancingStrategy::ConsistentHash,
             Some(&RuntimeRequestKeySpec::Header("x-user-id".to_string())),
             &second,
@@ -563,7 +563,7 @@ mod tests {
             HashMap::from([("x-user-id".to_string(), "alice".to_string())]),
         );
         assert_resolved(
-            QUICListener::resolve_lb_key_for_runtime_input(
+            Http3Service::resolve_lb_key_for_runtime_input(
                 RuntimeLoadBalancingStrategy::ConsistentHash,
                 Some(&RuntimeRequestKeySpec::Cookie("session".to_string())),
                 &missing_cookie,
@@ -592,7 +592,7 @@ mod tests {
         );
 
         let assert_runtime_key = |spec: RuntimeRequestKeySpec, expected: &str| {
-            let resolved = QUICListener::resolve_lb_key_for_runtime_input(
+            let resolved = Http3Service::resolve_lb_key_for_runtime_input(
                 RuntimeLoadBalancingStrategy::ConsistentHash,
                 Some(&spec),
                 &request,
@@ -631,7 +631,7 @@ mod tests {
         );
 
         let assert_default_fallback = |spec: &str, expected: &str| {
-            let resolved = QUICListener::resolve_lb_key(
+            let resolved = Http3Service::resolve_lb_key(
                 "",
                 Some(spec),
                 LbKeyRequestParts::new(
@@ -665,7 +665,7 @@ mod tests {
             HashMap::new(),
         );
         assert_resolved(
-            QUICListener::resolve_lb_key_for_runtime_input(
+            Http3Service::resolve_lb_key_for_runtime_input(
                 RuntimeLoadBalancingStrategy::StickyCid,
                 Some(&RuntimeRequestKeySpec::Header("x-missing".to_string())),
                 &sticky_request,
@@ -683,7 +683,7 @@ mod tests {
             HashMap::new(),
         );
         assert_resolved(
-            QUICListener::resolve_lb_key_for_runtime_input(
+            Http3Service::resolve_lb_key_for_runtime_input(
                 RuntimeLoadBalancingStrategy::StickyCid,
                 Some(&RuntimeRequestKeySpec::Header("x-missing".to_string())),
                 &no_cid_request,

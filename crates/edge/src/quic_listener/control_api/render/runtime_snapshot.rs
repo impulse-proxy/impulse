@@ -10,7 +10,7 @@ use super::{
 };
 use crate::runtime::policy::RuntimeLifecyclePhase;
 
-impl QUICListener {
+impl Http3Service {
     pub(in crate::quic_listener::control_api) fn json_response<T>(
         status: StatusCode,
         value: T,

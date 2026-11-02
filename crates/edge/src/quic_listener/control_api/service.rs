@@ -22,7 +22,7 @@ enum ControlApiTlsAcceptError {
     Timeout,
 }
 
-impl QUICListener {
+impl Http3Service {
     pub(in crate::quic_listener) fn spawn_control_api_endpoint(
         startup: &ControlPlaneStartup<'_>,
     ) -> Result<(), ProxyError> {
@@ -456,7 +456,7 @@ mod tests {
         let (server, _) = server_result.expect("server connection");
 
         let result =
-            QUICListener::accept_control_api_tls(server, server_config, Duration::from_millis(10))
+            Http3Service::accept_control_api_tls(server, server_config, Duration::from_millis(10))
                 .await;
 
         assert!(matches!(result, Err(ControlApiTlsAcceptError::Timeout)));

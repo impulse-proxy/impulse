@@ -88,7 +88,7 @@ struct AdminPrincipal {
     value: String,
 }
 
-impl QUICListener {
+impl Http3Service {
     fn reconcile_dual_auth_actor_id(
         token_principal: Option<AdminPrincipal>,
         mtls_principal: Option<AdminPrincipal>,

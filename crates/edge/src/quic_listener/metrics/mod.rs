@@ -15,7 +15,7 @@ use rustls::ServerConfig as RustlsServerConfig;
 use tokio_rustls::TlsAcceptor;
 
 use super::{
-    QUICListener,
+    Http3Service,
     runtime_endpoint::RuntimeConnectionSlotGuard,
     runtime_handle,
     runtime_state::{ControlPlaneStartup, MetricsServiceCtx},

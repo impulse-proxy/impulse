@@ -37,7 +37,7 @@ impl LoadedListenerIdentity {
         cert_field: &str,
         cert_path: &str,
     ) -> Result<Self, ProxyError> {
-        QUICListener::validate_tls_certificate_validity(&metadata, cert_field, cert_path)?;
+        Http3Service::validate_tls_certificate_validity(&metadata, cert_field, cert_path)?;
         Ok(Self {
             identity,
             certified_key,
@@ -90,7 +90,7 @@ impl QuicSniCertMaterial {
         cert_path: &str,
         key_path: &str,
     ) -> Result<Self, ProxyError> {
-        QUICListener::validate_boring_certificate_key(&leaf, &key, cert_path, key_path)?;
+        Http3Service::validate_boring_certificate_key(&leaf, &key, cert_path, key_path)?;
         Ok(Self { leaf, chain, key })
     }
 }
@@ -103,7 +103,7 @@ impl ResolvesServerCert for FallbackServerCertResolver {
     }
 }
 
-impl QUICListener {
+impl Http3Service {
     fn read_tls_pem_file_with_limit(path: &str, field_name: &str) -> Result<Vec<u8>, ProxyError> {
         let file = File::open(path).map_err(|err| {
             ProxyError::Tls(format!("failed to read {field_name} '{path}': {err}"))
@@ -1219,7 +1219,7 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        LoadedClientAuthCa, MAX_TLS_PEM_BYTES, QUICListener, RuntimeTlsCertificateMetadata,
+        Http3Service, LoadedClientAuthCa, MAX_TLS_PEM_BYTES, RuntimeTlsCertificateMetadata,
     };
     use crate::quic_listener::control_api::security::{
         ControlApiClientAuthPolicy, ControlApiClientCaMaterial, ControlApiClientVerifierState,
@@ -1260,7 +1260,7 @@ mod tests {
         let path = dir.path().join("oversized.pem");
         std::fs::write(&path, vec![b'A'; (MAX_TLS_PEM_BYTES as usize) + 1]).expect("write");
 
-        let err = QUICListener::read_tls_pem_file_with_limit(
+        let err = Http3Service::read_tls_pem_file_with_limit(
             path.to_str().expect("utf-8 path"),
             "SNI cert",
         )
@@ -1280,7 +1280,7 @@ mod tests {
         )
         .expect("oversized cert");
 
-        let err = match QUICListener::build_quic_ssl_context_builder_for_identity(
+        let err = match Http3Service::build_quic_ssl_context_builder_for_identity(
             &identity,
             &ClientAuth::default(),
             None,
@@ -1308,7 +1308,7 @@ mod tests {
             .remove(0);
         let key = PKey::private_key_from_pem(&key_pem).expect("parse key");
 
-        let error = QUICListener::validate_boring_certificate_key(
+        let error = Http3Service::validate_boring_certificate_key(
             &certificate,
             &key,
             &first.cert_path,
@@ -1335,7 +1335,7 @@ mod tests {
         };
 
         assert!(
-            QUICListener::validate_tls_certificate_validity(
+            Http3Service::validate_tls_certificate_validity(
                 &expired,
                 "listen.tls.default_identity.cert",
                 "/tmp/expired.pem",
@@ -1343,7 +1343,7 @@ mod tests {
             .is_err()
         );
         assert!(
-            QUICListener::validate_tls_certificate_validity(
+            Http3Service::validate_tls_certificate_validity(
                 &future,
                 "listen.tls.default_identity.cert",
                 "/tmp/future.pem",
@@ -1362,7 +1362,7 @@ mod tests {
         )
         .expect("oversized key");
 
-        let err = match QUICListener::build_quic_ssl_context_builder_for_identity(
+        let err = match Http3Service::build_quic_ssl_context_builder_for_identity(
             &identity,
             &ClientAuth::default(),
             None,
@@ -1395,7 +1395,7 @@ mod tests {
             roots: Arc::new(RootCertStore::empty()),
         };
 
-        let err = match QUICListener::build_quic_ssl_context_builder_for_identity(
+        let err = match Http3Service::build_quic_ssl_context_builder_for_identity(
             &identity,
             &client_auth,
             Some(&loaded_ca),
@@ -1421,7 +1421,7 @@ mod tests {
         )
         .expect("write huge pem");
 
-        let err = QUICListener::load_control_api_client_auth_roots(
+        let err = Http3Service::load_control_api_client_auth_roots(
             &control_api_client_auth_policy(None, Some(ca_dir.to_string_lossy().to_string())),
         )
         .expect_err("oversized ca_dir entry must be rejected");
@@ -1441,7 +1441,7 @@ mod tests {
         let identity = write_test_identity_files(&ca_dir);
         std::fs::rename(&identity.cert_path, ca_dir.join("root.pem")).expect("rename cert");
 
-        let roots = QUICListener::load_control_api_client_auth_roots(
+        let roots = Http3Service::load_control_api_client_auth_roots(
             &control_api_client_auth_policy(None, Some(ca_dir.to_string_lossy().to_string())),
         )
         .expect("load roots")

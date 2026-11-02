@@ -81,7 +81,7 @@ use crate::{
             response::{ForwardResult, ForwardSuccess, ResponseChunk, UpstreamResult},
             stream::{CancellationReason, TerminalReason, TunnelMode},
         },
-        listener::QUICListener,
+        listener::Http3Service,
         tasks::RuntimeTaskRegistry,
         tls::{
             inventory::{
@@ -170,7 +170,7 @@ struct ListenerRuntimeSettings {
 
 type LbHeaderLookup<'a> = crate::edge_core::request_execution::RequestHeaderLookup<'a>;
 
-impl QUICListener {
+impl Http3Service {
     fn random_reset_token() -> u128 {
         let mut token = [0u8; RESET_TOKEN_LEN_BYTES];
         rand::thread_rng().fill_bytes(&mut token);

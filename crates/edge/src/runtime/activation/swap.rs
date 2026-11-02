@@ -9,7 +9,7 @@ use crate::runtime::{
         ActiveRuntimeGeneration, RuntimeBundle, RuntimeBundleHandle, RuntimeGenerationRecordStatus,
     },
     generation::CarriedProcessSharedServices,
-    listener::QUICListener,
+    listener::Http3Service,
 };
 
 pub(super) fn commit_staged_runtime_reload(
@@ -44,7 +44,7 @@ pub(super) fn commit_runtime_bundle_swap(
 ) -> Result<GenerationId, ProxyError> {
     let current_log_level = handle.current_view().startup().log_config.level.clone();
     let next_log_level = next_runtime.startup.log_config.level.clone();
-    QUICListener::spawn_generation_background_tasks_for_runtime(
+    Http3Service::spawn_generation_background_tasks_for_runtime(
         &next_runtime.runtime_config,
         next_runtime.shared_state.as_ref(),
     );

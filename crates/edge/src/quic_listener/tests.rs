@@ -270,7 +270,7 @@ fn runtime_listener_tls_uses_first_sni_entry_when_legacy_pair_is_missing() {
         ],
     );
 
-    let runtime_tls = super::QUICListener::runtime_listener_tls(&tls_test_listener_config(&config))
+    let runtime_tls = super::Http3Service::runtime_listener_tls(&tls_test_listener_config(&config))
         .expect("runtime listener tls");
     assert_eq!(runtime_tls.default_identity.cert_path, api_cert);
     assert_eq!(runtime_tls.default_identity.key_path, api_key);
@@ -291,7 +291,7 @@ fn listener_tls_reload_state_accepts_sni_certs_without_legacy_pair() {
     );
 
     let reload_state =
-        super::QUICListener::build_listener_tls_reload_state(&tls_test_listener_config(&config));
+        super::Http3Service::build_listener_tls_reload_state(&tls_test_listener_config(&config));
     assert!(reload_state.is_ok());
 }
 
@@ -309,7 +309,7 @@ fn load_listener_tls_material_extracts_leaf_metadata() {
         }],
     ));
 
-    let loaded = super::QUICListener::load_listener_tls_material(&runtime_config)
+    let loaded = super::Http3Service::load_listener_tls_material(&runtime_config)
         .expect("loaded listener tls");
     let metadata = loaded.default_identity.metadata();
     assert!(
@@ -344,7 +344,7 @@ fn load_listener_tls_material_loads_client_auth_ca_roots() {
     };
 
     let loaded =
-        super::QUICListener::load_listener_tls_material(&tls_test_listener_config(&config))
+        super::Http3Service::load_listener_tls_material(&tls_test_listener_config(&config))
             .expect("loaded listener tls");
     let client_auth_ca = loaded.client_auth_ca.expect("client auth ca");
     assert_eq!(client_auth_ca.ca_file, client_ca_cert);
@@ -360,7 +360,7 @@ fn listener_tls_reload_store_refreshes_inventory_and_generation() {
     config.listen.port = 0;
 
     let runtime = RuntimeConfig::from_config(&config).expect("runtime config");
-    let shared = super::QUICListener::build_shared_state(&runtime).expect("shared state");
+    let shared = super::Http3Service::build_shared_state(&runtime).expect("shared state");
     let listener_label = "127.0.0.1:0";
     let initial_inventory = shared
         .shared_services()
@@ -387,7 +387,7 @@ fn listener_tls_reload_store_refreshes_inventory_and_generation() {
         .listener_runtime_configs
         .get(listener_label)
         .expect("listener runtime config");
-    let reloaded_state = super::QUICListener::build_listener_tls_reload_state(listener_config)
+    let reloaded_state = super::Http3Service::build_listener_tls_reload_state(listener_config)
         .expect("reloaded tls state");
     let generation = shared
         .shared_services()
@@ -419,13 +419,13 @@ fn quic_listener_syncs_tls_generation_after_reload() {
     let mut config = tls_test_config(server_cert, server_key, Vec::new());
     config.listen.port = 0;
     let runtime = RuntimeConfig::from_config(&config).expect("runtime config");
-    let shared = Arc::new(super::QUICListener::build_shared_state(&runtime).expect("shared"));
+    let shared = Arc::new(super::Http3Service::build_shared_state(&runtime).expect("shared"));
     let listener_config = runtime
         .primary_listener_runtime_config()
         .expect("listener runtime config");
-    let listener_label = super::QUICListener::listener_label(&listener_config);
+    let listener_label = super::Http3Service::listener_label(&listener_config);
     assert_eq!(
-        super::QUICListener::tls_reload_generation_if_needed(
+        super::Http3Service::tls_reload_generation_if_needed(
             &listener_label,
             0,
             &shared.shared_services().listener_tls_store
@@ -436,7 +436,7 @@ fn quic_listener_syncs_tls_generation_after_reload() {
 
     let (_rotated_cert, _rotated_key) =
         write_test_cert_for_name(dir.path(), "server", "api.example.com");
-    let reloaded_state = super::QUICListener::build_listener_tls_reload_state(&listener_config)
+    let reloaded_state = super::Http3Service::build_listener_tls_reload_state(&listener_config)
         .expect("reloaded tls state");
     shared
         .shared_services()
@@ -449,7 +449,7 @@ fn quic_listener_syncs_tls_generation_after_reload() {
         .expect("replace listener");
 
     assert_eq!(
-        super::QUICListener::tls_reload_generation_if_needed(
+        super::Http3Service::tls_reload_generation_if_needed(
             &listener_label,
             0,
             &shared.shared_services().listener_tls_store
@@ -466,7 +466,7 @@ fn metrics_endpoint_state_prefers_reloaded_runtime_settings() {
     let startup = tls_test_config(cert.clone(), key.clone(), Vec::new());
     let startup_runtime = RuntimeConfig::from_config(&startup).expect("startup runtime");
     let startup_shared =
-        Arc::new(super::QUICListener::build_shared_state(&startup_runtime).expect("shared"));
+        Arc::new(super::Http3Service::build_shared_state(&startup_runtime).expect("shared"));
     let mut reloaded = startup.clone();
     reloaded.observability.metrics.enabled = true;
     reloaded.observability.metrics.path = "/metrics-live".to_string();
@@ -474,7 +474,7 @@ fn metrics_endpoint_state_prefers_reloaded_runtime_settings() {
     reloaded.observability.metrics.connection_timeout_ms = 3456;
 
     let reloaded_runtime = RuntimeConfig::from_config(&reloaded).expect("reloaded runtime");
-    let reloaded_bundle = super::QUICListener::build_runtime_bundle(
+    let reloaded_bundle = super::Http3Service::build_runtime_bundle(
         "reloaded.yaml".to_string(),
         reloaded.log.clone(),
         &reloaded_runtime,
@@ -488,7 +488,7 @@ fn metrics_endpoint_state_prefers_reloaded_runtime_settings() {
     );
     let service_ctx = super::runtime_state::MetricsServiceCtx::new(runtime_ctx);
 
-    let state = super::QUICListener::current_metrics_endpoint_state(&service_ctx);
+    let state = super::Http3Service::current_metrics_endpoint_state(&service_ctx);
 
     assert_eq!(state.endpoint.path, "/metrics-live");
     assert_eq!(state.endpoint.max_connections, 29);
@@ -502,7 +502,7 @@ fn watchdog_service_state_prefers_reloaded_runtime_view_settings() {
     let startup = tls_test_config(cert.clone(), key.clone(), Vec::new());
     let startup_runtime = RuntimeConfig::from_config(&startup).expect("startup runtime");
     let startup_shared =
-        Arc::new(super::QUICListener::build_shared_state(&startup_runtime).expect("shared"));
+        Arc::new(super::Http3Service::build_shared_state(&startup_runtime).expect("shared"));
 
     let mut reloaded = startup.clone();
     reloaded.resilience.watchdog.enabled = true;
@@ -512,7 +512,7 @@ fn watchdog_service_state_prefers_reloaded_runtime_view_settings() {
     reloaded.resilience.watchdog.unhealthy_consecutive_windows = 3;
 
     let reloaded_runtime = RuntimeConfig::from_config(&reloaded).expect("reloaded runtime");
-    let reloaded_bundle = super::QUICListener::build_runtime_bundle(
+    let reloaded_bundle = super::Http3Service::build_runtime_bundle(
         "reloaded.yaml".to_string(),
         reloaded.log.clone(),
         &reloaded_runtime,
@@ -532,7 +532,7 @@ fn watchdog_service_state_prefers_reloaded_runtime_view_settings() {
     let expected_resilience = runtime_view.resilience();
     let expected_watchdog = runtime_view.watchdog();
 
-    let spawn_state = super::QUICListener::watchdog_spawn_state(
+    let spawn_state = super::Http3Service::watchdog_spawn_state(
         super::runtime_state::WatchdogServiceCtx::new(runtime_view, task_registry),
     );
 
@@ -569,7 +569,7 @@ fn quic_listener_syncs_drain_timeout_and_connection_rate_limiter_after_reload() 
     startup.performance.new_connections_burst = 5;
 
     let startup_runtime = RuntimeConfig::from_config(&startup).expect("startup runtime");
-    let startup_bundle = super::QUICListener::build_runtime_bundle(
+    let startup_bundle = super::Http3Service::build_runtime_bundle(
         "startup.yaml".to_string(),
         startup.log.clone(),
         &startup_runtime,
@@ -580,7 +580,7 @@ fn quic_listener_syncs_drain_timeout_and_connection_rate_limiter_after_reload() 
         .runtime_config
         .primary_listener_runtime_config()
         .expect("listener runtime config");
-    let socket = match super::QUICListener::bind_socket(&listener_config, false) {
+    let socket = match super::Http3Service::bind_socket(&listener_config, false) {
         Ok(socket) => socket,
         Err(impulse_errors::ProxyError::Transport(message))
             if message.contains("Operation not permitted") =>
@@ -589,7 +589,7 @@ fn quic_listener_syncs_drain_timeout_and_connection_rate_limiter_after_reload() 
         }
         Err(err) => panic!("bind socket: {err:?}"),
     };
-    let mut listener = super::QUICListener::new_with_socket_and_shared_state(
+    let mut listener = super::Http3Service::new_with_socket_and_shared_state(
         listener_config,
         socket,
         Arc::clone(&startup_bundle.shared_state),
@@ -603,7 +603,7 @@ fn quic_listener_syncs_drain_timeout_and_connection_rate_limiter_after_reload() 
     reloaded.performance.new_connections_burst = 2;
 
     let reloaded_runtime = RuntimeConfig::from_config(&reloaded).expect("reloaded runtime");
-    let mut reloaded_bundle = super::QUICListener::build_runtime_bundle(
+    let mut reloaded_bundle = super::Http3Service::build_runtime_bundle(
         "reloaded.yaml".to_string(),
         reloaded.log.clone(),
         &reloaded_runtime,
@@ -638,7 +638,7 @@ fn start_draining_is_idempotent_and_drain_completes_when_idle() {
     startup.performance.shutdown_drain_timeout_ms = 5_000;
 
     let startup_runtime = RuntimeConfig::from_config(&startup).expect("startup runtime");
-    let startup_bundle = super::QUICListener::build_runtime_bundle(
+    let startup_bundle = super::Http3Service::build_runtime_bundle(
         "startup.yaml".to_string(),
         startup.log.clone(),
         &startup_runtime,
@@ -648,7 +648,7 @@ fn start_draining_is_idempotent_and_drain_completes_when_idle() {
         .runtime_config
         .primary_listener_runtime_config()
         .expect("listener runtime config");
-    let socket = match super::QUICListener::bind_socket(&listener_config, false) {
+    let socket = match super::Http3Service::bind_socket(&listener_config, false) {
         Ok(socket) => socket,
         Err(impulse_errors::ProxyError::Transport(message))
             if message.contains("Operation not permitted") =>
@@ -657,7 +657,7 @@ fn start_draining_is_idempotent_and_drain_completes_when_idle() {
         }
         Err(err) => panic!("bind socket: {err:?}"),
     };
-    let mut listener = super::QUICListener::new_with_socket_and_shared_state(
+    let mut listener = super::Http3Service::new_with_socket_and_shared_state(
         listener_config,
         socket,
         Arc::clone(&startup_bundle.shared_state),
@@ -691,7 +691,7 @@ fn process_shutdown_signal_starts_listener_draining_before_worker_exit() {
     startup.listen.port = 0;
 
     let startup_runtime = RuntimeConfig::from_config(&startup).expect("startup runtime");
-    let startup_bundle = super::QUICListener::build_runtime_bundle(
+    let startup_bundle = super::Http3Service::build_runtime_bundle(
         "startup.yaml".to_string(),
         startup.log.clone(),
         &startup_runtime,
@@ -701,7 +701,7 @@ fn process_shutdown_signal_starts_listener_draining_before_worker_exit() {
         .runtime_config
         .primary_listener_runtime_config()
         .expect("listener runtime config");
-    let socket = match super::QUICListener::bind_socket(&listener_config, false) {
+    let socket = match super::Http3Service::bind_socket(&listener_config, false) {
         Ok(socket) => socket,
         Err(impulse_errors::ProxyError::Transport(message))
             if message.contains("Operation not permitted") =>
@@ -710,7 +710,7 @@ fn process_shutdown_signal_starts_listener_draining_before_worker_exit() {
         }
         Err(err) => panic!("bind socket: {err:?}"),
     };
-    let mut listener = super::QUICListener::new_with_socket_and_shared_state(
+    let mut listener = super::Http3Service::new_with_socket_and_shared_state(
         listener_config,
         socket,
         Arc::clone(&startup_bundle.shared_state),
@@ -732,7 +732,7 @@ fn watchdog_restart_transitions_listener_into_draining_and_counts_worker_drain_o
     startup.resilience.watchdog.enabled = true;
 
     let startup_runtime = RuntimeConfig::from_config(&startup).expect("startup runtime");
-    let startup_bundle = super::QUICListener::build_runtime_bundle(
+    let startup_bundle = super::Http3Service::build_runtime_bundle(
         "startup.yaml".to_string(),
         startup.log.clone(),
         &startup_runtime,
@@ -743,7 +743,7 @@ fn watchdog_restart_transitions_listener_into_draining_and_counts_worker_drain_o
         .runtime_config
         .primary_listener_runtime_config()
         .expect("listener runtime config");
-    let socket = match super::QUICListener::bind_socket(&listener_config, false) {
+    let socket = match super::Http3Service::bind_socket(&listener_config, false) {
         Ok(socket) => socket,
         Err(impulse_errors::ProxyError::Transport(message))
             if message.contains("Operation not permitted") =>
@@ -752,7 +752,7 @@ fn watchdog_restart_transitions_listener_into_draining_and_counts_worker_drain_o
         }
         Err(err) => panic!("bind socket: {err:?}"),
     };
-    let mut listener = super::QUICListener::new_with_socket_and_shared_state(
+    let mut listener = super::Http3Service::new_with_socket_and_shared_state(
         listener_config,
         socket,
         Arc::clone(&startup_bundle.shared_state),
@@ -811,7 +811,7 @@ fn listener_tls_reload_state_rejects_mismatched_sni_certificate_mapping() {
     );
 
     let err =
-        super::QUICListener::build_listener_tls_reload_state(&tls_test_listener_config(&config))
+        super::Http3Service::build_listener_tls_reload_state(&tls_test_listener_config(&config))
             .err()
             .expect("mismatched SNI cert mapping should fail");
     assert!(
@@ -835,7 +835,7 @@ fn build_quic_config_accepts_sni_certs_without_legacy_pair() {
         }],
     );
 
-    let quic_config = super::QUICListener::build_quic_config(&tls_test_listener_config(&config));
+    let quic_config = super::Http3Service::build_quic_config(&tls_test_listener_config(&config));
     if let Err(err) = quic_config {
         panic!("unexpected error: {err}");
     }
@@ -855,7 +855,7 @@ fn build_quic_config_rejects_mismatched_sni_certificate_mapping() {
         }],
     );
 
-    let err = super::QUICListener::build_quic_config(&tls_test_listener_config(&config))
+    let err = super::Http3Service::build_quic_config(&tls_test_listener_config(&config))
         .err()
         .expect("mismatched SNI cert mapping should fail");
     assert!(
@@ -867,15 +867,15 @@ fn build_quic_config_rejects_mismatched_sni_certificate_mapping() {
 
 #[test]
 fn certificate_name_matches_single_label_wildcards_only() {
-    assert!(super::QUICListener::certificate_name_matches(
+    assert!(super::Http3Service::certificate_name_matches(
         "*.example.com",
         "api.example.com"
     ));
-    assert!(!super::QUICListener::certificate_name_matches(
+    assert!(!super::Http3Service::certificate_name_matches(
         "*.example.com",
         "deep.api.example.com"
     ));
-    assert!(!super::QUICListener::certificate_name_matches(
+    assert!(!super::Http3Service::certificate_name_matches(
         "*.example.com",
         "example.com"
     ));
@@ -915,21 +915,21 @@ fn classify_upstream_failure_reason_distinguishes_tls_causes() {
 #[test]
 fn classify_downstream_tls_failure_reason_distinguishes_client_auth_causes() {
     assert_eq!(
-        super::QUICListener::classify_downstream_tls_failure_reason("peer sent no certificates"),
+        super::Http3Service::classify_downstream_tls_failure_reason("peer sent no certificates"),
         "missing_client_cert"
     );
     assert_eq!(
-        super::QUICListener::classify_downstream_tls_failure_reason(
+        super::Http3Service::classify_downstream_tls_failure_reason(
             "certificate verify failed: UnknownIssuer"
         ),
         "unknown_issuer"
     );
     assert_eq!(
-        super::QUICListener::classify_downstream_tls_failure_reason("certificate expired"),
+        super::Http3Service::classify_downstream_tls_failure_reason("certificate expired"),
         "expired_client_cert"
     );
     assert_eq!(
-        super::QUICListener::classify_downstream_tls_failure_reason("bad certificate"),
+        super::Http3Service::classify_downstream_tls_failure_reason("bad certificate"),
         "invalid_client_cert"
     );
 }
@@ -940,7 +940,7 @@ fn build_shared_state_separates_backend_identity_from_resolution_state() {
     let (cert, key) = write_test_cert_for_name(dir.path(), "server", "api.example.com");
     let runtime =
         RuntimeConfig::from_config(&dns_resolution_test_config(cert, key)).expect("runtime");
-    let shared = super::QUICListener::build_shared_state(&runtime).expect("shared state");
+    let shared = super::Http3Service::build_shared_state(&runtime).expect("shared state");
     let snapshot = shared.shared_services().backend_resolution_store.snapshot();
 
     let dns_backend = snapshot
@@ -1019,7 +1019,7 @@ fn resolve_backend_round_robin_is_not_pinned_to_first_backend() {
             None,
             None,
         );
-        let resolved = super::QUICListener::resolve_backend_request_for_test(
+        let resolved = super::Http3Service::resolve_backend_request_for_test(
             &request,
             &upstream_pools,
             &routing_index,
@@ -1060,7 +1060,7 @@ fn resolve_backend_skips_unhealthy_backends() {
 
     let request =
         super::forwarding::TestTargetResolutionRequest::new("GET", "/api/items", None, None, None);
-    let resolved = super::QUICListener::resolve_backend_request_for_test(
+    let resolved = super::Http3Service::resolve_backend_request_for_test(
         &request,
         &upstream_pools,
         &routing_index,
@@ -1088,7 +1088,7 @@ fn resolve_backend_respects_least_connections_strategy() {
 
     let request =
         super::forwarding::TestTargetResolutionRequest::new("GET", "/api/items", None, None, None);
-    let resolved = super::QUICListener::resolve_backend_request_for_test(
+    let resolved = super::Http3Service::resolve_backend_request_for_test(
         &request,
         &upstream_pools,
         &routing_index,
@@ -1131,7 +1131,7 @@ fn resolve_backend_prefers_method_specific_route() {
 
     let request =
         super::forwarding::TestTargetResolutionRequest::new("GET", "/api/items", None, None, None);
-    let resolved = super::QUICListener::resolve_backend_request_for_test(
+    let resolved = super::Http3Service::resolve_backend_request_for_test(
         &request,
         &upstream_pools,
         &routing_index,
@@ -1143,7 +1143,7 @@ fn resolve_backend_prefers_method_specific_route() {
 
     let request =
         super::forwarding::TestTargetResolutionRequest::new("POST", "/api/items", None, None, None);
-    let resolved = super::QUICListener::resolve_backend_request_for_test(
+    let resolved = super::Http3Service::resolve_backend_request_for_test(
         &request,
         &upstream_pools,
         &routing_index,
@@ -1207,7 +1207,7 @@ fn resolve_backend_uses_configured_header_lb_key() {
         None,
         Some(&header_lookup),
     );
-    let first = super::QUICListener::resolve_backend_request_for_test(
+    let first = super::Http3Service::resolve_backend_request_for_test(
         &first_request,
         &upstream_pools,
         &routing_index,
@@ -1222,7 +1222,7 @@ fn resolve_backend_uses_configured_header_lb_key() {
         None,
         Some(&header_lookup),
     );
-    let second = super::QUICListener::resolve_backend_request_for_test(
+    let second = super::Http3Service::resolve_backend_request_for_test(
         &second_request,
         &upstream_pools,
         &routing_index,

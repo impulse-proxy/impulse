@@ -1,6 +1,6 @@
 use super::{request_body::ControlApiRuntimePlanRequest, *};
 
-impl QUICListener {
+impl Http3Service {
     pub(in crate::quic_listener::control_api) async fn handle_control_api_runtime_preview(
         req: Request<Incoming>,
         state: &crate::quic_listener::runtime_state::ControlApiServiceCtx,
