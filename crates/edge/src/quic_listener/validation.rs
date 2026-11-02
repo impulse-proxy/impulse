@@ -1,6 +1,12 @@
+pub(super) use impulse_http3_ingress::{
+    extract_header_value, generated_span_id, generated_trace_id, parse_traceparent,
+};
+
 use super::*;
+#[cfg(test)]
+use crate::edge_core::request_validation::parse_content_length_values;
 use crate::edge_core::request_validation::{
-    RequestPartErrors, RequestValidationResult, parse_content_length_values, validate_request_parts,
+    RequestPartErrors, RequestValidationResult, validate_request_parts,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -11,305 +17,35 @@ pub(super) enum RequestBufferError {
 }
 
 pub(super) fn validate_request_headers(
-    list: &[quiche::h3::Header],
+    headers: &[quiche::h3::Header],
     resilience: &RuntimeResilience,
 ) -> Result<RequestValidationResult, (http::StatusCode, &'static [u8], bool)> {
-    if list.len() > resilience.max_headers_count {
-        return Err((
-            http::StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE,
-            b"too many request headers
-",
-            false,
-        ));
-    }
-
-    let mut header_bytes = 0usize;
-    let mut method = None::<String>;
-    let mut path = None::<String>;
-    let mut authority = None::<String>;
-    let mut host = None::<String>;
-    let mut scheme = None::<String>;
-    let mut protocol = None::<String>;
-    let mut h3_upgrade_requested = false;
-
-    for header in list {
-        header_bytes = header_bytes.saturating_add(header.name().len() + header.value().len());
-        if header_bytes > resilience.max_headers_bytes {
-            return Err((
-                http::StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE,
-                b"request headers exceed size limit
-",
-                false,
-            ));
-        }
-
-        match header.name() {
-            b":method" => {
-                if method.is_some() {
-                    return Err((
-                        http::StatusCode::BAD_REQUEST,
-                        b"duplicate :method header
-",
-                        false,
-                    ));
-                }
-                method = Some(strict_header_value(
-                    header.value(),
-                    b"invalid :method header
-",
-                )?);
-            }
-            b":path" => {
-                if path.is_some() {
-                    return Err((
-                        http::StatusCode::BAD_REQUEST,
-                        b"duplicate :path header
-",
-                        false,
-                    ));
-                }
-                path = Some(strict_header_value(
-                    header.value(),
-                    b"invalid :path header
-",
-                )?);
-            }
-            b":authority" => {
-                if authority.is_some() {
-                    return Err((
-                        http::StatusCode::BAD_REQUEST,
-                        b"duplicate :authority header
-",
-                        false,
-                    ));
-                }
-                authority = Some(strict_header_value(
-                    header.value(),
-                    b"invalid :authority header
-",
-                )?);
-            }
-            b"host" => {
-                if host.is_some() {
-                    return Err((
-                        http::StatusCode::BAD_REQUEST,
-                        b"duplicate host header
-",
-                        false,
-                    ));
-                }
-                host = Some(strict_header_value(
-                    header.value(),
-                    b"invalid host header
-",
-                )?);
-            }
-            b"connection" => {
-                let value = strict_header_value(
-                    header.value(),
-                    b"invalid connection header
-",
-                )?;
-                if value
-                    .split(',')
-                    .any(|part| part.trim().eq_ignore_ascii_case("upgrade"))
-                {
-                    h3_upgrade_requested = true;
-                }
-            }
-            b"upgrade" => {
-                let _ = strict_header_value(
-                    header.value(),
-                    b"invalid upgrade header
-",
-                )?;
-                h3_upgrade_requested = true;
-            }
-            b":scheme" => {
-                if scheme.is_some() {
-                    return Err((
-                        http::StatusCode::BAD_REQUEST,
-                        b"duplicate :scheme header
-",
-                        false,
-                    ));
-                }
-                let value = strict_header_value(
-                    header.value(),
-                    b"invalid :scheme header
-",
-                )?;
-                if !value.eq_ignore_ascii_case("http") && !value.eq_ignore_ascii_case("https") {
-                    return Err((
-                        http::StatusCode::BAD_REQUEST,
-                        b"invalid :scheme header
-",
-                        false,
-                    ));
-                }
-                scheme = Some(value);
-            }
-            b":protocol" => {
-                if protocol.is_some() {
-                    return Err((
-                        http::StatusCode::BAD_REQUEST,
-                        b"duplicate :protocol header
-",
-                        false,
-                    ));
-                }
-                protocol = Some(strict_header_value(
-                    header.value(),
-                    b"invalid :protocol header
-",
-                )?);
-            }
-            name if name.starts_with(b":") => {
-                return Err((
-                    http::StatusCode::BAD_REQUEST,
-                    b"unsupported pseudo-header
-",
-                    false,
-                ));
-            }
-            _ => {}
-        }
-    }
-
-    let content_length = parse_h3_content_length(list)?;
-
-    let method = match method {
-        Some(method) => method,
-        None => {
-            return Err((
-                http::StatusCode::BAD_REQUEST,
-                b"missing :method header
-",
-                false,
-            ));
-        }
-    };
-
-    let websocket_tunnel = impulse_bridge::websocket::h3_websocket_tunnel_requested(&method, list);
-    if protocol.is_some() && !websocket_tunnel {
-        return Err((
-            http::StatusCode::BAD_REQUEST,
-            b"unsupported pseudo-header
-",
-            false,
-        ));
-    }
-    if h3_upgrade_requested {
-        return Err((
-            http::StatusCode::BAD_REQUEST,
-            b"HTTP/3 does not support Upgrade requests
-",
-            false,
-        ));
-    }
-
-    let is_connect = method.eq_ignore_ascii_case("CONNECT");
-    match (is_connect, websocket_tunnel, scheme.is_some()) {
-        (false, _, false) | (true, true, false) => {
-            return Err((
-                http::StatusCode::BAD_REQUEST,
-                b"missing :scheme header
-",
-                false,
-            ));
-        }
-        (true, false, true) => {
-            return Err((
-                http::StatusCode::BAD_REQUEST,
-                b"invalid CONNECT :scheme header
-",
-                false,
-            ));
-        }
-        _ => {}
-    }
-    let path = match (is_connect, websocket_tunnel, path) {
-        (true, true, Some(path)) => path,
-        (true, true, None) => {
-            return Err((
-                http::StatusCode::BAD_REQUEST,
-                b"missing :path header
-",
-                false,
-            ));
-        }
-        (true, false, Some(path)) if path.is_empty() => {
-            return Err((
-                http::StatusCode::BAD_REQUEST,
-                b"invalid CONNECT :path header
-",
-                false,
-            ));
-        }
-        (true, false, Some(_)) => {
-            return Err((
-                http::StatusCode::BAD_REQUEST,
-                b"invalid CONNECT :path header
-",
-                false,
-            ));
-        }
-        (true, false, None) => "/".to_string(),
-        (false, _, Some(path)) => path,
-        (false, _, None) => {
-            return Err((
-                http::StatusCode::BAD_REQUEST,
-                b"missing :path header
-",
-                false,
-            ));
-        }
-    };
-
-    validate_request_parts(
-        method,
-        path,
-        authority,
-        host,
-        content_length,
-        websocket_tunnel,
-        resilience,
-        RequestPartErrors {
-            invalid_method: b"invalid :method header
-",
-            invalid_path: b"invalid :path header
-",
-            invalid_authority: b"invalid :authority header
-",
-            invalid_host: b"invalid host header
-",
-            authority_mismatch: b":authority and host headers must match
-",
-            connect_path_not_allowed: b"invalid CONNECT :path header
-",
-            connect_authority_required: b"CONNECT requires authority host:port
-",
+    let head = impulse_http3_ingress::parse_request_head(
+        headers,
+        impulse_http3_ingress::Http3RequestLimits {
+            max_headers_count: resilience.max_headers_count,
+            max_headers_bytes: resilience.max_headers_bytes,
         },
     )
-}
+    .map_err(|error| (error.status, error.body, false))?;
 
-fn strict_header_value(
-    value: &[u8],
-    invalid_error: &'static [u8],
-) -> Result<String, (http::StatusCode, &'static [u8], bool)> {
-    std::str::from_utf8(value)
-        .map(str::to_owned)
-        .map_err(|_| (http::StatusCode::BAD_REQUEST, invalid_error, false))
-}
-
-fn parse_h3_content_length(
-    headers: &[quiche::h3::Header],
-) -> Result<Option<usize>, (http::StatusCode, &'static [u8], bool)> {
-    parse_content_length_values(
-        headers
-            .iter()
-            .filter(|header| header.name().eq_ignore_ascii_case(b"content-length"))
-            .map(quiche::h3::Header::value),
+    validate_request_parts(
+        head.method,
+        head.path,
+        head.authority,
+        head.host,
+        head.content_length,
+        head.websocket_tunnel,
+        resilience,
+        RequestPartErrors {
+            invalid_method: b"invalid :method header\n",
+            invalid_path: b"invalid :path header\n",
+            invalid_authority: b"invalid :authority header\n",
+            invalid_host: b"invalid host header\n",
+            authority_mismatch: b":authority and host headers must match\n",
+            connect_path_not_allowed: b"invalid CONNECT :path header\n",
+            connect_authority_required: b"CONNECT requires authority host:port\n",
+        },
     )
 }
 
@@ -323,58 +59,6 @@ fn parse_http_content_length(
             .iter()
             .map(http::HeaderValue::as_bytes),
     )
-}
-
-pub(super) fn extract_header_value<'a>(
-    headers: &'a [quiche::h3::Header],
-    name: &[u8],
-) -> Option<&'a str> {
-    headers
-        .iter()
-        .find(|header| header.name().eq_ignore_ascii_case(name))
-        .and_then(|header| std::str::from_utf8(header.value()).ok())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-}
-
-pub(super) fn parse_traceparent(value: &str) -> Option<(String, String)> {
-    let parts: Vec<&str> = value.split('-').collect();
-    if parts.len() != 4 || parts[0] != "00" {
-        return None;
-    }
-    let trace_id = parts[1];
-    let parent_span_id = parts[2];
-    let flags = parts[3];
-
-    let trace_valid = trace_id.len() == 32
-        && trace_id.chars().all(|c| c.is_ascii_hexdigit())
-        && trace_id != "00000000000000000000000000000000";
-    let span_valid = parent_span_id.len() == 16
-        && parent_span_id.chars().all(|c| c.is_ascii_hexdigit())
-        && parent_span_id != "0000000000000000";
-    let flags_valid = flags.len() == 2 && flags.chars().all(|c| c.is_ascii_hexdigit());
-
-    if !(trace_valid && span_valid && flags_valid) {
-        return None;
-    }
-
-    Some((
-        trace_id.to_ascii_lowercase(),
-        parent_span_id.to_ascii_lowercase(),
-    ))
-}
-
-pub(super) fn generated_trace_id(conn_trace_id: &str, request_id: u64) -> String {
-    let mut seed = conn_trace_id.as_bytes().to_vec();
-    seed.extend_from_slice(&request_id.to_be_bytes());
-    let lo = crate::stable_hash64(&seed);
-    seed.extend_from_slice(b"trace-hi");
-    let hi = crate::stable_hash64(&seed);
-    format!("{hi:016x}{lo:016x}")
-}
-
-pub(super) fn generated_span_id(request_id: u64) -> String {
-    format!("{:016x}", crate::stable_hash64(&request_id.to_be_bytes()))
 }
 
 #[cfg(test)]

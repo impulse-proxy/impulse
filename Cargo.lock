@@ -1582,6 +1582,7 @@ version = "0.6.0"
 dependencies = [
  "boring",
  "core_affinity",
+ "http",
  "impulse-contracts",
  "log",
  "quiche",
