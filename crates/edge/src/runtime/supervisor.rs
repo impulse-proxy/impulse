@@ -10,9 +10,22 @@ use crate::runtime::{
     },
     bundle::RuntimeBundleHandle,
     listener::Http3Service,
-    listener_group::{ListenerGroupRuntime, reconcile_listener_groups},
+    listener_group::{
+        IngressServiceHandles, reconcile_listener_groups, start_ingress_service_handles,
+    },
     shared_state::SharedRuntimeState,
 };
+
+pub struct OperationsServiceHandle {
+    runtime: Arc<RuntimeBundleHandle>,
+}
+
+impl OperationsServiceHandle {
+    pub fn shutdown(self, task_drain_timeout: Duration) {
+        self.runtime.retire_background_tasks(task_drain_timeout);
+        self.runtime.lifecycle().finish_shutdown();
+    }
+}
 
 pub struct RuntimeSupervisor {
     runtime: Arc<RuntimeBundleHandle>,
@@ -24,34 +37,53 @@ impl RuntimeSupervisor {
         config_path: String,
         log_config: Log,
         runtime_config: &RuntimeConfig,
-        worker_count: usize,
     ) -> Result<Self, ProxyError> {
         let bundle = Http3Service::build_runtime_bundle(config_path, log_config, runtime_config)?;
         let shared_state = Arc::clone(&bundle.shared_state);
         let runtime = Arc::new(RuntimeBundleHandle::new(bundle));
-        Http3Service::spawn_control_plane_tasks_with_runtime_bundle(
-            runtime_config,
-            &shared_state,
-            Arc::clone(&runtime),
-            worker_count,
-        )?;
         Ok(Self {
             runtime,
             shared_state,
         })
     }
 
+    pub fn start_operations(
+        &self,
+        runtime_config: &RuntimeConfig,
+        worker_count: usize,
+    ) -> Result<OperationsServiceHandle, ProxyError> {
+        Http3Service::spawn_control_plane_tasks_with_runtime_bundle(
+            runtime_config,
+            &self.shared_state,
+            Arc::clone(&self.runtime),
+            worker_count,
+        )?;
+        Ok(OperationsServiceHandle {
+            runtime: Arc::clone(&self.runtime),
+        })
+    }
+
+    pub async fn start_ingress_services(
+        &self,
+        listener_config: impulse_config::runtime::ListenerRuntimeConfig,
+        worker_index_base: usize,
+    ) -> Result<IngressServiceHandles, String> {
+        start_ingress_service_handles(
+            listener_config,
+            Arc::clone(&self.shared_state),
+            Arc::clone(&self.runtime),
+            worker_index_base,
+        )
+        .await
+    }
+
     pub fn runtime(&self) -> Arc<RuntimeBundleHandle> {
         Arc::clone(&self.runtime)
     }
 
-    pub fn shared_state(&self) -> Arc<SharedRuntimeState> {
-        Arc::clone(&self.shared_state)
-    }
-
     pub async fn reconcile_listener_groups(
         &self,
-        groups: &mut Vec<ListenerGroupRuntime>,
+        groups: &mut Vec<IngressServiceHandles>,
         worker_failed: &mut bool,
     ) {
         reconcile_listener_groups(&self.runtime, groups, worker_failed).await;
@@ -94,10 +126,5 @@ impl RuntimeSupervisor {
 
     pub fn begin_shutdown(runtime: &RuntimeBundleHandle) {
         runtime.lifecycle().begin_shutdown();
-    }
-
-    pub fn complete_shutdown(runtime: &RuntimeBundleHandle, task_drain_timeout: Duration) {
-        runtime.retire_background_tasks(task_drain_timeout);
-        runtime.lifecycle().finish_shutdown();
     }
 }

@@ -36,41 +36,49 @@ struct ListenerGroupSignature {
     client_auth_ca_file: Option<String>,
 }
 
-pub struct ListenerGroupRuntime {
-    signature: ListenerGroupSignature,
+pub struct PingoraServiceHandle {
+    task: PingoraListenerTask,
+}
+
+pub struct Http3ServiceHandle {
     shutdown: ShutdownSignal,
     worker_handles: Vec<thread::JoinHandle<Result<(), String>>>,
-    pingora_listener: PingoraListenerTask,
+}
+
+pub struct IngressServiceHandles {
+    pub pingora: PingoraServiceHandle,
+    pub http3: Http3ServiceHandle,
+    signature: ListenerGroupSignature,
     worker_index_base: usize,
     failed_activation_generation: Option<u64>,
     drain_timeout: Duration,
     drain_deadline: Option<Instant>,
 }
 
-impl ListenerGroupRuntime {
+impl IngressServiceHandles {
     pub(crate) fn request_shutdown(&mut self) {
-        self.shutdown.store(true, Ordering::Relaxed);
-        self.pingora_listener.request_shutdown();
+        self.http3.shutdown.store(true, Ordering::Relaxed);
+        self.pingora.task.request_shutdown();
         self.drain_deadline
             .get_or_insert_with(|| Instant::now() + self.drain_timeout);
     }
 
     pub(crate) async fn collect_finished(&mut self, worker_failed: &mut bool) {
         let mut idx = 0usize;
-        while idx < self.worker_handles.len() {
-            if !self.worker_handles[idx].is_finished() {
+        while idx < self.http3.worker_handles.len() {
+            if !self.http3.worker_handles[idx].is_finished() {
                 idx += 1;
                 continue;
             }
 
-            let handle = self.worker_handles.swap_remove(idx);
+            let handle = self.http3.worker_handles.swap_remove(idx);
             join_worker_handle(handle, worker_failed);
         }
-        if let Some(result) = self.pingora_listener.collect_finished().await {
+        if let Some(result) = self.pingora.task.collect_finished().await {
             if let Err(err) = result {
                 *worker_failed = true;
                 error!("{}", err);
-            } else if !self.shutdown.load(Ordering::Relaxed) {
+            } else if !self.http3.shutdown.load(Ordering::Relaxed) {
                 *worker_failed = true;
                 error!(
                     "Pingora listener {} exited before listener-group shutdown",
@@ -81,9 +89,9 @@ impl ListenerGroupRuntime {
         if self
             .drain_deadline
             .is_some_and(|deadline| Instant::now() >= deadline)
-            && !self.pingora_listener.stopped()
+            && !self.pingora.task.stopped()
         {
-            let active = self.pingora_listener.force_drain();
+            let active = self.pingora.task.force_drain();
             log::warn!(
                 "Pingora listener {} exceeded its drain deadline with {} active request(s)",
                 self.signature.label,
@@ -93,20 +101,20 @@ impl ListenerGroupRuntime {
     }
 
     pub(crate) fn retired(&self) -> bool {
-        self.shutdown.load(Ordering::Relaxed)
-            && self.worker_handles.is_empty()
-            && self.pingora_listener.stopped()
+        self.http3.shutdown.load(Ordering::Relaxed)
+            && self.http3.worker_handles.is_empty()
+            && self.pingora.task.stopped()
     }
 
     pub(crate) async fn join_all(mut self, worker_failed: &mut bool) {
-        for handle in self.worker_handles.drain(..) {
+        for handle in self.http3.worker_handles.drain(..) {
             join_worker_handle(handle, worker_failed);
         }
         let remaining = self
             .drain_deadline
             .map(|deadline| deadline.saturating_duration_since(Instant::now()))
             .unwrap_or(self.drain_timeout);
-        match self.pingora_listener.drain(remaining).await {
+        match self.pingora.task.drain(remaining).await {
             Ok(0) => {}
             Ok(active) => log::warn!(
                 "Pingora listener {} reached its drain deadline with {} active request(s)",
@@ -122,7 +130,7 @@ impl ListenerGroupRuntime {
 }
 
 pub async fn shutdown_listener_groups(
-    listener_groups: &mut Vec<ListenerGroupRuntime>,
+    listener_groups: &mut Vec<IngressServiceHandles>,
     worker_failed: &mut bool,
 ) {
     for group in listener_groups.iter_mut() {
@@ -167,12 +175,12 @@ fn listener_group_signature(config: &ListenerRuntimeConfig) -> ListenerGroupSign
     }
 }
 
-pub async fn spawn_managed_listener_group(
+pub async fn start_ingress_service_handles(
     listener_config: ListenerRuntimeConfig,
     worker_shared: Arc<SharedRuntimeState>,
     runtime_bundle: Arc<RuntimeBundleHandle>,
     worker_index_base: usize,
-) -> Result<ListenerGroupRuntime, String> {
+) -> Result<IngressServiceHandles, String> {
     let signature = listener_group_signature(&listener_config);
     let shutdown = ShutdownSignal::new();
     let drain_timeout = listener_config.policies.timeouts.shutdown_drain;
@@ -198,11 +206,15 @@ pub async fn spawn_managed_listener_group(
         },
     )?;
 
-    Ok(ListenerGroupRuntime {
+    Ok(IngressServiceHandles {
+        pingora: PingoraServiceHandle {
+            task: pingora_listener,
+        },
+        http3: Http3ServiceHandle {
+            shutdown,
+            worker_handles,
+        },
         signature,
-        shutdown,
-        worker_handles,
-        pingora_listener,
         worker_index_base,
         failed_activation_generation: None,
         drain_timeout,
@@ -214,7 +226,7 @@ pub async fn spawn_managed_listener_group(
 /// does not overlap any live group's range. Ranges freed when groups retire are
 /// reused, so indices stay bounded across reloads instead of growing without
 /// limit (which would push worker/metrics slots past the metrics capacity).
-pub fn allocate_worker_index_base(groups: &[ListenerGroupRuntime], worker_count: usize) -> usize {
+pub fn allocate_worker_index_base(groups: &[IngressServiceHandles], worker_count: usize) -> usize {
     let mut ranges: Vec<(usize, usize)> = groups
         .iter()
         .map(|g| {
@@ -238,7 +250,7 @@ pub fn allocate_worker_index_base(groups: &[ListenerGroupRuntime], worker_count:
 
 pub(super) async fn reconcile_listener_groups(
     runtime_bundle: &Arc<RuntimeBundleHandle>,
-    groups: &mut Vec<ListenerGroupRuntime>,
+    groups: &mut Vec<IngressServiceHandles>,
     worker_failed: &mut bool,
 ) {
     let runtime = runtime_bundle.current();
@@ -252,7 +264,7 @@ pub(super) async fn reconcile_listener_groups(
         let signature = listener_group_signature(listener_config);
         let Some(group_index) = groups.iter().position(|group| {
             group.signature.label == signature.label
-                && !group.shutdown.load(Ordering::Relaxed)
+                && !group.http3.shutdown.load(Ordering::Relaxed)
                 && group.signature != signature
                 && group.failed_activation_generation != Some(runtime.generation)
         }) else {
@@ -274,7 +286,7 @@ pub(super) async fn reconcile_listener_groups(
             signature.label, runtime.generation
         );
 
-        match spawn_managed_listener_group(
+        match start_ingress_service_handles(
             listener_config.clone(),
             Arc::clone(&runtime.shared_state),
             Arc::clone(runtime_bundle),
@@ -303,7 +315,8 @@ pub(super) async fn reconcile_listener_groups(
     for listener_config in &desired_configs {
         let signature = listener_group_signature(listener_config);
         let active_match = groups.iter().any(|group| {
-            group.signature.label == signature.label && !group.shutdown.load(Ordering::Relaxed)
+            group.signature.label == signature.label
+                && !group.http3.shutdown.load(Ordering::Relaxed)
         });
         let failed_replacement = groups.iter().any(|group| {
             group.signature.listener_index == signature.listener_index
@@ -314,7 +327,7 @@ pub(super) async fn reconcile_listener_groups(
         }
 
         let worker_index_base = allocate_worker_index_base(groups, signature.worker_count);
-        match spawn_managed_listener_group(
+        match start_ingress_service_handles(
             listener_config.clone(),
             Arc::clone(&runtime.shared_state),
             Arc::clone(runtime_bundle),
@@ -330,7 +343,7 @@ pub(super) async fn reconcile_listener_groups(
                 error!("{}", err);
                 if let Some(previous) = groups.iter_mut().find(|group| {
                     group.signature.listener_index == signature.listener_index
-                        && !group.shutdown.load(Ordering::Relaxed)
+                        && !group.http3.shutdown.load(Ordering::Relaxed)
                 }) {
                     previous.failed_activation_generation = Some(runtime.generation);
                 } else {
@@ -344,13 +357,13 @@ pub(super) async fn reconcile_listener_groups(
         .iter()
         .filter(|group| {
             desired_signatures.contains_key(&group.signature.label)
-                && !group.shutdown.load(Ordering::Relaxed)
+                && !group.http3.shutdown.load(Ordering::Relaxed)
         })
         .map(|group| group.signature.listener_index)
         .collect::<Vec<_>>();
     for group in groups.iter_mut() {
         if desired_signatures.contains_key(&group.signature.label)
-            || group.shutdown.load(Ordering::Relaxed)
+            || group.http3.shutdown.load(Ordering::Relaxed)
         {
             continue;
         }
@@ -376,7 +389,7 @@ pub(super) async fn reconcile_listener_groups(
 }
 
 pub async fn collect_finished_listener_groups(
-    groups: &mut Vec<ListenerGroupRuntime>,
+    groups: &mut Vec<IngressServiceHandles>,
     worker_failed: &mut bool,
 ) {
     let mut idx = 0usize;
@@ -410,7 +423,7 @@ fn join_worker_handle(handle: thread::JoinHandle<Result<(), String>>, worker_fai
 
 pub fn log_listener_startup(
     runtime_config: &RuntimeConfig,
-    listener_groups: &[ListenerGroupRuntime],
+    listener_groups: &[IngressServiceHandles],
 ) {
     let shard_count = runtime_config.performance.packet_shards_per_worker.max(1);
     info!("Impulse startup phase=begin");
@@ -447,7 +460,7 @@ pub fn log_listener_startup(
     );
 }
 
-fn group_signature_worker_count(group: &ListenerGroupRuntime) -> usize {
+fn group_signature_worker_count(group: &IngressServiceHandles) -> usize {
     group.signature.worker_count
 }
 

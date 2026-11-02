@@ -13,7 +13,7 @@ use impulse_edge::runtime::{
     ingress::configure_async_runtime,
     listener_group::{
         allocate_worker_index_base, collect_finished_listener_groups, log_listener_startup,
-        shutdown_listener_groups, spawn_managed_listener_group,
+        shutdown_listener_groups,
     },
     privilege_drop::{apply_process_privilege_drop, current_process_privilege_state},
     supervisor::RuntimeSupervisor,
@@ -151,20 +151,21 @@ async fn run(
     let worker_count = runtime_config.performance.worker_threads.max(1);
     let shard_count = runtime_config.performance.packet_shards_per_worker.max(1);
     let effective_worker_count = worker_count.saturating_mul(shard_count);
-    let supervisor = match RuntimeSupervisor::start(
-        config_path,
-        log_config,
-        &runtime_config,
-        effective_worker_count,
-    ) {
+    let supervisor = match RuntimeSupervisor::start(config_path, log_config, &runtime_config) {
         Ok(supervisor) => supervisor,
         Err(err) => {
             error!("Failed to initialize runtime supervisor: {}", err);
             std::process::exit(1);
         }
     };
-    let shared_state = supervisor.shared_state();
     let runtime_bundle = supervisor.runtime();
+    let operations = match supervisor.start_operations(&runtime_config, effective_worker_count) {
+        Ok(operations) => operations,
+        Err(err) => {
+            error!("Failed to start operational services: {}", err);
+            std::process::exit(1);
+        }
+    };
 
     let binds_privileged_port = runtime_config
         .listeners
@@ -189,7 +190,7 @@ async fn run(
         shutdown_flag.store(true, Ordering::Relaxed);
     });
 
-    let mut listener_groups = Vec::new();
+    let mut ingress_services = Vec::new();
     let mut worker_failed = false;
     for listener_config in runtime_config.listener_runtime_configs() {
         if shutdown.load(Ordering::Relaxed) {
@@ -197,17 +198,13 @@ async fn run(
         }
 
         let worker_count = listener_config.performance.worker_threads.max(1);
-        let worker_index_base = allocate_worker_index_base(&listener_groups, worker_count);
-        match spawn_managed_listener_group(
-            listener_config,
-            Arc::clone(&shared_state),
-            Arc::clone(&runtime_bundle),
-            worker_index_base,
-        )
-        .await
+        let worker_index_base = allocate_worker_index_base(&ingress_services, worker_count);
+        match supervisor
+            .start_ingress_services(listener_config, worker_index_base)
+            .await
         {
             Ok(group) => {
-                listener_groups.push(group);
+                ingress_services.push(group);
             }
             Err(err) => {
                 error!("{}", err);
@@ -218,7 +215,7 @@ async fn run(
     }
 
     if !shutdown.load(Ordering::Relaxed) && !worker_failed {
-        log_listener_startup(&runtime_config, &listener_groups);
+        log_listener_startup(&runtime_config, &ingress_services);
         if let Err(err) = apply_privilege_drop(privilege_state, &runtime_config) {
             error!("{}", err);
             worker_failed = true;
@@ -226,12 +223,12 @@ async fn run(
     }
 
     while !shutdown.load(Ordering::Relaxed) && !worker_failed {
-        collect_finished_listener_groups(&mut listener_groups, &mut worker_failed).await;
+        collect_finished_listener_groups(&mut ingress_services, &mut worker_failed).await;
         if worker_failed {
             break;
         }
         supervisor
-            .reconcile_listener_groups(&mut listener_groups, &mut worker_failed)
+            .reconcile_listener_groups(&mut ingress_services, &mut worker_failed)
             .await;
 
         // Reflect a watchdog-requested drain in the runtime lifecycle: once the
@@ -258,8 +255,8 @@ async fn run(
     // Whether we exited via signal or a worker failure, the process is now
     // shutting down; ensure the lifecycle reflects it before draining workers.
     RuntimeSupervisor::begin_shutdown(&runtime_bundle);
-    shutdown_listener_groups(&mut listener_groups, &mut worker_failed).await;
-    RuntimeSupervisor::complete_shutdown(&runtime_bundle, Duration::from_secs(5));
+    shutdown_listener_groups(&mut ingress_services, &mut worker_failed).await;
+    operations.shutdown(Duration::from_secs(5));
 
     let panic_count = runtime_guard::panic_count();
     if panic_count > 0 {
