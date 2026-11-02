@@ -16,7 +16,7 @@ use super::{
 use crate::{
     edge_core::{
         request_completion::RequestCompletion,
-        request_execution::{EdgeRequestService, RequestExecutionInput, RequestExecutionState},
+        request_execution::{EdgeRequestService, RequestExecutionState},
     },
     quic_listener::admission::{
         AdmissionPolicyDecision, AdmissionRejectionResponse, admission_rejection_response,
@@ -488,7 +488,7 @@ impl QUICListener {
                 .and_then(|header| std::str::from_utf8(header.value()).ok())
                 .map(str::to_string)
         };
-        let request_input = RequestExecutionInput {
+        let request_input = impulse_http3_ingress::Http3RequestExecutionInput {
             method,
             path,
             authority,
@@ -500,48 +500,50 @@ impl QUICListener {
             shared_ctx.upstream_policies,
             resilience,
         );
-        let resolved = request_service
-            .execute(request_input)
-            .map_err(|error| {
-                let error = Self::request_resolution_error(path, error);
-                Self::observe_route_resolution_failure(
-                    &TargetResolutionRequest::new(
-                        method,
-                        path,
-                        authority,
-                        Some(sticky_cid_key),
-                        Some(&lb_header_lookup),
-                    ),
-                    &error,
-                    metrics,
-                    request_start.elapsed(),
-                );
-                error
+        let resolved = impulse_http3_ingress::Http3RequestService::execute_http3(
+            &request_service,
+            request_input,
+        )
+        .map_err(|error| {
+            let error = Self::request_resolution_error(path, error);
+            Self::observe_route_resolution_failure(
+                &TargetResolutionRequest::new(
+                    method,
+                    path,
+                    authority,
+                    Some(sticky_cid_key),
+                    Some(&lb_header_lookup),
+                ),
+                &error,
+                metrics,
+                request_start.elapsed(),
+            );
+            error
+        })
+        .and_then(|execution| {
+            let RequestExecutionState {
+                route,
+                policy,
+                admission,
+            } = execution;
+            Self::resolve_forwarding_target(ForwardTargetResolutionInput {
+                request: TargetResolutionRequest::new(
+                    method,
+                    path,
+                    authority,
+                    Some(sticky_cid_key),
+                    Some(&lb_header_lookup),
+                ),
+                route,
+                context: resolution_context,
+                observation: ResolutionObservation::new(metrics, request_start.elapsed()),
             })
-            .and_then(|execution| {
-                let RequestExecutionState {
-                    route,
-                    policy,
-                    admission,
-                } = execution;
-                Self::resolve_forwarding_target(ForwardTargetResolutionInput {
-                    request: TargetResolutionRequest::new(
-                        method,
-                        path,
-                        authority,
-                        Some(sticky_cid_key),
-                        Some(&lb_header_lookup),
-                    ),
-                    route,
-                    context: resolution_context,
-                    observation: ResolutionObservation::new(metrics, request_start.elapsed()),
-                })
-                .map(|target| RequestExecutionState {
-                    route: target,
-                    policy,
-                    admission,
-                })
-            });
+            .map(|target| RequestExecutionState {
+                route: target,
+                policy,
+                admission,
+            })
+        });
 
         let prepared = match resolved {
             Ok(RequestExecutionState {

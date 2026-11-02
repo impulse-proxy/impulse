@@ -55,3 +55,21 @@ impl<'a> EdgeRequestService<'a> {
         })
     }
 }
+
+impl impulse_http3_ingress::Http3RequestService for EdgeRequestService<'_> {
+    type Output = RequestExecutionState<super::ResolvedRouteTarget>;
+    type Error = super::RouteResolutionError;
+
+    fn execute_http3(
+        &self,
+        request: impulse_http3_ingress::Http3RequestExecutionInput<'_>,
+    ) -> Result<Self::Output, Self::Error> {
+        self.execute(RequestExecutionInput {
+            method: request.method,
+            path: request.path,
+            authority: request.authority,
+            peer_address: request.peer_address,
+            headers: request.headers,
+        })
+    }
+}
