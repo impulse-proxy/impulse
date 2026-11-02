@@ -357,8 +357,10 @@ impl QUICListener {
         }
 
         let request_mode = req.request_mode();
-        let websocket_h1_tunnel = req.tunnel_mode == TunnelMode::Websocket
-            && backend_endpoint.scheme() == BackendScheme::Http;
+        let websocket_h1_tunnel = impulse_http3_ingress::requires_h1_websocket_adaptation(
+            req.tunnel_mode,
+            backend_endpoint.scheme() == BackendScheme::Http,
+        );
         let (body_tx, websocket_tunnel_body_rx, request_body) = if request_mode.bodyless_mode() {
             (None, None, Some(BoxBody::new(Full::new(Bytes::new()))))
         } else if websocket_h1_tunnel {
@@ -602,13 +604,8 @@ impl QUICListener {
                     let authority = request.authority;
                     let content_length = request.content_length;
                     let websocket_tunnel = request.websocket_tunnel;
-                    let tunnel_mode = if websocket_tunnel {
-                        TunnelMode::Websocket
-                    } else if is_connect_method(&method) {
-                        TunnelMode::Connect
-                    } else {
-                        TunnelMode::None
-                    };
+                    let tunnel_mode =
+                        impulse_http3_ingress::classify_tunnel(&method, websocket_tunnel);
 
                     metrics.request_observations().inc_total();
                     let request_start = Instant::now();
@@ -773,9 +770,7 @@ impl QUICListener {
                                             buffered_bytes: 0,
                                             next_chunk_bytes: read,
                                             declared_content_length: None,
-                                            exempt_from_body_size_cap: is_connect_method(
-                                                &req.method,
-                                            ),
+                                            exempt_from_body_size_cap: req.tunnel_mode.is_tunnel(),
                                         },
                                     );
                                     match next_state {

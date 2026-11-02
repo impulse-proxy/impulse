@@ -199,25 +199,7 @@ impl PendingForward {
     }
 
     fn request_headers_for_http1_websocket_tunnel(&self) -> Cow<'_, [quiche::h3::Header]> {
-        let request_headers = self.request_headers_cow();
-        let has_upgrade = request_headers
-            .iter()
-            .any(|header| header.name().eq_ignore_ascii_case(b"upgrade"));
-        let has_connection = request_headers
-            .iter()
-            .any(|header| header.name().eq_ignore_ascii_case(b"connection"));
-        if has_upgrade && has_connection {
-            return request_headers;
-        }
-
-        let mut request_headers = request_headers.into_owned();
-        if !has_upgrade {
-            request_headers.push(quiche::h3::Header::new(b"upgrade", b"websocket"));
-        }
-        if !has_connection {
-            request_headers.push(quiche::h3::Header::new(b"connection", b"upgrade"));
-        }
-        Cow::Owned(request_headers)
+        impulse_http3_ingress::adapt_h1_websocket_headers(self.request_headers_cow())
     }
 
     #[cfg(test)]
@@ -335,7 +317,10 @@ impl PendingForward {
         impulse_bridge::request::build_h1_request(
             self.request_build_target(endpoint),
             self.request_build_input(
-                "GET",
+                impulse_http3_ingress::adapt_h1_websocket_method(
+                    TunnelMode::Websocket,
+                    &self.method,
+                ),
                 request_headers.as_ref(),
                 &[],
                 BoxBody::new(Full::new(Bytes::new())),

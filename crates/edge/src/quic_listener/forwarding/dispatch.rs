@@ -80,7 +80,7 @@ struct H3CacheLookupInput<'a> {
     pending_forward: &'a PendingForward,
     namespace: u64,
     has_body: bool,
-    is_tunnel: bool,
+    tunnel_mode: TunnelMode,
 }
 
 struct H3CacheMiss {
@@ -146,7 +146,7 @@ impl QUICListener {
             pending_forward,
             namespace,
             has_body,
-            is_tunnel,
+            tunnel_mode,
         } = input;
         let bypass = || {
             metrics
@@ -163,6 +163,7 @@ impl QUICListener {
                 headers.append(name, value);
             }
         }
+        let (is_upgrade, is_tunnel) = impulse_http3_ingress::tunnel_cache_flags(tunnel_mode);
         let Ok(representation) =
             evaluate_cache_request_eligibility(ResponseCacheRequestEligibilityInput {
                 policy: crate::runtime::subsystem_mapping::response_cache_policy_input(&policy),
@@ -170,7 +171,7 @@ impl QUICListener {
                 method: pending_forward.method.as_ref(),
                 headers: &headers,
                 has_body,
-                is_upgrade: is_tunnel && !pending_forward.method.eq_ignore_ascii_case("CONNECT"),
+                is_upgrade,
                 is_tunnel,
             })
         else {
@@ -358,7 +359,8 @@ impl QUICListener {
             Self::send_upstream_request(backend.as_ref(), request, circuit_breakers, executor)
                 .await?;
 
-        if response.head.status != StatusCode::SWITCHING_PROTOCOLS {
+        let upstream_status = response.head.status;
+        if upstream_status != StatusCode::SWITCHING_PROTOCOLS {
             return Ok(ForwardSuccess::Response {
                 status: response.head.status,
                 headers: response.head.headers,
@@ -426,7 +428,7 @@ impl QUICListener {
         let _ = spawn_async_task(fut, "ws-h1-tunnel");
 
         Ok(ForwardSuccess::Tunnel {
-            status: StatusCode::OK,
+            status: impulse_http3_ingress::downstream_tunnel_status(mode, upstream_status),
             headers,
             response_chunk_rx: chunk_rx,
         })
@@ -606,7 +608,7 @@ impl QUICListener {
         let hedge_method_allowed = resilience.hedging_method_allowed(&req.method);
         let hedge_configured =
             resilience.hedging_route_enabled_for(pending_forward.upstream_name.as_ref());
-        let hedge_tunnel_request = req.tunnel_mode != TunnelMode::None;
+        let hedge_tunnel_request = req.tunnel_mode.is_tunnel();
         let needs_alternate_before_primary =
             hedge_configured && hedge_method_allowed && bodyless_mode && !hedge_tunnel_request;
         let policy = RetryCoordinator::new(
@@ -660,7 +662,7 @@ impl QUICListener {
                         pending_forward: pending_forward.as_ref(),
                         namespace: response_cache_namespace,
                         has_body: !bodyless_mode,
-                        is_tunnel: tunnel_mode != TunnelMode::None,
+                        tunnel_mode,
                     })
                     .await
                     {
@@ -673,9 +675,11 @@ impl QUICListener {
                 };
                 retry_budget.mark_primary(route_name);
 
-                let forward_success: ForwardSuccess = if tunnel_mode == TunnelMode::Websocket
-                    && backend_endpoint.scheme() == BackendScheme::Http
-                {
+                let h1_websocket = impulse_http3_ingress::requires_h1_websocket_adaptation(
+                    tunnel_mode,
+                    backend_endpoint.scheme() == BackendScheme::Http,
+                );
+                let forward_success: ForwardSuccess = if h1_websocket {
                     let Some(body_rx) = websocket_tunnel_body_rx else {
                         return Err(ProxyError::Transport(
                             "websocket H1 tunnels require a downstream body channel".into(),

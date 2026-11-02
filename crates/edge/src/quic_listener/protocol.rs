@@ -55,10 +55,6 @@ pub(in crate::quic_listener) fn collect_h3_trailers(
     .collect()
 }
 
-pub(in crate::quic_listener) fn is_connect_method(method: &str) -> bool {
-    method.eq_ignore_ascii_case("CONNECT")
-}
-
 #[cfg(test)]
 pub(in crate::quic_listener) fn is_head_method(method: &str) -> bool {
     method.eq_ignore_ascii_case("HEAD")
@@ -73,24 +69,13 @@ pub(in crate::quic_listener) fn is_bodyless_request_mode(
         && (method.eq_ignore_ascii_case("GET") || is_head_method(method))
 }
 
-pub(in crate::quic_listener) fn is_tunnel_mode(tunnel_mode: TunnelMode) -> bool {
-    tunnel_mode.is_tunnel()
-}
-
-pub(in crate::quic_listener) fn is_tunnel_response(
-    tunnel_mode: TunnelMode,
-    method: &str,
-    status: StatusCode,
-) -> bool {
-    tunnel_mode.established_by(method, status)
-}
-
 #[cfg(test)]
 pub(in crate::quic_listener) fn is_connect_tunnel_response(
     method: &str,
     status: StatusCode,
 ) -> bool {
-    is_connect_method(method) && status.is_success()
+    impulse_http3_ingress::classify_tunnel(method, false) == TunnelMode::Connect
+        && status.is_success()
 }
 
 pub(in crate::quic_listener) fn can_poll_upstream_result(req: &RequestEnvelope) -> bool {
