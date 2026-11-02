@@ -1,4 +1,5 @@
 use std::{
+    any::Any,
     collections::HashMap,
     sync::{Arc, atomic::Ordering},
     thread,
@@ -6,7 +7,9 @@ use std::{
 };
 
 use impulse_config::runtime::{ListenerRuntimeConfig, RuntimeConfig};
-use impulse_edge::runtime::{
+use log::{error, info};
+
+use crate::runtime::{
     bundle::RuntimeBundleHandle,
     ingress::{
         ListenerWorkerGroupConfig, ListenerWorkerRuntimeState, PingoraListenerTask,
@@ -15,15 +18,12 @@ use impulse_edge::runtime::{
     listener::ShutdownSignal,
     shared_state::SharedRuntimeState,
 };
-use log::{error, info};
-
-use crate::runtime_guard;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ListenerGroupSignature {
-    pub(crate) label: String,
+struct ListenerGroupSignature {
+    label: String,
     listener_index: usize,
-    pub(crate) worker_count: usize,
+    worker_count: usize,
     shard_count: usize,
     shard_queue_capacity: usize,
     shard_queue_max_bytes: usize,
@@ -36,9 +36,9 @@ pub(crate) struct ListenerGroupSignature {
     client_auth_ca_file: Option<String>,
 }
 
-pub(crate) struct ListenerGroupRuntime {
-    pub(crate) signature: ListenerGroupSignature,
-    pub(crate) shutdown: ShutdownSignal,
+pub struct ListenerGroupRuntime {
+    signature: ListenerGroupSignature,
+    shutdown: ShutdownSignal,
     worker_handles: Vec<thread::JoinHandle<Result<(), String>>>,
     pingora_listener: PingoraListenerTask,
     worker_index_base: usize,
@@ -121,7 +121,7 @@ impl ListenerGroupRuntime {
     }
 }
 
-pub(crate) async fn shutdown_listener_groups(
+pub async fn shutdown_listener_groups(
     listener_groups: &mut Vec<ListenerGroupRuntime>,
     worker_failed: &mut bool,
 ) {
@@ -142,14 +142,14 @@ pub(crate) async fn shutdown_listener_groups(
     }
 }
 
-pub(crate) fn listener_label(config: &ListenerRuntimeConfig) -> String {
+fn listener_label(config: &ListenerRuntimeConfig) -> String {
     format!(
         "{}:{}",
         config.listen.listen.address, config.listen.listen.port
     )
 }
 
-pub(crate) fn listener_group_signature(config: &ListenerRuntimeConfig) -> ListenerGroupSignature {
+fn listener_group_signature(config: &ListenerRuntimeConfig) -> ListenerGroupSignature {
     ListenerGroupSignature {
         label: listener_label(config),
         listener_index: config.listen.index,
@@ -167,7 +167,7 @@ pub(crate) fn listener_group_signature(config: &ListenerRuntimeConfig) -> Listen
     }
 }
 
-pub(crate) async fn spawn_managed_listener_group(
+pub async fn spawn_managed_listener_group(
     listener_config: ListenerRuntimeConfig,
     worker_shared: Arc<SharedRuntimeState>,
     runtime_bundle: Arc<RuntimeBundleHandle>,
@@ -214,10 +214,7 @@ pub(crate) async fn spawn_managed_listener_group(
 /// does not overlap any live group's range. Ranges freed when groups retire are
 /// reused, so indices stay bounded across reloads instead of growing without
 /// limit (which would push worker/metrics slots past the metrics capacity).
-pub(crate) fn allocate_worker_index_base(
-    groups: &[ListenerGroupRuntime],
-    worker_count: usize,
-) -> usize {
+pub fn allocate_worker_index_base(groups: &[ListenerGroupRuntime], worker_count: usize) -> usize {
     let mut ranges: Vec<(usize, usize)> = groups
         .iter()
         .map(|g| {
@@ -239,7 +236,7 @@ pub(crate) fn allocate_worker_index_base(
     base
 }
 
-pub(crate) async fn reconcile_listener_groups(
+pub(super) async fn reconcile_listener_groups(
     runtime_bundle: &Arc<RuntimeBundleHandle>,
     groups: &mut Vec<ListenerGroupRuntime>,
     worker_failed: &mut bool,
@@ -378,7 +375,7 @@ pub(crate) async fn reconcile_listener_groups(
     }
 }
 
-pub(crate) async fn collect_finished_listener_groups(
+pub async fn collect_finished_listener_groups(
     groups: &mut Vec<ListenerGroupRuntime>,
     worker_failed: &mut bool,
 ) {
@@ -405,13 +402,13 @@ fn join_worker_handle(handle: thread::JoinHandle<Result<(), String>>, worker_fai
             *worker_failed = true;
             error!(
                 "Worker thread panicked: {}",
-                runtime_guard::panic_payload_message(payload.as_ref())
+                panic_payload_message(payload.as_ref())
             );
         }
     }
 }
 
-pub(crate) fn log_listener_startup(
+pub fn log_listener_startup(
     runtime_config: &RuntimeConfig,
     listener_groups: &[ListenerGroupRuntime],
 ) {
@@ -454,11 +451,21 @@ fn group_signature_worker_count(group: &ListenerGroupRuntime) -> usize {
     group.signature.worker_count
 }
 
+fn panic_payload_message(payload: &(dyn Any + Send + 'static)) -> String {
+    if let Some(message) = payload.downcast_ref::<&str>() {
+        return (*message).to_string();
+    }
+    if let Some(message) = payload.downcast_ref::<String>() {
+        return message.clone();
+    }
+    "non-string panic payload".to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use std::{net::SocketAddr, sync::atomic::AtomicUsize};
 
-    use impulse_edge::runtime::ingress::{
+    use crate::runtime::ingress::{
         release_shard_queue_bytes, shard_index_for_peer, try_reserve_shard_queue_bytes,
     };
 

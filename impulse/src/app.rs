@@ -11,18 +11,16 @@ use clap::Parser;
 use impulse_config::{runtime::RuntimeConfig, validator::validate as validate_config};
 use impulse_edge::runtime::{
     ingress::configure_async_runtime,
+    listener_group::{
+        allocate_worker_index_base, collect_finished_listener_groups, log_listener_startup,
+        shutdown_listener_groups, spawn_managed_listener_group,
+    },
     privilege_drop::{apply_process_privilege_drop, current_process_privilege_state},
     supervisor::RuntimeSupervisor,
 };
 use log::{error, info, warn};
 
-use crate::{
-    listener_group::{
-        allocate_worker_index_base, collect_finished_listener_groups, log_listener_startup,
-        reconcile_listener_groups, shutdown_listener_groups, spawn_managed_listener_group,
-    },
-    runtime_guard,
-};
+use crate::runtime_guard;
 
 #[derive(Parser)]
 #[command(
@@ -232,7 +230,9 @@ async fn run(
         if worker_failed {
             break;
         }
-        reconcile_listener_groups(&runtime_bundle, &mut listener_groups, &mut worker_failed).await;
+        supervisor
+            .reconcile_listener_groups(&mut listener_groups, &mut worker_failed)
+            .await;
 
         // Reflect a watchdog-requested drain in the runtime lifecycle: once the
         // watchdog asks for a restart, workers begin draining, so move the process

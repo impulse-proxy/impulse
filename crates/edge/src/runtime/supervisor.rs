@@ -10,6 +10,7 @@ use crate::runtime::{
     },
     bundle::RuntimeBundleHandle,
     listener::Http3Service,
+    listener_group::{ListenerGroupRuntime, reconcile_listener_groups},
     shared_state::SharedRuntimeState,
 };
 
@@ -46,6 +47,14 @@ impl RuntimeSupervisor {
 
     pub fn shared_state(&self) -> Arc<SharedRuntimeState> {
         Arc::clone(&self.shared_state)
+    }
+
+    pub async fn reconcile_listener_groups(
+        &self,
+        groups: &mut Vec<ListenerGroupRuntime>,
+        worker_failed: &mut bool,
+    ) {
+        reconcile_listener_groups(&self.runtime, groups, worker_failed).await;
     }
 
     pub(crate) fn validate_reload(
