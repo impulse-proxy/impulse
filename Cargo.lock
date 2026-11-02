@@ -1611,6 +1611,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "impulse-operations"
+version = "0.6.0"
+
+[[package]]
 name = "impulse-pingora-ingress"
 version = "0.6.0"
 dependencies = [
