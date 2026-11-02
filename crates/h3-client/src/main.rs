@@ -5,13 +5,18 @@ use std::{
 };
 
 use clap::Parser;
-use impulse_edge::{
-    MAX_DATAGRAM_SIZE_BYTES, MAX_UDP_PAYLOAD_BYTES, QUIC_IDLE_TIMEOUT_MS, QUIC_INITIAL_MAX_DATA,
-    QUIC_INITIAL_MAX_STREAMS_BIDI, QUIC_INITIAL_MAX_STREAMS_UNI, QUIC_INITIAL_STREAM_DATA,
-    REQUEST_TIMEOUT_SECS, UDP_READ_TIMEOUT_MS,
-};
 use quiche::h3::NameValue;
 use rand::RngCore;
+
+const MAX_DATAGRAM_SIZE_BYTES: usize = 65_535;
+const MAX_UDP_PAYLOAD_BYTES: usize = 1_350;
+const UDP_READ_TIMEOUT_MS: u64 = 50;
+const REQUEST_TIMEOUT_SECS: u64 = 5;
+const QUIC_IDLE_TIMEOUT_MS: u64 = 5_000;
+const QUIC_INITIAL_MAX_DATA: u64 = 10_000_000;
+const QUIC_INITIAL_STREAM_DATA: u64 = 1_000_000;
+const QUIC_INITIAL_MAX_STREAMS_BIDI: u64 = 100;
+const QUIC_INITIAL_MAX_STREAMS_UNI: u64 = 100;
 
 #[derive(Parser)]
 #[command(version, about = "Minimal HTTP/3 client using quiche")]

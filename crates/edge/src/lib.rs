@@ -36,3 +36,4 @@ pub use observability::{
     MetricReasonLabels, OperationalEventContext, RequestOutcomeReason, RetryDecisionReason,
     backend_health_reason,
 };
+pub use runtime::supervisor::RuntimeSupervisor;

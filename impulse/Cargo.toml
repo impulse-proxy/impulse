@@ -12,9 +12,11 @@ path = "src/main.rs"
 clap.workspace = true
 log.workspace = true
 tokio.workspace = true
-quiche.workspace = true
-rand.workspace = true
+libc.workspace = true
 
 impulse-config = { path = "../crates/config" }
 impulse-edge = { path = "../crates/edge" }
 impulse-utils = { path = "../crates/utils" }
+
+[dev-dependencies]
+serde_yaml.workspace = true

@@ -7,6 +7,7 @@ members = [
     "crates/observability",
     "crates/operations",
     "crates/http3-ingress",
+    "crates/h3-client",
     "crates/pingora-ingress",
     "crates/config",
     "crates/utils",

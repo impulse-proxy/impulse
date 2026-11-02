@@ -114,7 +114,7 @@ pub(crate) use admission::{
     AdmissionPolicyDecision, admission_rejection_response,
     evaluate_forwarding_pre_admission_policy, evaluate_post_auth_quota_policy,
 };
-pub use async_runtime::configure_async_runtime;
+pub(crate) use async_runtime::configure_async_runtime;
 pub(in crate::quic_listener) use async_runtime::{runtime_handle, spawn_async_task};
 use connection::maybe_log_quic_connection_error;
 #[cfg(test)]

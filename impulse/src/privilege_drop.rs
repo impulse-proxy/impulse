@@ -1,34 +1,31 @@
+//! Process-owned privilege inspection and dropping.
+
 use impulse_config::runtime::RuntimeConfig;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PrivilegeDropTarget {
-    pub user: String,
-    pub group: String,
+pub(crate) struct PrivilegeDropTarget {
+    pub(crate) user: String,
+    pub(crate) group: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ProcessPrivilegeState {
-    pub real_uid: libc::uid_t,
-    pub effective_uid: libc::uid_t,
-    pub has_net_bind_service_capability: bool,
+pub(crate) struct ProcessPrivilegeState {
+    effective_uid: libc::uid_t,
+    has_net_bind_service_capability: bool,
 }
 
 impl ProcessPrivilegeState {
-    pub fn can_bind_privileged_ports(self) -> bool {
+    pub(crate) fn can_bind_privileged_ports(self) -> bool {
         self.effective_uid == 0 || self.has_net_bind_service_capability
     }
 
-    pub fn can_drop_privileges(self) -> bool {
+    fn can_drop_privileges(self) -> bool {
         self.effective_uid == 0
     }
 }
 
-pub fn current_process_privilege_state() -> ProcessPrivilegeState {
+pub(crate) fn current_process_privilege_state() -> ProcessPrivilegeState {
     ProcessPrivilegeState {
-        real_uid: unsafe {
-            // SAFETY: simple libc getter.
-            libc::getuid()
-        },
         effective_uid: unsafe {
             // SAFETY: simple libc getter.
             libc::geteuid()
@@ -37,7 +34,7 @@ pub fn current_process_privilege_state() -> ProcessPrivilegeState {
     }
 }
 
-pub fn apply_process_privilege_drop(
+pub(crate) fn apply_process_privilege_drop(
     startup_privileges: ProcessPrivilegeState,
     runtime_config: &RuntimeConfig,
 ) -> Result<Option<PrivilegeDropTarget>, String> {
@@ -256,9 +253,8 @@ upstream:
         RuntimeConfig::from_config(&config).expect("runtime config")
     }
 
-    fn privilege_state(real_uid: libc::uid_t, effective_uid: libc::uid_t) -> ProcessPrivilegeState {
+    fn privilege_state(effective_uid: libc::uid_t) -> ProcessPrivilegeState {
         ProcessPrivilegeState {
-            real_uid,
             effective_uid,
             has_net_bind_service_capability: false,
         }
@@ -267,8 +263,8 @@ upstream:
     #[test]
     fn skips_drop_when_startup_is_not_root() {
         let runtime_config = minimal_runtime_config();
-        let result = apply_process_privilege_drop(privilege_state(1000, 1000), &runtime_config)
-            .expect("no-op");
+        let result =
+            apply_process_privilege_drop(privilege_state(1000), &runtime_config).expect("no-op");
         assert!(result.is_none());
     }
 
@@ -278,7 +274,7 @@ upstream:
         runtime_config.security.privileges.user = format!("missing-user-{}", std::process::id());
         runtime_config.security.privileges.group = format!("missing-group-{}", std::process::id());
 
-        let result = apply_process_privilege_drop(privilege_state(1000, 0), &runtime_config);
+        let result = apply_process_privilege_drop(privilege_state(0), &runtime_config);
         assert!(result.is_err());
     }
 
@@ -288,7 +284,7 @@ upstream:
         runtime_config.security.privileges.enabled = false;
 
         let result =
-            apply_process_privilege_drop(privilege_state(0, 0), &runtime_config).expect("no-op");
+            apply_process_privilege_drop(privilege_state(0), &runtime_config).expect("no-op");
         assert!(result.is_none());
     }
 
@@ -299,13 +295,13 @@ upstream:
         runtime_config.security.privileges.user = "nobody".to_string();
         runtime_config.security.privileges.group = format!("missing-group-{}", std::process::id());
 
-        let result = apply_process_privilege_drop(privilege_state(0, 0), &runtime_config);
+        let result = apply_process_privilege_drop(privilege_state(0), &runtime_config);
         assert!(result.is_err());
 
         runtime_config.security.privileges.user = format!("missing-user-{}", std::process::id());
         runtime_config.security.privileges.group = "nogroup".to_string();
 
-        let result = apply_process_privilege_drop(privilege_state(0, 0), &runtime_config);
+        let result = apply_process_privilege_drop(privilege_state(0), &runtime_config);
         assert!(result.is_err());
     }
 

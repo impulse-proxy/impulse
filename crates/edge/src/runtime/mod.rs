@@ -16,7 +16,6 @@ pub mod listener;
 pub(crate) mod listener_group;
 pub(crate) mod operations;
 pub mod policy;
-pub mod privilege_drop;
 pub mod shared_state;
 pub(crate) mod subsystem_mapping;
 pub mod supervisor;

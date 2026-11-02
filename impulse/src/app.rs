@@ -8,14 +8,15 @@ use std::{
 
 use clap::Parser;
 use impulse_config::{runtime::RuntimeConfig, validator::validate as validate_config};
-use impulse_edge::runtime::{
-    ingress::configure_async_runtime,
-    privilege_drop::{apply_process_privilege_drop, current_process_privilege_state},
-    supervisor::RuntimeSupervisor,
-};
+use impulse_edge::RuntimeSupervisor;
 use log::{error, info, warn};
 
-use crate::runtime_guard;
+use crate::{
+    privilege_drop::{
+        ProcessPrivilegeState, apply_process_privilege_drop, current_process_privilege_state,
+    },
+    runtime_guard,
+};
 
 #[derive(Parser)]
 #[command(
@@ -97,7 +98,7 @@ pub(crate) fn main_entry() {
     }
 
     let control_plane_threads = runtime_config.performance.control_plane_threads.max(1);
-    configure_async_runtime(control_plane_threads);
+    RuntimeSupervisor::configure_async_runtime(control_plane_threads);
 
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -131,7 +132,7 @@ async fn run(
     runtime_config: RuntimeConfig,
     log_config: impulse_config::config::Log,
     tracing_config: impulse_config::config::Tracing,
-    privilege_state: impulse_edge::runtime::privilege_drop::ProcessPrivilegeState,
+    privilege_state: ProcessPrivilegeState,
     config_path: String,
 ) {
     // Must happen inside the runtime: the OTLP tonic exporter spawns a task on
@@ -250,7 +251,7 @@ fn fatal_startup_error(message: &str, logger_ready: bool, exit_code: i32) -> ! {
 }
 
 fn apply_privilege_drop(
-    privilege_state: impulse_edge::runtime::privilege_drop::ProcessPrivilegeState,
+    privilege_state: ProcessPrivilegeState,
     runtime_config: &RuntimeConfig,
 ) -> Result<(), String> {
     match apply_process_privilege_drop(privilege_state, runtime_config) {

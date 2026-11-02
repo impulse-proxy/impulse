@@ -1467,9 +1467,9 @@ dependencies = [
  "impulse-config",
  "impulse-edge",
  "impulse-utils",
+ "libc",
  "log",
- "quiche",
- "rand",
+ "serde_yaml",
  "tokio",
 ]
 
@@ -1543,7 +1543,6 @@ dependencies = [
  "impulse-runtime",
  "impulse-transport",
  "impulse-utils",
- "libc",
  "log",
  "pingora-cache",
  "pingora-core",
@@ -1574,6 +1573,15 @@ dependencies = [
  "http",
  "impulse-contracts",
  "thiserror 1.0.69",
+]
+
+[[package]]
+name = "impulse-h3-client"
+version = "0.6.0"
+dependencies = [
+ "clap",
+ "quiche",
+ "rand",
 ]
 
 [[package]]

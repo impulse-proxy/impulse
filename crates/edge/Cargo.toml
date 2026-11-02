@@ -41,7 +41,6 @@ tokio-rustls.workspace = true
 rustls.workspace = true
 rustls-pki-types.workspace = true
 x509-parser = "0.16"
-libc.workspace = true
 smallvec.workspace = true
 pingora-cache.workspace = true
 pingora-core.workspace = true

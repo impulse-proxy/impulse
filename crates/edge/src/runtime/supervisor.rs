@@ -64,6 +64,10 @@ pub struct RuntimeSupervisor {
 }
 
 impl RuntimeSupervisor {
+    pub fn configure_async_runtime(worker_threads: usize) {
+        crate::quic_listener::configure_async_runtime(worker_threads);
+    }
+
     pub fn start(
         config_path: String,
         log_config: Log,
