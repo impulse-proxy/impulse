@@ -1,3 +1,5 @@
+//! Normalized watchdog policy used by operational coordination.
+
 use impulse_config::{config::Watchdog as WatchdogConfig, runtime::RuntimeWatchdogPolicy};
 
 #[derive(Debug, Clone)]

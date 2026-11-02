@@ -1153,7 +1153,7 @@ fn runtime_history_records_activate_fail_and_rollback_flow() {
 // Domain: watchdog service state transitions and restart environment handling.
 #[test]
 fn watchdog_restart_env_keeps_path_when_present() {
-    let env = crate::watchdog::service::watchdog_restart_env(
+    let env = crate::runtime::watchdog::service::watchdog_restart_env(
         Some(OsString::from("/usr/bin:/bin")),
         "timeout_spike",
     );
@@ -1171,7 +1171,7 @@ fn watchdog_restart_env_keeps_path_when_present() {
 
 #[test]
 fn watchdog_restart_env_omits_path_when_missing() {
-    let env = crate::watchdog::service::watchdog_restart_env(None, "poll_stall");
+    let env = crate::runtime::watchdog::service::watchdog_restart_env(None, "poll_stall");
     let map: HashMap<OsString, OsString> = env.into_iter().collect();
 
     assert!(!map.contains_key(&OsString::from("PATH")));

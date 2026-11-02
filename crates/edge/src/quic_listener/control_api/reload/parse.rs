@@ -135,7 +135,7 @@ impl Http3Service {
                 .clone()
                 .or_else(|| Some(default_reason.to_string())),
             expected_generation: payload.expected_generation.or(Some(current_generation)),
-            requested_at_ms: crate::watchdog::time::now_millis(),
+            requested_at_ms: impulse_operations::watchdog::now_millis(),
         }
     }
 

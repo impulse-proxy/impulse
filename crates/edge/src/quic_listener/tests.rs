@@ -19,6 +19,7 @@ use impulse_errors::{
     UpstreamErrorCategory, UpstreamErrorClassification, UpstreamTlsReason,
     classify_upstream_error_detail,
 };
+use impulse_operations::watchdog::WatchdogRuntimeConfig;
 use rcgen::{Certificate, CertificateParams, SanType};
 use tempfile::tempdir;
 
@@ -45,7 +46,6 @@ use crate::{
             StreamAdmissionState, StreamPhase, TerminalReason, TimeoutReason, TunnelMode,
         },
     },
-    watchdog::config::WatchdogRuntimeConfig,
 };
 type RoutingMaps = (
     HashMap<Arc<[u8]>, Arc<[u8]>>,

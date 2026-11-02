@@ -1,8 +1,9 @@
 use std::{ffi::OsString, path::Path, sync::atomic::Ordering, time::Duration};
 
+use impulse_operations::watchdog::now_millis;
 use log::{info, warn};
 
-use crate::watchdog::{state::WatchdogServiceState, time::now_millis};
+use super::state::WatchdogServiceState;
 
 pub(crate) fn watchdog_restart_env(
     path: Option<OsString>,
@@ -207,14 +208,13 @@ mod tests {
     };
 
     use impulse_config::config::Resilience as ResilienceConfig;
+    use impulse_operations::watchdog::{WatchdogCoordinator, WatchdogRuntimeConfig};
 
     use super::*;
-    use crate::{
-        Metrics, resilience::runtime::RuntimeResilience, watchdog::coordinator::WatchdogCoordinator,
-    };
+    use crate::{Metrics, resilience::runtime::RuntimeResilience};
 
-    fn test_watchdog_config() -> crate::watchdog::config::WatchdogRuntimeConfig {
-        crate::watchdog::config::WatchdogRuntimeConfig {
+    fn test_watchdog_config() -> WatchdogRuntimeConfig {
+        WatchdogRuntimeConfig {
             enabled: true,
             check_interval_ms: 5,
             poll_stall_timeout_ms: 60_000,
@@ -240,7 +240,7 @@ mod tests {
     }
 
     fn test_service_state(
-        config: crate::watchdog::config::WatchdogRuntimeConfig,
+        config: WatchdogRuntimeConfig,
     ) -> (
         WatchdogServiceState,
         Arc<Metrics>,

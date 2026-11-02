@@ -5,6 +5,7 @@ use impulse_errors::ProxyError;
 use impulse_lb::{
     pingora_backend::SharedPingoraLoadBalancingRuntimeState, upstream_pool::UpstreamPool,
 };
+use impulse_operations::watchdog::WatchdogCoordinator;
 use impulse_transport::{SharedDnsResolver, UpstreamTransportPool};
 
 use crate::{
@@ -19,7 +20,6 @@ use crate::{
         tasks::RuntimeTaskRegistry,
         tls::store::ListenerTlsReloadStore,
     },
-    watchdog::coordinator::WatchdogCoordinator,
 };
 
 #[derive(Clone)]

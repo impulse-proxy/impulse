@@ -47,7 +47,7 @@ fn record_history_event(
 }
 
 fn validation_history_entry(plan: &ReloadPlan) -> GenerationHistoryEntry {
-    let completed_at_ms = crate::watchdog::time::now_millis();
+    let completed_at_ms = impulse_operations::watchdog::now_millis();
     let status = if plan
         .validation
         .iter()
@@ -74,7 +74,7 @@ fn validation_history_entry(plan: &ReloadPlan) -> GenerationHistoryEntry {
 }
 
 fn preview_history_entry(plan: &ReloadPlan) -> GenerationHistoryEntry {
-    let completed_at_ms = crate::watchdog::time::now_millis();
+    let completed_at_ms = impulse_operations::watchdog::now_millis();
     GenerationHistoryEntry {
         generation: plan.candidate_generation,
         operation: GenerationOperation::Preview,
@@ -107,7 +107,7 @@ pub(super) fn successful_rollback_result(
     config_version: Option<u32>,
     diff: ReloadDiff,
 ) -> RollbackResult {
-    let completed_at_ms = crate::watchdog::time::now_millis();
+    let completed_at_ms = impulse_operations::watchdog::now_millis();
     let history_entry = GenerationHistoryEntry {
         generation,
         operation: GenerationOperation::Rollback,
@@ -137,7 +137,7 @@ pub(super) fn successful_rollback_result(
 }
 
 pub(super) fn rejected_rollback_result(input: RejectedRollbackResultInput) -> RollbackResult {
-    let completed_at_ms = crate::watchdog::time::now_millis();
+    let completed_at_ms = impulse_operations::watchdog::now_millis();
     let history_entry = GenerationHistoryEntry {
         generation: input
             .target_generation
@@ -185,7 +185,7 @@ pub(super) fn failed_rollback_result(
         active_generation_changed: false,
         message: error.clone(),
     }];
-    let completed_at_ms = crate::watchdog::time::now_millis();
+    let completed_at_ms = impulse_operations::watchdog::now_millis();
     let history_entry = GenerationHistoryEntry {
         generation: active_generation.saturating_add(1),
         operation: GenerationOperation::Rollback,
@@ -223,7 +223,7 @@ pub(super) fn successful_activation_result(
     previous_log_level: String,
     active_log_level: String,
 ) -> ActivationResult {
-    let completed_at_ms = crate::watchdog::time::now_millis();
+    let completed_at_ms = impulse_operations::watchdog::now_millis();
     let history_entry = GenerationHistoryEntry {
         generation,
         operation: GenerationOperation::Activate,
@@ -265,7 +265,7 @@ fn activation_summary_suffix(diff: &ReloadDiff) -> &'static str {
 }
 
 pub(super) fn rejected_activation_result(input: RejectedActivationResultInput) -> ActivationResult {
-    let completed_at_ms = crate::watchdog::time::now_millis();
+    let completed_at_ms = impulse_operations::watchdog::now_millis();
     let history_entry = GenerationHistoryEntry {
         generation: input.candidate_generation,
         operation: GenerationOperation::Activate,
@@ -311,7 +311,7 @@ pub(super) fn failed_activation_result(
         active_generation_changed: false,
         message: error.clone(),
     }];
-    let completed_at_ms = crate::watchdog::time::now_millis();
+    let completed_at_ms = impulse_operations::watchdog::now_millis();
     let history_entry = GenerationHistoryEntry {
         generation: candidate_generation,
         operation: GenerationOperation::Activate,

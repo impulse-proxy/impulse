@@ -105,7 +105,7 @@ impl Http3Service {
                     .reason
                     .or_else(|| Some("runtime_rollback".to_string())),
                 expected_active_generation: payload.expected_active_generation,
-                requested_at_ms: crate::watchdog::time::now_millis(),
+                requested_at_ms: impulse_operations::watchdog::now_millis(),
             };
             move || RuntimeSupervisor::rollback_generation(&runtime_bundle_handle, request)
         })

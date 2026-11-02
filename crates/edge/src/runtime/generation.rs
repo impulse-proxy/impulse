@@ -9,6 +9,7 @@ use impulse_config::{
     },
 };
 use impulse_lb::pingora_backend::SharedPingoraLoadBalancingRuntimeState;
+use impulse_operations::watchdog::WatchdogCoordinator;
 use impulse_transport::{SharedDnsResolver, UpstreamTransportPool};
 use tokio::sync::Semaphore;
 
@@ -22,7 +23,6 @@ use crate::{
         tasks::RuntimeTaskRegistry,
         tls::store::ListenerTlsReloadStore,
     },
-    watchdog::coordinator::WatchdogCoordinator,
 };
 
 /// Startup-owned runtime state.

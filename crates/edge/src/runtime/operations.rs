@@ -1,6 +1,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use impulse_config::runtime::{ListenerRuntimeConfig, RuntimeConfig};
+use impulse_operations::watchdog::WatchdogCoordinator;
 
 use crate::{
     Metrics,
@@ -9,7 +10,6 @@ use crate::{
         backend::state::BackendLifecycleInventorySnapshot, bundle::ActiveRuntimeGeneration,
         tls::store::ListenerTlsReloadStore,
     },
-    watchdog::coordinator::WatchdogCoordinator,
 };
 
 #[derive(Clone)]

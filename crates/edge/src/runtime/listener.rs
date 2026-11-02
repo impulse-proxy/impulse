@@ -11,6 +11,7 @@ use impulse_config::{
 };
 pub use impulse_http3_ingress::ShutdownSignal;
 use impulse_lb::pingora_backend::SharedPingoraLoadBalancingRuntimeState;
+use impulse_operations::watchdog::WatchdogCoordinator;
 use impulse_transport::{SharedDnsResolver, UpstreamTransportPool};
 use tokio::sync::Semaphore;
 
@@ -24,7 +25,6 @@ use crate::{
         bundle::RuntimeBundleHandle, connection::quic::QuicConnection,
         tls::store::ListenerTlsReloadStore,
     },
-    watchdog::coordinator::WatchdogCoordinator,
 };
 
 /// Live listener worker state for the edge data plane.

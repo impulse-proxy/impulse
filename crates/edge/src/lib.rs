@@ -19,7 +19,6 @@ mod pingora_ingress;
 mod quic_listener;
 pub mod resilience;
 pub mod runtime;
-pub mod watchdog;
 
 pub(crate) use body::ChannelBody;
 pub use constants::{

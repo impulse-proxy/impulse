@@ -7,6 +7,7 @@
 pub mod administrative;
 mod control_api;
 mod metrics;
+pub mod watchdog;
 
 pub use control_api::{
     ConnectionSlotGuard, ControlApiConnectionError, ControlApiConnectionService,

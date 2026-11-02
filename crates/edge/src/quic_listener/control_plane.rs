@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use impulse_config::runtime::RuntimeConfig;
 use impulse_errors::ProxyError;
+use impulse_operations::watchdog::{WatchdogCoordinator, WatchdogRuntimeConfig};
 use log::error;
 
 use super::{
@@ -20,11 +21,10 @@ use crate::{
         },
         bundle::RuntimeBundleHandle,
         shared_state::SharedRuntimeState,
-    },
-    watchdog::{
-        config::WatchdogRuntimeConfig,
-        service::run_watchdog_service,
-        state::{WatchdogServiceState, WatchdogSpawnState},
+        watchdog::{
+            service::run_watchdog_service,
+            state::{WatchdogServiceState, WatchdogSpawnState},
+        },
     },
 };
 
@@ -124,10 +124,7 @@ impl Http3Service {
         });
     }
 
-    fn configure_expected_workers(
-        watchdog: &crate::watchdog::coordinator::WatchdogCoordinator,
-        worker_count: usize,
-    ) {
+    fn configure_expected_workers(watchdog: &WatchdogCoordinator, worker_count: usize) {
         watchdog.set_expected_workers(worker_count.max(1));
     }
 

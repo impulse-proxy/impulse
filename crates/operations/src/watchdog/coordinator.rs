@@ -9,7 +9,7 @@ use std::{
 use impulse_config::config::Watchdog as WatchdogConfig;
 use log::warn;
 
-use crate::watchdog::{config::WatchdogRuntimeConfig, time::now_millis};
+use super::{config::WatchdogRuntimeConfig, time::now_millis};
 
 pub struct WatchdogCoordinator {
     enabled: bool,

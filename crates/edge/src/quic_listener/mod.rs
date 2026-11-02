@@ -39,6 +39,7 @@ use impulse_config::{
 };
 use impulse_errors::{PoolError, ProxyError};
 use impulse_lb::upstream_pool::UpstreamPool;
+use impulse_operations::watchdog::WatchdogCoordinator;
 use impulse_transport::{SharedDnsResolver, UpstreamRequestExecutor, UpstreamTransportPool};
 use log::{debug, error, info, warn};
 use quiche::{Config, h3::NameValue};
@@ -91,7 +92,6 @@ use crate::{
             store::{ListenerTlsReloadState, ListenerTlsReloadStore},
         },
     },
-    watchdog::coordinator::WatchdogCoordinator,
 };
 
 mod admission;

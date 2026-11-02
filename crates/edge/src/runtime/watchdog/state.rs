@@ -1,11 +1,8 @@
 use std::sync::Arc;
 
-use crate::{
-    Metrics,
-    resilience::runtime::RuntimeResilience,
-    runtime::tasks::RuntimeTaskRegistry,
-    watchdog::{config::WatchdogRuntimeConfig, coordinator::WatchdogCoordinator},
-};
+use impulse_operations::watchdog::{WatchdogCoordinator, WatchdogRuntimeConfig};
+
+use crate::{Metrics, resilience::runtime::RuntimeResilience, runtime::tasks::RuntimeTaskRegistry};
 
 #[derive(Clone)]
 pub(crate) struct WatchdogServiceState {

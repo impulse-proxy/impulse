@@ -1042,7 +1042,7 @@ impl Http3Service {
         let certificate_resolver = Self::build_server_cert_resolver_from_loaded(&loaded_tls)?;
         Ok(ListenerTlsReloadState {
             generation: 0,
-            loaded_at_unix_ms: crate::watchdog::time::now_millis(),
+            loaded_at_unix_ms: impulse_operations::watchdog::now_millis(),
             last_reload_status: "loaded".to_string(),
             inventory,
             certificate_resolver,

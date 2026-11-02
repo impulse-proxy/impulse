@@ -11,6 +11,7 @@ use impulse_errors::ProxyError;
 use impulse_lb::pingora_backend::{
     GenerationBackendView, HealthRegistry, PingoraLoadBalancingRuntimeState, map_validated_backend,
 };
+use impulse_operations::watchdog::{WatchdogCoordinator, WatchdogRuntimeConfig};
 use impulse_transport::PingoraBackendHealthIdentity;
 use log::{debug, info, warn};
 use tokio::sync::Semaphore;
@@ -33,7 +34,6 @@ use crate::{
         tls::store::ListenerTlsReloadStore,
         transport::create_transport_pool,
     },
-    watchdog::{config::WatchdogRuntimeConfig, coordinator::WatchdogCoordinator},
 };
 
 pub(crate) struct RuntimeBuilder;

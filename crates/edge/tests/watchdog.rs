@@ -1,7 +1,7 @@
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use impulse_config::config::Watchdog as WatchdogConfig;
-use impulse_edge::watchdog::coordinator::WatchdogCoordinator;
+use impulse_operations::watchdog::WatchdogCoordinator;
 
 #[test]
 fn restart_request_respects_single_pending_cycle() {
