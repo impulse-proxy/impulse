@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+boring.workspace = true
 core_affinity.workspace = true
 impulse-contracts = { path = "../contracts" }
 log.workspace = true

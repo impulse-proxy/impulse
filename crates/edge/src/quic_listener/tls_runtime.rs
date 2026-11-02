@@ -166,50 +166,33 @@ impl QUICListener {
                 client_auth_ca.ca_file, client_auth_ca.certificate_count
             );
         }
-        let mut quic_config = Self::build_quic_config_from_loaded(&loaded_tls)?;
-
-        quic_config
-            .set_application_protos(quiche::h3::APPLICATION_PROTOCOL)
-            .map_err(|err| {
-                ProxyError::Transport(format!("failed to set ALPN protocols: {:?}", err))
-            })?;
-        quic_config.set_max_idle_timeout(
-            timeout_policy
-                .quic_max_idle
-                .as_millis()
-                .try_into()
-                .unwrap_or(u64::MAX),
-        );
-        quic_config.set_max_recv_udp_payload_size(MAX_UDP_PAYLOAD_BYTES);
-        quic_config.set_max_send_udp_payload_size(MAX_UDP_PAYLOAD_BYTES);
-        quic_config.set_initial_max_data(transport_policy.quic_initial_max_data);
-        quic_config
-            .set_initial_max_stream_data_bidi_local(transport_policy.quic_initial_max_stream_data);
-        quic_config
-            .set_initial_max_stream_data_bidi_remote(transport_policy.quic_initial_max_stream_data);
-        quic_config.set_initial_max_stream_data_uni(transport_policy.quic_initial_max_stream_data);
-        quic_config.set_initial_max_streams_bidi(transport_policy.quic_initial_max_streams_bidi);
-        quic_config.set_initial_max_streams_uni(transport_policy.quic_initial_max_streams_uni);
-        quic_config.set_disable_active_migration(true);
+        let tls_context = Self::build_quic_ssl_context_builder(&loaded_tls)?;
+        let quic_config = impulse_http3_ingress::build_http3_tls_config(
+            tls_context,
+            impulse_http3_ingress::Http3TlsSettings {
+                max_idle_timeout_millis: timeout_policy
+                    .quic_max_idle
+                    .as_millis()
+                    .try_into()
+                    .unwrap_or(u64::MAX),
+                max_udp_payload_bytes: MAX_UDP_PAYLOAD_BYTES,
+                initial_max_data: transport_policy.quic_initial_max_data,
+                initial_max_stream_data: transport_policy.quic_initial_max_stream_data,
+                initial_max_streams_bidi: transport_policy.quic_initial_max_streams_bidi,
+                initial_max_streams_uni: transport_policy.quic_initial_max_streams_uni,
+                client_auth_enabled: loaded_tls.client_auth.enabled,
+            },
+        )
+        .map_err(ProxyError::Transport)?;
 
         if loaded_tls.client_auth.enabled {
             info!(
                 "Downstream mTLS enabled (require_client_cert={})",
                 loaded_tls.client_auth.require_client_cert
             );
-        } else {
-            quic_config.verify_peer(false);
         }
 
         Ok(quic_config)
-    }
-
-    fn build_quic_config_from_loaded(
-        loaded_tls: &LoadedListenerTlsMaterial,
-    ) -> Result<Config, ProxyError> {
-        let tls_ctx_builder = Self::build_quic_ssl_context_builder(loaded_tls)?;
-        Config::with_boring_ssl_ctx_builder(quiche::PROTOCOL_VERSION, tls_ctx_builder)
-            .map_err(|err| ProxyError::Transport(format!("failed to create QUIC config: {err}")))
     }
 
     fn build_quic_ssl_context_builder(
