@@ -179,9 +179,9 @@ impl QUICListener {
     ///    - Ok result     -> send H3 response headers, spawn body-pump task,
     ///      store `response_chunk_rx`, transition to SendingResponse.
     /// 4. Flush `response_chunk_rx` chunks into H3 (`try_recv` loop).
-    ///    - `Data`     -> `h3.send_body(..., false)`
-    ///    - `Trailers` -> `h3.send_additional_headers(..., true, false)`
-    ///    - `End`      -> `h3.send_body(..., true)`, mark Completed
+    ///    - `Data`     -> HTTP/3 response adapter body write
+    ///    - `Trailers` -> HTTP/3 response adapter trailer write
+    ///    - `End`      -> HTTP/3 response adapter final write, mark Completed
     ///    - `Error`    -> send 502, mark Failed
     /// 5. Remove streams in terminal phase (Completed / Failed).
     pub(in crate::quic_listener) fn advance_streams_non_blocking(
