@@ -314,7 +314,7 @@ impl ControlApiRuntimePayload {
                 details: "No plugin/middleware ABI is exposed in-process today; extension support remains a deliberate non-goal until a safe isolation model is designed.",
             },
             runtime: state
-                .generation
+                .generation()
                 .map(|active| ControlApiRuntimeGenerationPayload {
                     generation: active.generation(),
                     config_path: active.startup().config_path.clone(),
@@ -363,8 +363,8 @@ impl ControlApiObservabilityPayload {
                 reason: state.security.audit.delivery_reason(),
             },
             current_generation: state
-                .generation
-                .as_ref()
+                .runtime
+                .generation()
                 .map(|generation| generation.generation()),
             dashboard_packages: vec![
                 ControlApiObservabilityDashboardPayload {

@@ -2547,8 +2547,7 @@ async fn control_api_snapshot_read_emits_audit_event() {
         Http3Service::control_api_audit_target_for_route(route, None),
         super::audit::AdminAuditGeneration {
             active_generation: service_state
-                .generation
-                .as_ref()
+                .generation()
                 .map(|current| current.generation()),
             ..Default::default()
         },

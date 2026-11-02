@@ -151,8 +151,7 @@ impl Http3Service {
                         Self::control_api_audit_target_for_route(route, None),
                         AdminAuditGeneration {
                             active_generation: runtime_state
-                                .generation
-                                .as_ref()
+                                .generation()
                                 .map(|current| current.generation()),
                             ..Default::default()
                         },
@@ -231,7 +230,7 @@ impl Http3Service {
                 Self::control_api_not_found_response(),
             )));
         };
-        let Some(runtime) = runtime_state.generation.clone() else {
+        let Some(runtime) = runtime_state.runtime.generation().cloned() else {
             return Err(ControlApiActivationError::Response(Box::new(
                 Self::json_response(
                     StatusCode::INTERNAL_SERVER_ERROR,

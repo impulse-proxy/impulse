@@ -210,8 +210,7 @@ impl Http3Service {
         let service_state = state.current_service_state();
         let request_context = req.extensions().get::<ControlApiRequestContext>().cloned();
         let active_generation = service_state
-            .generation
-            .as_ref()
+            .generation()
             .map(|current| current.generation());
         Self::enforce_control_api_source_policy(
             req,

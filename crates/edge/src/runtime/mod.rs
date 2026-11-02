@@ -13,6 +13,7 @@ pub(crate) mod connection;
 pub(crate) mod generation;
 pub mod ingress;
 pub mod listener;
+pub(crate) mod operations;
 pub mod policy;
 pub mod privilege_drop;
 pub mod shared_state;

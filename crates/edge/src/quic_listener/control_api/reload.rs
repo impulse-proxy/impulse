@@ -147,8 +147,7 @@ impl Http3Service {
     ) -> Response<Full<Bytes>> {
         let runtime_state = state.current_service_state();
         let active_generation = runtime_state
-            .generation
-            .as_ref()
+            .generation()
             .map(|current| current.generation());
         Self::emit_control_api_audit_event(
             &runtime_state.security,
@@ -209,8 +208,7 @@ impl Http3Service {
     ) -> Response<Full<Bytes>> {
         let runtime_state = state.current_service_state();
         let active_generation = runtime_state
-            .generation
-            .as_ref()
+            .generation()
             .map(|current| current.generation());
         Self::emit_control_api_audit_event(
             &runtime_state.security,
