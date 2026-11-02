@@ -1,26 +1,4 @@
-use std::net::SocketAddr;
-
 use quiche::h3::NameValue;
-
-pub type Http3HeaderLookup<'a> = dyn Fn(&str) -> Option<String> + Sync + 'a;
-
-pub struct Http3RequestExecutionInput<'a> {
-    pub method: &'a str,
-    pub path: &'a str,
-    pub authority: Option<&'a str>,
-    pub peer_address: SocketAddr,
-    pub headers: Option<&'a Http3HeaderLookup<'a>>,
-}
-
-pub trait Http3RequestService {
-    type Output;
-    type Error;
-
-    fn execute_http3(
-        &self,
-        request: Http3RequestExecutionInput<'_>,
-    ) -> Result<Self::Output, Self::Error>;
-}
 
 #[derive(Clone, Copy, Debug)]
 pub struct Http3RequestLimits {
