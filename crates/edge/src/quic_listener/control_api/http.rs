@@ -31,13 +31,13 @@ impl Http3Service {
             ControlApiRoute::Health => Self::render_control_api_health(state),
             ControlApiRoute::Ready => Self::render_control_api_ready(state),
             ControlApiRoute::Runtime => {
-                Self::emit_control_api_audit_event(
+                AdministrativeSecurity::emit_control_api_audit_event(
                     &service_state.security,
                     identity.as_ref(),
                     request_context.as_ref(),
                     AdminAuditEventType::RuntimeSnapshot,
                     AdminAuditAction::RuntimeSnapshotRead,
-                    Self::control_api_audit_target_for_route(route, None),
+                    AdministrativeSecurity::control_api_audit_target_for_route(route, None),
                     AdminAuditGeneration {
                         active_generation,
                         ..Default::default()
@@ -63,13 +63,13 @@ impl Http3Service {
                 Self::handle_control_api_runtime_rollback(req, state).await
             }
             ControlApiRoute::RuntimeHistory => {
-                Self::emit_control_api_audit_event(
+                AdministrativeSecurity::emit_control_api_audit_event(
                     &service_state.security,
                     identity.as_ref(),
                     request_context.as_ref(),
                     AdminAuditEventType::RuntimeSnapshot,
                     AdminAuditAction::RuntimeSnapshotRead,
-                    Self::control_api_audit_target_for_route(route, None),
+                    AdministrativeSecurity::control_api_audit_target_for_route(route, None),
                     AdminAuditGeneration {
                         active_generation,
                         ..Default::default()
@@ -80,13 +80,13 @@ impl Http3Service {
                 Self::render_control_api_runtime_history(state)
             }
             ControlApiRoute::RuntimeHistoryGeneration(generation) => {
-                Self::emit_control_api_audit_event(
+                AdministrativeSecurity::emit_control_api_audit_event(
                     &service_state.security,
                     identity.as_ref(),
                     request_context.as_ref(),
                     AdminAuditEventType::RuntimeSnapshot,
                     AdminAuditAction::RuntimeSnapshotRead,
-                    Self::control_api_audit_target_for_route(route, None),
+                    AdministrativeSecurity::control_api_audit_target_for_route(route, None),
                     AdminAuditGeneration {
                         active_generation,
                         target_generation: Some(generation),

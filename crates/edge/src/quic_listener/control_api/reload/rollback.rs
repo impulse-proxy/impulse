@@ -21,13 +21,13 @@ impl Http3Service {
             match Self::control_api_json_body::<ControlApiRuntimeRollbackPayload>(req).await {
                 Ok(payload) => payload,
                 Err(response) => {
-                    Self::emit_control_api_audit_event(
+                    AdministrativeSecurity::emit_control_api_audit_event(
                         &runtime_state.security,
                         identity.as_ref(),
                         request_context.as_ref(),
                         AdminAuditEventType::RuntimeRollback,
                         AdminAuditAction::RuntimeRollbackResult,
-                        Self::control_api_audit_target_for_route(
+                        AdministrativeSecurity::control_api_audit_target_for_route(
                             ControlApiRoute::RuntimeRollback,
                             None,
                         ),
@@ -74,13 +74,16 @@ impl Http3Service {
             );
         }
         let current_generation = runtime_bundle_handle.current_generation();
-        Self::emit_control_api_audit_event(
+        AdministrativeSecurity::emit_control_api_audit_event(
             &runtime_state.security,
             identity.as_ref(),
             request_context.as_ref(),
             AdminAuditEventType::RuntimeRollback,
             AdminAuditAction::RuntimeRollbackAttempt,
-            Self::control_api_audit_target_for_route(ControlApiRoute::RuntimeRollback, None),
+            AdministrativeSecurity::control_api_audit_target_for_route(
+                ControlApiRoute::RuntimeRollback,
+                None,
+            ),
             AdminAuditGeneration {
                 active_generation: Some(current_generation),
                 target_generation: Some(payload.target_generation),
@@ -111,13 +114,16 @@ impl Http3Service {
             return control_api_internal_error_response();
         };
         Self::record_control_api_rollback_outcome(&runtime_bundle_handle, &rollback);
-        Self::emit_control_api_audit_event(
+        AdministrativeSecurity::emit_control_api_audit_event(
             &runtime_state.security,
             identity.as_ref(),
             request_context.as_ref(),
             AdminAuditEventType::RuntimeRollback,
             AdminAuditAction::RuntimeRollbackResult,
-            Self::control_api_audit_target_for_route(ControlApiRoute::RuntimeRollback, None),
+            AdministrativeSecurity::control_api_audit_target_for_route(
+                ControlApiRoute::RuntimeRollback,
+                None,
+            ),
             AdminAuditGeneration {
                 active_generation: Some(rollback.active_generation),
                 target_generation: Some(rollback.request.target_generation),

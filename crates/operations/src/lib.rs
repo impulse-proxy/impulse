@@ -4,6 +4,7 @@
 #![deny(unused_crate_dependencies)]
 #![warn(unreachable_pub)]
 
+pub mod administrative;
 mod control_api;
 mod metrics;
 

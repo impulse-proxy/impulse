@@ -12,30 +12,31 @@ impl Http3Service {
             return Self::control_api_not_found_response();
         };
         let current = runtime_bundle_handle.current_view();
-        let plan_request = match Self::control_api_json_body_or_default::<
-            ControlApiRuntimePlanRequest,
-        >(req)
-        .await
-        {
-            Ok(payload) => payload,
-            Err(response) => {
-                Self::emit_control_api_audit_event(
-                    &runtime_state.security,
-                    identity.as_ref(),
-                    request_context.as_ref(),
-                    AdminAuditEventType::RuntimePreview,
-                    AdminAuditAction::RuntimePreviewResult,
-                    Self::control_api_audit_target_for_route(ControlApiRoute::RuntimePreview, None),
-                    AdminAuditGeneration {
-                        active_generation: Some(current.generation()),
-                        ..Default::default()
-                    },
-                    AdminAuditResult::Failed,
-                    Some("invalid_request_body".to_string()),
-                );
-                return *response;
-            }
-        };
+        let plan_request =
+            match Self::control_api_json_body_or_default::<ControlApiRuntimePlanRequest>(req).await
+            {
+                Ok(payload) => payload,
+                Err(response) => {
+                    AdministrativeSecurity::emit_control_api_audit_event(
+                        &runtime_state.security,
+                        identity.as_ref(),
+                        request_context.as_ref(),
+                        AdminAuditEventType::RuntimePreview,
+                        AdminAuditAction::RuntimePreviewResult,
+                        AdministrativeSecurity::control_api_audit_target_for_route(
+                            ControlApiRoute::RuntimePreview,
+                            None,
+                        ),
+                        AdminAuditGeneration {
+                            active_generation: Some(current.generation()),
+                            ..Default::default()
+                        },
+                        AdminAuditResult::Failed,
+                        Some("invalid_request_body".to_string()),
+                    );
+                    return *response;
+                }
+            };
         let activation_request = Self::control_api_activation_request(
             &plan_request,
             current.generation(),
@@ -45,13 +46,13 @@ impl Http3Service {
         let reload_input =
             Self::control_api_reload_config_input(&current, plan_request.config_path);
         let config_path = Some(reload_input.source_label().to_string());
-        Self::emit_control_api_audit_event(
+        AdministrativeSecurity::emit_control_api_audit_event(
             &runtime_state.security,
             identity.as_ref(),
             request_context.as_ref(),
             AdminAuditEventType::RuntimePreview,
             AdminAuditAction::RuntimePreviewAttempt,
-            Self::control_api_audit_target_for_route(
+            AdministrativeSecurity::control_api_audit_target_for_route(
                 ControlApiRoute::RuntimePreview,
                 config_path.clone(),
             ),
@@ -83,13 +84,16 @@ impl Http3Service {
             return control_api_internal_error_response();
         };
         Self::record_control_api_plan_result(&runtime_bundle_handle, "preview", &plan);
-        Self::emit_control_api_audit_event(
+        AdministrativeSecurity::emit_control_api_audit_event(
             &runtime_state.security,
             identity.as_ref(),
             request_context.as_ref(),
             AdminAuditEventType::RuntimePreview,
             AdminAuditAction::RuntimePreviewResult,
-            Self::control_api_audit_target_for_route(ControlApiRoute::RuntimePreview, config_path),
+            AdministrativeSecurity::control_api_audit_target_for_route(
+                ControlApiRoute::RuntimePreview,
+                config_path,
+            ),
             AdminAuditGeneration {
                 active_generation: Some(current.generation()),
                 candidate_generation: Some(plan.candidate_generation),

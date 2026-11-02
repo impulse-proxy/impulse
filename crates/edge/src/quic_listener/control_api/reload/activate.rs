@@ -142,13 +142,13 @@ impl Http3Service {
             Self::control_api_json_body_or_default::<ControlApiRuntimePlanRequest>(req)
                 .await
                 .map_err(|response| {
-                    Self::emit_control_api_audit_event(
+                    AdministrativeSecurity::emit_control_api_audit_event(
                         &runtime_state.security,
                         identity.as_ref(),
                         request_context.as_ref(),
                         event_type,
                         result_action,
-                        Self::control_api_audit_target_for_route(route, None),
+                        AdministrativeSecurity::control_api_audit_target_for_route(route, None),
                         AdminAuditGeneration {
                             active_generation: runtime_state
                                 .generation()
@@ -250,13 +250,13 @@ impl Http3Service {
         let reload_input =
             Self::control_api_reload_config_input(&runtime, plan_request.config_path);
         let config_path = Some(reload_input.source_label().to_string());
-        Self::emit_control_api_audit_event(
+        AdministrativeSecurity::emit_control_api_audit_event(
             &runtime_state.security,
             identity.as_ref(),
             request_context.as_ref(),
             event_type,
             attempt_action,
-            Self::control_api_audit_target_for_route(route, config_path.clone()),
+            AdministrativeSecurity::control_api_audit_target_for_route(route, config_path.clone()),
             AdminAuditGeneration {
                 active_generation: Some(runtime.generation()),
                 ..Default::default()
@@ -286,13 +286,13 @@ impl Http3Service {
             )));
         };
         Self::record_control_api_activation_outcome(&runtime_bundle_handle, &activation);
-        Self::emit_control_api_audit_event(
+        AdministrativeSecurity::emit_control_api_audit_event(
             &runtime_state.security,
             identity.as_ref(),
             request_context.as_ref(),
             event_type,
             result_action,
-            Self::control_api_audit_target_for_route(route, config_path.clone()),
+            AdministrativeSecurity::control_api_audit_target_for_route(route, config_path.clone()),
             AdminAuditGeneration {
                 active_generation: Some(activation.active_generation),
                 candidate_generation: Some(activation.history_entry.generation),
@@ -306,13 +306,13 @@ impl Http3Service {
             Some(control_api_activation_reason(&activation)),
         );
         if let Some((action, result, reason)) = upstream_mtls_material_audit_event(&activation) {
-            Self::emit_control_api_audit_event(
+            AdministrativeSecurity::emit_control_api_audit_event(
                 &runtime_state.security,
                 identity.as_ref(),
                 request_context.as_ref(),
                 AdminAuditEventType::UpstreamMtlsMaterial,
                 action,
-                Self::control_api_audit_target_for_route(route, config_path),
+                AdministrativeSecurity::control_api_audit_target_for_route(route, config_path),
                 AdminAuditGeneration {
                     active_generation: Some(activation.active_generation),
                     candidate_generation: Some(activation.history_entry.generation),

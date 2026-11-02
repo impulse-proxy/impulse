@@ -149,13 +149,16 @@ impl Http3Service {
         let active_generation = runtime_state
             .generation()
             .map(|current| current.generation());
-        Self::emit_control_api_audit_event(
+        AdministrativeSecurity::emit_control_api_audit_event(
             &runtime_state.security,
             identity.as_ref(),
             request_context.as_ref(),
             AdminAuditEventType::CertReload,
             AdminAuditAction::CertReloadAttempt,
-            Self::control_api_audit_target_for_route(ControlApiRoute::ReloadCerts, None),
+            AdministrativeSecurity::control_api_audit_target_for_route(
+                ControlApiRoute::ReloadCerts,
+                None,
+            ),
             AdminAuditGeneration {
                 active_generation,
                 ..Default::default()
@@ -172,7 +175,7 @@ impl Http3Service {
             live_metrics.as_ref(),
         );
         let succeeded = response.status().is_success();
-        Self::emit_control_api_audit_event(
+        AdministrativeSecurity::emit_control_api_audit_event(
             &runtime_state.security,
             identity.as_ref(),
             request_context.as_ref(),
@@ -182,7 +185,10 @@ impl Http3Service {
             } else {
                 AdminAuditAction::CertReloadResult
             },
-            Self::control_api_audit_target_for_route(ControlApiRoute::ReloadCerts, None),
+            AdministrativeSecurity::control_api_audit_target_for_route(
+                ControlApiRoute::ReloadCerts,
+                None,
+            ),
             AdminAuditGeneration {
                 active_generation,
                 ..Default::default()
@@ -210,13 +216,16 @@ impl Http3Service {
         let active_generation = runtime_state
             .generation()
             .map(|current| current.generation());
-        Self::emit_control_api_audit_event(
+        AdministrativeSecurity::emit_control_api_audit_event(
             &runtime_state.security,
             identity.as_ref(),
             request_context.as_ref(),
             AdminAuditEventType::RuntimeRestart,
             AdminAuditAction::RuntimeRestartAttempt,
-            Self::control_api_audit_target_for_route(ControlApiRoute::Restart, None),
+            AdministrativeSecurity::control_api_audit_target_for_route(
+                ControlApiRoute::Restart,
+                None,
+            ),
             AdminAuditGeneration {
                 active_generation,
                 ..Default::default()
@@ -226,13 +235,16 @@ impl Http3Service {
         );
         let watchdog = runtime_state.watchdog();
         if !watchdog.enabled() {
-            Self::emit_control_api_audit_event(
+            AdministrativeSecurity::emit_control_api_audit_event(
                 &runtime_state.security,
                 identity.as_ref(),
                 request_context.as_ref(),
                 AdminAuditEventType::RuntimeRestart,
                 AdminAuditAction::RuntimeRestartResult,
-                Self::control_api_audit_target_for_route(ControlApiRoute::Restart, None),
+                AdministrativeSecurity::control_api_audit_target_for_route(
+                    ControlApiRoute::Restart,
+                    None,
+                ),
                 AdminAuditGeneration {
                     active_generation,
                     ..Default::default()
@@ -250,13 +262,16 @@ impl Http3Service {
         }
 
         let accepted = watchdog.request_restart("admin_runtime_api");
-        Self::emit_control_api_audit_event(
+        AdministrativeSecurity::emit_control_api_audit_event(
             &runtime_state.security,
             identity.as_ref(),
             request_context.as_ref(),
             AdminAuditEventType::RuntimeRestart,
             AdminAuditAction::RuntimeRestartResult,
-            Self::control_api_audit_target_for_route(ControlApiRoute::Restart, None),
+            AdministrativeSecurity::control_api_audit_target_for_route(
+                ControlApiRoute::Restart,
+                None,
+            ),
             AdminAuditGeneration {
                 active_generation,
                 ..Default::default()

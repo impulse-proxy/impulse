@@ -19,13 +19,13 @@ impl Http3Service {
             {
                 Ok(payload) => payload,
                 Err(response) => {
-                    Self::emit_control_api_audit_event(
+                    AdministrativeSecurity::emit_control_api_audit_event(
                         &runtime_state.security,
                         identity.as_ref(),
                         request_context.as_ref(),
                         AdminAuditEventType::RuntimeValidate,
                         AdminAuditAction::RuntimeValidateResult,
-                        Self::control_api_audit_target_for_route(
+                        AdministrativeSecurity::control_api_audit_target_for_route(
                             ControlApiRoute::RuntimeValidate,
                             None,
                         ),
@@ -48,13 +48,13 @@ impl Http3Service {
         let reload_input =
             Self::control_api_reload_config_input(&current, plan_request.config_path);
         let config_path = Some(reload_input.source_label().to_string());
-        Self::emit_control_api_audit_event(
+        AdministrativeSecurity::emit_control_api_audit_event(
             &runtime_state.security,
             identity.as_ref(),
             request_context.as_ref(),
             AdminAuditEventType::RuntimeValidate,
             AdminAuditAction::RuntimeValidateAttempt,
-            Self::control_api_audit_target_for_route(
+            AdministrativeSecurity::control_api_audit_target_for_route(
                 ControlApiRoute::RuntimeValidate,
                 config_path.clone(),
             ),
@@ -86,13 +86,16 @@ impl Http3Service {
             return control_api_internal_error_response();
         };
         Self::record_control_api_plan_result(&runtime_bundle_handle, "validate", &plan);
-        Self::emit_control_api_audit_event(
+        AdministrativeSecurity::emit_control_api_audit_event(
             &runtime_state.security,
             identity.as_ref(),
             request_context.as_ref(),
             AdminAuditEventType::RuntimeValidate,
             AdminAuditAction::RuntimeValidateResult,
-            Self::control_api_audit_target_for_route(ControlApiRoute::RuntimeValidate, config_path),
+            AdministrativeSecurity::control_api_audit_target_for_route(
+                ControlApiRoute::RuntimeValidate,
+                config_path,
+            ),
             AdminAuditGeneration {
                 active_generation: Some(current.generation()),
                 candidate_generation: Some(plan.candidate_generation),

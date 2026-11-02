@@ -42,7 +42,7 @@ impl ControlApiRequestService for EdgeControlApiRequestService {
     ) -> Self::ConnectionContext {
         let runtime_state = self.state.current_service_state();
         EdgeControlApiConnectionContext {
-            request: Http3Service::build_control_api_request_context(
+            request: AdministrativeSecurity::build_control_api_request_context(
                 peer,
                 peer_certificates,
                 runtime_state.security.identity_source.as_ref(),
@@ -63,12 +63,9 @@ impl ControlApiRequestService for EdgeControlApiRequestService {
         {
             return stale_control_api_connection_response();
         }
-        request
-            .extensions_mut()
-            .insert(Http3Service::augment_control_api_request_context(
-                context.request,
-                &request,
-            ));
+        request.extensions_mut().insert(
+            AdministrativeSecurity::augment_control_api_request_context(context.request, &request),
+        );
         Http3Service::handle_control_api_request(request, &self.state).await
     }
 }

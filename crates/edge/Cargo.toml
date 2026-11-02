@@ -40,7 +40,6 @@ serde_json.workspace = true
 tokio-rustls.workspace = true
 rustls.workspace = true
 rustls-pki-types.workspace = true
-subtle.workspace = true
 x509-parser = "0.16"
 libc.workspace = true
 smallvec.workspace = true

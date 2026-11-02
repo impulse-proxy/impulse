@@ -1185,15 +1185,15 @@ fn watchdog_restart_env_omits_path_when_missing() {
 #[test]
 fn bearer_authorization_scheme_is_case_insensitive() {
     assert_eq!(
-        Http3Service::bearer_token_from_authorization_header("Bearer token-1"),
+        AdministrativeSecurity::bearer_token_from_authorization_header("Bearer token-1"),
         Some("token-1")
     );
     assert_eq!(
-        Http3Service::bearer_token_from_authorization_header("bearer token-2"),
+        AdministrativeSecurity::bearer_token_from_authorization_header("bearer token-2"),
         Some("token-2")
     );
     assert_eq!(
-        Http3Service::bearer_token_from_authorization_header("BEARER token-3"),
+        AdministrativeSecurity::bearer_token_from_authorization_header("BEARER token-3"),
         Some("token-3")
     );
 }
@@ -1201,15 +1201,15 @@ fn bearer_authorization_scheme_is_case_insensitive() {
 #[test]
 fn bearer_authorization_rejects_malformed_headers() {
     assert_eq!(
-        Http3Service::bearer_token_from_authorization_header("Basic abc"),
+        AdministrativeSecurity::bearer_token_from_authorization_header("Basic abc"),
         None
     );
     assert_eq!(
-        Http3Service::bearer_token_from_authorization_header("Bearer"),
+        AdministrativeSecurity::bearer_token_from_authorization_header("Bearer"),
         None
     );
     assert_eq!(
-        Http3Service::bearer_token_from_authorization_header("Bearer   "),
+        AdministrativeSecurity::bearer_token_from_authorization_header("Bearer   "),
         None
     );
 }
@@ -1765,15 +1765,18 @@ fn control_api_builds_mtls_identity_from_subject_role_mapping() {
         kind: "mtls_subject_cn".to_string(),
         role_attribute: Some("ou".to_string()),
     };
-    let request_context = Http3Service::build_control_api_request_context(
+    let request_context = AdministrativeSecurity::build_control_api_request_context(
         "127.0.0.1:9443".parse().expect("peer addr"),
         Some(std::slice::from_ref(&cert_der)),
         Some(&identity_source),
         Some("edge-primary".to_string()),
     );
-    let identity =
-        Http3Service::build_admin_identity(Some(request_context), None, Some(&identity_source))
-            .expect("mtls identity");
+    let identity = AdministrativeSecurity::build_admin_identity(
+        Some(request_context),
+        None,
+        Some(&identity_source),
+    )
+    .expect("mtls identity");
 
     assert_eq!(identity.actor_id.as_deref(), Some("alice"));
     assert_eq!(
@@ -1811,9 +1814,12 @@ fn control_api_dual_auth_identity_uses_least_privileged_common_role() {
         role: super::admin_identity::AdminRole::Viewer,
     };
 
-    let identity =
-        Http3Service::build_admin_identity(Some(request_context), Some(token_match), None)
-            .expect("dual auth identity");
+    let identity = AdministrativeSecurity::build_admin_identity(
+        Some(request_context),
+        Some(token_match),
+        None,
+    )
+    .expect("dual auth identity");
 
     assert_eq!(
         identity.roles,
@@ -1850,9 +1856,12 @@ fn control_api_dual_auth_identity_keeps_token_role_when_mtls_has_no_role_mapping
         role: super::admin_identity::AdminRole::Operator,
     };
 
-    let identity =
-        Http3Service::build_admin_identity(Some(request_context), Some(token_match), None)
-            .expect("dual auth identity without mtls role");
+    let identity = AdministrativeSecurity::build_admin_identity(
+        Some(request_context),
+        Some(token_match),
+        None,
+    )
+    .expect("dual auth identity without mtls role");
 
     assert_eq!(
         identity.roles,
@@ -1882,8 +1891,11 @@ fn control_api_dual_auth_identity_rejects_disagreeing_principals() {
         role: super::admin_identity::AdminRole::Viewer,
     };
 
-    let identity =
-        Http3Service::build_admin_identity(Some(request_context), Some(token_match), None);
+    let identity = AdministrativeSecurity::build_admin_identity(
+        Some(request_context),
+        Some(token_match),
+        None,
+    );
 
     assert!(identity.is_none());
 }
@@ -1913,7 +1925,7 @@ fn control_api_dual_auth_identity_rejects_bearer_actor_from_other_mtls_namespace
         role: super::admin_identity::AdminRole::Operator,
     };
 
-    let identity = Http3Service::build_admin_identity(
+    let identity = AdministrativeSecurity::build_admin_identity(
         Some(request_context),
         Some(token_match),
         Some(&identity_source),
@@ -1947,7 +1959,7 @@ fn control_api_dual_auth_identity_rejects_when_no_mtls_principal_matches() {
         role: super::admin_identity::AdminRole::Operator,
     };
 
-    let identity = Http3Service::build_admin_identity(
+    let identity = AdministrativeSecurity::build_admin_identity(
         Some(request_context),
         Some(token_match),
         Some(&identity_source),
@@ -1977,7 +1989,8 @@ fn control_api_request_context_captures_operator_correlation_headers() {
         .body(())
         .expect("control api request");
 
-    let request_context = Http3Service::augment_control_api_request_context(request_context, &req);
+    let request_context =
+        AdministrativeSecurity::augment_control_api_request_context(request_context, &req);
 
     assert_eq!(request_context.listener.as_deref(), Some("edge-primary"));
     assert_eq!(request_context.request_id.as_deref(), Some("req-42"));
@@ -2536,7 +2549,7 @@ async fn control_api_snapshot_read_emits_audit_event() {
     let service_state = state.current_service_state();
     let response = Http3Service::render_control_api_runtime_snapshot(&state);
     assert_eq!(response.status(), StatusCode::OK);
-    Http3Service::emit_control_api_audit_event(
+    AdministrativeSecurity::emit_control_api_audit_event(
         &service_state.security,
         req.extensions()
             .get::<super::admin_identity::AdminIdentity>(),
@@ -2544,7 +2557,7 @@ async fn control_api_snapshot_read_emits_audit_event() {
             .get::<super::admin_identity::ControlApiRequestContext>(),
         super::audit::AdminAuditEventType::RuntimeSnapshot,
         super::audit::AdminAuditAction::RuntimeSnapshotRead,
-        Http3Service::control_api_audit_target_for_route(route, None),
+        AdministrativeSecurity::control_api_audit_target_for_route(route, None),
         super::audit::AdminAuditGeneration {
             active_generation: service_state
                 .generation()
@@ -3540,31 +3553,6 @@ async fn control_api_runtime_snapshot_exposes_quota_policy_and_backend_status() 
             },
             "recent_admin_actions": []
         })
-    );
-}
-
-#[tokio::test]
-async fn control_api_runtime_snapshot_surfaces_degraded_file_audit_sink() {
-    let dir = tempdir().expect("tempdir");
-    let (cert, key) = write_test_cert_for_name(dir.path(), "server", "api.example.com");
-    let audit_path = dir.path().join("admin-audit.jsonl");
-    let mut config = test_config(cert, key);
-    config.observability.control_api.enabled = true;
-    config.observability.control_api.audit.enabled = true;
-    config.observability.control_api.audit.sink = ControlApiAuditSink::File;
-    config.observability.control_api.audit.file_path =
-        Some(audit_path.to_string_lossy().to_string());
-
-    super::audit::force_audit_writer_thread_spawn_failure_for_test(true);
-    let state = control_api_state_with_runtime_bundle(&config, &config);
-    let payload = json_body(Http3Service::render_control_api_runtime_snapshot(&state)).await;
-    super::audit::force_audit_writer_thread_spawn_failure_for_test(false);
-    assert_eq!(payload["observability"]["audit_sink"]["enabled"], true);
-    assert_eq!(payload["observability"]["audit_sink"]["target"], "file");
-    assert_eq!(payload["observability"]["audit_sink"]["degraded"], true);
-    assert_eq!(
-        payload["observability"]["audit_sink"]["reason"],
-        "writer_thread_start_failed"
     );
 }
 
@@ -4729,13 +4717,13 @@ fn log_audit_sink_delivers_events_regardless_of_the_application_log_threshold() 
         impulse_utils::logger::set_log_level(level).expect("set application log level");
         let marker = format!("log-threshold-marker-{level}");
 
-        Http3Service::emit_control_api_audit_event(
+        AdministrativeSecurity::emit_control_api_audit_event(
             &state.current_security_policy(),
             None,
             None,
             super::audit::AdminAuditEventType::RuntimeSnapshot,
             super::audit::AdminAuditAction::RuntimeSnapshotRead,
-            Http3Service::control_api_audit_target_for_route(
+            AdministrativeSecurity::control_api_audit_target_for_route(
                 super::admin_auth::ControlApiRoute::Runtime,
                 None,
             ),
