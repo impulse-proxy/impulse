@@ -5,10 +5,13 @@
 #![warn(unreachable_pub)]
 
 mod control_api;
+mod metrics;
 
 pub use control_api::{
     ConnectionSlotGuard, ControlApiConnectionError, ControlApiConnectionService,
     ControlApiRequestService, ControlApiResponse, accept_control_api_tls,
     control_api_internal_error_response, run_control_api_blocking,
     stale_control_api_connection_response, try_claim_control_api_connection_slot,
+    try_claim_control_api_connection_slot as try_claim_connection_slot,
 };
+pub use metrics::{MetricsConnectionError, MetricsHttpService, MetricsResponse, MetricsSource};

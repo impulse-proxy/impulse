@@ -1,8 +1,15 @@
 use super::*;
 
-trait MetricsIo: tokio::io::AsyncRead + tokio::io::AsyncWrite {}
+#[derive(Clone)]
+struct EdgeMetricsSource {
+    metrics: Arc<Metrics>,
+}
 
-impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite> MetricsIo for T {}
+impl MetricsSource for EdgeMetricsSource {
+    fn render_prometheus(&self) -> String {
+        self.metrics.render_prometheus()
+    }
+}
 
 pub(super) struct MetricsEndpointBinding {
     bind: String,
@@ -10,7 +17,9 @@ pub(super) struct MetricsEndpointBinding {
     active_connections: Arc<AtomicUsize>,
 }
 
-impl Http3Service {
+pub(in crate::quic_listener) struct MetricsEndpointService;
+
+impl MetricsEndpointService {
     pub(in crate::quic_listener) fn spawn_metrics_endpoint(
         startup: &ControlPlaneStartup<'_>,
     ) -> Result<(), ProxyError> {
@@ -49,7 +58,7 @@ impl Http3Service {
                 "{}:{}",
                 startup_state.endpoint.address, startup_state.endpoint.port
             );
-            match Self::bind_tcp_listener(&bind, Some(&handle), "metrics endpoint") {
+            match Http3Service::bind_tcp_listener(&bind, Some(&handle), "metrics endpoint") {
                 Ok(listener) => Some(MetricsEndpointBinding {
                     bind,
                     listener,
@@ -76,7 +85,7 @@ impl Http3Service {
                 let mut tls_state = None;
 
                 loop {
-                    let runtime_state = Self::current_metrics_endpoint_state(&service_ctx);
+                    let runtime_state = service_ctx.current_state();
                     let endpoint = &runtime_state.endpoint;
                     let desired_bind = format!("{}:{}", endpoint.address, endpoint.port);
 
@@ -105,7 +114,11 @@ impl Http3Service {
                         None => true,
                     };
                     if needs_rebind {
-                        match Self::bind_tcp_listener(&desired_bind, None, "metrics endpoint") {
+                        match Http3Service::bind_tcp_listener(
+                            &desired_bind,
+                            None,
+                            "metrics endpoint",
+                        ) {
                             Ok(listener) => {
                                 info!(
                                     "Metrics endpoint ready bind=http://{}{}",
@@ -150,9 +163,9 @@ impl Http3Service {
                             continue;
                         }
                     };
-                    let runtime_state = Self::current_metrics_endpoint_state(&service_ctx);
+                    let runtime_state = service_ctx.current_state();
                     let active_connections = Arc::clone(&binding.active_connections);
-                    if !Self::try_claim_runtime_connection_slot(
+                    if !try_claim_connection_slot(
                         &active_connections,
                         runtime_state.endpoint.max_connections.max(1),
                     ) {
@@ -163,45 +176,25 @@ impl Http3Service {
                     let metrics_path = runtime_state.endpoint.path.clone();
                     let timeout =
                         Duration::from_millis(runtime_state.endpoint.connection_timeout_ms.max(1));
+                    let service = MetricsHttpService::new(
+                        metrics_path,
+                        EdgeMetricsSource { metrics },
+                    );
 
                     tokio::spawn(async move {
-                        let _connection_guard = RuntimeConnectionSlotGuard::new(active_connections);
-                        let io: TokioIo<Box<dyn MetricsIo + Send + Unpin>> =
-                            if let Some(server_config) = tls_config {
-                                let accept = TlsAcceptor::from(server_config).accept(stream);
-                                match tokio::time::timeout(timeout, accept).await {
-                                    Ok(Ok(stream)) => TokioIo::new(Box::new(stream)),
-                                    Ok(Err(err)) => {
-                                        debug!("Metrics endpoint mTLS handshake failed: {}", err);
-                                        return;
-                                    }
-                                    Err(_) => {
-                                        debug!("Metrics endpoint mTLS handshake timed out");
-                                        return;
-                                    }
-                                }
-                            } else {
-                                TokioIo::new(Box::new(stream))
-                            };
-                        let service = service_fn(move |req: Request<Incoming>| {
-                            let metrics = Arc::clone(&metrics);
-                            let metrics_path = metrics_path.clone();
-                            async move {
-                                Ok::<_, hyper::Error>(Self::handle_metrics_request(
-                                    req,
-                                    &metrics_path,
-                                    metrics,
-                                ))
+                        let _connection_guard = ConnectionSlotGuard::new(active_connections);
+                        match service.serve(stream, tls_config, timeout).await {
+                            Ok(()) => {}
+                            Err(MetricsConnectionError::TlsHandshake(err)) => {
+                                debug!("Metrics endpoint mTLS handshake failed: {}", err);
                             }
-                        });
-
-                        let serve = http1::Builder::new().serve_connection(io, service);
-                        match tokio::time::timeout(timeout, serve).await {
-                            Ok(Ok(())) => {}
-                            Ok(Err(err)) => {
+                            Err(MetricsConnectionError::TlsHandshakeTimeout) => {
+                                debug!("Metrics endpoint mTLS handshake timed out");
+                            }
+                            Err(MetricsConnectionError::Http(err)) => {
                                 error!("Metrics endpoint connection failed: {}", err);
                             }
-                            Err(_) => {
+                            Err(MetricsConnectionError::ConnectionTimeout) => {
                                 debug!("Metrics endpoint connection timed out");
                             }
                         }

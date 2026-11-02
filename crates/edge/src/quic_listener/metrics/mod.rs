@@ -3,25 +3,20 @@ use std::{
     time::Duration,
 };
 
-use ::http::{Response, StatusCode};
-use bytes::Bytes;
-use http_body_util::Full;
-use hyper::{Request, body::Incoming, server::conn::http1, service::service_fn};
-use hyper_util::rt::TokioIo;
 use impulse_config::config::MetricsEndpoint;
 use impulse_errors::ProxyError;
+use impulse_operations::{
+    ConnectionSlotGuard, MetricsConnectionError, MetricsHttpService, MetricsSource,
+    try_claim_connection_slot,
+};
 use log::{debug, error, info};
 use rustls::ServerConfig as RustlsServerConfig;
-use tokio_rustls::TlsAcceptor;
 
 use super::{
-    Http3Service,
-    runtime_endpoint::RuntimeConnectionSlotGuard,
-    runtime_handle,
+    Http3Service, runtime_handle,
     runtime_state::{ControlPlaneStartup, MetricsServiceCtx},
 };
 use crate::Metrics;
 
-mod http;
-mod service;
+pub(super) mod service;
 mod state;

@@ -7,6 +7,7 @@ use log::error;
 use super::{
     Http3Service,
     control_api::service::ControlApiEndpointService,
+    metrics::service::MetricsEndpointService,
     runtime_handle,
     runtime_state::{ControlPlaneStartup, WatchdogServiceCtx},
 };
@@ -60,7 +61,7 @@ impl Http3Service {
             Self::configure_expected_workers(runtime.watchdog().as_ref(), startup.worker_count);
         });
         Self::spawn_generation_background_tasks(&startup);
-        Self::spawn_metrics_endpoint(&startup)?;
+        MetricsEndpointService::spawn_metrics_endpoint(&startup)?;
         ControlApiEndpointService::spawn_control_api_endpoint(&startup)?;
         Ok(())
     }

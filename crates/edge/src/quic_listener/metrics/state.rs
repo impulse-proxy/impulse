@@ -6,7 +6,6 @@ pub(in crate::quic_listener) struct MetricsTlsState {
     listener_tls_generation: u64,
     server_config: Arc<RustlsServerConfig>,
 }
-
 #[derive(Clone)]
 pub(in crate::quic_listener) struct MetricsEndpointState {
     pub(in crate::quic_listener) endpoint: MetricsEndpoint,
@@ -92,13 +91,5 @@ impl MetricsServiceCtx {
         Ok(tls_state
             .as_ref()
             .map(|state| Arc::clone(&state.server_config)))
-    }
-}
-
-impl Http3Service {
-    pub(in crate::quic_listener) fn current_metrics_endpoint_state(
-        service_ctx: &MetricsServiceCtx,
-    ) -> MetricsEndpointState {
-        service_ctx.current_state()
     }
 }

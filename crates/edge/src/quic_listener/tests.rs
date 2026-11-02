@@ -488,7 +488,7 @@ fn metrics_endpoint_state_prefers_reloaded_runtime_settings() {
     );
     let service_ctx = super::runtime_state::MetricsServiceCtx::new(runtime_ctx);
 
-    let state = super::Http3Service::current_metrics_endpoint_state(&service_ctx);
+    let state = service_ctx.current_state();
 
     assert_eq!(state.endpoint.path, "/metrics-live");
     assert_eq!(state.endpoint.max_connections, 29);
