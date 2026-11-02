@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     net::{SocketAddr, UdpSocket},
-    sync::{Arc, atomic::AtomicBool},
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -9,6 +9,7 @@ use impulse_config::{
     backend_endpoint::BackendEndpoint,
     runtime::{ListenerRuntimeConfig, RuntimeBackendTlsPolicy, RuntimeUpstreamPolicy},
 };
+pub use impulse_http3_ingress::ShutdownSignal;
 use impulse_lb::pingora_backend::SharedPingoraLoadBalancingRuntimeState;
 use impulse_transport::{SharedDnsResolver, UpstreamTransportPool};
 use tokio::sync::Semaphore;
@@ -25,30 +26,6 @@ use crate::{
     },
     watchdog::coordinator::WatchdogCoordinator,
 };
-
-/// Shared cancellation signal for the QUIC workers in a listener group.
-#[derive(Clone, Debug)]
-pub struct ShutdownSignal(Arc<AtomicBool>);
-
-impl ShutdownSignal {
-    pub fn new() -> Self {
-        Self(Arc::new(AtomicBool::new(false)))
-    }
-
-    pub fn load(&self, ordering: std::sync::atomic::Ordering) -> bool {
-        self.0.load(ordering)
-    }
-
-    pub fn store(&self, value: bool, ordering: std::sync::atomic::Ordering) {
-        self.0.store(value, ordering);
-    }
-}
-
-impl Default for ShutdownSignal {
-    fn default() -> Self {
-        Self::new()
-    }
-}
 
 /// Live listener worker state for the edge data plane.
 ///

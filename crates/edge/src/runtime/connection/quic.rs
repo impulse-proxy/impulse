@@ -1,34 +1,4 @@
-use std::{
-    collections::{HashMap, HashSet},
-    net::SocketAddr,
-    sync::Arc,
-    time::Instant,
-};
-
 use crate::runtime::connection::request::RequestEnvelope;
 
-pub struct QuicConnection {
-    pub quic: quiche::Connection,
-    pub h3: Option<quiche::h3::Connection>,
-    pub h3_config: Arc<quiche::h3::Config>,
-    pub streams: HashMap<u64, RequestEnvelope>,
-
-    pub peer_address: SocketAddr,
-    pub last_activity: Instant,
-    pub primary_scid: Arc<[u8]>,
-    pub routing_scids: HashSet<Arc<[u8]>>,
-    pub packets_since_rotation: u64,
-    pub last_scid_rotation: Instant,
-    pub tls_observed: bool,
-    pub tls_handshake_failure_recorded: bool,
-    pub tls_client_auth_failure_recorded: bool,
-    pub(crate) last_peer_error_snapshot: Option<QuicConnectionErrorSnapshot>,
-    pub(crate) last_local_error_snapshot: Option<QuicConnectionErrorSnapshot>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct QuicConnectionErrorSnapshot {
-    pub(crate) is_app: bool,
-    pub(crate) error_code: u64,
-    pub(crate) reason: Vec<u8>,
-}
+pub type QuicConnection = impulse_http3_ingress::QuicConnection<RequestEnvelope>;
+pub(crate) use impulse_http3_ingress::QuicConnectionErrorSnapshot;

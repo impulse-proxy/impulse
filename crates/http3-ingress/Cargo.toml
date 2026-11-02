@@ -5,3 +5,8 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+core_affinity.workspace = true
+impulse-contracts = { path = "../contracts" }
+log.workspace = true
+quiche.workspace = true
+socket2.workspace = true

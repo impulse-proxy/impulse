@@ -7,8 +7,8 @@ use std::{
 
 use impulse_config::runtime::{ListenerRuntimeConfig, RuntimeConfig};
 use impulse_errors::ProxyError;
+use impulse_http3_ingress::{UdpSocketConfig, bind_udp_socket};
 use log::debug;
-use socket2::{Domain, Protocol, Socket, Type};
 
 use crate::{
     Metrics,
@@ -175,19 +175,12 @@ impl QUICListener {
     ) -> Result<UdpSocket, ProxyError> {
         let bind_addr = Self::resolve_bind_addr(config)?;
         let transport_policy = &config.policies.transport;
-        let socket = Self::create_udp_socket(
+        Self::create_udp_socket(
             bind_addr,
             reuse_port,
             transport_policy.udp_recv_buffer_bytes,
             transport_policy.udp_send_buffer_bytes,
-        )?;
-        socket
-            .set_read_timeout(Some(Duration::from_millis(UDP_READ_TIMEOUT_MS)))
-            .map_err(|err| {
-                ProxyError::Transport(format!("failed to set UDP read timeout: {}", err))
-            })?;
-
-        Ok(socket)
+        )
     }
 
     pub fn new_with_socket_and_shared_state(
@@ -363,74 +356,18 @@ impl QUICListener {
         udp_recv_buffer_bytes: usize,
         udp_send_buffer_bytes: usize,
     ) -> Result<UdpSocket, ProxyError> {
-        let domain = if bind_addr.is_ipv4() {
-            Domain::IPV4
-        } else {
-            Domain::IPV6
-        };
-        let socket = Socket::new(domain, Type::DGRAM, Some(Protocol::UDP)).map_err(|err| {
-            ProxyError::Transport(format!("failed to create UDP socket: {}", err))
-        })?;
-        socket
-            .set_reuse_address(true)
-            .map_err(|err| ProxyError::Transport(format!("failed to set SO_REUSEADDR: {}", err)))?;
-        socket
-            .set_recv_buffer_size(udp_recv_buffer_bytes)
-            .map_err(|err| {
-                ProxyError::Transport(format!(
-                    "failed to set UDP recv buffer size ({}): {}",
-                    udp_recv_buffer_bytes, err
-                ))
-            })?;
-        socket
-            .set_send_buffer_size(udp_send_buffer_bytes)
-            .map_err(|err| {
-                ProxyError::Transport(format!(
-                    "failed to set UDP send buffer size ({}): {}",
-                    udp_send_buffer_bytes, err
-                ))
-            })?;
-
-        #[cfg(all(
-            unix,
-            not(target_os = "solaris"),
-            not(target_os = "illumos"),
-            not(target_os = "cygwin")
-        ))]
-        {
-            socket.set_reuse_port(reuse_port).map_err(|err| {
-                ProxyError::Transport(format!("failed to set SO_REUSEPORT: {}", err))
-            })?;
-        }
-
-        socket.bind(&bind_addr.into()).map_err(|err| {
+        bind_udp_socket(UdpSocketConfig {
+            bind_address: bind_addr,
+            reuse_port,
+            receive_buffer_bytes: udp_recv_buffer_bytes,
+            send_buffer_bytes: udp_send_buffer_bytes,
+            read_timeout: Duration::from_millis(UDP_READ_TIMEOUT_MS),
+        })
+        .map_err(|error| {
             ProxyError::Transport(format!(
-                "failed to bind UDP socket on '{}': {}",
-                bind_addr, err
+                "failed to bind UDP socket on '{bind_addr}': {error}"
             ))
-        })?;
-
-        match (socket.recv_buffer_size(), socket.send_buffer_size()) {
-            (Ok(actual_recv), Ok(actual_send)) => {
-                debug!(
-                    "UDP socket buffers on {}: recv={} (requested={}) send={} (requested={}) reuseport={}",
-                    bind_addr,
-                    actual_recv,
-                    udp_recv_buffer_bytes,
-                    actual_send,
-                    udp_send_buffer_bytes,
-                    reuse_port
-                );
-            }
-            _ => {
-                debug!(
-                    "UDP socket bound on {} with requested buffers recv={} send={} reuseport={}",
-                    bind_addr, udp_recv_buffer_bytes, udp_send_buffer_bytes, reuse_port
-                );
-            }
-        }
-
-        Ok(socket.into())
+        })
     }
 
     fn update_runtime_secret_lifecycle_metrics(metrics: &Metrics, config: &RuntimeConfig) {
