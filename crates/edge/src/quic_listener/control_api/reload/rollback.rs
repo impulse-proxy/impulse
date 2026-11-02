@@ -42,7 +42,7 @@ impl Http3Service {
         let authorization_is_current = authorization_generation
             .is_some_and(|expected| expected.is_current(current_auth_generation));
         if !authorization_is_current {
-            return Self::stale_control_api_connection_response();
+            return stale_control_api_connection_response();
         }
         if let Some(response) =
             Self::missing_expected_active_generation_response(payload.expected_active_generation)
@@ -92,7 +92,7 @@ impl Http3Service {
                 .clone()
                 .or_else(|| Some("runtime_rollback".to_string())),
         );
-        let Some(rollback) = Self::run_control_api_blocking({
+        let Some(rollback) = run_control_api_blocking({
             let runtime_bundle_handle = Arc::clone(&runtime_bundle_handle);
             let request = RollbackRequest {
                 target_generation: payload.target_generation,
@@ -108,7 +108,7 @@ impl Http3Service {
         })
         .await
         else {
-            return Self::control_api_internal_error_response();
+            return control_api_internal_error_response();
         };
         Self::record_control_api_rollback_outcome(&runtime_bundle_handle, &rollback);
         Self::emit_control_api_audit_event(

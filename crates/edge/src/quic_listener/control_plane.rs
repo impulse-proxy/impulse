@@ -5,7 +5,9 @@ use impulse_errors::ProxyError;
 use log::error;
 
 use super::{
-    Http3Service, runtime_handle,
+    Http3Service,
+    control_api::service::ControlApiEndpointService,
+    runtime_handle,
     runtime_state::{ControlPlaneStartup, WatchdogServiceCtx},
 };
 use crate::{
@@ -59,7 +61,7 @@ impl Http3Service {
         });
         Self::spawn_generation_background_tasks(&startup);
         Self::spawn_metrics_endpoint(&startup)?;
-        Self::spawn_control_api_endpoint(&startup)?;
+        ControlApiEndpointService::spawn_control_api_endpoint(&startup)?;
         Ok(())
     }
 

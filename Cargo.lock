@@ -1537,6 +1537,7 @@ dependencies = [
  "impulse-http3-ingress",
  "impulse-lb",
  "impulse-observability",
+ "impulse-operations",
  "impulse-pingora-ingress",
  "impulse-policy",
  "impulse-runtime",
@@ -1613,6 +1614,18 @@ dependencies = [
 [[package]]
 name = "impulse-operations"
 version = "0.6.0"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "http",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "log",
+ "rustls",
+ "tokio",
+ "tokio-rustls",
+]
 
 [[package]]
 name = "impulse-pingora-ingress"

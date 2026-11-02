@@ -166,7 +166,7 @@ impl Http3Service {
             .is_some_and(|expected| expected.is_current(current_auth_generation));
         if !authorization_is_current {
             return Err(ControlApiActivationError::Response(Box::new(
-                Self::stale_control_api_connection_response(),
+                stale_control_api_connection_response(),
             )));
         }
         if let Some(response) =
@@ -270,7 +270,7 @@ impl Http3Service {
             &activation_request,
             &reload_input,
         );
-        let Some(activation) = Self::run_control_api_blocking({
+        let Some(activation) = run_control_api_blocking({
             let runtime_bundle_handle = Arc::clone(&runtime_bundle_handle);
             move || {
                 RuntimeSupervisor::activate_reload(
@@ -283,7 +283,7 @@ impl Http3Service {
         .await
         else {
             return Err(ControlApiActivationError::Response(Box::new(
-                Self::control_api_internal_error_response(),
+                control_api_internal_error_response(),
             )));
         };
         Self::record_control_api_activation_outcome(&runtime_bundle_handle, &activation);

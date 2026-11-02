@@ -68,7 +68,7 @@ impl Http3Service {
             &activation_request,
             &reload_input,
         );
-        let Some(plan) = Self::run_control_api_blocking({
+        let Some(plan) = run_control_api_blocking({
             let runtime_bundle_handle = Arc::clone(&runtime_bundle_handle);
             move || {
                 RuntimeSupervisor::preview_reload(
@@ -80,7 +80,7 @@ impl Http3Service {
         })
         .await
         else {
-            return Self::control_api_internal_error_response();
+            return control_api_internal_error_response();
         };
         Self::record_control_api_plan_result(&runtime_bundle_handle, "preview", &plan);
         Self::emit_control_api_audit_event(

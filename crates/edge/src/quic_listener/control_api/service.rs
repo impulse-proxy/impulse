@@ -1,12 +1,15 @@
 use std::sync::atomic::AtomicUsize;
 
+use async_trait::async_trait;
 use http_body_util::Full;
+use impulse_operations::{
+    ConnectionSlotGuard, ControlApiConnectionError, ControlApiConnectionService,
+    ControlApiRequestService, try_claim_control_api_connection_slot,
+};
 
 use super::{
-    context::{ConnectionSlotGuard, ControlApiListenerBinding},
-    security::ControlApiSecurityPolicy,
-    state::ControlApiState,
-    *,
+    admin_identity::ControlApiRequestContext, context::ControlApiListenerBinding,
+    security::ControlApiSecurityPolicy, state::ControlApiState, *,
 };
 use crate::quic_listener::runtime_state::ControlPlaneStartup;
 
@@ -17,12 +20,62 @@ struct ControlApiTlsState {
     server_config: Arc<RustlsServerConfig>,
 }
 
-enum ControlApiTlsAcceptError {
-    Handshake(std::io::Error),
-    Timeout,
+#[derive(Clone)]
+struct EdgeControlApiRequestService {
+    state: ControlApiState,
 }
 
-impl Http3Service {
+#[derive(Clone)]
+struct EdgeControlApiConnectionContext {
+    request: ControlApiRequestContext,
+    auth_policy_generation: (Option<u64>, Option<u64>),
+}
+
+#[async_trait]
+impl ControlApiRequestService for EdgeControlApiRequestService {
+    type ConnectionContext = EdgeControlApiConnectionContext;
+
+    fn connection_context(
+        &self,
+        peer: SocketAddr,
+        peer_certificates: Option<&[rustls::pki_types::CertificateDer<'static>]>,
+    ) -> Self::ConnectionContext {
+        let runtime_state = self.state.current_service_state();
+        EdgeControlApiConnectionContext {
+            request: Http3Service::build_control_api_request_context(
+                peer,
+                peer_certificates,
+                runtime_state.security.identity_source.as_ref(),
+                runtime_state.primary_listener_label.clone(),
+            ),
+            auth_policy_generation: runtime_state.auth_policy_generation(),
+        }
+    }
+
+    async fn handle_request(
+        &self,
+        mut request: Request<Incoming>,
+        context: Self::ConnectionContext,
+    ) -> Response<Full<Bytes>> {
+        let current_state = self.state.current_service_state();
+        if !current_state.endpoint.enabled
+            || current_state.auth_policy_generation() != context.auth_policy_generation
+        {
+            return stale_control_api_connection_response();
+        }
+        request
+            .extensions_mut()
+            .insert(Http3Service::augment_control_api_request_context(
+                context.request,
+                &request,
+            ));
+        Http3Service::handle_control_api_request(request, &self.state).await
+    }
+}
+
+pub(in crate::quic_listener) struct ControlApiEndpointService;
+
+impl ControlApiEndpointService {
     pub(in crate::quic_listener) fn spawn_control_api_endpoint(
         startup: &ControlPlaneStartup<'_>,
     ) -> Result<(), ProxyError> {
@@ -59,7 +112,7 @@ impl Http3Service {
                 "{}:{}",
                 startup_state.endpoint.address, startup_state.endpoint.port
             );
-            match Self::bind_tcp_listener(&bind, Some(&handle), "control API endpoint") {
+            match Http3Service::bind_tcp_listener(&bind, Some(&handle), "control API endpoint") {
                 Ok(listener) => Some(ControlApiListenerBinding {
                     bind,
                     listener,
@@ -117,7 +170,11 @@ impl Http3Service {
                         None => true,
                     };
                     if needs_rebind {
-                        match Self::bind_tcp_listener(&desired_bind, None, "control API endpoint") {
+                        match Http3Service::bind_tcp_listener(
+                            &desired_bind,
+                            None,
+                            "control API endpoint",
+                        ) {
                             Ok(listener) => {
                                 info!("Control API endpoint ready bind=https://{}", desired_bind);
                                 info!(
@@ -182,7 +239,7 @@ impl Http3Service {
                     let server_config = tls_state
                         .as_ref()
                         .map(|state| Arc::clone(&state.server_config));
-                    if !Self::try_claim_control_api_connection_slot(
+                    if !try_claim_control_api_connection_slot(
                         &active_connections,
                         max_connections,
                     ) {
@@ -198,169 +255,51 @@ impl Http3Service {
                     }
 
                     tokio::spawn(async move {
-                        Self::serve_control_api_connection(
-                            state,
-                            active_connections,
-                            stream,
-                            peer,
-                            server_config,
-                        )
-                        .await;
+                        let _connection_guard = ConnectionSlotGuard::new(active_connections);
+                        let runtime_state = state.current_service_state();
+                        let timeout = Duration::from_millis(
+                            runtime_state.endpoint.connection_timeout_ms.max(1),
+                        );
+                        let Some(server_config) = server_config else {
+                            error!("Control API endpoint missing live TLS config");
+                            return;
+                        };
+                        let service = ControlApiConnectionService::new(
+                            EdgeControlApiRequestService { state },
+                        );
+                        match service.serve(stream, peer, server_config, timeout).await {
+                            Ok(()) => {}
+                            Err(ControlApiConnectionError::TlsHandshake(error)) => {
+                                let detail = error.to_string();
+                                let reason =
+                                    Http3Service::classify_downstream_tls_failure_reason(&detail);
+                                error!(
+                                    "Control API endpoint TLS handshake failed from {}: reason={} detail={}",
+                                    peer, reason, detail
+                                );
+                            }
+                            Err(ControlApiConnectionError::TlsHandshakeTimeout) => {
+                                debug!(
+                                    "Control API endpoint TLS handshake timed out from {}",
+                                    peer
+                                );
+                            }
+                            Err(ControlApiConnectionError::Http(error)) => {
+                                error!("Control API endpoint connection failed: {}", error);
+                            }
+                            Err(ControlApiConnectionError::ConnectionTimeout) => {
+                                debug!("Control API endpoint connection timed out");
+                            }
+                        }
                     });
                 }
             },
         );
         Ok(())
     }
+}
 
-    fn try_claim_control_api_connection_slot(
-        active_connections: &Arc<AtomicUsize>,
-        max_connections: usize,
-    ) -> bool {
-        loop {
-            let current = active_connections.load(Ordering::Relaxed);
-            if current >= max_connections {
-                return false;
-            }
-            if active_connections
-                .compare_exchange(
-                    current,
-                    current.saturating_add(1),
-                    Ordering::AcqRel,
-                    Ordering::Relaxed,
-                )
-                .is_ok()
-            {
-                return true;
-            }
-        }
-    }
-
-    async fn serve_control_api_connection(
-        state: ControlApiState,
-        active_connections: Arc<AtomicUsize>,
-        stream: tokio::net::TcpStream,
-        peer: SocketAddr,
-        server_config: Option<Arc<RustlsServerConfig>>,
-    ) {
-        let _connection_guard = ConnectionSlotGuard::new(active_connections);
-        let runtime_state = state.current_service_state();
-        let timeout = Duration::from_millis(runtime_state.endpoint.connection_timeout_ms.max(1));
-        let Some(server_config) = server_config else {
-            error!("Control API endpoint missing live TLS config");
-            return;
-        };
-        let tls_stream = match Self::accept_control_api_tls(stream, server_config, timeout).await {
-            Ok(stream) => stream,
-            Err(ControlApiTlsAcceptError::Handshake(err)) => {
-                let detail = err.to_string();
-                let reason = Self::classify_downstream_tls_failure_reason(&detail);
-                error!(
-                    "Control API endpoint TLS handshake failed from {}: reason={} detail={}",
-                    peer, reason, detail
-                );
-                return;
-            }
-            Err(ControlApiTlsAcceptError::Timeout) => {
-                debug!("Control API endpoint TLS handshake timed out from {}", peer);
-                return;
-            }
-        };
-        let request_context = Self::build_control_api_request_context(
-            peer,
-            tls_stream.get_ref().1.peer_certificates(),
-            runtime_state.security.identity_source.as_ref(),
-            runtime_state.primary_listener_label.clone(),
-        );
-        let auth_policy_generation = runtime_state.auth_policy_generation();
-        let io = TokioIo::new(tls_stream);
-        let service = service_fn(move |mut req: Request<Incoming>| {
-            let state = state.clone();
-            let auth_policy_generation = auth_policy_generation;
-            let request_context =
-                Self::augment_control_api_request_context(request_context.clone(), &req);
-            async move {
-                let current_state = state.current_service_state();
-                if !current_state.endpoint.enabled
-                    || current_state.auth_policy_generation() != auth_policy_generation
-                {
-                    return Ok::<_, hyper::Error>(Self::stale_control_api_connection_response());
-                }
-                req.extensions_mut().insert(request_context);
-                Ok::<_, hyper::Error>(Self::handle_control_api_request(req, &state).await)
-            }
-        });
-
-        let serve = http1::Builder::new().serve_connection(io, service);
-        match tokio::time::timeout(timeout, serve).await {
-            Ok(Ok(())) => {}
-            Ok(Err(err)) => {
-                error!("Control API endpoint connection failed: {}", err);
-            }
-            Err(_) => {
-                debug!("Control API endpoint connection timed out");
-            }
-        }
-    }
-
-    /// Run synchronous, potentially filesystem-touching runtime-reload work
-    /// (config reads, TLS/CA material loading) on Tokio's blocking-thread
-    /// pool instead of the control API's own async worker.
-    ///
-    /// `read_file_with_limit` no longer blocks indefinitely on a FIFO
-    /// (SEC-08), but arbitrary caller-supplied paths can still be slow to
-    /// read (large files, loaded disks, network filesystems); running that
-    /// work here keeps one slow request from starving the shared
-    /// control-plane async workers.
-    ///
-    /// Returns `None` if the blocking task panicked; callers should treat
-    /// that as an internal error rather than propagating the panic into the
-    /// request-handling task.
-    pub(super) async fn run_control_api_blocking<F, T>(work: F) -> Option<T>
-    where
-        F: FnOnce() -> T + Send + 'static,
-        T: Send + 'static,
-    {
-        match tokio::task::spawn_blocking(work).await {
-            Ok(value) => Some(value),
-            Err(err) => {
-                error!("control API blocking task panicked: {}", err);
-                None
-            }
-        }
-    }
-
-    pub(super) fn control_api_internal_error_response() -> Response<Full<Bytes>> {
-        Self::json_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            json!({ "error": "internal_error" }),
-        )
-    }
-
-    pub(super) fn stale_control_api_connection_response() -> Response<Full<Bytes>> {
-        Response::builder()
-            .status(StatusCode::UNAUTHORIZED)
-            .header("connection", "close")
-            .body(Full::new(Bytes::from_static(
-                b"control API authentication policy changed\n",
-            )))
-            .unwrap_or_else(|_| Response::new(Full::new(Bytes::from_static(b"unauthorized\n"))))
-    }
-
-    async fn accept_control_api_tls(
-        stream: tokio::net::TcpStream,
-        server_config: Arc<RustlsServerConfig>,
-        timeout: Duration,
-    ) -> Result<tokio_rustls::server::TlsStream<tokio::net::TcpStream>, ControlApiTlsAcceptError>
-    {
-        let accept = TlsAcceptor::from(server_config).accept(stream);
-        match tokio::time::timeout(timeout, accept).await {
-            Ok(Ok(stream)) => Ok(stream),
-            Ok(Err(err)) => Err(ControlApiTlsAcceptError::Handshake(err)),
-            Err(_) => Err(ControlApiTlsAcceptError::Timeout),
-        }
-    }
-
+impl ControlApiEndpointService {
     fn build_control_api_tls_state(
         runtime_state: &super::context::ControlApiServiceState,
     ) -> Result<ControlApiTlsState, ProxyError> {
@@ -386,8 +325,10 @@ impl Http3Service {
             .generation(&primary_listener_label)
             .unwrap_or(0);
         let security = Arc::clone(&runtime_state.security);
-        let server_config =
-            Self::build_control_api_server_tls_config(&listener_config, &security.client_auth)?;
+        let server_config = Http3Service::build_control_api_server_tls_config(
+            &listener_config,
+            &security.client_auth,
+        )?;
 
         Ok(ControlApiTlsState {
             primary_listener_label,
@@ -455,10 +396,16 @@ mod tests {
         let _client = client_result.expect("client connection");
         let (server, _) = server_result.expect("server connection");
 
-        let result =
-            Http3Service::accept_control_api_tls(server, server_config, Duration::from_millis(10))
-                .await;
+        let result = impulse_operations::accept_control_api_tls(
+            server,
+            server_config,
+            Duration::from_millis(10),
+        )
+        .await;
 
-        assert!(matches!(result, Err(ControlApiTlsAcceptError::Timeout)));
+        assert!(matches!(
+            result,
+            Err(ControlApiConnectionError::TlsHandshakeTimeout)
+        ));
     }
 }

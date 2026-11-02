@@ -1,7 +1,8 @@
-use hyper::{server::conn::http1, service::service_fn};
-use hyper_util::rt::TokioIo;
 use impulse_config::config::ControlApi as ControlApiConfig;
-use tokio_rustls::TlsAcceptor;
+use impulse_operations::{
+    control_api_internal_error_response, run_control_api_blocking,
+    stale_control_api_connection_response,
+};
 
 use super::*;
 
@@ -13,7 +14,7 @@ mod http;
 mod reload;
 mod render;
 pub(in crate::quic_listener) mod security;
-mod service;
+pub(super) mod service;
 mod state;
 
 #[cfg(test)]

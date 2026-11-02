@@ -4485,7 +4485,7 @@ fn run_control_api_blocking_does_not_stall_the_async_runtime() {
             std::time::Instant::now()
         });
 
-        let blocking_result = Http3Service::run_control_api_blocking(|| {
+        let blocking_result = run_control_api_blocking(|| {
             std::thread::sleep(std::time::Duration::from_millis(200));
             42
         })
