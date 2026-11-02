@@ -1620,7 +1620,6 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
- "impulse-config",
  "impulse-observability",
  "impulse-utils",
  "libc",

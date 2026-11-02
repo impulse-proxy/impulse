@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use impulse_config::runtime::RuntimeConfig;
 use impulse_errors::ProxyError;
-use impulse_operations::watchdog::{WatchdogCoordinator, WatchdogRuntimeConfig};
+use impulse_operations::watchdog::WatchdogCoordinator;
 use log::error;
 
 use super::{
@@ -21,6 +21,7 @@ use crate::{
         },
         bundle::RuntimeBundleHandle,
         shared_state::SharedRuntimeState,
+        subsystem_mapping::watchdog_runtime_config,
         watchdog::{
             service::run_watchdog_service,
             state::{WatchdogServiceState, WatchdogSpawnState},
@@ -153,7 +154,7 @@ impl Http3Service {
     pub(super) fn watchdog_spawn_state(service_ctx: WatchdogServiceCtx) -> WatchdogSpawnState {
         WatchdogSpawnState {
             service: WatchdogServiceState {
-                config: WatchdogRuntimeConfig::from(
+                config: watchdog_runtime_config(
                     &service_ctx
                         .runtime
                         .runtime_config()

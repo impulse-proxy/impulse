@@ -34,7 +34,7 @@ impl AdministrativeSecurity {
             .cloned();
         if matches!(
             security.client_auth.mode,
-            impulse_config::config::ControlApiClientAuthMode::Required
+            super::security::AdminClientAuthMode::Required
         ) && request_context
             .as_ref()
             .and_then(|context| context.mtls_identity.as_ref())

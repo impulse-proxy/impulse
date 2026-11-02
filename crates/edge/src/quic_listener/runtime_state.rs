@@ -10,7 +10,9 @@ use impulse_transport::{SharedDnsResolver, UpstreamTransportPool};
 
 use crate::{
     Metrics,
-    quic_listener::control_api::security::{ControlApiAuthThrottle, ControlApiSecurityPolicy},
+    quic_listener::control_api::security::{
+        ControlApiAuthThrottle, ControlApiSecurityPolicy, control_api_security_policy_from_config,
+    },
     resilience::runtime::RuntimeResilience,
     runtime::{
         backend::lifecycle::BackendLifecycleCoordinator,
@@ -66,7 +68,7 @@ impl ControlPlaneRuntimeView {
             primary_listener_label: runtime_config
                 .primary_listener_runtime_config()
                 .map(|listener| crate::quic_listener::Http3Service::listener_label(&listener)),
-            control_api_security: Arc::new(ControlApiSecurityPolicy::from_config(
+            control_api_security: Arc::new(control_api_security_policy_from_config(
                 &runtime_config.observability.control_api,
                 Arc::clone(&shared.metrics),
             )),
@@ -92,7 +94,7 @@ impl ControlPlaneRuntimeView {
                 .runtime_config
                 .primary_listener_runtime_config()
                 .map(|listener| crate::quic_listener::Http3Service::listener_label(&listener)),
-            control_api_security: Arc::new(ControlApiSecurityPolicy::from_config(
+            control_api_security: Arc::new(control_api_security_policy_from_config(
                 &view.runtime_config.observability.control_api,
                 Arc::clone(&view.shared.metrics),
             )),

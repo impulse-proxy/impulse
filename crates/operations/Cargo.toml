@@ -9,7 +9,6 @@ async-trait.workspace = true
 bytes.workspace = true
 http.workspace = true
 http-body-util.workspace = true
-impulse-config = { path = "../config" }
 impulse-observability = { path = "../observability" }
 impulse-utils = { path = "../utils" }
 hyper = { workspace = true, features = ["http1", "server"] }

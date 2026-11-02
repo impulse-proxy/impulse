@@ -2803,7 +2803,7 @@ fn control_api_state_builds_runtime_security_policy_from_reloaded_config() {
 
     assert_eq!(
         security.client_auth.mode,
-        ControlApiClientAuthMode::Required
+        super::security::AdminClientAuthMode::Required
     );
     assert_eq!(
         security.client_auth.verifier,
@@ -2816,7 +2816,10 @@ fn control_api_state_builds_runtime_security_policy_from_reloaded_config() {
     );
     assert_eq!(security.bearer_tokens.len(), 1);
     assert_eq!(security.bearer_tokens[0].token, "operator-token");
-    assert_eq!(security.bearer_tokens[0].role, ControlApiRole::Operator);
+    assert_eq!(
+        security.bearer_tokens[0].role,
+        super::security::AdminRole::Operator
+    );
     assert!(
         security
             .ip_allowlist
@@ -2849,13 +2852,13 @@ fn control_api_tls_builder_supports_disabled_optional_and_required_client_auth()
         .expect("primary listener runtime config");
 
     let disabled = super::security::ControlApiClientAuthPolicy {
-        mode: ControlApiClientAuthMode::Disabled,
+        mode: super::security::AdminClientAuthMode::Disabled,
         verifier: super::security::ControlApiClientVerifierState::Disabled,
     };
     assert!(Http3Service::build_control_api_server_tls_config(&listener_config, &disabled).is_ok());
 
     let optional = super::security::ControlApiClientAuthPolicy {
-        mode: ControlApiClientAuthMode::Optional,
+        mode: super::security::AdminClientAuthMode::Optional,
         verifier: super::security::ControlApiClientVerifierState::Configured(
             super::security::ControlApiClientCaMaterial {
                 ca_file: Some(cert.clone()),
@@ -2866,7 +2869,7 @@ fn control_api_tls_builder_supports_disabled_optional_and_required_client_auth()
     assert!(Http3Service::build_control_api_server_tls_config(&listener_config, &optional).is_ok());
 
     let required = super::security::ControlApiClientAuthPolicy {
-        mode: ControlApiClientAuthMode::Required,
+        mode: super::security::AdminClientAuthMode::Required,
         verifier: super::security::ControlApiClientVerifierState::Configured(
             super::security::ControlApiClientCaMaterial {
                 ca_file: Some(cert),

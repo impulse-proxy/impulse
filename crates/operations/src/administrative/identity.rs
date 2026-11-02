@@ -46,16 +46,6 @@ pub enum AdminRole {
     Admin,
 }
 
-impl From<impulse_config::config::ControlApiRole> for AdminRole {
-    fn from(value: impulse_config::config::ControlApiRole) -> Self {
-        match value {
-            impulse_config::config::ControlApiRole::Viewer => Self::Viewer,
-            impulse_config::config::ControlApiRole::Operator => Self::Operator,
-            impulse_config::config::ControlApiRole::Admin => Self::Admin,
-        }
-    }
-}
-
 impl AdminRole {
     fn most_privileged(roles: &[Self]) -> Option<Self> {
         roles.iter().copied().max()
@@ -283,7 +273,7 @@ impl AdministrativeSecurity {
             if is_match == 1 {
                 matched = Some(AdminTokenMatch {
                     actor_id: entry.actor_id.clone(),
-                    role: AdminRole::from(entry.role),
+                    role: entry.role,
                 });
             }
             matched_any |= is_match;

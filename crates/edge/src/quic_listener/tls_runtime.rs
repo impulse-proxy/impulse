@@ -8,7 +8,8 @@ use std::{
 
 use super::*;
 use crate::quic_listener::control_api::security::{
-    ControlApiClientAuthPolicy, ControlApiClientVerifierState,
+    AdminClientAuthMode, ControlApiClientAuthPolicy, ControlApiClientVerifierState,
+    control_api_security_policy_from_config,
 };
 
 const MAX_TLS_PEM_BYTES: u64 = 1024 * 1024;
@@ -927,11 +928,8 @@ impl Http3Service {
         let loaded_tls = Self::load_listener_tls_material(config)?;
 
         let builder = match client_auth.mode {
-            impulse_config::config::ControlApiClientAuthMode::Disabled => {
-                RustlsServerConfig::builder().with_no_client_auth()
-            }
-            impulse_config::config::ControlApiClientAuthMode::Optional
-            | impulse_config::config::ControlApiClientAuthMode::Required => {
+            AdminClientAuthMode::Disabled => RustlsServerConfig::builder().with_no_client_auth(),
+            AdminClientAuthMode::Optional | AdminClientAuthMode::Required => {
                 let roots =
                     Self::load_control_api_client_auth_roots(client_auth)?.ok_or_else(|| {
                         ProxyError::Tls(
@@ -940,10 +938,7 @@ impl Http3Service {
                         )
                     })?;
                 let verifier_builder = WebPkiClientVerifier::builder(roots);
-                let verifier = if matches!(
-                    client_auth.mode,
-                    impulse_config::config::ControlApiClientAuthMode::Required
-                ) {
+                let verifier = if matches!(client_auth.mode, AdminClientAuthMode::Required) {
                     verifier_builder.build()
                 } else {
                     verifier_builder.allow_unauthenticated().build()
@@ -987,7 +982,7 @@ impl Http3Service {
         control_api: &ControlApiConfig,
         metrics: Arc<Metrics>,
     ) -> Result<(), ProxyError> {
-        let security = ControlApiSecurityPolicy::from_config(control_api, metrics);
+        let security = control_api_security_policy_from_config(control_api, metrics);
         Self::build_control_api_server_tls_config(config, &security.client_auth).map(|_| ())
     }
 
@@ -1210,10 +1205,7 @@ mod tests {
     use std::sync::Arc;
 
     use boring::{pkey::PKey, x509::X509};
-    use impulse_config::{
-        config::{ClientAuth, ControlApiClientAuthMode},
-        runtime::RuntimeTlsIdentity,
-    };
+    use impulse_config::{config::ClientAuth, runtime::RuntimeTlsIdentity};
     use rcgen::{Certificate, CertificateParams, SanType};
     use rustls::RootCertStore;
     use tempfile::tempdir;
@@ -1222,7 +1214,8 @@ mod tests {
         Http3Service, LoadedClientAuthCa, MAX_TLS_PEM_BYTES, RuntimeTlsCertificateMetadata,
     };
     use crate::quic_listener::control_api::security::{
-        ControlApiClientAuthPolicy, ControlApiClientCaMaterial, ControlApiClientVerifierState,
+        AdminClientAuthMode, ControlApiClientAuthPolicy, ControlApiClientCaMaterial,
+        ControlApiClientVerifierState,
     };
 
     fn write_test_identity_files(dir: &std::path::Path) -> RuntimeTlsIdentity {
@@ -1246,7 +1239,7 @@ mod tests {
         ca_dir: Option<String>,
     ) -> ControlApiClientAuthPolicy {
         ControlApiClientAuthPolicy {
-            mode: ControlApiClientAuthMode::Required,
+            mode: AdminClientAuthMode::Required,
             verifier: ControlApiClientVerifierState::Configured(ControlApiClientCaMaterial {
                 ca_file,
                 ca_dir,

@@ -19,7 +19,6 @@ use impulse_errors::{
     UpstreamErrorCategory, UpstreamErrorClassification, UpstreamTlsReason,
     classify_upstream_error_detail,
 };
-use impulse_operations::watchdog::WatchdogRuntimeConfig;
 use rcgen::{Certificate, CertificateParams, SanType};
 use tempfile::tempdir;
 
@@ -526,8 +525,9 @@ fn watchdog_service_state_prefers_reloaded_runtime_view_settings() {
     );
     let runtime_view = runtime_ctx.current_view();
     let task_registry = runtime_view.generation_tasks();
-    let expected_config =
-        WatchdogRuntimeConfig::from(&reloaded_runtime.policies.admission.watchdog);
+    let expected_config = crate::runtime::subsystem_mapping::watchdog_runtime_config(
+        &reloaded_runtime.policies.admission.watchdog,
+    );
     let expected_metrics = runtime_view.metrics();
     let expected_resilience = runtime_view.resilience();
     let expected_watchdog = runtime_view.watchdog();

@@ -13,12 +13,14 @@ use impulse_config::{
         RuntimeAuthPolicy, RuntimeBackend, RuntimeBackendTransportKind, RuntimeConfig,
         RuntimeJwtAuth, RuntimeLoadBalancingStrategy, RuntimeRequestKeySpec,
         RuntimeResponseCachePolicy, RuntimeResponseCompressionPolicy, RuntimeUpstream,
+        RuntimeWatchdogPolicy,
     },
 };
 use impulse_lb::{
     BackendHealthInput, BackendInput, BackendWeight, LoadBalancingStrategy, RequestKeyInput,
     upstream_pool::UpstreamPool,
 };
+use impulse_operations::watchdog::WatchdogRuntimeConfig;
 use impulse_policy::{
     ApiKeyPolicyInput, JwtAllowedAlgorithms, JwtPolicyInput, ResponseCacheAuthInput,
     ResponseCachePolicyInput, ResponseCompressionPolicyInput,
@@ -78,6 +80,38 @@ pub(crate) const fn response_compression_policy_input(
     ResponseCompressionPolicyInput {
         enabled: policy.enabled,
         minimum_size_bytes: policy.minimum_size_bytes,
+    }
+}
+
+pub(crate) fn watchdog_runtime_config(policy: &RuntimeWatchdogPolicy) -> WatchdogRuntimeConfig {
+    WatchdogRuntimeConfig {
+        enabled: policy.enabled,
+        check_interval_ms: policy
+            .check_interval
+            .as_millis()
+            .try_into()
+            .unwrap_or(u64::MAX),
+        poll_stall_timeout_ms: policy
+            .poll_stall_timeout
+            .as_millis()
+            .try_into()
+            .unwrap_or(u64::MAX),
+        timeout_error_rate_percent: policy.timeout_error_rate_percent,
+        min_requests_per_window: policy.min_requests_per_window,
+        overload_inflight_percent: policy.overload_inflight_percent,
+        unhealthy_consecutive_windows: policy.unhealthy_consecutive_windows,
+        drain_grace_ms: policy
+            .drain_grace
+            .as_millis()
+            .try_into()
+            .unwrap_or(u64::MAX),
+        restart_cooldown_ms: policy
+            .restart_cooldown
+            .as_millis()
+            .try_into()
+            .unwrap_or(u64::MAX),
+        restart_command: policy.restart_command.clone(),
+        restart_hook: None,
     }
 }
 

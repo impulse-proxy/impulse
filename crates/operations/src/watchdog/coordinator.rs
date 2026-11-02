@@ -6,7 +6,6 @@ use std::{
     time::Instant,
 };
 
-use impulse_config::config::Watchdog as WatchdogConfig;
 use log::warn;
 
 use super::{config::WatchdogRuntimeConfig, time::now_millis};
@@ -26,10 +25,6 @@ pub struct WatchdogCoordinator {
 }
 
 impl WatchdogCoordinator {
-    pub fn new(config: &WatchdogConfig) -> Self {
-        Self::from_runtime_config(&WatchdogRuntimeConfig::from(config))
-    }
-
     pub fn from_runtime_config(config: &WatchdogRuntimeConfig) -> Self {
         let now_ms = now_millis();
         Self {

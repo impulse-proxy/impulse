@@ -13,9 +13,6 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use impulse_config::config::{
-    ControlApi as ControlApiConfig, ControlApiAuditFormat, ControlApiAuditSink,
-};
 use impulse_observability::Metrics;
 use impulse_utils::logger::CONTROL_API_AUDIT_LOG_TARGET;
 use log::{Level, Metadata, Record, error, warn};
@@ -34,6 +31,11 @@ pub const ADMIN_AUDIT_SCHEMA_VERSION: &str = "v1";
 const CONTROL_API_AUDIT_BUFFER_CAPACITY: usize = 1024;
 static ADMIN_AUDIT_EVENT_COUNTER: AtomicU64 = AtomicU64::new(1);
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum AdminAuditFormat {
+    Json,
+}
+
 fn now_millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -42,23 +44,22 @@ fn now_millis() -> u64 {
 
 pub struct ControlApiAdminAuditEmitter {
     pub enabled: bool,
-    pub format: ControlApiAuditFormat,
+    pub format: AdminAuditFormat,
     pub sink: ControlApiAdminAuditTarget,
     delivery: ControlApiAdminAuditDelivery,
     metrics: Arc<Metrics>,
 }
 
 impl ControlApiAdminAuditEmitter {
-    pub fn from_config(config: &ControlApiConfig, metrics: Arc<Metrics>) -> Self {
-        let sink = match config.audit.sink {
-            ControlApiAuditSink::Log => ControlApiAdminAuditTarget::Log,
-            ControlApiAuditSink::File => {
-                ControlApiAdminAuditTarget::File(config.audit.file_path.clone())
-            }
-        };
+    pub fn new(
+        enabled: bool,
+        format: AdminAuditFormat,
+        sink: ControlApiAdminAuditTarget,
+        metrics: Arc<Metrics>,
+    ) -> Self {
         Self {
-            enabled: config.audit.enabled,
-            format: config.audit.format,
+            enabled,
+            format,
             delivery: ControlApiAdminAuditDelivery::for_target(&sink, Arc::clone(&metrics)),
             sink,
             metrics,
@@ -791,7 +792,7 @@ impl ControlApiAdminAuditEmitter {
 
     fn emit(&self, event: &AdminAuditEvent) {
         let serialized = match self.format {
-            ControlApiAuditFormat::Json => match serde_json::to_string(event) {
+            AdminAuditFormat::Json => match serde_json::to_string(event) {
                 Ok(serialized) => serialized,
                 Err(err) => {
                     error!("failed to serialize control API admin audit event: {}", err);
@@ -871,14 +872,13 @@ mod tests {
 
     #[test]
     fn audit_emitter_reports_degraded_file_delivery() {
-        let mut config = ControlApiConfig::default();
-        config.audit.enabled = true;
-        config.audit.sink = ControlApiAuditSink::File;
-        config.audit.file_path = Some("unused-audit-path".to_string());
-
         force_audit_writer_thread_spawn_failure_for_test(true);
-        let emitter =
-            ControlApiAdminAuditEmitter::from_config(&config, Arc::new(Metrics::default()));
+        let emitter = ControlApiAdminAuditEmitter::new(
+            true,
+            AdminAuditFormat::Json,
+            ControlApiAdminAuditTarget::File(Some("unused-audit-path".to_string())),
+            Arc::new(Metrics::default()),
+        );
         force_audit_writer_thread_spawn_failure_for_test(false);
 
         assert!(emitter.delivery_degraded());

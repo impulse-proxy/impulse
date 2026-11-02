@@ -5,13 +5,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use impulse_config::config::{
-    ControlApi as ControlApiConfig, ControlApiBearerToken, ControlApiClientAuthMode,
-    ControlApiIdentitySource, ControlApiRole,
-};
-use impulse_observability::Metrics;
-
-use super::audit::ControlApiAdminAuditEmitter;
+use super::{audit::ControlApiAdminAuditEmitter, identity::AdminRole};
 
 const AUTH_FAILURE_LIMIT: u32 = 5;
 const AUTH_FAILURE_WINDOW: Duration = Duration::from_secs(60);
@@ -118,39 +112,48 @@ pub struct ControlApiSecurityPolicy {
 }
 
 impl ControlApiSecurityPolicy {
-    pub fn from_config(config: &ControlApiConfig, metrics: Arc<Metrics>) -> Self {
+    pub fn new(
+        client_auth: ControlApiClientAuthPolicy,
+        bearer_tokens: Vec<ControlApiBearerTokenEntry>,
+        identity_source: Option<ControlApiIdentitySourcePolicy>,
+        authorization: ControlApiAuthorizationPolicy,
+        ip_allowlist: ControlApiIpAllowlistPolicy,
+        audit: ControlApiAdminAuditEmitter,
+    ) -> Self {
         Self {
-            client_auth: ControlApiClientAuthPolicy::from_config(config),
-            bearer_tokens: Arc::new(runtime_bearer_tokens(config)),
-            identity_source: config
-                .auth
-                .identity_source
-                .as_ref()
-                .map(ControlApiIdentitySourcePolicy::from_config),
-            authorization: ControlApiAuthorizationPolicy::from_config(config),
-            ip_allowlist: ControlApiIpAllowlistPolicy::from_config(config),
-            audit: ControlApiAdminAuditEmitter::from_config(config, metrics),
+            client_auth,
+            bearer_tokens: Arc::new(bearer_tokens),
+            identity_source,
+            authorization,
+            ip_allowlist,
+            audit,
         }
     }
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum AdminClientAuthMode {
+    Disabled,
+    Optional,
+    Required,
+}
+
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct ControlApiClientAuthPolicy {
-    pub mode: ControlApiClientAuthMode,
+    pub mode: AdminClientAuthMode,
     pub verifier: ControlApiClientVerifierState,
 }
 
 impl ControlApiClientAuthPolicy {
-    fn from_config(config: &ControlApiConfig) -> Self {
-        let client_auth = &config.tls.client_auth;
+    pub fn new(mode: AdminClientAuthMode, ca_file: Option<String>, ca_dir: Option<String>) -> Self {
         Self {
-            mode: client_auth.mode,
-            verifier: if matches!(client_auth.mode, ControlApiClientAuthMode::Disabled) {
+            mode,
+            verifier: if matches!(mode, AdminClientAuthMode::Disabled) {
                 ControlApiClientVerifierState::Disabled
             } else {
                 ControlApiClientVerifierState::Configured(ControlApiClientCaMaterial {
-                    ca_file: client_auth.ca_file.clone(),
-                    ca_dir: client_auth.ca_dir.clone(),
+                    ca_file,
+                    ca_dir,
                 })
             },
         }
@@ -172,7 +175,7 @@ pub struct ControlApiClientCaMaterial {
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct ControlApiBearerTokenEntry {
     pub token: String,
-    pub role: ControlApiRole,
+    pub role: AdminRole,
     pub actor_id: Option<String>,
     pub source: ControlApiBearerTokenSource,
 }
@@ -187,37 +190,15 @@ pub enum ControlApiBearerTokenSource {
 pub struct ControlApiAuthorizationPolicy {
     pub protect_health: bool,
     pub protect_ready: bool,
-    pub runtime_read_role: ControlApiRole,
-    pub runtime_mutate_role: ControlApiRole,
-    pub restart_role: ControlApiRole,
+    pub runtime_read_role: AdminRole,
+    pub runtime_mutate_role: AdminRole,
+    pub restart_role: AdminRole,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct ControlApiIdentitySourcePolicy {
     pub kind: String,
     pub role_attribute: Option<String>,
-}
-
-impl ControlApiIdentitySourcePolicy {
-    fn from_config(config: &ControlApiIdentitySource) -> Self {
-        Self {
-            kind: config.kind.clone(),
-            role_attribute: config.role_attribute.clone(),
-        }
-    }
-}
-
-impl ControlApiAuthorizationPolicy {
-    fn from_config(config: &ControlApiConfig) -> Self {
-        let authz = &config.authorization;
-        Self {
-            protect_health: authz.protect_health,
-            protect_ready: authz.protect_ready,
-            runtime_read_role: authz.runtime_read_role,
-            runtime_mutate_role: authz.runtime_mutate_role,
-            restart_role: authz.restart_role,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -228,21 +209,21 @@ pub struct ControlApiIpAllowlistPolicy {
 }
 
 impl ControlApiIpAllowlistPolicy {
-    fn from_config(config: &ControlApiConfig) -> Self {
-        let cidrs = config
-            .ip_allowlist
-            .cidrs
+    pub fn new(
+        trust_proxy_headers: bool,
+        cidrs: &[String],
+        trusted_proxy_cidrs: &[String],
+    ) -> Self {
+        let cidrs = cidrs
             .iter()
             .filter_map(|cidr| ControlApiIpNetwork::parse(cidr))
             .collect::<Vec<_>>();
-        let trusted_proxy_cidrs = config
-            .ip_allowlist
-            .trusted_proxy_cidrs
+        let trusted_proxy_cidrs = trusted_proxy_cidrs
             .iter()
             .filter_map(|cidr| ControlApiIpNetwork::parse(cidr))
             .collect::<Vec<_>>();
         Self {
-            trust_proxy_headers: config.ip_allowlist.trust_proxy_headers,
+            trust_proxy_headers,
             matcher: (!cidrs.is_empty()).then_some(ControlApiIpAllowlistMatcher { cidrs }),
             trusted_proxy_matcher: (!trusted_proxy_cidrs.is_empty()).then_some(
                 ControlApiIpAllowlistMatcher {
@@ -486,35 +467,6 @@ impl ControlApiIpNetwork {
             }
             _ => false,
         }
-    }
-}
-
-fn runtime_bearer_tokens(config: &ControlApiConfig) -> Vec<ControlApiBearerTokenEntry> {
-    let mut tokens = Vec::new();
-    if let Some(token) = config.auth_token.as_ref() {
-        tokens.push(ControlApiBearerTokenEntry {
-            token: token.clone(),
-            role: ControlApiRole::Admin,
-            actor_id: Some("legacy_auth_token".to_string()),
-            source: ControlApiBearerTokenSource::LegacyAuthToken,
-        });
-    }
-    tokens.extend(
-        config
-            .auth
-            .bearer_tokens
-            .iter()
-            .map(runtime_bearer_token_from_config),
-    );
-    tokens
-}
-
-fn runtime_bearer_token_from_config(token: &ControlApiBearerToken) -> ControlApiBearerTokenEntry {
-    ControlApiBearerTokenEntry {
-        token: token.token.clone(),
-        role: token.role,
-        actor_id: token.actor_id.clone(),
-        source: ControlApiBearerTokenSource::StaticTokenList,
     }
 }
 

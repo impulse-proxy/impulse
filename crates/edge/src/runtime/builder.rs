@@ -11,7 +11,7 @@ use impulse_errors::ProxyError;
 use impulse_lb::pingora_backend::{
     GenerationBackendView, HealthRegistry, PingoraLoadBalancingRuntimeState, map_validated_backend,
 };
-use impulse_operations::watchdog::{WatchdogCoordinator, WatchdogRuntimeConfig};
+use impulse_operations::watchdog::WatchdogCoordinator;
 use impulse_transport::PingoraBackendHealthIdentity;
 use log::{debug, info, warn};
 use tokio::sync::Semaphore;
@@ -28,7 +28,7 @@ use crate::{
         shared_state::SharedRuntimeState,
         subsystem_mapping::{
             load_balancing_backend_inputs, load_balancing_strategy_input,
-            upstream_pool_from_runtime, upstream_transport_inputs,
+            upstream_pool_from_runtime, upstream_transport_inputs, watchdog_runtime_config,
         },
         tasks::RuntimeTaskRegistry,
         tls::store::ListenerTlsReloadStore,
@@ -343,7 +343,7 @@ impl RuntimeBuilder {
         let watchdog = match &carried {
             Some(carried) => Arc::clone(&carried.watchdog),
             None => Arc::new(WatchdogCoordinator::from_runtime_config(
-                &WatchdogRuntimeConfig::from(&config.policies.admission.watchdog),
+                &watchdog_runtime_config(&config.policies.admission.watchdog),
             )),
         };
         let process_tasks = carried
