@@ -219,7 +219,7 @@ fn overload_response_headers(body: &[u8], retry_after_seconds: u32) -> Vec<quich
 
 #[cfg(test)]
 fn admission_rejection_headers(
-    response: &crate::quic_listener::admission::AdmissionRejectionResponse,
+    response: &impulse_contracts::BoundedRejectionResponse,
 ) -> Vec<quiche::h3::Header> {
     let retry_after = response
         .retry_after_seconds
@@ -899,7 +899,7 @@ impl Http3Service {
         h3: &mut quiche::h3::Connection,
         quic: &mut quiche::Connection,
         stream_id: u64,
-        response: &crate::quic_listener::admission::AdmissionRejectionResponse,
+        response: &impulse_contracts::BoundedRejectionResponse,
     ) -> Result<(), quiche::h3::Error> {
         let retry_after = response
             .retry_after_seconds
@@ -1867,14 +1867,12 @@ impl Http3Service {
 
 #[cfg(test)]
 mod tests {
+    use impulse_contracts::BoundedRejectionResponse as AdmissionRejectionResponse;
     use quiche::h3::NameValue;
 
     use super::*;
-    use crate::{
-        quic_listener::admission::AdmissionRejectionResponse,
-        runtime::connection::auth::{
-            ExternalAuthChallengeResponse, ExternalAuthDenyResponse, ExternalAuthRedirectResponse,
-        },
+    use crate::runtime::connection::auth::{
+        ExternalAuthChallengeResponse, ExternalAuthDenyResponse, ExternalAuthRedirectResponse,
     };
 
     fn header_value<'a>(headers: &'a [quiche::h3::Header], name: &[u8]) -> Option<&'a [u8]> {

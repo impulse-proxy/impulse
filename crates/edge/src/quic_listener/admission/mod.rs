@@ -33,9 +33,10 @@ use impulse_config::{
     runtime::{RuntimeConfig, RuntimeJwtAuth, RuntimeJwtVerificationKey, RuntimeUpstreamPolicy},
 };
 use impulse_lb::upstream_pool::UpstreamPool;
+#[cfg(test)]
+use impulse_policy::evaluate_brownout_admission;
 use impulse_policy::{
-    ScopedRateLimitEvaluation, evaluate_adaptive_admission, evaluate_brownout_admission,
-    evaluate_scoped_rate_limit,
+    ScopedRateLimitEvaluation, evaluate_adaptive_admission, evaluate_scoped_rate_limit,
 };
 use quiche::h3::NameValue;
 use serde_json::Value;
@@ -51,11 +52,11 @@ use tokio::{
 use super::{Http3Service, LbHeaderLookup, runtime_handle};
 use crate::{
     RouteOutcome,
+    edge_core::request_execution::{QuotaRejectedDecision, evaluate_post_auth_quota_policy},
     metrics::OverloadShedReason,
     resilience::{
         adaptive_admission::AdaptivePermit,
-        brownout::BrownoutController,
-        quota::{QuotaDecision, QuotaDenyReason, QuotaIdentityContext, evaluate_admission_quota},
+        quota::{QuotaDecision, QuotaIdentityContext, evaluate_admission_quota},
         route_queue::{RouteQueuePermit, RouteQueueRejection},
         runtime::RuntimeResilience,
         scoped_rate_limit::ScopedRateLimiters,
@@ -71,10 +72,10 @@ mod key_resolution;
 mod startup;
 
 pub(crate) use impulse_contracts::{
-    AuthChallengeKind, BoundedRejectionResponse as AdmissionRejectionResponse, OverloadDecision,
-    OverloadDecisionReason, RateLimitedDecision, RequestDecision as AdmissionPolicyDecision,
-    UnauthorizedDecision,
+    AuthChallengeKind, OverloadDecision, OverloadDecisionReason, RateLimitedDecision,
+    RequestDecision, UnauthorizedDecision,
 };
+type AdmissionPolicyDecision = RequestDecision;
 use impulse_policy::jwks::*;
 pub(super) use impulse_policy::jwks::{
     JwtJwksFetchFailure, JwtJwksFetchFailureReason, JwtJwksRuntimeSnapshot,
@@ -125,15 +126,6 @@ pub(crate) const fn overload_metrics_reason(reason: OverloadDecisionReason) -> O
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct QuotaRejectedDecision {
-    pub(super) policy_name: String,
-    pub(super) reason: QuotaDenyReason,
-    pub(super) status: StatusCode,
-    pub(super) body: &'static [u8],
-    pub(super) retry_after_seconds: Option<u32>,
-}
-
 #[derive(Debug, Clone)]
 pub(super) struct PostAuthAdmissionFailure {
     pub(super) status: StatusCode,
@@ -166,43 +158,7 @@ pub(super) enum PostAuthAdmissionExecution {
     Rejected(PostAuthAdmissionRejection),
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn evaluate_forwarding_pre_admission_policy(
-    policy: &RuntimeUpstreamPolicy,
-    header_lookup: Option<&LbHeaderLookup<'_>>,
-    brownout: &BrownoutController,
-    inflight_percent: u8,
-    route: &str,
-    method: &str,
-    path: &str,
-    authority: Option<&str>,
-    client_addr: SocketAddr,
-    retry_after_seconds: u32,
-    scoped_rate_limits: &ScopedRateLimiters,
-) -> AdmissionPolicyDecision {
-    let auth = evaluate_local_auth_policy(policy, header_lookup);
-    if auth != AdmissionPolicyDecision::AdmitReady {
-        return auth;
-    }
-
-    let brownout =
-        evaluate_brownout_admission(brownout, inflight_percent, route, retry_after_seconds);
-    if brownout != AdmissionPolicyDecision::AdmitReady {
-        return brownout;
-    }
-
-    evaluate_scoped_rate_limit_policy(
-        scoped_rate_limits,
-        route,
-        method,
-        path,
-        authority,
-        client_addr,
-        header_lookup,
-    )
-}
-
-pub(super) fn evaluate_local_auth_policy(
+pub(crate) fn evaluate_local_auth_policy(
     policy: &RuntimeUpstreamPolicy,
     header_lookup: Option<&LbHeaderLookup<'_>>,
 ) -> AdmissionPolicyDecision {
@@ -225,7 +181,7 @@ pub(super) fn evaluate_local_auth_policy(
     AdmissionPolicyDecision::AdmitReady
 }
 
-pub(super) fn evaluate_scoped_rate_limit_policy(
+pub(crate) fn evaluate_scoped_rate_limit_policy(
     scoped_rate_limits: &ScopedRateLimiters,
     route: &str,
     method: &str,
@@ -291,57 +247,6 @@ fn overload_decision_for_route_queue_rejection(
         RouteQueueRejection::RouteCap => OverloadDecisionReason::RouteCap,
     };
     overload_decision(reason, retry_after_seconds)
-}
-
-pub(crate) fn admission_rejection_response(
-    decision: &AdmissionPolicyDecision,
-) -> Option<AdmissionRejectionResponse> {
-    decision.rejection_response()
-}
-
-impl QuotaRejectedDecision {
-    fn from_quota_decision(decision: QuotaDecision) -> Option<Self> {
-        match decision {
-            QuotaDecision::Denied(denial) | QuotaDecision::ShadowDenied(denial) => Some(Self {
-                policy_name: denial.policy_name,
-                reason: denial.reason,
-                status: StatusCode::TOO_MANY_REQUESTS,
-                body: quota_response_body(denial.reason),
-                retry_after_seconds: denial.retry_after_seconds.map(|value| value.max(1)),
-            }),
-            QuotaDecision::FailedClosed(failure) => Some(Self {
-                policy_name: failure.policy_name.unwrap_or_else(|| "unknown".to_string()),
-                reason: failure.reason,
-                status: StatusCode::SERVICE_UNAVAILABLE,
-                body: quota_response_body(failure.reason),
-                retry_after_seconds: None,
-            }),
-            QuotaDecision::NotApplied
-            | QuotaDecision::Allowed(_)
-            | QuotaDecision::FailedOpen(_) => None,
-        }
-    }
-
-    pub(crate) fn as_response(&self) -> AdmissionRejectionResponse {
-        AdmissionRejectionResponse {
-            status: self.status,
-            body: self.body,
-            www_authenticate: None,
-            retry_after_seconds: self.retry_after_seconds,
-        }
-    }
-}
-
-fn quota_response_body(reason: QuotaDenyReason) -> &'static [u8] {
-    match reason {
-        QuotaDenyReason::BurstQuotaExhausted => b"burst quota exhausted\n",
-        QuotaDenyReason::SustainedQuotaExhausted => b"sustained quota exhausted\n",
-        QuotaDenyReason::SelectorIdentityMissing => b"quota selector identity missing\n",
-        QuotaDenyReason::SelectorIdentityInvalid => b"quota selector identity invalid\n",
-        QuotaDenyReason::BackendTimeout => b"quota backend timed out\n",
-        QuotaDenyReason::BackendUnavailable => b"quota backend unavailable\n",
-        QuotaDenyReason::BackendError => b"quota backend error\n",
-    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -496,28 +401,6 @@ fn evaluate_forwarding_post_auth_quota_policy(
         .map(PostAuthAdmissionRejection::Quota)
 }
 
-pub(crate) async fn evaluate_post_auth_quota_policy(
-    resilience: &RuntimeResilience,
-    quota_context: &QuotaIdentityContext<'_>,
-) -> Option<QuotaRejectedDecision> {
-    let backend = resilience.quota_backend.as_ref()?;
-    match evaluate_admission_quota(resilience.quota.as_ref(), backend.as_ref(), quota_context).await
-    {
-        QuotaDecision::NotApplied | QuotaDecision::Allowed(_) | QuotaDecision::FailedOpen(_) => {
-            None
-        }
-        QuotaDecision::ShadowDenied(denial) => {
-            log::debug!(
-                "quota shadow deny observed: policy={} reason={}",
-                denial.policy_name,
-                denial.reason.slug()
-            );
-            None
-        }
-        denied => QuotaRejectedDecision::from_quota_decision(denied),
-    }
-}
-
 pub(super) fn try_acquire_owned_with_micro_wait(
     semaphore: Arc<Semaphore>,
     _wait_budget: Duration,
@@ -623,7 +506,9 @@ mod tests {
         quic_listener::admission::{
             jwks_refresh::collect_jwks_body_bounded, jwt::parse_jose_header,
         },
-        resilience::runtime::RuntimeResilience,
+        resilience::{
+            brownout::BrownoutController, quota::QuotaDenyReason, runtime::RuntimeResilience,
+        },
     };
 
     fn test_policy_with_api_key() -> RuntimeUpstreamPolicy {
@@ -923,32 +808,21 @@ mod tests {
         #[test]
         fn unauthorized_and_overload_rejections_have_distinct_outward_mapping() {
             let policy = test_policy_with_api_key();
-            let unauthorized =
-                admission_rejection_response(&evaluate_forwarding_pre_admission_policy(
-                    &policy,
-                    None,
-                    &BrownoutController::new(false, 100, 50, Vec::new()),
-                    0,
-                    "api",
-                    "GET",
-                    "/resource",
-                    Some("api.example.com"),
-                    "198.51.100.10:443".parse().expect("client addr"),
-                    7,
-                    &ScopedRateLimiters::new(&[]),
-                ))
+            let unauthorized = evaluate_local_auth_policy(&policy, None)
+                .rejection_response()
                 .expect("unauthorized response");
             assert_eq!(unauthorized.status, StatusCode::UNAUTHORIZED);
             assert_eq!(unauthorized.body, b"unauthorized\n");
             assert_eq!(unauthorized.www_authenticate, Some("ApiKey"));
             assert_eq!(unauthorized.retry_after_seconds, None);
 
-            let overload = admission_rejection_response(&evaluate_brownout_admission(
+            let overload = evaluate_brownout_admission(
                 &BrownoutController::new(true, 50, 25, vec![String::from("core")]),
                 90,
                 "api",
                 7,
-            ))
+            )
+            .rejection_response()
             .expect("overload response");
             assert_eq!(overload.status, StatusCode::SERVICE_UNAVAILABLE);
             assert_eq!(overload.body, b"brownout active, non-core route shed\n");
@@ -1222,7 +1096,7 @@ mod tests {
                 })
             );
 
-            let mapped = admission_rejection_response(&global_cap).expect("rejection mapping");
+            let mapped = global_cap.rejection_response().expect("rejection mapping");
             assert_eq!(mapped.status, StatusCode::SERVICE_UNAVAILABLE);
             assert_eq!(mapped.body, b"global queue cap exceeded\n");
             assert_eq!(mapped.www_authenticate, None);

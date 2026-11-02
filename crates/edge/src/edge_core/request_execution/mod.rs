@@ -7,6 +7,7 @@ mod policy;
 mod routing;
 mod types;
 
+pub(crate) use admission::{QuotaRejectedDecision, evaluate_post_auth_quota_policy};
 pub(crate) use compression::{
     ResponseCompressionAction, ResponseCompressionInput, ResponseCompressionPolicyInput,
     apply_gzip_response_headers, ensure_vary_accept_encoding, evaluate_response_compression,

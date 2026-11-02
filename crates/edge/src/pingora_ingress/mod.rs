@@ -12,6 +12,7 @@ use impulse_bridge::response::{
     normalize_response_trailers,
 };
 use impulse_config::{backend_endpoint::BackendScheme, runtime::ListenerRuntimeConfig};
+use impulse_contracts::RequestDecision as AdmissionPolicyDecision;
 use impulse_errors::{
     BridgeError, PoolError, ProxyError, RetryAttemptTelemetryReason, RetryPolicyDecision,
     classify_upstream_proxy_error, is_idempotent_method,
@@ -63,7 +64,7 @@ use crate::{
         request_completion::RequestCompletion,
         request_execution::{
             EdgeRequestService, RequestExecutionInput, ResolvedRequestPolicy, ResolvedRouteTarget,
-            ResponseCompressionAction, RouteResolutionError,
+            ResponseCompressionAction, RouteResolutionError, evaluate_post_auth_quota_policy,
         },
         request_validation::validate_http_request_parts,
         response_processing::{
@@ -74,8 +75,7 @@ use crate::{
     },
     metrics::ResponseCacheOutcome,
     quic_listener::{
-        AdmissionPolicyDecision, BackendCandidate, ForwardingSelectionService,
-        TargetResolutionRequest, admission_rejection_response, evaluate_post_auth_quota_policy,
+        BackendCandidate, ForwardingSelectionService, TargetResolutionRequest,
         execute_external_auth_request,
     },
     resilience::quota::QuotaIdentityContext,
@@ -767,7 +767,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
         ctx.content_length = validated.content_length;
         ctx.tunnel_mode = tunnel_mode;
 
-        if let Some(response) = admission_rejection_response(&execution.admission) {
+        if let Some(response) = execution.admission.rejection_response() {
             match execution.admission {
                 AdmissionPolicyDecision::Unauthorized(_) => {
                     ctx.terminal_classification = Some(PingoraTerminalClassification::Admission(

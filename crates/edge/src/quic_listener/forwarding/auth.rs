@@ -934,12 +934,9 @@ mod tests {
         );
     }
 
-    use crate::{
-        quic_listener::admission::{
-            AdmissionPolicyDecision, UnauthorizedDecision, evaluate_forwarding_pre_admission_policy,
-        },
-        resilience::{brownout::BrownoutController, scoped_rate_limit::ScopedRateLimiters},
-    };
+    use impulse_contracts::{RequestDecision as AdmissionPolicyDecision, UnauthorizedDecision};
+
+    use crate::quic_listener::admission::evaluate_local_auth_policy;
 
     #[test]
     fn append_auth_request_headers_strips_unsafe_headers_and_overrides_with_configured_values() {
@@ -1040,22 +1037,7 @@ mod tests {
             response_compression: Default::default(),
             protocol: RuntimeProtocolPolicy::default(),
         };
-        let brownout = BrownoutController::new(false, 100, 90, Vec::new());
-        let scoped_rate_limits = ScopedRateLimiters::new(&[]);
-
-        let decision = evaluate_forwarding_pre_admission_policy(
-            &policy,
-            None,
-            &brownout,
-            0,
-            "api",
-            "GET",
-            "/resource",
-            Some("api.example.com"),
-            "198.51.100.10:443".parse().expect("client addr"),
-            1,
-            &scoped_rate_limits,
-        );
+        let decision = evaluate_local_auth_policy(&policy, None);
 
         assert!(matches!(
             decision,

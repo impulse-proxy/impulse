@@ -1,6 +1,10 @@
 use std::{borrow::Cow, collections::VecDeque, convert::Infallible};
 
 use http_body_util::Full;
+use impulse_contracts::{
+    BoundedRejectionResponse as AdmissionRejectionResponse,
+    RequestDecision as AdmissionPolicyDecision,
+};
 use impulse_policy::ExternalAuthPolicy;
 use smallvec::SmallVec;
 use tokio::{sync::oneshot, task::AbortHandle};
@@ -17,9 +21,6 @@ use crate::{
     edge_core::{
         request_completion::RequestCompletion,
         request_execution::{EdgeRequestService, RequestExecutionState},
-    },
-    quic_listener::admission::{
-        AdmissionPolicyDecision, AdmissionRejectionResponse, admission_rejection_response,
     },
     runtime::connection::{
         auth::{
@@ -558,7 +559,7 @@ impl Http3Service {
                 metrics
                     .policy_observations()
                     .set_brownout_active(resilience.brownout.is_active());
-                let rejection_response = admission_rejection_response(&admission);
+                let rejection_response = admission.rejection_response();
                 match admission {
                     AdmissionPolicyDecision::AdmitReady => {}
                     AdmissionPolicyDecision::Unauthorized(_) => {
