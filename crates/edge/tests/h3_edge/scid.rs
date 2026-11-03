@@ -11,7 +11,7 @@ fn server_rotates_scids_for_active_connection() {
     let backend_addr = rt.block_on(start_h2_backend("ok\n"));
     let config = make_config(0, cert, key, backend_addr.to_string());
     let listener = Arc::new(Mutex::new(
-        QUICListener::new(config).expect("failed to create listener"),
+        Http3Service::new(config).expect("failed to create listener"),
     ));
     let addr = listener
         .lock()

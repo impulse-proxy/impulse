@@ -27,12 +27,15 @@ use impulse_config::{
     validator::validate,
 };
 use impulse_edge::{
-    MAX_DATAGRAM_SIZE_BYTES, MAX_UDP_PAYLOAD_BYTES, Metrics, QUIC_IDLE_TIMEOUT_MS,
-    QUIC_INITIAL_MAX_DATA, QUIC_INITIAL_MAX_STREAMS_BIDI, QUIC_INITIAL_MAX_STREAMS_UNI,
-    QUIC_INITIAL_STREAM_DATA, REQUEST_TIMEOUT_SECS, UDP_READ_TIMEOUT_MS,
-    runtime::{bundle::RuntimeBundleHandle, listener::QUICListener},
+    constants::{
+        MAX_DATAGRAM_SIZE_BYTES, MAX_UDP_PAYLOAD_BYTES, QUIC_IDLE_TIMEOUT_MS,
+        QUIC_INITIAL_MAX_DATA, QUIC_INITIAL_MAX_STREAMS_BIDI, QUIC_INITIAL_MAX_STREAMS_UNI,
+        QUIC_INITIAL_STREAM_DATA, REQUEST_TIMEOUT_SECS, UDP_READ_TIMEOUT_MS,
+    },
+    runtime::{bundle::RuntimeBundleHandle, listener::Http3Service},
 };
 use impulse_lb::pingora_backend::SharedPingoraLoadBalancingRuntimeState;
+use impulse_observability::Metrics;
 use impulse_transport::SharedDnsResolver;
 use quiche::h3::NameValue;
 use rand::RngCore;
@@ -105,7 +108,7 @@ pub(crate) struct ListenerTaskGuard {
 }
 
 impl ListenerTaskGuard {
-    pub(crate) fn spawn(rt: &tokio::runtime::Runtime, mut listener: QUICListener) -> Self {
+    pub(crate) fn spawn(rt: &tokio::runtime::Runtime, mut listener: Http3Service) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
         let stop_flag = Arc::clone(&stop);
         let runtime_handle = rt.handle().clone();
@@ -164,18 +167,31 @@ impl QuicRequestPathHarness {
         validate(&config).map_err(|err| format!("config validation failed: {err}"))?;
         let runtime_config =
             RuntimeConfig::from_config(&config).map_err(|err| format!("runtime config: {err}"))?;
-        let runtime_bundle = QUICListener::build_runtime_bundle(
+        let runtime_bundle = Http3Service::build_runtime_bundle(
             "request-path-test".to_string(),
             config.log.clone(),
             &runtime_config,
         )
         .map_err(|err| format!("runtime bundle: {err}"))?;
         let runtime_bundle = Arc::new(RuntimeBundleHandle::new(runtime_bundle));
-        let listener = QUICListener::new(config)
+        let listener = Http3Service::new(config)
             .map_err(|err| format!("listener: {err}"))?
             .with_runtime_bundle(runtime_bundle);
-        self.backend_dns_resolver = Some(listener.backend_dns_resolver.clone());
-        self.pingora_load_balancing = Some(Arc::clone(&listener.pingora_load_balancing));
+        self.backend_dns_resolver = Some(
+            listener
+                .runtime_state
+                .shared_state()
+                .shared_services()
+                .backend_dns_resolver
+                .clone(),
+        );
+        self.pingora_load_balancing = Some(Arc::clone(
+            &listener
+                .runtime_state
+                .shared_state()
+                .generation_state()
+                .pingora_load_balancing,
+        ));
         self.metrics = Some(Arc::clone(&listener.metrics));
         let listen_addr = listener
             .socket

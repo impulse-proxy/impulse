@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use super::{admin_identity::AdminRole, request_body::ControlApiRuntimeRollbackPayload, *};
 
-impl QUICListener {
+impl Http3Service {
     pub(in crate::quic_listener::control_api) async fn handle_control_api_runtime_rollback(
         req: Request<Incoming>,
         state: &crate::quic_listener::runtime_state::ControlApiServiceCtx,
@@ -21,13 +21,13 @@ impl QUICListener {
             match Self::control_api_json_body::<ControlApiRuntimeRollbackPayload>(req).await {
                 Ok(payload) => payload,
                 Err(response) => {
-                    Self::emit_control_api_audit_event(
+                    AdministrativeSecurity::emit_control_api_audit_event(
                         &runtime_state.security,
                         identity.as_ref(),
                         request_context.as_ref(),
                         AdminAuditEventType::RuntimeRollback,
                         AdminAuditAction::RuntimeRollbackResult,
-                        Self::control_api_audit_target_for_route(
+                        AdministrativeSecurity::control_api_audit_target_for_route(
                             ControlApiRoute::RuntimeRollback,
                             None,
                         ),
@@ -42,7 +42,7 @@ impl QUICListener {
         let authorization_is_current = authorization_generation
             .is_some_and(|expected| expected.is_current(current_auth_generation));
         if !authorization_is_current {
-            return Self::stale_control_api_connection_response();
+            return stale_control_api_connection_response();
         }
         if let Some(response) =
             Self::missing_expected_active_generation_response(payload.expected_active_generation)
@@ -74,13 +74,16 @@ impl QUICListener {
             );
         }
         let current_generation = runtime_bundle_handle.current_generation();
-        Self::emit_control_api_audit_event(
+        AdministrativeSecurity::emit_control_api_audit_event(
             &runtime_state.security,
             identity.as_ref(),
             request_context.as_ref(),
             AdminAuditEventType::RuntimeRollback,
             AdminAuditAction::RuntimeRollbackAttempt,
-            Self::control_api_audit_target_for_route(ControlApiRoute::RuntimeRollback, None),
+            AdministrativeSecurity::control_api_audit_target_for_route(
+                ControlApiRoute::RuntimeRollback,
+                None,
+            ),
             AdminAuditGeneration {
                 active_generation: Some(current_generation),
                 target_generation: Some(payload.target_generation),
@@ -92,7 +95,7 @@ impl QUICListener {
                 .clone()
                 .or_else(|| Some("runtime_rollback".to_string())),
         );
-        let Some(rollback) = Self::run_control_api_blocking({
+        let Some(rollback) = run_control_api_blocking({
             let runtime_bundle_handle = Arc::clone(&runtime_bundle_handle);
             let request = RollbackRequest {
                 target_generation: payload.target_generation,
@@ -102,22 +105,25 @@ impl QUICListener {
                     .reason
                     .or_else(|| Some("runtime_rollback".to_string())),
                 expected_active_generation: payload.expected_active_generation,
-                requested_at_ms: crate::watchdog::time::now_millis(),
+                requested_at_ms: impulse_operations::watchdog::now_millis(),
             };
-            move || RuntimeActivationService::rollback_generation(&runtime_bundle_handle, request)
+            move || RuntimeSupervisor::rollback_generation(&runtime_bundle_handle, request)
         })
         .await
         else {
-            return Self::control_api_internal_error_response();
+            return control_api_internal_error_response();
         };
         Self::record_control_api_rollback_outcome(&runtime_bundle_handle, &rollback);
-        Self::emit_control_api_audit_event(
+        AdministrativeSecurity::emit_control_api_audit_event(
             &runtime_state.security,
             identity.as_ref(),
             request_context.as_ref(),
             AdminAuditEventType::RuntimeRollback,
             AdminAuditAction::RuntimeRollbackResult,
-            Self::control_api_audit_target_for_route(ControlApiRoute::RuntimeRollback, None),
+            AdministrativeSecurity::control_api_audit_target_for_route(
+                ControlApiRoute::RuntimeRollback,
+                None,
+            ),
             AdminAuditGeneration {
                 active_generation: Some(rollback.active_generation),
                 target_generation: Some(rollback.request.target_generation),
@@ -151,9 +157,13 @@ impl QUICListener {
         let current = handle.current_view();
         let metrics = Arc::clone(&current.shared_services().metrics);
         let outcome = rollback.outcome_reason();
-        metrics.record_runtime_rollback_outcome(outcome);
+        metrics
+            .runtime_observations()
+            .record_runtime_rollback_outcome(outcome);
         if let Some(reason) = rollback.primary_rejection_reason() {
-            metrics.inc_runtime_rejection_reason(reason);
+            metrics
+                .runtime_observations()
+                .inc_runtime_rejection_reason(reason);
             warn!(
                 "runtime rollback rejected active_generation={} target_generation={} reason={} error={}",
                 rollback.active_generation,

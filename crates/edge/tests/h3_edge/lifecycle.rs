@@ -19,7 +19,7 @@ fn lifecycle_churn_leaves_no_orphaned_state() {
     config.performance.new_connections_burst = 1_000;
 
     let listener = Arc::new(Mutex::new(
-        QUICListener::new(config).expect("failed to create listener"),
+        Http3Service::new(config).expect("failed to create listener"),
     ));
     let server_addr = listener.lock().unwrap().socket.local_addr().unwrap();
 

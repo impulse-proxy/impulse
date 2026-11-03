@@ -1,7 +1,4 @@
-use std::{
-    collections::HashMap,
-    sync::{Arc, RwLock},
-};
+use std::{collections::HashMap, sync::Arc};
 
 use impulse_config::{
     backend_endpoint::BackendEndpoint,
@@ -11,9 +8,8 @@ use impulse_config::{
         RuntimeUpstreamPolicy,
     },
 };
-use impulse_lb::{
-    pingora_backend::SharedPingoraLoadBalancingRuntimeState, upstream_pool::UpstreamPool,
-};
+use impulse_lb::pingora_backend::SharedPingoraLoadBalancingRuntimeState;
+use impulse_operations::watchdog::WatchdogCoordinator;
 use impulse_transport::{SharedDnsResolver, UpstreamTransportPool};
 use tokio::sync::Semaphore;
 
@@ -27,7 +23,6 @@ use crate::{
         tasks::RuntimeTaskRegistry,
         tls::store::ListenerTlsReloadStore,
     },
-    watchdog::coordinator::WatchdogCoordinator,
 };
 
 /// Startup-owned runtime state.
@@ -60,7 +55,7 @@ impl OwnedRuntimeState for StartupOwnedRuntimeState {
 /// `backend_resolution_store`) legitimately track the active config and are
 /// rebuilt per generation on reload. The genuinely process-scoped services -
 /// [`Self::listener_tls_store`], [`Self::watchdog`], and
-/// [`Self::backend_dns_resolver`] - carry state that must
+/// [`Self::backend_dns_resolver`], and [`Self::process_tasks`] - carry state that must
 /// survive a reload (an in-flight watchdog restart/drain; the DNS cache) and are
 /// therefore carried forward across generations by [`CarriedProcessSharedServices`]
 /// rather than reconstructed. See `build_shared_state` for how the reload path
@@ -83,6 +78,8 @@ pub struct RuntimeSharedServices {
     /// Watchdog coordinator (heartbeat/restart signaling). Process-scoped: carried
     /// across reloads so an in-flight restart/drain is not silently reset.
     pub watchdog: Arc<WatchdogCoordinator>,
+    /// Process-scoped background tasks that survive generation replacement.
+    pub process_tasks: Arc<RuntimeTaskRegistry>,
 }
 
 /// The genuinely process-scoped services carried forward from the active
@@ -100,6 +97,8 @@ pub struct CarriedProcessSharedServices {
     pub watchdog: Arc<WatchdogCoordinator>,
     /// The live DNS resolver, preserving its cache across the reload.
     pub backend_dns_resolver: SharedDnsResolver,
+    /// Process-scoped background task owner.
+    pub process_tasks: Arc<RuntimeTaskRegistry>,
 }
 
 impl CarriedProcessSharedServices {
@@ -109,6 +108,7 @@ impl CarriedProcessSharedServices {
             listener_tls_store: Arc::clone(&shared.listener_tls_store),
             watchdog: Arc::clone(&shared.watchdog),
             backend_dns_resolver: shared.backend_dns_resolver.clone(),
+            process_tasks: Arc::clone(&shared.process_tasks),
         }
     }
 }
@@ -134,9 +134,7 @@ pub struct RuntimeGenerationState {
     pub backend_health_checks: Arc<HashMap<String, RuntimeBackendHealthCheck>>,
     /// Upstream policies, keyed by upstream name.
     pub upstream_policies: Arc<HashMap<String, RuntimeUpstreamPolicy>>,
-    /// Per-upstream load-balancing pools.
-    pub upstream_pools: HashMap<String, Arc<RwLock<UpstreamPool>>>,
-    /// Pingora selectors owned by this runtime generation.
+    /// Backend membership, readiness, discovery, and selectors for this generation.
     pub pingora_load_balancing: SharedPingoraLoadBalancingRuntimeState<RuntimeBackendTlsPolicy>,
     /// Per-upstream inflight semaphores.
     pub upstream_inflight: HashMap<String, Arc<Semaphore>>,
@@ -154,17 +152,9 @@ impl OwnedRuntimeState for RuntimeGenerationState {
     const OWNERSHIP: OperationalOwnership = OperationalOwnership::GenerationOwned;
 }
 
-#[derive(Clone, Copy)]
-pub struct RuntimeGenerationView<'a> {
-    pub generation: u64,
-    pub startup: &'a StartupOwnedRuntimeState,
-    pub runtime_config: &'a RuntimeConfig,
-    pub shared: &'a RuntimeSharedServices,
-    pub state: &'a RuntimeGenerationState,
-}
-
-impl<'a> RuntimeGenerationView<'a> {
-    pub fn listener_runtime_config(&self, label: &str) -> Option<ListenerRuntimeConfig> {
-        self.state.listener_runtime_configs.get(label).cloned()
-    }
-}
+pub(crate) type RuntimeGenerationView<'a> = impulse_runtime::RuntimeGenerationView<
+    'a,
+    StartupOwnedRuntimeState,
+    RuntimeConfig,
+    crate::runtime::shared_state::SharedRuntimeState,
+>;

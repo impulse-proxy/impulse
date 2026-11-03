@@ -19,17 +19,26 @@ use log::LevelFilter;
 use tempfile::tempdir;
 
 use super::{state::ControlApiState, *};
-use crate::runtime::activation::{
-    ActivationRequest, GenerationEventKind, GenerationOperation, GenerationStatus, PlanningPhase,
-    PlanningPhaseStatus, RejectedChangeKind, ReloadCompatibilityClassification, ReloadConfigInput,
-    ReloadDiffDisposition, RollbackRequest, RuntimeActivationService, RuntimeRejectionReason,
-    plan_runtime_reload,
+use crate::runtime::{
+    activation::{
+        ActivationRequest, GenerationEventKind, GenerationOperation, GenerationStatus,
+        PlanningPhase, PlanningPhaseStatus, RejectedChangeKind, ReloadCompatibilityClassification,
+        ReloadConfigInput, ReloadDiffDisposition, RollbackRequest, RuntimeActivationService,
+        RuntimeRejectionReason,
+        compatibility::{
+            evaluate_runtime_reload_compatibility, validate_control_api_reload_compatibility,
+            validate_metrics_reload_compatibility, validate_runtime_reload_compatibility,
+            validate_startup_owned_reload_compatibility,
+        },
+        plan_runtime_reload,
+    },
+    bundle::RuntimeBundle,
 };
 
 /// Render the typed startup-owned compatibility result into the flat list of
 /// operator strings the assertions below were written against.
 fn startup_owned_issue_strings(current: &RuntimeBundle, next: &RuntimeBundle) -> Vec<String> {
-    match QUICListener::validate_startup_owned_reload_compatibility(current, next) {
+    match validate_startup_owned_reload_compatibility(current, next) {
         Ok(()) => Vec::new(),
         Err(rejections) => rejections.iter().map(|r| r.to_string()).collect(),
     }
@@ -113,7 +122,7 @@ fn test_config(cert: String, key: String) -> ImpulseConfigConfig {
 
 fn runtime_bundle_from_config(config_path: &str, config: &ImpulseConfigConfig) -> RuntimeBundle {
     let runtime_config = RuntimeConfig::from_config(config).expect("runtime config");
-    QUICListener::build_runtime_bundle(config_path.to_string(), config.log.clone(), &runtime_config)
+    Http3Service::build_runtime_bundle(config_path.to_string(), config.log.clone(), &runtime_config)
         .expect("runtime bundle")
 }
 
@@ -1153,7 +1162,7 @@ fn runtime_history_records_activate_fail_and_rollback_flow() {
 // Domain: watchdog service state transitions and restart environment handling.
 #[test]
 fn watchdog_restart_env_keeps_path_when_present() {
-    let env = crate::watchdog::service::watchdog_restart_env(
+    let env = crate::runtime::watchdog::service::watchdog_restart_env(
         Some(OsString::from("/usr/bin:/bin")),
         "timeout_spike",
     );
@@ -1171,7 +1180,7 @@ fn watchdog_restart_env_keeps_path_when_present() {
 
 #[test]
 fn watchdog_restart_env_omits_path_when_missing() {
-    let env = crate::watchdog::service::watchdog_restart_env(None, "poll_stall");
+    let env = crate::runtime::watchdog::service::watchdog_restart_env(None, "poll_stall");
     let map: HashMap<OsString, OsString> = env.into_iter().collect();
 
     assert!(!map.contains_key(&OsString::from("PATH")));
@@ -1185,15 +1194,15 @@ fn watchdog_restart_env_omits_path_when_missing() {
 #[test]
 fn bearer_authorization_scheme_is_case_insensitive() {
     assert_eq!(
-        QUICListener::bearer_token_from_authorization_header("Bearer token-1"),
+        AdministrativeSecurity::bearer_token_from_authorization_header("Bearer token-1"),
         Some("token-1")
     );
     assert_eq!(
-        QUICListener::bearer_token_from_authorization_header("bearer token-2"),
+        AdministrativeSecurity::bearer_token_from_authorization_header("bearer token-2"),
         Some("token-2")
     );
     assert_eq!(
-        QUICListener::bearer_token_from_authorization_header("BEARER token-3"),
+        AdministrativeSecurity::bearer_token_from_authorization_header("BEARER token-3"),
         Some("token-3")
     );
 }
@@ -1201,15 +1210,15 @@ fn bearer_authorization_scheme_is_case_insensitive() {
 #[test]
 fn bearer_authorization_rejects_malformed_headers() {
     assert_eq!(
-        QUICListener::bearer_token_from_authorization_header("Basic abc"),
+        AdministrativeSecurity::bearer_token_from_authorization_header("Basic abc"),
         None
     );
     assert_eq!(
-        QUICListener::bearer_token_from_authorization_header("Bearer"),
+        AdministrativeSecurity::bearer_token_from_authorization_header("Bearer"),
         None
     );
     assert_eq!(
-        QUICListener::bearer_token_from_authorization_header("Bearer   "),
+        AdministrativeSecurity::bearer_token_from_authorization_header("Bearer   "),
         None
     );
 }
@@ -1289,7 +1298,7 @@ fn control_api_route_gating_accepts_only_canonical_method_and_path_pairs() {
     for (method, path, expected) in cases {
         let req = control_api_request(method, &path, None);
         assert_eq!(
-            QUICListener::control_api_request_route_for(&req, &state.current_paths()),
+            Http3Service::control_api_request_route_for(&req, &state.current_paths()),
             expected,
             "unexpected route decision for {} {}",
             req.method(),
@@ -1305,7 +1314,7 @@ fn control_api_route_gating_leaves_health_and_ready_ungated_by_auth() {
 
     for path in [&paths.health_path, &paths.ready_path] {
         let mut req = control_api_request(Method::GET, path, None);
-        let route = QUICListener::gate_control_api_request_for(&mut req, &state)
+        let route = Http3Service::gate_control_api_request_for(&mut req, &state)
             .expect("health and ready routes should bypass auth");
         assert!(matches!(
             route,
@@ -1324,14 +1333,14 @@ fn control_api_authorization_uses_token_matching_independent_of_request_body_typ
 
     let security = state.current_security_policy();
 
-    assert!(QUICListener::control_api_is_authorized_for(
+    assert!(Http3Service::control_api_is_authorized_for(
         &authorized,
         &security
     ));
-    assert!(!QUICListener::control_api_is_authorized_for(
+    assert!(!Http3Service::control_api_is_authorized_for(
         &malformed, &security
     ));
-    assert!(!QUICListener::control_api_is_authorized_for(
+    assert!(!Http3Service::control_api_is_authorized_for(
         &missing, &security
     ));
 }
@@ -1430,7 +1439,7 @@ async fn control_api_gate_returns_canonical_unauthorized_payloads_per_route() {
 
     for (method, path, expected_body) in cases {
         let mut req = control_api_request(method, &path, None);
-        let response = QUICListener::gate_control_api_request_for(&mut req, &state)
+        let response = Http3Service::gate_control_api_request_for(&mut req, &state)
             .expect_err("protected route should reject missing auth");
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         let body = full_body_bytes(*response).await;
@@ -1455,7 +1464,7 @@ async fn control_api_gate_rejects_bearer_only_request_when_mtls_required() {
     let mut req = control_api_request(Method::GET, &runtime_path, Some("Bearer secret-token"));
     attach_control_api_peer_addr(&mut req, "127.0.0.1:9443");
 
-    let response = QUICListener::gate_control_api_request_for(&mut req, &state)
+    let response = Http3Service::gate_control_api_request_for(&mut req, &state)
         .expect_err("bearer-only request must be rejected once mTLS is required");
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     let body = full_body_bytes(*response).await;
@@ -1607,7 +1616,7 @@ async fn control_api_gate_returns_forbidden_for_under_scoped_identity() {
         &state.current_paths().reload_path,
         Some("Bearer viewer-token"),
     );
-    let response = QUICListener::gate_control_api_request_for(&mut req, &state)
+    let response = Http3Service::gate_control_api_request_for(&mut req, &state)
         .expect_err("viewer should not be allowed to call operator route");
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
     let payload: serde_json::Value =
@@ -1632,7 +1641,7 @@ async fn control_api_gate_rejects_invalid_bearer_token() {
         Some("Bearer wrong-token"),
     );
 
-    let response = QUICListener::gate_control_api_request_for(&mut req, &state)
+    let response = Http3Service::gate_control_api_request_for(&mut req, &state)
         .expect_err("invalid token should be rejected");
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     let payload: serde_json::Value =
@@ -1682,7 +1691,7 @@ async fn control_api_auth_throttle_ignores_spoofed_forwarding_addresses() {
         );
         attach_control_api_peer_addr(&mut req, "10.0.0.2:9443");
 
-        let response = QUICListener::gate_control_api_request_for(&mut req, &state)
+        let response = Http3Service::gate_control_api_request_for(&mut req, &state)
             .expect_err("invalid token should be rejected");
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
@@ -1698,14 +1707,14 @@ async fn control_api_auth_throttle_ignores_spoofed_forwarding_addresses() {
     );
     attach_control_api_peer_addr(&mut req, "10.0.0.2:9443");
 
-    let response = QUICListener::gate_control_api_request_for(&mut req, &state)
+    let response = Http3Service::gate_control_api_request_for(&mut req, &state)
         .expect_err("transport peer should remain throttled across spoofed headers");
     assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
 
     let mut valid_admin =
         control_api_request(Method::GET, &runtime_path, Some("Bearer secret-token"));
     attach_control_api_peer_addr(&mut valid_admin, "10.0.0.2:9443");
-    QUICListener::gate_control_api_request_for(&mut valid_admin, &state)
+    Http3Service::gate_control_api_request_for(&mut valid_admin, &state)
         .expect("valid administrator must not be locked out by shared-peer failures");
 }
 
@@ -1729,7 +1738,7 @@ async fn control_api_gate_returns_forbidden_for_operator_hitting_restart() {
         &state.current_paths().restart_path,
         Some("Bearer operator-token"),
     );
-    let response = QUICListener::gate_control_api_request_for(&mut req, &state)
+    let response = Http3Service::gate_control_api_request_for(&mut req, &state)
         .expect_err("operator should not be allowed to restart");
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
     let payload: serde_json::Value =
@@ -1765,15 +1774,18 @@ fn control_api_builds_mtls_identity_from_subject_role_mapping() {
         kind: "mtls_subject_cn".to_string(),
         role_attribute: Some("ou".to_string()),
     };
-    let request_context = QUICListener::build_control_api_request_context(
+    let request_context = AdministrativeSecurity::build_control_api_request_context(
         "127.0.0.1:9443".parse().expect("peer addr"),
         Some(std::slice::from_ref(&cert_der)),
         Some(&identity_source),
         Some("edge-primary".to_string()),
     );
-    let identity =
-        QUICListener::build_admin_identity(Some(request_context), None, Some(&identity_source))
-            .expect("mtls identity");
+    let identity = AdministrativeSecurity::build_admin_identity(
+        Some(request_context),
+        None,
+        Some(&identity_source),
+    )
+    .expect("mtls identity");
 
     assert_eq!(identity.actor_id.as_deref(), Some("alice"));
     assert_eq!(
@@ -1811,9 +1823,12 @@ fn control_api_dual_auth_identity_uses_least_privileged_common_role() {
         role: super::admin_identity::AdminRole::Viewer,
     };
 
-    let identity =
-        QUICListener::build_admin_identity(Some(request_context), Some(token_match), None)
-            .expect("dual auth identity");
+    let identity = AdministrativeSecurity::build_admin_identity(
+        Some(request_context),
+        Some(token_match),
+        None,
+    )
+    .expect("dual auth identity");
 
     assert_eq!(
         identity.roles,
@@ -1850,9 +1865,12 @@ fn control_api_dual_auth_identity_keeps_token_role_when_mtls_has_no_role_mapping
         role: super::admin_identity::AdminRole::Operator,
     };
 
-    let identity =
-        QUICListener::build_admin_identity(Some(request_context), Some(token_match), None)
-            .expect("dual auth identity without mtls role");
+    let identity = AdministrativeSecurity::build_admin_identity(
+        Some(request_context),
+        Some(token_match),
+        None,
+    )
+    .expect("dual auth identity without mtls role");
 
     assert_eq!(
         identity.roles,
@@ -1882,8 +1900,11 @@ fn control_api_dual_auth_identity_rejects_disagreeing_principals() {
         role: super::admin_identity::AdminRole::Viewer,
     };
 
-    let identity =
-        QUICListener::build_admin_identity(Some(request_context), Some(token_match), None);
+    let identity = AdministrativeSecurity::build_admin_identity(
+        Some(request_context),
+        Some(token_match),
+        None,
+    );
 
     assert!(identity.is_none());
 }
@@ -1913,7 +1934,7 @@ fn control_api_dual_auth_identity_rejects_bearer_actor_from_other_mtls_namespace
         role: super::admin_identity::AdminRole::Operator,
     };
 
-    let identity = QUICListener::build_admin_identity(
+    let identity = AdministrativeSecurity::build_admin_identity(
         Some(request_context),
         Some(token_match),
         Some(&identity_source),
@@ -1947,7 +1968,7 @@ fn control_api_dual_auth_identity_rejects_when_no_mtls_principal_matches() {
         role: super::admin_identity::AdminRole::Operator,
     };
 
-    let identity = QUICListener::build_admin_identity(
+    let identity = AdministrativeSecurity::build_admin_identity(
         Some(request_context),
         Some(token_match),
         Some(&identity_source),
@@ -1977,7 +1998,8 @@ fn control_api_request_context_captures_operator_correlation_headers() {
         .body(())
         .expect("control api request");
 
-    let request_context = QUICListener::augment_control_api_request_context(request_context, &req);
+    let request_context =
+        AdministrativeSecurity::augment_control_api_request_context(request_context, &req);
 
     assert_eq!(request_context.listener.as_deref(), Some("edge-primary"));
     assert_eq!(request_context.request_id.as_deref(), Some("req-42"));
@@ -2005,7 +2027,7 @@ async fn control_api_gate_rejects_source_ip_before_authentication() {
     );
     attach_control_api_peer_addr(&mut req, "10.0.0.10:9443");
 
-    let response = QUICListener::gate_control_api_request_for(&mut req, &state)
+    let response = Http3Service::gate_control_api_request_for(&mut req, &state)
         .expect_err("non-allowlisted source should be rejected before auth");
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
     let payload: serde_json::Value =
@@ -2038,7 +2060,7 @@ async fn control_api_gate_allows_allowlisted_source_and_continues_authentication
     );
     attach_control_api_peer_addr(&mut req, "127.0.0.1:9443");
 
-    let route = QUICListener::gate_control_api_request_for(&mut req, &state)
+    let route = Http3Service::gate_control_api_request_for(&mut req, &state)
         .expect("allowlisted source with valid auth should pass");
     assert_eq!(route, super::admin_auth::ControlApiRoute::ReloadRuntime);
 }
@@ -2052,7 +2074,7 @@ async fn control_api_gate_returns_not_found_for_invalid_routes_without_transport
         Some("Bearer secret-token"),
     );
 
-    let response = QUICListener::gate_control_api_request_for(&mut req, &state)
+    let response = Http3Service::gate_control_api_request_for(&mut req, &state)
         .expect_err("invalid route should map to not found");
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
     assert_eq!(
@@ -2081,10 +2103,10 @@ async fn control_api_runtime_snapshot_endpoint_allows_viewer() {
         &state.current_paths().runtime_path,
         Some("Bearer viewer-token"),
     );
-    let route = QUICListener::gate_control_api_request_for(&mut req, &state)
+    let route = Http3Service::gate_control_api_request_for(&mut req, &state)
         .expect("viewer should be allowed to read runtime snapshot");
     assert_eq!(route, super::admin_auth::ControlApiRoute::Runtime);
-    let response = QUICListener::render_control_api_runtime_snapshot(&state);
+    let response = Http3Service::render_control_api_runtime_snapshot(&state);
     assert_eq!(response.status(), StatusCode::OK);
 }
 
@@ -2123,11 +2145,17 @@ async fn control_api_runtime_snapshot_includes_jwks_cache_visibility() {
         }],
     );
     let metrics = state.current_service_state().metrics();
-    metrics.record_jwt_validation_failure("issuer_mismatch");
-    metrics.record_jwt_algorithm_rejection("RS256");
-    metrics.record_jwks_unknown_kid(&jwks_source_id);
+    metrics
+        .runtime_observations()
+        .record_jwt_validation_failure("issuer_mismatch");
+    metrics
+        .runtime_observations()
+        .record_jwt_algorithm_rejection("RS256");
+    metrics
+        .runtime_observations()
+        .record_jwks_unknown_kid(&jwks_source_id);
 
-    let payload = json_body(QUICListener::render_control_api_runtime_snapshot(&state)).await;
+    let payload = json_body(Http3Service::render_control_api_runtime_snapshot(&state)).await;
     let providers = payload["auth"]["providers"]
         .as_array()
         .expect("auth providers");
@@ -2215,7 +2243,7 @@ async fn control_api_runtime_snapshot_omits_jwks_endpoint_details() {
     });
     let state = control_api_state_with_runtime_bundle(&startup, &startup);
 
-    let payload = json_body(QUICListener::render_control_api_runtime_snapshot(&state)).await;
+    let payload = json_body(Http3Service::render_control_api_runtime_snapshot(&state)).await;
     let sources = payload["jwks"]["sources"].as_array().expect("jwks sources");
 
     assert_eq!(sources.len(), 1);
@@ -2260,7 +2288,7 @@ async fn control_api_runtime_snapshot_coarsens_sensitive_tls_and_secret_details(
     config.secrets.default_provider = Some("files".to_string());
 
     let state = control_api_state_with_runtime_bundle(&config, &config);
-    let payload = json_body(QUICListener::render_control_api_runtime_snapshot(&state)).await;
+    let payload = json_body(Http3Service::render_control_api_runtime_snapshot(&state)).await;
 
     let upstream_tls = &payload["tls"]["upstreams"]["api"];
     assert_eq!(upstream_tls["custom_ca_file_configured"], true);
@@ -2410,7 +2438,7 @@ async fn control_api_reload_endpoint_denies_viewer() {
         &state.current_paths().reload_path,
         Some("Bearer viewer-token"),
     );
-    let response = QUICListener::gate_control_api_request_for(&mut req, &state)
+    let response = Http3Service::gate_control_api_request_for(&mut req, &state)
         .expect_err("viewer should be denied reload");
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
 }
@@ -2436,7 +2464,7 @@ async fn control_api_restart_endpoint_denies_operator() {
         &state.current_paths().restart_path,
         Some("Bearer operator-token"),
     );
-    let response = QUICListener::gate_control_api_request_for(&mut req, &state)
+    let response = Http3Service::gate_control_api_request_for(&mut req, &state)
         .expect_err("operator should be denied restart");
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
 }
@@ -2462,10 +2490,10 @@ async fn control_api_restart_endpoint_allows_admin() {
         &state.current_paths().restart_path,
         Some("Bearer admin-token"),
     );
-    let route = QUICListener::gate_control_api_request_for(&mut req, &state)
+    let route = Http3Service::gate_control_api_request_for(&mut req, &state)
         .expect("admin should be allowed to hit restart route");
     assert_eq!(route, super::admin_auth::ControlApiRoute::Restart);
-    let response = QUICListener::handle_control_api_restart(
+    let response = Http3Service::handle_control_api_restart(
         &state,
         req.extensions()
             .get::<super::admin_identity::AdminIdentity>()
@@ -2492,7 +2520,7 @@ async fn control_api_auth_failure_emits_audit_event() {
         &state.current_paths().runtime_path,
         Some("Bearer wrong-token"),
     );
-    let _ = QUICListener::gate_control_api_request_for(&mut req, &state)
+    let _ = Http3Service::gate_control_api_request_for(&mut req, &state)
         .expect_err("invalid token should be rejected");
 
     let events = read_audit_events(&audit_path);
@@ -2525,12 +2553,12 @@ async fn control_api_snapshot_read_emits_audit_event() {
         &state.current_paths().runtime_path,
         Some("Bearer viewer-token"),
     );
-    let route = QUICListener::gate_control_api_request_for(&mut req, &state)
+    let route = Http3Service::gate_control_api_request_for(&mut req, &state)
         .expect("viewer should be authorized");
     let service_state = state.current_service_state();
-    let response = QUICListener::render_control_api_runtime_snapshot(&state);
+    let response = Http3Service::render_control_api_runtime_snapshot(&state);
     assert_eq!(response.status(), StatusCode::OK);
-    QUICListener::emit_control_api_audit_event(
+    AdministrativeSecurity::emit_control_api_audit_event(
         &service_state.security,
         req.extensions()
             .get::<super::admin_identity::AdminIdentity>(),
@@ -2538,11 +2566,10 @@ async fn control_api_snapshot_read_emits_audit_event() {
             .get::<super::admin_identity::ControlApiRequestContext>(),
         super::audit::AdminAuditEventType::RuntimeSnapshot,
         super::audit::AdminAuditAction::RuntimeSnapshotRead,
-        QUICListener::control_api_audit_target_for_route(route, None),
+        AdministrativeSecurity::control_api_audit_target_for_route(route, None),
         super::audit::AdminAuditGeneration {
             active_generation: service_state
-                .generation
-                .as_ref()
+                .generation()
                 .map(|current| current.generation()),
             ..Default::default()
         },
@@ -2578,7 +2605,7 @@ async fn control_api_reload_emits_attempt_and_result_audit_events() {
     }];
     let state = audit_enabled_control_api_state(config, &config_path, &audit_path);
 
-    let _response = QUICListener::handle_control_api_runtime_reload_without_body_for_tests(
+    let _response = Http3Service::handle_control_api_runtime_reload_without_body_for_tests(
         &state,
         Some(super::admin_identity::AdminIdentity {
             actor_id: Some("operator".to_string()),
@@ -2624,7 +2651,7 @@ async fn control_api_restart_emits_attempt_and_result_audit_events() {
     config.resilience.watchdog.enabled = true;
     let state = audit_enabled_control_api_state(config, &config_path, &audit_path);
 
-    let response = QUICListener::handle_control_api_restart(
+    let response = Http3Service::handle_control_api_restart(
         &state,
         Some(super::admin_identity::AdminIdentity {
             actor_id: Some("admin".to_string()),
@@ -2673,7 +2700,7 @@ async fn control_api_restart_keeps_admin_action_available_when_audit_sink_fails(
     let state = audit_enabled_control_api_state(config, &config_path, &audit_sink_path);
 
     let metrics = state.current_service_state().metrics();
-    let response = QUICListener::handle_control_api_restart(
+    let response = Http3Service::handle_control_api_restart(
         &state,
         Some(super::admin_identity::AdminIdentity {
             actor_id: Some("admin".to_string()),
@@ -2741,7 +2768,7 @@ fn control_api_state_prefers_reloaded_paths_and_auth_token() {
     );
     assert_eq!(
         state.current_security_policy().bearer_tokens[0].role,
-        ControlApiRole::Admin
+        super::admin_identity::AdminRole::Admin
     );
     assert_eq!(
         state.current_security_policy().bearer_tokens[0]
@@ -2785,7 +2812,7 @@ fn control_api_state_builds_runtime_security_policy_from_reloaded_config() {
 
     assert_eq!(
         security.client_auth.mode,
-        ControlApiClientAuthMode::Required
+        super::security::AdminClientAuthMode::Required
     );
     assert_eq!(
         security.client_auth.verifier,
@@ -2798,7 +2825,10 @@ fn control_api_state_builds_runtime_security_policy_from_reloaded_config() {
     );
     assert_eq!(security.bearer_tokens.len(), 1);
     assert_eq!(security.bearer_tokens[0].token, "operator-token");
-    assert_eq!(security.bearer_tokens[0].role, ControlApiRole::Operator);
+    assert_eq!(
+        security.bearer_tokens[0].role,
+        super::security::AdminRole::Operator
+    );
     assert!(
         security
             .ip_allowlist
@@ -2831,13 +2861,13 @@ fn control_api_tls_builder_supports_disabled_optional_and_required_client_auth()
         .expect("primary listener runtime config");
 
     let disabled = super::security::ControlApiClientAuthPolicy {
-        mode: ControlApiClientAuthMode::Disabled,
+        mode: super::security::AdminClientAuthMode::Disabled,
         verifier: super::security::ControlApiClientVerifierState::Disabled,
     };
-    assert!(QUICListener::build_control_api_server_tls_config(&listener_config, &disabled).is_ok());
+    assert!(Http3Service::build_control_api_server_tls_config(&listener_config, &disabled).is_ok());
 
     let optional = super::security::ControlApiClientAuthPolicy {
-        mode: ControlApiClientAuthMode::Optional,
+        mode: super::security::AdminClientAuthMode::Optional,
         verifier: super::security::ControlApiClientVerifierState::Configured(
             super::security::ControlApiClientCaMaterial {
                 ca_file: Some(cert.clone()),
@@ -2845,10 +2875,10 @@ fn control_api_tls_builder_supports_disabled_optional_and_required_client_auth()
             },
         ),
     };
-    assert!(QUICListener::build_control_api_server_tls_config(&listener_config, &optional).is_ok());
+    assert!(Http3Service::build_control_api_server_tls_config(&listener_config, &optional).is_ok());
 
     let required = super::security::ControlApiClientAuthPolicy {
-        mode: ControlApiClientAuthMode::Required,
+        mode: super::security::AdminClientAuthMode::Required,
         verifier: super::security::ControlApiClientVerifierState::Configured(
             super::security::ControlApiClientCaMaterial {
                 ca_file: Some(cert),
@@ -2856,7 +2886,7 @@ fn control_api_tls_builder_supports_disabled_optional_and_required_client_auth()
             },
         ),
     };
-    assert!(QUICListener::build_control_api_server_tls_config(&listener_config, &required).is_ok());
+    assert!(Http3Service::build_control_api_server_tls_config(&listener_config, &required).is_ok());
 }
 
 #[test]
@@ -2900,7 +2930,7 @@ async fn control_api_runtime_snapshot_uses_live_primary_listener_label_after_bun
     let (state, runtime_handle) = runtime_bundle_control_api_state(startup_bundle);
 
     let startup_payload =
-        json_body(QUICListener::render_control_api_runtime_snapshot(&state)).await;
+        json_body(Http3Service::render_control_api_runtime_snapshot(&state)).await;
     let startup_listeners = startup_payload["tls"]["listeners"]
         .as_object()
         .expect("startup listeners object");
@@ -2937,7 +2967,7 @@ async fn control_api_runtime_snapshot_uses_live_primary_listener_label_after_bun
         "control api state must prefer the live generation's primary listener label"
     );
 
-    let live_payload = json_body(QUICListener::render_control_api_runtime_snapshot(&state)).await;
+    let live_payload = json_body(Http3Service::render_control_api_runtime_snapshot(&state)).await;
     let live_listeners = live_payload["tls"]["listeners"]
         .as_object()
         .expect("live listeners object");
@@ -3019,7 +3049,7 @@ fn control_api_gating_uses_live_generation_paths_and_auth_after_bundle_replace()
         "/runtime-startup",
         Some("Bearer startup-token"),
     );
-    let startup_err = QUICListener::gate_control_api_request_for(&mut startup_path, &state)
+    let startup_err = Http3Service::gate_control_api_request_for(&mut startup_path, &state)
         .expect_err("stale runtime path should be rejected after replacement");
     assert_eq!(startup_err.status(), StatusCode::NOT_FOUND);
 
@@ -3028,7 +3058,7 @@ fn control_api_gating_uses_live_generation_paths_and_auth_after_bundle_replace()
         "/runtime-reloaded",
         Some("Bearer startup-token"),
     );
-    let stale_token_err = QUICListener::gate_control_api_request_for(&mut stale_token, &state)
+    let stale_token_err = Http3Service::gate_control_api_request_for(&mut stale_token, &state)
         .expect_err("stale token should be rejected after replacement");
     assert_eq!(stale_token_err.status(), StatusCode::UNAUTHORIZED);
 
@@ -3037,7 +3067,7 @@ fn control_api_gating_uses_live_generation_paths_and_auth_after_bundle_replace()
         "/runtime-reloaded",
         Some("Bearer reloaded-token"),
     );
-    let route = QUICListener::gate_control_api_request_for(&mut live, &state)
+    let route = Http3Service::gate_control_api_request_for(&mut live, &state)
         .expect("live control api path and auth should be accepted");
     assert!(matches!(route, super::admin_auth::ControlApiRoute::Runtime));
 }
@@ -3103,7 +3133,7 @@ async fn control_api_runtime_history_renders_recorded_generation_changes() {
     assert!(activation.succeeded());
     runtime_handle.record_failed_prepare(9, "candidate generation never prepared");
 
-    let payload = json_body(QUICListener::render_control_api_runtime_history(&state)).await;
+    let payload = json_body(Http3Service::render_control_api_runtime_history(&state)).await;
     assert_eq!(payload["active_generation"], 1);
     assert_eq!(payload["observability"]["contract_version"], "v1");
     assert_eq!(payload["observability"]["audit_schema_version"], "v1");
@@ -3174,7 +3204,7 @@ async fn control_api_runtime_history_observability_view_stays_stable_without_adm
     let bundle = runtime_bundle_from_config(config_path.to_string_lossy().as_ref(), &config);
     let (state, _) = runtime_bundle_control_api_state(bundle);
 
-    let payload = json_body(QUICListener::render_control_api_runtime_history(&state)).await;
+    let payload = json_body(Http3Service::render_control_api_runtime_history(&state)).await;
 
     assert_eq!(
         payload["observability"],
@@ -3266,7 +3296,7 @@ async fn control_api_runtime_history_generation_filters_to_requested_generation(
     );
     assert!(activation.succeeded());
 
-    let payload = json_body(QUICListener::render_control_api_runtime_history_generation(
+    let payload = json_body(Http3Service::render_control_api_runtime_history_generation(
         &state, 1,
     ))
     .await;
@@ -3277,7 +3307,7 @@ async fn control_api_runtime_history_generation_filters_to_requested_generation(
     assert_eq!(payload["retained_generation"]["has_bundle"], true);
     assert_eq!(payload["entries"].as_array().map(Vec::len), Some(1));
 
-    let missing = QUICListener::render_control_api_runtime_history_generation(&state, 99);
+    let missing = Http3Service::render_control_api_runtime_history_generation(&state, 99);
     assert_eq!(missing.status(), StatusCode::NOT_FOUND);
 }
 
@@ -3336,7 +3366,7 @@ async fn control_api_runtime_snapshot_renders_live_generation_listener_and_backe
         .active_connections
         .store(3, std::sync::atomic::Ordering::Relaxed);
 
-    let payload = json_body(QUICListener::render_control_api_runtime_snapshot(&state)).await;
+    let payload = json_body(Http3Service::render_control_api_runtime_snapshot(&state)).await;
 
     assert_eq!(payload["runtime"]["generation"], 1);
     assert_eq!(payload["runtime"]["config_path"], "reloaded.yaml");
@@ -3433,7 +3463,7 @@ async fn control_api_runtime_snapshot_exposes_quota_policy_and_backend_status() 
     let bundle = runtime_bundle_from_config("runtime.yaml", &config);
     let (state, _) = runtime_bundle_control_api_state(bundle);
 
-    let payload = json_body(QUICListener::render_control_api_runtime_snapshot(&state)).await;
+    let payload = json_body(Http3Service::render_control_api_runtime_snapshot(&state)).await;
 
     assert_eq!(payload["quota"]["enabled"], true);
     assert_eq!(payload["quota"]["enforcement"], "shadow");
@@ -3539,31 +3569,6 @@ async fn control_api_runtime_snapshot_exposes_quota_policy_and_backend_status() 
 }
 
 #[tokio::test]
-async fn control_api_runtime_snapshot_surfaces_degraded_file_audit_sink() {
-    let dir = tempdir().expect("tempdir");
-    let (cert, key) = write_test_cert_for_name(dir.path(), "server", "api.example.com");
-    let audit_path = dir.path().join("admin-audit.jsonl");
-    let mut config = test_config(cert, key);
-    config.observability.control_api.enabled = true;
-    config.observability.control_api.audit.enabled = true;
-    config.observability.control_api.audit.sink = ControlApiAuditSink::File;
-    config.observability.control_api.audit.file_path =
-        Some(audit_path.to_string_lossy().to_string());
-
-    super::audit::force_audit_writer_thread_spawn_failure_for_test(true);
-    let state = control_api_state_with_runtime_bundle(&config, &config);
-    let payload = json_body(QUICListener::render_control_api_runtime_snapshot(&state)).await;
-    super::audit::force_audit_writer_thread_spawn_failure_for_test(false);
-    assert_eq!(payload["observability"]["audit_sink"]["enabled"], true);
-    assert_eq!(payload["observability"]["audit_sink"]["target"], "file");
-    assert_eq!(payload["observability"]["audit_sink"]["degraded"], true);
-    assert_eq!(
-        payload["observability"]["audit_sink"]["reason"],
-        "writer_thread_start_failed"
-    );
-}
-
-#[tokio::test]
 async fn control_api_runtime_snapshot_renders_composite_quota_selector_dimensions() {
     let dir = tempdir().expect("tempdir");
     let (cert, key) = write_test_cert_for_name(dir.path(), "server", "api.example.com");
@@ -3598,7 +3603,7 @@ async fn control_api_runtime_snapshot_renders_composite_quota_selector_dimension
 
     let bundle = runtime_bundle_from_config("runtime.yaml", &config);
     let (state, _) = runtime_bundle_control_api_state(bundle);
-    let payload = json_body(QUICListener::render_control_api_runtime_snapshot(&state)).await;
+    let payload = json_body(Http3Service::render_control_api_runtime_snapshot(&state)).await;
 
     assert_eq!(payload["quota"]["enabled"], true);
     assert_eq!(payload["quota"]["active_backend"], "in_memory");
@@ -3628,7 +3633,7 @@ fn reload_preserves_process_scoped_watchdog_and_dns_resolver() {
     config.resilience.watchdog.enabled = true;
     let runtime_config = RuntimeConfig::from_config(&config).expect("runtime config");
 
-    let current = QUICListener::build_shared_state(&runtime_config).expect("current shared state");
+    let current = Http3Service::build_shared_state(&runtime_config).expect("current shared state");
 
     // Simulate an in-flight watchdog restart on the active generation.
     assert!(
@@ -3641,7 +3646,7 @@ fn reload_preserves_process_scoped_watchdog_and_dns_resolver() {
     let carried = crate::runtime::generation::CarriedProcessSharedServices::from_active(
         current.shared_services(),
     );
-    let next = QUICListener::build_shared_state_with_carried(&runtime_config, Some(carried))
+    let next = Http3Service::build_shared_state_with_carried(&runtime_config, Some(carried))
         .expect("reloaded shared state");
 
     // Same watchdog instance, and its in-flight restart survived the swap.
@@ -3699,7 +3704,7 @@ fn live_reloadable_upstream_change_is_accepted() {
     let next_bundle = runtime_bundle_from_config("next.yaml", &next);
     let current_active = RuntimeBundleHandle::new(current_bundle).current_view();
 
-    let result = QUICListener::evaluate_runtime_reload_compatibility(&current_active, &next_bundle);
+    let result = evaluate_runtime_reload_compatibility(&current_active, &next_bundle);
     assert!(
         result.is_ok(),
         "generation-owned upstream change must be live-reloadable, got: {result:?}"
@@ -3724,7 +3729,7 @@ fn reload_compatibility_classifies_generation_owned_changes_as_live_reloadable()
     let active = RuntimeBundleHandle::new(current_bundle).current_view();
 
     assert!(
-        QUICListener::evaluate_runtime_reload_compatibility(&active, &next_bundle).is_ok(),
+        evaluate_runtime_reload_compatibility(&active, &next_bundle).is_ok(),
         "generation-owned routing changes should stay reloadable"
     );
 }
@@ -3749,7 +3754,7 @@ fn restart_required_change_rejects_before_touching_active_generation() {
     let generation_before = handle.current_generation();
     let active = handle.current_view();
 
-    let result = QUICListener::evaluate_runtime_reload_compatibility(&active, &next_bundle);
+    let result = evaluate_runtime_reload_compatibility(&active, &next_bundle);
     let rejections = result.expect_err("restart-required change must be rejected");
     assert!(
         rejections.iter().any(
@@ -3778,7 +3783,7 @@ fn reload_compatibility_classifies_startup_owned_changes_as_restart_required() {
     let next_bundle = runtime_bundle_from_config("next.yaml", &next);
     let active = RuntimeBundleHandle::new(current_bundle).current_view();
 
-    let rejections = QUICListener::evaluate_runtime_reload_compatibility(&active, &next_bundle)
+    let rejections = evaluate_runtime_reload_compatibility(&active, &next_bundle)
         .expect_err("startup-owned change must reject the reload");
     assert_eq!(rejections.len(), 1);
     let rejection = &rejections[0];
@@ -3920,9 +3925,8 @@ fn validate_control_api_reload_compatibility_allows_bind_change_when_socket_is_f
 
     let current_bundle = runtime_bundle_from_config("current.yaml", &current);
     let next_bundle = runtime_bundle_from_config("next.yaml", &next);
-    let result =
-        QUICListener::validate_control_api_reload_compatibility(&current_bundle, &next_bundle)
-            .map(|rejection| rejection.to_string());
+    let result = validate_control_api_reload_compatibility(&current_bundle, &next_bundle)
+        .map(|rejection| rejection.to_string());
     if result
         .as_deref()
         .is_some_and(|err| err.contains("Operation not permitted"))
@@ -3949,7 +3953,7 @@ fn validate_metrics_reload_compatibility_allows_bind_change_when_socket_is_free(
 
     let current_bundle = runtime_bundle_from_config("current.yaml", &current);
     let next_bundle = runtime_bundle_from_config("next.yaml", &next);
-    let result = QUICListener::validate_metrics_reload_compatibility(&current_bundle, &next_bundle)
+    let result = validate_metrics_reload_compatibility(&current_bundle, &next_bundle)
         .map(|rejection| rejection.to_string());
     if result
         .as_deref()
@@ -4033,7 +4037,7 @@ fn validate_runtime_reload_compatibility_allows_listener_addition_when_binds_are
     let current_bundle = runtime_bundle_from_config("current.yaml", &current);
     let next_bundle = runtime_bundle_from_config("next.yaml", &next);
 
-    let result = QUICListener::validate_runtime_reload_compatibility(&current_bundle, &next_bundle)
+    let result = validate_runtime_reload_compatibility(&current_bundle, &next_bundle)
         .map(|rejection| rejection.to_string());
     if result
         .as_deref()
@@ -4066,9 +4070,8 @@ fn validate_runtime_reload_compatibility_classifies_listener_bind_conflict_as_pr
     let current_bundle = runtime_bundle_from_config("current.yaml", &current);
     let next_bundle = runtime_bundle_from_config("next.yaml", &next);
 
-    let rejection =
-        QUICListener::validate_runtime_reload_compatibility(&current_bundle, &next_bundle)
-            .expect("listener bind conflict must reject");
+    let rejection = validate_runtime_reload_compatibility(&current_bundle, &next_bundle)
+        .expect("listener bind conflict must reject");
     let expected_field = format!("QUIC listener '127.0.0.1:{occupied_port}'");
     assert_eq!(
         rejection.kind,
@@ -4098,7 +4101,7 @@ fn validate_runtime_reload_compatibility_allows_explicit_listener_replacement() 
     let current_bundle = runtime_bundle_from_config("current.yaml", &current);
     let next_bundle = runtime_bundle_from_config("next.yaml", &next);
 
-    let result = QUICListener::validate_runtime_reload_compatibility(&current_bundle, &next_bundle)
+    let result = validate_runtime_reload_compatibility(&current_bundle, &next_bundle)
         .map(|rejection| rejection.to_string());
     assert!(
         result.is_none(),
@@ -4118,7 +4121,7 @@ fn validate_runtime_reload_compatibility_allows_listener_bind_replacement() {
     let current_bundle = runtime_bundle_from_config("current.yaml", &current);
     let next_bundle = runtime_bundle_from_config("next.yaml", &next);
 
-    let result = QUICListener::validate_runtime_reload_compatibility(&current_bundle, &next_bundle)
+    let result = validate_runtime_reload_compatibility(&current_bundle, &next_bundle)
         .map(|rejection| rejection.to_string());
     assert!(
         result.is_none(),
@@ -4145,9 +4148,8 @@ fn validate_control_api_reload_compatibility_classifies_bind_conflict_as_preflig
     let current_bundle = runtime_bundle_from_config("current.yaml", &current);
     let next_bundle = runtime_bundle_from_config("next.yaml", &next);
 
-    let rejection =
-        QUICListener::validate_control_api_reload_compatibility(&current_bundle, &next_bundle)
-            .expect("control api bind conflict must reject");
+    let rejection = validate_control_api_reload_compatibility(&current_bundle, &next_bundle)
+        .expect("control api bind conflict must reject");
     let expected_field = format!("control API endpoint '127.0.0.1:{occupied_port}'");
     assert_eq!(
         rejection.kind,
@@ -4180,9 +4182,8 @@ fn validate_metrics_reload_compatibility_classifies_bind_conflict_as_preflight_f
     let current_bundle = runtime_bundle_from_config("current.yaml", &current);
     let next_bundle = runtime_bundle_from_config("next.yaml", &next);
 
-    let rejection =
-        QUICListener::validate_metrics_reload_compatibility(&current_bundle, &next_bundle)
-            .expect("metrics bind conflict must reject");
+    let rejection = validate_metrics_reload_compatibility(&current_bundle, &next_bundle)
+        .expect("metrics bind conflict must reject");
     let expected_field = format!("metrics endpoint '127.0.0.1:{occupied_port}'");
     assert_eq!(
         rejection.kind,
@@ -4217,9 +4218,8 @@ fn validate_control_api_reload_compatibility_rejects_invalid_admin_ca_file() {
     let current_bundle = runtime_bundle_from_config("current.yaml", &current);
     let next_bundle = runtime_bundle_from_config("next.yaml", &next);
 
-    let rejection =
-        QUICListener::validate_control_api_reload_compatibility(&current_bundle, &next_bundle)
-            .expect("invalid admin CA file must reject at preflight");
+    let rejection = validate_control_api_reload_compatibility(&current_bundle, &next_bundle)
+        .expect("invalid admin CA file must reject at preflight");
     assert_eq!(
         rejection.kind,
         TransitionRejectionKind::ResourcePreparationFailed
@@ -4254,9 +4254,8 @@ fn validate_metrics_reload_compatibility_rejects_invalid_admin_ca_file() {
     let current_bundle = runtime_bundle_from_config("current.yaml", &current);
     let next_bundle = runtime_bundle_from_config("next.yaml", &next);
 
-    let rejection =
-        QUICListener::validate_metrics_reload_compatibility(&current_bundle, &next_bundle)
-            .expect("invalid admin CA file must reject metrics preflight");
+    let rejection = validate_metrics_reload_compatibility(&current_bundle, &next_bundle)
+        .expect("invalid admin CA file must reject metrics preflight");
     assert_eq!(
         rejection.kind,
         TransitionRejectionKind::ResourcePreparationFailed
@@ -4337,7 +4336,7 @@ async fn runtime_bundle_cert_reload_ignores_unrelated_config_drift_and_bundle_sw
         .generation(&primary_listener_label)
         .unwrap_or(0);
 
-    let response = QUICListener::reload_listener_certs(
+    let response = Http3Service::reload_listener_certs(
         live_runtime.state().listener_runtime_configs.as_ref(),
         live_runtime.shared_services().listener_tls_store.as_ref(),
         live_runtime.shared_services().metrics.as_ref(),
@@ -4425,7 +4424,7 @@ async fn reload_listener_certs_is_atomic_when_any_listener_reload_fails() {
 
     std::fs::write(&cert2, "not a valid certificate").expect("corrupt cert");
 
-    let response = QUICListener::reload_listener_certs(
+    let response = Http3Service::reload_listener_certs(
         bundle
             .shared_state
             .generation_state()
@@ -4479,7 +4478,7 @@ fn run_control_api_blocking_does_not_stall_the_async_runtime() {
             std::time::Instant::now()
         });
 
-        let blocking_result = QUICListener::run_control_api_blocking(|| {
+        let blocking_result = run_control_api_blocking(|| {
             std::thread::sleep(std::time::Duration::from_millis(200));
             42
         })
@@ -4518,7 +4517,7 @@ fn control_api_actor_ignores_caller_supplied_requested_by_for_validate_and_previ
         serde_json::from_str(r#"{"requested_by": "another-admin"}"#).expect("plan request json");
 
     let real_identity = authenticated_identity("real-operator");
-    let activation_request = QUICListener::control_api_activation_request(
+    let activation_request = Http3Service::control_api_activation_request(
         &body,
         0,
         "runtime_validate",
@@ -4538,7 +4537,7 @@ fn control_api_actor_falls_back_to_generic_label_without_an_identity() {
         serde_json::from_str(r#"{"requested_by": "another-admin"}"#).expect("plan request json");
 
     let activation_request =
-        QUICListener::control_api_activation_request(&body, 0, "runtime_validate", None);
+        Http3Service::control_api_activation_request(&body, 0, "runtime_validate", None);
 
     assert_eq!(
         activation_request.requested_by.as_deref(),
@@ -4556,7 +4555,7 @@ fn control_api_actor_ignores_caller_supplied_requested_by_for_rollback() {
     assert_eq!(payload.target_generation, 1);
 
     let real_identity = authenticated_identity("real-admin");
-    let requested_by = QUICListener::control_api_actor(Some(&real_identity));
+    let requested_by = Http3Service::control_api_actor(Some(&real_identity));
 
     assert_eq!(
         requested_by.as_deref(),
@@ -4567,7 +4566,7 @@ fn control_api_actor_ignores_caller_supplied_requested_by_for_rollback() {
 
 #[test]
 fn activation_requires_expected_generation_but_reload_certs_does_not() {
-    let missing = QUICListener::missing_expected_generation_response(
+    let missing = Http3Service::missing_expected_generation_response(
         super::admin_auth::ControlApiRoute::RuntimeActivate,
         None,
     );
@@ -4576,7 +4575,7 @@ fn activation_requires_expected_generation_but_reload_certs_does_not() {
         "activation without expected_generation must be rejected"
     );
 
-    let present = QUICListener::missing_expected_generation_response(
+    let present = Http3Service::missing_expected_generation_response(
         super::admin_auth::ControlApiRoute::RuntimeActivate,
         Some(3),
     );
@@ -4585,7 +4584,7 @@ fn activation_requires_expected_generation_but_reload_certs_does_not() {
         "activation with expected_generation present must not be rejected"
     );
 
-    let unrelated_route = QUICListener::missing_expected_generation_response(
+    let unrelated_route = Http3Service::missing_expected_generation_response(
         super::admin_auth::ControlApiRoute::RuntimeValidate,
         None,
     );
@@ -4597,7 +4596,7 @@ fn activation_requires_expected_generation_but_reload_certs_does_not() {
 
 #[tokio::test]
 async fn activation_missing_expected_generation_returns_400() {
-    let response = QUICListener::missing_expected_generation_response(
+    let response = Http3Service::missing_expected_generation_response(
         super::admin_auth::ControlApiRoute::RuntimeActivate,
         None,
     )
@@ -4613,13 +4612,13 @@ async fn activation_missing_expected_generation_returns_400() {
 
 #[test]
 fn rollback_requires_expected_active_generation() {
-    let missing = QUICListener::missing_expected_active_generation_response(None);
+    let missing = Http3Service::missing_expected_active_generation_response(None);
     assert!(
         missing.is_some(),
         "rollback without expected_active_generation must be rejected"
     );
 
-    let present = QUICListener::missing_expected_active_generation_response(Some(2));
+    let present = Http3Service::missing_expected_active_generation_response(Some(2));
     assert!(
         present.is_none(),
         "rollback with expected_active_generation present must not be rejected"
@@ -4628,7 +4627,7 @@ fn rollback_requires_expected_active_generation() {
 
 #[tokio::test]
 async fn rollback_missing_expected_active_generation_returns_400() {
-    let response = QUICListener::missing_expected_active_generation_response(None)
+    let response = Http3Service::missing_expected_active_generation_response(None)
         .expect("missing expected_active_generation must produce a response");
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     let body = full_body_bytes(response).await;
@@ -4724,13 +4723,13 @@ fn log_audit_sink_delivers_events_regardless_of_the_application_log_threshold() 
         impulse_utils::logger::set_log_level(level).expect("set application log level");
         let marker = format!("log-threshold-marker-{level}");
 
-        QUICListener::emit_control_api_audit_event(
+        AdministrativeSecurity::emit_control_api_audit_event(
             &state.current_security_policy(),
             None,
             None,
             super::audit::AdminAuditEventType::RuntimeSnapshot,
             super::audit::AdminAuditAction::RuntimeSnapshotRead,
-            QUICListener::control_api_audit_target_for_route(
+            AdministrativeSecurity::control_api_audit_target_for_route(
                 super::admin_auth::ControlApiRoute::Runtime,
                 None,
             ),

@@ -1,14 +1,16 @@
 use super::{orchestration_service::ForwardingOrchestrationService, *};
-use crate::runtime::connection::{
-    guardrails::{
+use crate::{
+    edge_core::body_guardrails::{
         BodyLimitKind, BodyTimeoutKind, RequestBodyGuardrailConfig, RequestBodyGuardrailDecision,
         RequestBodyGuardrailInput, checked_request_body_ingress, evaluate_request_body_timeouts,
     },
-    response::ForwardingPolicyTelemetry,
-    stream::{CompletionReason, RequestBodyState, TimeoutReason},
+    runtime::connection::{
+        response::ForwardingPolicyTelemetry,
+        stream::{CompletionReason, RequestBodyState, TimeoutReason},
+    },
 };
 
-impl QUICListener {
+impl Http3Service {
     pub(in crate::quic_listener) fn push_request_chunk(
         req: &mut RequestEnvelope,
         chunk: Bytes,
@@ -17,7 +19,10 @@ impl QUICListener {
         request_buffer_global_cap_bytes: usize,
     ) -> Result<(), RequestBufferError> {
         let chunk_len = chunk.len();
-        if !metrics.try_reserve_request_buffer(chunk_len, request_buffer_global_cap_bytes) {
+        if !metrics
+            .request_observations()
+            .try_reserve_request_buffer(chunk_len, request_buffer_global_cap_bytes)
+        {
             return Err(RequestBufferError::Global);
         }
 
@@ -43,7 +48,9 @@ impl QUICListener {
             },
         );
         let Ok(next_state) = next_state else {
-            metrics.release_request_buffer(chunk_len);
+            metrics
+                .request_observations()
+                .release_request_buffer(chunk_len);
             return Err(match next_state {
                 Err(RequestBodyGuardrailDecision::Reject {
                     kind: BodyLimitKind::BodySize,
@@ -85,7 +92,9 @@ impl QUICListener {
                 ),
                 Err(TrySendError::Closed(_chunk)) => {
                     if req.body_buf_bytes() > 0 {
-                        metrics.release_request_buffer(req.body_buf_bytes());
+                        metrics
+                            .request_observations()
+                            .release_request_buffer(req.body_buf_bytes());
                     }
                     req.body_buf_mut().clear();
                     req.set_body_buf_bytes(0);
@@ -120,7 +129,7 @@ impl QUICListener {
             match tx.try_send(chunk) {
                 Ok(()) => {
                     req.set_body_buf_bytes(req.body_buf_bytes().saturating_sub(len));
-                    metrics.release_request_buffer(len);
+                    metrics.request_observations().release_request_buffer(len);
                 }
                 Err(TrySendError::Full(chunk)) => {
                     req.body_buf_mut().push_front(chunk);
@@ -128,7 +137,9 @@ impl QUICListener {
                 }
                 Err(TrySendError::Closed(_chunk)) => {
                     if req.body_buf_bytes() > 0 {
-                        metrics.release_request_buffer(req.body_buf_bytes());
+                        metrics
+                            .request_observations()
+                            .release_request_buffer(req.body_buf_bytes());
                     }
                     req.body_buf_mut().clear();
                     req.set_body_buf_bytes(0);
@@ -168,9 +179,9 @@ impl QUICListener {
     ///    - Ok result     -> send H3 response headers, spawn body-pump task,
     ///      store `response_chunk_rx`, transition to SendingResponse.
     /// 4. Flush `response_chunk_rx` chunks into H3 (`try_recv` loop).
-    ///    - `Data`     -> `h3.send_body(..., false)`
-    ///    - `Trailers` -> `h3.send_additional_headers(..., true, false)`
-    ///    - `End`      -> `h3.send_body(..., true)`, mark Completed
+    ///    - `Data`     -> HTTP/3 response adapter body write
+    ///    - `Trailers` -> HTTP/3 response adapter trailer write
+    ///    - `End`      -> HTTP/3 response adapter final write, mark Completed
     ///    - `Error`    -> send 502, mark Failed
     /// 5. Remove streams in terminal phase (Completed / Failed).
     pub(in crate::quic_listener) fn advance_streams_non_blocking(
@@ -250,22 +261,24 @@ impl QUICListener {
                         kind: BodyTimeoutKind::Idle,
                     }
                 ) {
-                    metrics.inc_timeout();
-                    let _ = crate::runtime::connection::outcome::observe_proxy_error_outcome(
-                        metrics,
-                        crate::runtime::connection::outcome::RouteOutcomeTarget {
-                            route: req.upstream_name.as_deref().unwrap_or("unrouted"),
-                        },
-                        Some(crate::runtime::connection::outcome::BackendOutcomeTarget {
-                            upstream: req.upstream_name.as_deref().unwrap_or("unrouted"),
-                            backend_addr: req.backend_addr.as_deref(),
-                            backend_index: req.backend_index,
-                        }),
-                        req.start.elapsed(),
-                        Some(http::StatusCode::REQUEST_TIMEOUT),
-                        &ProxyError::Timeout,
-                        None,
-                    );
+                    metrics.request_observations().inc_timeout();
+                    let _ = req.complete_with(|| {
+                        crate::runtime::connection::outcome::observe_proxy_error_outcome(
+                            metrics,
+                            crate::runtime::connection::outcome::RouteOutcomeTarget {
+                                route: req.upstream_name.as_deref().unwrap_or("unrouted"),
+                            },
+                            Some(crate::runtime::connection::outcome::BackendOutcomeTarget {
+                                upstream: req.upstream_name.as_deref().unwrap_or("unrouted"),
+                                backend_addr: req.backend_addr.as_deref(),
+                                backend_index: req.backend_index,
+                            }),
+                            req.start.elapsed(),
+                            Some(http::StatusCode::REQUEST_TIMEOUT),
+                            &ProxyError::Timeout,
+                            None,
+                        )
+                    });
                     let _ = Self::send_simple_response(
                         h3,
                         quic,
@@ -277,7 +290,6 @@ impl QUICListener {
                         .adaptive_admission
                         .observe(req.start.elapsed(), true);
                     if let Some(req) = streams.get_mut(&stream_id) {
-                        req.mark_terminal_outcome_recorded();
                         terminalize_stream(
                             req,
                             TerminalReason::TimedOut(TimeoutReason::RequestBodyIdle),

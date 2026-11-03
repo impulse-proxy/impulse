@@ -5,12 +5,13 @@ use std::{
 
 use http::StatusCode;
 use impulse_config::runtime::RuntimeBackendTlsPolicy;
+use impulse_contracts::HealthFailureReason;
 use impulse_errors::{
     ClassifiedUpstreamProxyError, PoolError, ProxyError, UpstreamErrorCategory, UpstreamTlsReason,
 };
 use impulse_lb::{
-    HealthTransition, health::HealthFailureReason,
-    pingora_backend::PingoraLoadBalancingRuntimeState, upstream_pool::UpstreamPool,
+    health::HealthTransition, pingora_backend::PingoraLoadBalancingRuntimeState,
+    upstream_pool::UpstreamPool,
 };
 use log::{error, info};
 
@@ -359,19 +360,23 @@ pub(crate) fn record_request_metrics_observation(
     } = observation;
 
     if !matches!(metrics_outcome, RouteOutcome::Success) {
-        metrics.inc_failure();
+        metrics.request_observations().inc_failure();
     }
 
     if matches!(metrics_outcome, RouteOutcome::OverloadShed) {
         if let Some(reason) = overload_reason {
-            metrics.inc_overload_shed_reason(reason);
+            metrics
+                .policy_observations()
+                .inc_overload_shed_reason(reason);
         } else {
-            metrics.inc_overload_shed();
+            metrics.policy_observations().inc_overload_shed();
         }
     }
 
-    metrics.record_route(route_target.route, elapsed, metrics_outcome);
-    metrics.record_request_result(
+    metrics
+        .request_observations()
+        .record_route(route_target.route, elapsed, metrics_outcome);
+    metrics.request_observations().record_request_result(
         route_target.route,
         backend_target.and_then(|target| target.backend_addr),
         status,
@@ -389,7 +394,7 @@ pub(crate) fn observe_request_outcome(
     decision: RequestOutcomeClassification,
 ) -> RequestOutcomeClassification {
     if matches!(decision.route_outcome, CanonicalRouteOutcome::Success) {
-        metrics.inc_success();
+        metrics.request_observations().inc_success();
     }
 
     record_request_metrics_observation(
@@ -776,7 +781,7 @@ pub(crate) fn apply_passive_readiness_to_pingora(
     let Some(transition) = transition else {
         return;
     };
-    pingora_load_balancing.set_backend_health(
+    pingora_load_balancing.set_backend_readiness(
         backend_addr,
         matches!(transition, HealthTransition::BecameHealthy),
     );
@@ -790,7 +795,7 @@ pub(crate) fn record_classified_backend_failure_metrics(
     classified: &ClassifiedUpstreamProxyError,
 ) -> Option<HealthFailureReason> {
     if classified.classification.category == UpstreamErrorCategory::Tls {
-        metrics.record_upstream_tls_failure(
+        metrics.runtime_observations().record_upstream_tls_failure(
             upstream_name,
             backend_addr,
             metrics_phase,
@@ -798,7 +803,9 @@ pub(crate) fn record_classified_backend_failure_metrics(
         );
     }
     let health_mapping = classified.health_failure?;
-    metrics.inc_health_failure(health_mapping.failure_reason);
+    metrics
+        .policy_observations()
+        .inc_health_failure(health_mapping.failure_reason);
     Some(health_mapping.failure_reason)
 }
 
@@ -951,17 +958,10 @@ mod tests {
         .expect("runtime config");
 
         let mut runtime_upstream = runtime.upstreams.get("api").expect("upstream").clone();
-        runtime_upstream.backends[0].backend.health_check = Some(HealthCheck {
-            path: "/health".to_string(),
-            interval: 0,
-            timeout_ms: 1000,
-            failure_threshold: 1,
-            success_threshold: 1,
-            cooldown_ms: 0,
-        });
+        runtime_upstream.backends[0].health_check = None;
 
         Arc::new(RwLock::new(
-            UpstreamPool::from_runtime_upstream(&runtime_upstream).expect("pool"),
+            crate::quic_listener::upstream_pool_from_runtime(&runtime_upstream).expect("pool"),
         ))
     }
 
@@ -1007,7 +1007,7 @@ mod tests {
         metrics: &Metrics,
         upstream: &str,
         outcome: &str,
-    ) -> crate::metrics::RequestLatencyStats {
+    ) -> impulse_observability::RequestLatencyStats {
         metrics
             .snapshot_upstream_request_latency()
             .into_iter()
@@ -1031,7 +1031,7 @@ mod tests {
                 authority: None,
                 start: now,
                 total_request_deadline: now,
-                terminal_outcome: crate::request_pipeline::TerminalOutcomeGuard::default(),
+                completion: crate::edge_core::request_completion::RequestCompletion::default(),
             },
             routing: None,
             request_mode: RequestMode::Normal,
@@ -1521,33 +1521,40 @@ mod tests {
                 assert!(state.ewma_latency_ms.is_some());
             }
 
-            let unhealthy = observe_backend_response_status(BackendHealthObservationInput {
-                backend_addr: "backend-a",
-                backend_index: 0,
-                upstream_pool: Some(&pool),
-                status: StatusCode::INTERNAL_SERVER_ERROR,
-            });
+            let mut unhealthy = None;
+            for _ in 0..3 {
+                unhealthy = observe_backend_response_status(BackendHealthObservationInput {
+                    backend_addr: "backend-a",
+                    backend_index: 0,
+                    upstream_pool: Some(&pool),
+                    status: StatusCode::INTERNAL_SERVER_ERROR,
+                });
+            }
             assert!(matches!(unhealthy, Some(HealthTransition::BecameUnhealthy)));
 
-            let healthy = observe_backend_response_status(BackendHealthObservationInput {
+            let cooling_down = observe_backend_response_status(BackendHealthObservationInput {
                 backend_addr: "backend-a",
                 backend_index: 0,
                 upstream_pool: Some(&pool),
                 status: StatusCode::OK,
             });
-            assert!(matches!(healthy, Some(HealthTransition::BecameHealthy)));
+            assert!(cooling_down.is_none());
 
             let classified = impulse_errors::classify_upstream_proxy_error(&ProxyError::Timeout)
                 .expect("classified timeout");
-            let transition = observe_classified_backend_failure(ClassifiedBackendFailureInput {
-                metrics_phase: "bootstrap",
-                upstream_name: "api",
-                backend_addr: "backend-a",
-                backend_index: 0,
-                upstream_pool: Some(&pool),
-                metrics: &metrics,
-                classified: &classified,
-            });
+            let timeout_pool = test_upstream_pool();
+            let mut transition = None;
+            for _ in 0..3 {
+                transition = observe_classified_backend_failure(ClassifiedBackendFailureInput {
+                    metrics_phase: "bootstrap",
+                    upstream_name: "api",
+                    backend_addr: "backend-a",
+                    backend_index: 0,
+                    upstream_pool: Some(&timeout_pool),
+                    metrics: &metrics,
+                    classified: &classified,
+                });
+            }
             assert!(matches!(
                 transition,
                 Some(HealthTransition::BecameUnhealthy)
@@ -1556,7 +1563,7 @@ mod tests {
                 metrics
                     .health_failure_timeout
                     .load(std::sync::atomic::Ordering::Relaxed),
-                1
+                3
             );
         }
 

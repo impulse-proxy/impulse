@@ -8,7 +8,7 @@ fn http3_request_is_accepted_and_parsed() {
     let dir = tempdir().expect("failed to create temp dir");
     let (cert, key) = write_test_certs(&dir);
     let config = make_config(0, cert, key, "127.0.0.1:1".to_string());
-    let mut listener = QUICListener::new(config).expect("failed to create listener");
+    let mut listener = Http3Service::new(config).expect("failed to create listener");
     let addr = listener.socket.local_addr().unwrap();
 
     let stop = Arc::new(AtomicBool::new(false));
@@ -36,7 +36,7 @@ fn invalid_backend_scheme_is_rejected_at_startup() {
     let dir = tempdir().expect("failed to create temp dir");
     let (cert, key) = write_test_certs(&dir);
     let config = make_config(0, cert, key, "ftp://127.0.0.1:8080".to_string());
-    match QUICListener::new(config) {
+    match Http3Service::new(config) {
         Ok(_) => panic!("invalid backend scheme should fail startup"),
         Err(err) => {
             assert!(

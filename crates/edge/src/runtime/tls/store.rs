@@ -66,7 +66,7 @@ impl ListenerTlsReloadStore {
             ))
         })?;
         state.generation = state.generation.saturating_add(1);
-        state.loaded_at_unix_ms = crate::watchdog::time::now_millis();
+        state.loaded_at_unix_ms = impulse_operations::watchdog::now_millis();
         state.last_reload_status = "cert_reload_applied".to_string();
         state.inventory = inventory;
         state.certificate_resolver = certificate_resolver;

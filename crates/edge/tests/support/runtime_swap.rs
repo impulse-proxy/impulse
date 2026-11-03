@@ -5,7 +5,7 @@ use std::{
     convert::Infallible,
     future::Future,
     net::{SocketAddr, TcpListener as StdTcpListener, UdpSocket as StdUdpSocket},
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -21,11 +21,14 @@ use impulse_config::{
     validator::validate,
 };
 use impulse_edge::{
-    MAX_DATAGRAM_SIZE_BYTES, MAX_UDP_PAYLOAD_BYTES, QUIC_IDLE_TIMEOUT_MS, QUIC_INITIAL_MAX_DATA,
-    QUIC_INITIAL_MAX_STREAMS_BIDI, QUIC_INITIAL_MAX_STREAMS_UNI, QUIC_INITIAL_STREAM_DATA,
+    constants::{
+        MAX_DATAGRAM_SIZE_BYTES, MAX_UDP_PAYLOAD_BYTES, QUIC_IDLE_TIMEOUT_MS,
+        QUIC_INITIAL_MAX_DATA, QUIC_INITIAL_MAX_STREAMS_BIDI, QUIC_INITIAL_MAX_STREAMS_UNI,
+        QUIC_INITIAL_STREAM_DATA,
+    },
     runtime::{
         bundle::RuntimeBundleHandle,
-        listener::QUICListener as RuntimeListener,
+        listener::Http3Service as RuntimeListener,
         policy::{LifecycleTransitionResult, RuntimeLifecyclePhase},
     },
 };
@@ -111,10 +114,6 @@ impl RuntimeSwapHarness {
             runtime_bundle: None,
             listen_addr: None,
         }
-    }
-
-    pub(crate) fn config_path(&self) -> &Path {
-        &self.config_path
     }
 
     pub(crate) fn make_config(&self, upstreams: HashMap<String, Upstream>) -> Config {

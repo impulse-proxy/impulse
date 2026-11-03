@@ -13,6 +13,13 @@ mod h3_to_h1;
 mod h3_to_h2;
 mod headers;
 mod host;
+mod input;
 pub mod request;
 pub mod response;
 pub mod websocket;
+
+pub use input::{
+    ForwardedHeaderMode, ForwardingPolicyInput, HostPolicyInput, HostPolicyMode,
+    NormalizationInput, RequestFramingInput, TrailerPolicyInput, UpstreamScheme,
+    UpstreamTargetInput,
+};

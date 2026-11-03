@@ -1,5 +1,54 @@
 use super::*;
 
+impl impulse_http3_ingress::ConnectionAdmissionAdapter for Http3Service {
+    fn draining(&self) -> bool {
+        self.draining
+    }
+
+    fn try_consume_global_token(&mut self) -> bool {
+        self.conn_rate_limiter.try_consume()
+    }
+
+    fn try_consume_source_token(&self, source: std::net::IpAddr) -> bool {
+        self.source_conn_rate_limiter.try_consume(source)
+    }
+
+    fn active_connections(&self) -> usize {
+        self.connections.len()
+    }
+
+    fn max_active_connections(&self) -> usize {
+        self.max_active_connections
+    }
+
+    fn record_rejection(&self, reason: impulse_http3_ingress::ConnectionAdmissionRejection) {
+        use impulse_http3_ingress::ConnectionAdmissionRejection;
+
+        match reason {
+            ConnectionAdmissionRejection::Draining => self
+                .metrics
+                .ingress_observations()
+                .inc_ingress_draining_drop(),
+            ConnectionAdmissionRejection::Unroutable => {
+                self.metrics.ingress_observations().inc_ingress_unroutable();
+            }
+            ConnectionAdmissionRejection::GlobalRateLimit
+            | ConnectionAdmissionRejection::SourceRateLimit => self
+                .metrics
+                .ingress_observations()
+                .inc_ingress_rate_limited(),
+            ConnectionAdmissionRejection::ConnectionCapacity => {
+                self.metrics
+                    .ingress_observations()
+                    .inc_connection_cap_reject();
+                self.metrics
+                    .policy_observations()
+                    .inc_overload_shed_reason(OverloadShedReason::ConnectionCap);
+            }
+        }
+    }
+}
+
 fn is_benign_quic_close(err: &quiche::ConnectionError) -> bool {
     !err.is_app && err.error_code == 0 && err.reason.is_empty()
 }
@@ -62,7 +111,7 @@ pub(super) fn maybe_log_quic_connection_error(
     log_quic_connection_error(source, peer, trace_id, err);
 }
 
-impl QUICListener {
+impl Http3Service {
     pub(super) fn clear_connection_registry(&mut self) {
         self.connections.clear();
         self.cid_routes.clear();
@@ -148,14 +197,10 @@ impl QUICListener {
             self.connections.len()
         );
 
-        if self.draining {
-            self.metrics.inc_ingress_draining_drop();
-            return None;
-        }
-
-        if packet_type != quiche::Type::Initial {
-            debug!("Non-Initial packet for unknown connection, ignoring");
-            self.metrics.inc_ingress_unroutable();
+        if let Err(reason) =
+            impulse_http3_ingress::admit_initial_connection(self, peer.ip(), packet_type)
+        {
+            debug!("Rejecting new QUIC connection from {}: {:?}", peer, reason);
             return None;
         }
 
@@ -163,43 +208,14 @@ impl QUICListener {
             debug!("Received 0-RTT attempt, will negotiate fresh connection");
         }
 
-        if !self.conn_rate_limiter.try_consume() {
-            debug!(
-                "New connection rate limit exceeded, dropping Initial packet from {}",
-                peer
-            );
-            self.metrics.inc_ingress_rate_limited();
-            return None;
-        }
-
-        if !self.source_conn_rate_limiter.try_consume(peer.ip()) {
-            debug!(
-                "Per-source new connection rate limit exceeded, dropping Initial packet from {}",
-                peer
-            );
-            self.metrics.inc_ingress_rate_limited();
-            return None;
-        }
-
-        if self.connections.len() >= self.max_active_connections {
-            self.metrics.inc_connection_cap_reject();
-            self.metrics
-                .inc_overload_shed_reason(OverloadShedReason::ConnectionCap);
-            debug!(
-                "Active connection cap reached (cap={}, active={}), dropping Initial packet from {}",
-                self.max_active_connections,
-                self.connections.len(),
-                peer
-            );
-            return None;
-        }
-
         if let Err(err) = self.sync_runtime_bundle_if_needed() {
             error!(
                 "Failed to reload QUIC TLS configuration for listener {}: {}",
                 self.listener_label, err
             );
-            self.metrics.inc_ingress_connection_create_failed();
+            self.metrics
+                .ingress_observations()
+                .inc_ingress_connection_create_failed();
             return None;
         }
 
@@ -213,7 +229,9 @@ impl QUICListener {
                 Ok(conn) => conn,
                 Err(e) => {
                     error!("quiche::accept failed: {:?}", e);
-                    self.metrics.inc_ingress_connection_create_failed();
+                    self.metrics
+                        .ingress_observations()
+                        .inc_ingress_connection_create_failed();
                     return None;
                 }
             };
@@ -384,7 +402,9 @@ impl QUICListener {
     }
 
     pub(super) fn refresh_active_connection_metric(&self) {
-        self.metrics.set_active_connections(self.connections.len());
+        self.metrics
+            .ingress_observations()
+            .set_active_connections(self.connections.len());
     }
 }
 

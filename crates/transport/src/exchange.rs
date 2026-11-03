@@ -1,5 +1,6 @@
 use bytes::Bytes;
 use hyper::http::{HeaderMap, Method, StatusCode, Uri, Version};
+use impulse_contracts::TunnelMode;
 use impulse_errors::ProxyError;
 use tokio::{
     io::{AsyncRead, AsyncWrite},
@@ -36,37 +37,39 @@ pub(crate) fn upstream_response_body_channel() -> (
     mpsc::channel(16)
 }
 
-pub struct UpstreamCancellation {
+pub(crate) struct UpstreamCancellation {
     pub signal: oneshot::Receiver<()>,
 }
 
 #[derive(Debug)]
-pub enum UpstreamExchangeOutcome {
+#[allow(dead_code)]
+pub(crate) enum UpstreamExchangeOutcome {
     Completed,
     Cancelled,
     Failed(ProxyError),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum UpstreamConnectionReuse {
+pub(crate) enum UpstreamConnectionReuse {
     Reuse,
     Close,
 }
 
 #[derive(Debug)]
-pub struct UpstreamExchangeCompletion {
+#[allow(dead_code)]
+pub(crate) struct UpstreamExchangeCompletion {
     pub outcome: UpstreamExchangeOutcome,
     pub connection_reuse: UpstreamConnectionReuse,
 }
 
-pub struct UpstreamInflightPermit {
+pub(crate) struct UpstreamInflightPermit {
     pub(crate) _permit: OwnedSemaphorePermit,
 }
 
-pub struct UpstreamExchangeLifecycle {
+pub(crate) struct UpstreamExchangeLifecycle {
     pub cancellation: UpstreamCancellation,
     pub completion: oneshot::Sender<UpstreamExchangeCompletion>,
-    pub inflight_permit: UpstreamInflightPermit,
+    pub _inflight_permit: UpstreamInflightPermit,
 }
 
 pub trait UpstreamTunnelIo: AsyncRead + AsyncWrite + Send + Unpin {}
@@ -74,8 +77,60 @@ pub trait UpstreamTunnelIo: AsyncRead + AsyncWrite + Send + Unpin {}
 impl<T> UpstreamTunnelIo for T where T: AsyncRead + AsyncWrite + Send + Unpin {}
 
 pub struct UpstreamTunnel {
-    pub io: Box<dyn UpstreamTunnelIo>,
-    pub lifecycle: UpstreamExchangeLifecycle,
+    mode: TunnelMode,
+    io: Box<dyn UpstreamTunnelIo>,
+    lifecycle: UpstreamExchangeLifecycle,
+}
+
+impl UpstreamTunnel {
+    pub(crate) fn new(
+        mode: TunnelMode,
+        io: Box<dyn UpstreamTunnelIo>,
+        lifecycle: UpstreamExchangeLifecycle,
+    ) -> Self {
+        Self {
+            mode,
+            io,
+            lifecycle,
+        }
+    }
+
+    pub fn into_parts(
+        self,
+    ) -> (
+        TunnelMode,
+        Box<dyn UpstreamTunnelIo>,
+        UpstreamTunnelCompletion,
+    ) {
+        (
+            self.mode,
+            self.io,
+            UpstreamTunnelCompletion {
+                lifecycle: self.lifecycle,
+            },
+        )
+    }
+}
+
+pub struct UpstreamTunnelCompletion {
+    lifecycle: UpstreamExchangeLifecycle,
+}
+
+impl UpstreamTunnelCompletion {
+    pub fn complete(self) {
+        self.finish(UpstreamExchangeOutcome::Completed);
+    }
+
+    pub fn fail(self, error: ProxyError) {
+        self.finish(UpstreamExchangeOutcome::Failed(error));
+    }
+
+    fn finish(self, outcome: UpstreamExchangeOutcome) {
+        let _ = self.lifecycle.completion.send(UpstreamExchangeCompletion {
+            outcome,
+            connection_reuse: UpstreamConnectionReuse::Close,
+        });
+    }
 }
 
 pub struct UpstreamUpgrade {
@@ -85,8 +140,6 @@ pub struct UpstreamUpgrade {
 pub struct UpstreamExchangeRequest {
     pub head: UpstreamRequestHead,
     pub body: UpstreamBody,
-    pub cancellation: UpstreamCancellation,
-    pub completion: oneshot::Sender<UpstreamExchangeCompletion>,
 }
 
 pub struct UpstreamExchangeResponse {

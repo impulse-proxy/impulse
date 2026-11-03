@@ -2,7 +2,9 @@ mod support;
 
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use impulse_lb::upstream_pool::UpstreamPool;
-use support::{BACKEND_COUNTS, STRATEGIES, runtime_upstream, upstream_pool};
+use support::{
+    BACKEND_COUNTS, STRATEGIES, runtime_upstream, upstream_pool, upstream_pool_from_runtime,
+};
 
 const KEYS: [&str; 8] = [
     "tenant:001",
@@ -47,8 +49,7 @@ fn benchmark_pool_index_construction(criterion: &mut Criterion) {
                 &upstream,
                 |bencher, upstream| {
                     bencher.iter(|| {
-                        let mut pool = UpstreamPool::from_runtime_upstream(black_box(upstream))
-                            .expect("benchmark upstream pool must build");
+                        let mut pool = upstream_pool_from_runtime(black_box(upstream));
                         black_box(pool.pick_without_begin(black_box(KEYS[0])));
                     });
                 },

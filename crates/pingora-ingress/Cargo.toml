@@ -1,0 +1,18 @@
+[package]
+name = "impulse-pingora-ingress"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+bytes.workspace = true
+http.workspace = true
+impulse-contracts = { path = "../contracts" }
+impulse-errors = { path = "../errors" }
+pingora-cache.workspace = true
+pingora-core = { workspace = true, features = ["connection_filter", "rustls"] }
+pingora-http.workspace = true
+pingora-proxy.workspace = true
+rustls.workspace = true
+tokio.workspace = true

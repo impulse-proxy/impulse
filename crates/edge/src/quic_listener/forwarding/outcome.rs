@@ -25,7 +25,7 @@ pub(in crate::quic_listener) fn rejection_reason_for_status(
     ForwardingOrchestrationService::rejection_reason(status)
 }
 
-impl QUICListener {
+impl Http3Service {
     pub(in crate::quic_listener) fn log_classified_upstream_failure(
         phase: &str,
         request_id: Option<u64>,

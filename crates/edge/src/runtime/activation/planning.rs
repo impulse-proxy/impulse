@@ -11,9 +11,11 @@ use super::{
     *,
 };
 use crate::runtime::{
+    activation::compatibility::evaluate_runtime_reload_compatibility,
+    builder::RuntimeBuilder,
     bundle::{ActiveRuntimeGeneration, RuntimeBundle},
     generation::CarriedProcessSharedServices,
-    listener::QUICListener,
+    listener::Http3Service,
     policy::{TransitionRejection, render_rejections},
 };
 
@@ -103,7 +105,7 @@ pub(crate) fn plan_runtime_reload(
     };
 
     if let Err(err) =
-        QUICListener::preflight_require_ready_jwks(&runtime_config, "reload_preflight")
+        Http3Service::preflight_require_ready_jwks(&runtime_config, "reload_preflight")
     {
         let rejected =
             RejectedChange::resource_preparation_failed("runtime jwks preflight", err.to_string());
@@ -124,38 +126,37 @@ pub(crate) fn plan_runtime_reload(
     }
 
     let carried = CarriedProcessSharedServices::from_active(current.shared_services());
-    let next_shared_state = match QUICListener::build_shared_state_for_generation(
-        &runtime_config,
-        Some(carried),
-        candidate_generation,
-    ) {
-        Ok(shared_state) => {
-            validation.push(PlanningPhaseResult {
-                phase: PlanningPhase::NormalizeRuntime,
-                status: PlanningPhaseStatus::Accepted,
-                summary: "runtime generation assembled successfully".to_string(),
-            });
-            Arc::new(shared_state)
-        }
-        Err(err) => {
-            let rejected =
-                RejectedChange::resource_preparation_failed("runtime generation", err.to_string());
-            validation.push(PlanningPhaseResult {
-                phase: PlanningPhase::NormalizeRuntime,
-                status: PlanningPhaseStatus::Rejected,
-                summary: rejected.message.clone(),
-            });
-            return rejected_reload_plan(
-                request,
-                config_source,
-                Some(config.version),
-                current_generation,
-                candidate_generation,
-                validation,
-                vec![rejected],
-            );
-        }
-    };
+    let next_shared_state =
+        match RuntimeBuilder::rebuild_generation(&runtime_config, carried, candidate_generation) {
+            Ok(shared_state) => {
+                validation.push(PlanningPhaseResult {
+                    phase: PlanningPhase::NormalizeRuntime,
+                    status: PlanningPhaseStatus::Accepted,
+                    summary: "runtime generation assembled successfully".to_string(),
+                });
+                Arc::new(shared_state)
+            }
+            Err(err) => {
+                let rejected = RejectedChange::resource_preparation_failed(
+                    "runtime generation",
+                    err.to_string(),
+                );
+                validation.push(PlanningPhaseResult {
+                    phase: PlanningPhase::NormalizeRuntime,
+                    status: PlanningPhaseStatus::Rejected,
+                    summary: rejected.message.clone(),
+                });
+                return rejected_reload_plan(
+                    request,
+                    config_source,
+                    Some(config.version),
+                    current_generation,
+                    candidate_generation,
+                    validation,
+                    vec![rejected],
+                );
+            }
+        };
 
     let next_runtime = RuntimeBundle {
         generation: candidate_generation,
@@ -169,7 +170,7 @@ pub(crate) fn plan_runtime_reload(
     let candidate_snapshot = Some(snapshot_from_bundle(&next_runtime));
 
     let compatibility_rejections: Result<(), Vec<TransitionRejection>> =
-        QUICListener::evaluate_runtime_reload_compatibility(current, &next_runtime);
+        evaluate_runtime_reload_compatibility(current, &next_runtime);
     let (compatibility, rejected_changes, compatibility_summary, candidate_status) =
         match compatibility_rejections {
             Ok(()) => (

@@ -4,21 +4,24 @@ use super::{
     prepare::{RequestFinalizationConfig, RequestRoutingInput, StartedRequestEnvelope},
     *,
 };
-use crate::runtime::connection::{
-    guardrails::{
+use crate::{
+    edge_core::body_guardrails::{
         BodyLimitKind, REQUEST_BODY_TOO_LARGE_BODY, RequestBodyGuardrailConfig,
         RequestBodyGuardrailDecision, RequestBodyGuardrailInput, checked_request_body_ingress,
     },
-    outcome::{
-        BackendOutcomeTarget, RouteOutcomeTarget, observe_admission_outcome,
-        observe_proxy_error_outcome,
-    },
-    stream::{
-        AdmissionPermits, BackendFailureReason, CancellationReason, RejectionReason, TerminalReason,
+    runtime::connection::{
+        outcome::{
+            BackendOutcomeTarget, RouteOutcomeTarget, observe_admission_outcome,
+            observe_proxy_error_outcome,
+        },
+        stream::{
+            AdmissionPermits, BackendFailureReason, CancellationReason, RejectionReason,
+            TerminalReason,
+        },
     },
 };
 
-impl QUICListener {
+impl Http3Service {
     pub(super) fn materialize_forward_after_auth(
         stream_id: u64,
         req: &mut RequestEnvelope,
@@ -98,29 +101,30 @@ impl QUICListener {
                 crate::quic_listener::admission::PostAuthAdmissionRejection::Quota(decision),
             ) => {
                 if decision.status == http::StatusCode::TOO_MANY_REQUESTS {
-                    metrics.inc_request_rate_limited();
+                    metrics.policy_observations().inc_request_rate_limited();
                 }
-                let _ = observe_admission_outcome(
-                    metrics,
-                    RouteOutcomeTarget {
-                        route: &upstream_name,
-                    },
-                    Some(BackendOutcomeTarget {
-                        upstream: &upstream_name,
-                        backend_addr: Some(pending_forward.backend_addr.as_ref()),
-                        backend_index: Some(pending_forward.backend_index),
-                    }),
-                    req.start.elapsed(),
-                    decision.status,
-                    crate::runtime::connection::outcome::AdmissionOutcomeClass::QuotaDenied,
-                );
+                let _ = req.complete_with(|| {
+                    observe_admission_outcome(
+                        metrics,
+                        RouteOutcomeTarget {
+                            route: &upstream_name,
+                        },
+                        Some(BackendOutcomeTarget {
+                            upstream: &upstream_name,
+                            backend_addr: Some(pending_forward.backend_addr.as_ref()),
+                            backend_index: Some(pending_forward.backend_index),
+                        }),
+                        req.start.elapsed(),
+                        decision.status,
+                        crate::runtime::connection::outcome::AdmissionOutcomeClass::QuotaDenied,
+                    )
+                });
                 Self::send_admission_rejection_response(
                     h3,
                     quic,
                     stream_id,
                     &decision.as_response(),
                 )?;
-                req.mark_terminal_outcome_recorded();
                 terminalize_stream(
                     req,
                     TerminalReason::Rejected(RejectionReason::QuotaDenied),
@@ -130,10 +134,14 @@ impl QUICListener {
             }
             crate::quic_listener::admission::PostAuthAdmissionExecution::Ready(ready) => {
                 if ready.waited_for_global_permit {
-                    metrics.inc_inflight_wait_admit_global();
+                    metrics
+                        .policy_observations()
+                        .inc_inflight_wait_admit_global();
                 }
                 if ready.waited_for_upstream_permit {
-                    metrics.inc_inflight_wait_admit_upstream();
+                    metrics
+                        .policy_observations()
+                        .inc_inflight_wait_admit_upstream();
                 }
                 (
                     ready.backend_index,
@@ -147,22 +155,26 @@ impl QUICListener {
             crate::quic_listener::admission::PostAuthAdmissionExecution::Rejected(
                 crate::quic_listener::admission::PostAuthAdmissionRejection::Overloaded(decision),
             ) => {
-                let _ = observe_admission_outcome(
-                    metrics,
-                    RouteOutcomeTarget {
-                        route: &upstream_name,
-                    },
-                    Some(BackendOutcomeTarget {
-                        upstream: &upstream_name,
-                        backend_addr: Some(pending_forward.backend_addr.as_ref()),
-                        backend_index: Some(pending_forward.backend_index),
-                    }),
-                    req.start.elapsed(),
-                    http::StatusCode::SERVICE_UNAVAILABLE,
-                    crate::runtime::connection::outcome::AdmissionOutcomeClass::OverloadShed {
-                        reason: Some(decision.reason.metrics_reason()),
-                    },
-                );
+                let _ = req.complete_with(|| {
+                    observe_admission_outcome(
+                        metrics,
+                        RouteOutcomeTarget {
+                            route: &upstream_name,
+                        },
+                        Some(BackendOutcomeTarget {
+                            upstream: &upstream_name,
+                            backend_addr: Some(pending_forward.backend_addr.as_ref()),
+                            backend_index: Some(pending_forward.backend_index),
+                        }),
+                        req.start.elapsed(),
+                        http::StatusCode::SERVICE_UNAVAILABLE,
+                        crate::runtime::connection::outcome::AdmissionOutcomeClass::OverloadShed {
+                            reason: Some(crate::quic_listener::admission::overload_metrics_reason(
+                                decision.reason,
+                            )),
+                        },
+                    )
+                });
                 Self::send_overload_response(
                     h3,
                     quic,
@@ -173,8 +185,9 @@ impl QUICListener {
                 resilience
                     .adaptive_admission
                     .observe(req.start.elapsed(), true);
-                req.set_terminal_overload_reason(Some(decision.reason.metrics_reason()));
-                req.mark_terminal_outcome_recorded();
+                req.set_terminal_overload_reason(Some(
+                    crate::quic_listener::admission::overload_metrics_reason(decision.reason),
+                ));
                 terminalize_stream(
                     req,
                     TerminalReason::Rejected(RejectionReason::Overloaded),
@@ -187,27 +200,31 @@ impl QUICListener {
             ) => {
                 let outcome = if let Some(reason) = decision.overload_reason {
                     crate::runtime::connection::outcome::AdmissionOutcomeClass::OverloadShed {
-                        reason: Some(reason.metrics_reason()),
+                        reason: Some(crate::quic_listener::admission::overload_metrics_reason(
+                            reason,
+                        )),
                     }
                 } else {
                     crate::runtime::connection::outcome::AdmissionOutcomeClass::Failed {
                         timed_out: matches!(decision.route_outcome, Some(RouteOutcome::Timeout)),
                     }
                 };
-                let _ = observe_admission_outcome(
-                    metrics,
-                    RouteOutcomeTarget {
-                        route: &upstream_name,
-                    },
-                    Some(BackendOutcomeTarget {
-                        upstream: &upstream_name,
-                        backend_addr: Some(pending_forward.backend_addr.as_ref()),
-                        backend_index: Some(pending_forward.backend_index),
-                    }),
-                    req.start.elapsed(),
-                    decision.status,
-                    outcome,
-                );
+                let _ = req.complete_with(|| {
+                    observe_admission_outcome(
+                        metrics,
+                        RouteOutcomeTarget {
+                            route: &upstream_name,
+                        },
+                        Some(BackendOutcomeTarget {
+                            upstream: &upstream_name,
+                            backend_addr: Some(pending_forward.backend_addr.as_ref()),
+                            backend_index: Some(pending_forward.backend_index),
+                        }),
+                        req.start.elapsed(),
+                        decision.status,
+                        outcome,
+                    )
+                });
                 Self::send_simple_response(h3, quic, stream_id, decision.status, decision.body)?;
                 if decision.observe_adaptive_overload {
                     resilience
@@ -215,9 +232,10 @@ impl QUICListener {
                         .observe(req.start.elapsed(), true);
                 }
                 if let Some(reason) = decision.overload_reason {
-                    req.set_terminal_overload_reason(Some(reason.metrics_reason()));
+                    req.set_terminal_overload_reason(Some(
+                        crate::quic_listener::admission::overload_metrics_reason(reason),
+                    ));
                 }
-                req.mark_terminal_outcome_recorded();
                 terminalize_stream(
                     req,
                     TerminalReason::Rejected(rejection_reason_for_status(decision.status)),
@@ -339,8 +357,10 @@ impl QUICListener {
         }
 
         let request_mode = req.request_mode();
-        let websocket_h1_tunnel = req.tunnel_mode == TunnelMode::Websocket
-            && backend_endpoint.scheme() == BackendScheme::Http;
+        let websocket_h1_tunnel = impulse_http3_ingress::requires_h1_websocket_adaptation(
+            req.tunnel_mode,
+            backend_endpoint.scheme() == BackendScheme::Http,
+        );
         let (body_tx, websocket_tunnel_body_rx, request_body) = if request_mode.bodyless_mode() {
             (None, None, Some(BoxBody::new(Full::new(Bytes::new()))))
         } else if websocket_h1_tunnel {
@@ -554,9 +574,11 @@ impl QUICListener {
                     let request = match validate_request_headers(&list, resilience) {
                         Ok(request) => request,
                         Err((status, body, is_policy)) => {
-                            metrics.inc_request_validation_reject();
+                            metrics
+                                .request_observations()
+                                .inc_request_validation_reject();
                             if is_policy {
-                                metrics.inc_policy_denied();
+                                metrics.policy_observations().inc_policy_denied();
                             }
                             let _ = observe_proxy_error_outcome(
                                 metrics,
@@ -582,23 +604,18 @@ impl QUICListener {
                     let authority = request.authority;
                     let content_length = request.content_length;
                     let websocket_tunnel = request.websocket_tunnel;
-                    let tunnel_mode = if websocket_tunnel {
-                        TunnelMode::Websocket
-                    } else if is_connect_method(&method) {
-                        TunnelMode::Connect
-                    } else {
-                        TunnelMode::None
-                    };
+                    let tunnel_mode =
+                        impulse_http3_ingress::classify_tunnel(&method, websocket_tunnel);
 
-                    metrics.inc_total();
+                    metrics.request_observations().inc_total();
                     let request_start = Instant::now();
 
                     if connection.quic.is_in_early_data() {
                         if resilience.early_data_allowed_for(&method) {
-                            metrics.inc_early_data_accepted();
+                            metrics.ingress_observations().inc_early_data_accepted();
                         } else {
-                            metrics.inc_early_data_rejected();
-                            metrics.inc_policy_denied();
+                            metrics.ingress_observations().inc_early_data_rejected();
+                            metrics.policy_observations().inc_policy_denied();
                             let _ = observe_proxy_error_outcome(
                                 metrics,
                                 RouteOutcomeTarget::UNROUTED,
@@ -753,9 +770,7 @@ impl QUICListener {
                                             buffered_bytes: 0,
                                             next_chunk_bytes: read,
                                             declared_content_length: None,
-                                            exempt_from_body_size_cap: is_connect_method(
-                                                &req.method,
-                                            ),
+                                            exempt_from_body_size_cap: req.tunnel_mode.is_tunnel(),
                                         },
                                     );
                                     match next_state {
@@ -794,7 +809,9 @@ impl QUICListener {
                                                         ));
                                                     } else {
                                                         shed_due_to_buffer_pressure = true;
-                                                        metrics.inc_request_buffer_limit_reject();
+                                                        metrics
+                                                            .request_observations()
+                                                            .inc_request_buffer_limit_reject();
                                                         if err == RequestBufferError::Global {
                                                             debug!(
                                                                 "global request buffer cap reached"
@@ -811,7 +828,9 @@ impl QUICListener {
                                                 | BodyLimitKind::BufferedBody,
                                         }) => {
                                             shed_due_to_buffer_pressure = true;
-                                            metrics.inc_request_buffer_limit_reject();
+                                            metrics
+                                                .request_observations()
+                                                .inc_request_buffer_limit_reject();
                                         }
                                         Err(other) => {
                                             unreachable!(
@@ -889,26 +908,31 @@ impl QUICListener {
                             if shed_due_to_buffer_pressure
                                 && let Some(req) = connection.streams.get(&stream_id)
                             {
-                                let _ = observe_proxy_error_outcome(
-                                    metrics,
-                                    RouteOutcomeTarget {
-                                        route: req.upstream_name.as_deref().unwrap_or("unrouted"),
-                                    },
-                                    Some(BackendOutcomeTarget {
-                                        upstream: req
-                                            .upstream_name
-                                            .as_deref()
-                                            .unwrap_or("unrouted"),
-                                        backend_addr: req.backend_addr.as_deref(),
-                                        backend_index: req.backend_index,
-                                    }),
-                                    req.start.elapsed(),
-                                    Some(http::StatusCode::SERVICE_UNAVAILABLE),
-                                    &ProxyError::Pool(PoolError::BackendOverloaded(
-                                        "request body backpressure overload".into(),
-                                    )),
-                                    Some(OverloadShedReason::RequestBufferCap),
-                                );
+                                let _ = req.complete_with(|| {
+                                    observe_proxy_error_outcome(
+                                        metrics,
+                                        RouteOutcomeTarget {
+                                            route: req
+                                                .upstream_name
+                                                .as_deref()
+                                                .unwrap_or("unrouted"),
+                                        },
+                                        Some(BackendOutcomeTarget {
+                                            upstream: req
+                                                .upstream_name
+                                                .as_deref()
+                                                .unwrap_or("unrouted"),
+                                            backend_addr: req.backend_addr.as_deref(),
+                                            backend_index: req.backend_index,
+                                        }),
+                                        req.start.elapsed(),
+                                        Some(http::StatusCode::SERVICE_UNAVAILABLE),
+                                        &ProxyError::Pool(PoolError::BackendOverloaded(
+                                            "request body backpressure overload".into(),
+                                        )),
+                                        Some(OverloadShedReason::RequestBufferCap),
+                                    )
+                                });
                                 Self::send_overload_response(
                                     h3,
                                     &mut connection.quic,
@@ -923,7 +947,6 @@ impl QUICListener {
                                     req.set_terminal_overload_reason(Some(
                                         OverloadShedReason::RequestBufferCap,
                                     ));
-                                    req.mark_terminal_outcome_recorded();
                                     terminalize_stream(
                                         req,
                                         TerminalReason::Rejected(RejectionReason::Overloaded),

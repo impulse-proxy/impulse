@@ -1,18 +1,13 @@
 use std::{
     collections::HashMap,
     net::{SocketAddr, UdpSocket},
-    sync::{Arc, RwLock, atomic::AtomicBool},
+    sync::Arc,
     time::{Duration, Instant},
 };
 
-use impulse_config::{
-    backend_endpoint::BackendEndpoint,
-    runtime::{ListenerRuntimeConfig, RuntimeBackendTlsPolicy, RuntimeUpstreamPolicy},
-};
-use impulse_lb::{
-    pingora_backend::SharedPingoraLoadBalancingRuntimeState, upstream_pool::UpstreamPool,
-};
-use impulse_transport::{SharedDnsResolver, UpstreamTransportPool};
+use impulse_config::runtime::{ListenerRuntimeConfig, RuntimeUpstreamPolicy};
+pub use impulse_http3_ingress::ShutdownSignal;
+use impulse_operations::watchdog::WatchdogCoordinator;
 use tokio::sync::Semaphore;
 
 use crate::{
@@ -22,33 +17,30 @@ use crate::{
     resilience::runtime::RuntimeResilience,
     routing::index::RouteIndex,
     runtime::{
-        bundle::RuntimeBundleHandle, connection::quic::QuicConnection,
-        tls::store::ListenerTlsReloadStore,
+        bundle::{ActiveRuntimeGeneration, RuntimeBundleHandle},
+        connection::quic::QuicConnection,
+        shared_state::SharedRuntimeState,
     },
-    watchdog::coordinator::WatchdogCoordinator,
 };
 
-/// Shared cancellation signal for the QUIC workers in a listener group.
-#[derive(Clone, Debug)]
-pub struct ShutdownSignal(Arc<AtomicBool>);
-
-impl ShutdownSignal {
-    pub fn new() -> Self {
-        Self(Arc::new(AtomicBool::new(false)))
-    }
-
-    pub fn load(&self, ordering: std::sync::atomic::Ordering) -> bool {
-        self.0.load(ordering)
-    }
-
-    pub fn store(&self, value: bool, ordering: std::sync::atomic::Ordering) {
-        self.0.store(value, ordering);
-    }
+pub enum ListenerRuntimeState {
+    Standalone(Arc<SharedRuntimeState>),
+    Managed(ActiveRuntimeGeneration),
 }
 
-impl Default for ShutdownSignal {
-    fn default() -> Self {
-        Self::new()
+impl ListenerRuntimeState {
+    pub fn shared_state(&self) -> &SharedRuntimeState {
+        match self {
+            Self::Standalone(state) => state,
+            Self::Managed(runtime) => runtime.bundle().shared_state.as_ref(),
+        }
+    }
+
+    pub fn generation(&self) -> u64 {
+        match self {
+            Self::Standalone(_) => 0,
+            Self::Managed(runtime) => runtime.generation(),
+        }
     }
 }
 
@@ -58,24 +50,17 @@ impl Default for ShutdownSignal {
 /// per-listener limits needed by a running worker. Runtime generation assembly
 /// happens in [`crate::runtime::bundle`]; request execution details live under
 /// [`crate::runtime::connection`].
-pub struct QUICListener {
+pub struct Http3Service {
     pub socket: UdpSocket,
     pub local_addr: SocketAddr,
     pub config: ListenerRuntimeConfig,
     pub listener_label: String,
-    pub listener_tls_store: Arc<ListenerTlsReloadStore>,
     pub tls_reload_generation: u64,
     pub runtime_bundle: Option<Arc<RuntimeBundleHandle>>,
-    pub runtime_generation: u64,
-    pub response_cache_namespace: u64,
+    pub runtime_state: ListenerRuntimeState,
     pub quic_config: quiche::Config,
     pub h3_config: Arc<quiche::h3::Config>,
-    pub transport_pool: Arc<UpstreamTransportPool>,
-    pub backend_endpoints: Arc<HashMap<String, BackendEndpoint>>,
-    pub backend_dns_resolver: SharedDnsResolver,
     pub upstream_policies: Arc<HashMap<String, RuntimeUpstreamPolicy>>,
-    pub upstream_pools: HashMap<String, Arc<RwLock<UpstreamPool>>>,
-    pub pingora_load_balancing: SharedPingoraLoadBalancingRuntimeState<RuntimeBackendTlsPolicy>,
     pub upstream_inflight: HashMap<String, Arc<Semaphore>>,
     pub global_inflight: Arc<Semaphore>,
     pub(crate) routing_index: Arc<RouteIndex>,
@@ -112,7 +97,7 @@ pub struct QUICListener {
     pub(crate) source_conn_rate_limiter: crate::runtime::connection::PerSourceTokenBucket,
 }
 
-impl QUICListener {
+impl Http3Service {
     pub fn connections(&self) -> &HashMap<Arc<[u8]>, QuicConnection> {
         &self.connections
     }

@@ -25,21 +25,20 @@ use hyper::body::Incoming;
 #[cfg(test)]
 use impulse_bridge::response::should_strip_response_header;
 use impulse_bridge::response::{
-    ResponseBodyMode, ResponseBodyPolicy, ResponseNormalizationInput,
-    ResponseNormalizationProtocol, ResponseProtocolConstraints, normalize_response_trailers,
-    normalize_upstream_response,
+    ResponseBodyMode, ResponseNormalizationProtocol, ResponseProtocolConstraints,
+    normalize_response_trailers,
 };
 use impulse_config::{
     backend_endpoint::{BackendEndpoint, BackendScheme},
-    config::ClientAuth,
+    config::{ClientAuth, ControlApi as ControlApiConfig},
     runtime::{
-        ListenerRuntimeConfig, RuntimeConfig, RuntimeListenerTls, RuntimeTlsIdentity,
-        RuntimeUpstreamPolicy,
+        ListenerRuntimeConfig, RuntimeListenerTls, RuntimeTlsIdentity, RuntimeUpstreamPolicy,
     },
 };
 use impulse_errors::{PoolError, ProxyError};
 use impulse_lb::upstream_pool::UpstreamPool;
-use impulse_transport::{SharedDnsResolver, UpstreamTransportPool};
+use impulse_operations::watchdog::WatchdogCoordinator;
+use impulse_transport::UpstreamRequestExecutor;
 use log::{debug, error, info, warn};
 use quiche::{Config, h3::NameValue};
 use rand::RngCore;
@@ -74,15 +73,13 @@ use crate::{
     resilience::runtime::RuntimeResilience,
     routing::{decision::RouteDecisionReason, index::RouteIndex},
     runtime::{
-        bundle::RuntimeBundle,
         connection::{
             quic::{QuicConnection, QuicConnectionErrorSnapshot},
             request::RequestEnvelope,
             response::{ForwardResult, ForwardSuccess, ResponseChunk, UpstreamResult},
             stream::{CancellationReason, TerminalReason, TunnelMode},
         },
-        listener::QUICListener,
-        tasks::RuntimeTaskRegistry,
+        listener::Http3Service,
         tls::{
             inventory::{
                 ListenerTlsInventory, RuntimeLoadedClientAuthCa, RuntimeLoadedTlsIdentity,
@@ -91,18 +88,15 @@ use crate::{
             store::{ListenerTlsReloadState, ListenerTlsReloadStore},
         },
     },
-    watchdog::coordinator::WatchdogCoordinator,
 };
 
 mod admission;
 mod async_runtime;
-mod backend_resolution;
 mod connection;
 mod control_api;
 mod control_plane;
 mod forwarding;
 mod metrics;
-mod pingora_health;
 mod protocol;
 mod runtime_endpoint;
 mod runtime_state;
@@ -112,14 +106,9 @@ mod tls_runtime;
 mod validation;
 mod workers;
 
-pub(crate) use admission::{
-    AdmissionPolicyDecision, admission_rejection_response,
-    evaluate_forwarding_pre_admission_policy, evaluate_post_auth_quota_policy,
-};
-pub use async_runtime::configure_async_runtime;
-pub(in crate::quic_listener) use async_runtime::{
-    runtime_handle, spawn_async_task, spawn_supervised_async_task,
-};
+pub(crate) use admission::{evaluate_local_auth_policy, evaluate_scoped_rate_limit_policy};
+pub(crate) use async_runtime::configure_async_runtime;
+pub(in crate::quic_listener) use async_runtime::{runtime_handle, spawn_async_task};
 use connection::maybe_log_quic_connection_error;
 #[cfg(test)]
 pub(crate) use connection::purge_connection_routes;
@@ -127,22 +116,19 @@ pub(crate) use connection::purge_connection_routes;
 use connection::resolve_primary_from_radix_prefix;
 pub(crate) use connection::{ConnectionRoutes, sweep_closed_connections};
 pub(crate) use forwarding::{
-    BackendCandidate, ForwardingSelectionService, MAX_UPSTREAM_RETRY_ATTEMPTS, RetryCoordinator,
-    TargetResolutionRequest, execute_external_auth_request,
+    BackendCandidate, ForwardingSelectionService, TargetResolutionRequest,
+    execute_external_auth_request,
 };
 use forwarding::{
     ForwardingExecutionCtx, ForwardingSharedCtx, H3RequestHandlingConfig, StreamProgressConfig,
 };
-pub(in crate::quic_listener) use protocol::{
-    can_poll_upstream_result, collect_h3_trailers, is_connect_method, is_tunnel_response,
-};
+pub(in crate::quic_listener) use protocol::{can_poll_upstream_result, collect_h3_trailers};
 #[cfg(test)]
 pub(in crate::quic_listener) use protocol::{
     connection_header_tokens, is_bodyless_request_mode, is_connect_tunnel_response,
     should_strip_h3_response_header,
 };
 pub use runtime_state::ListenerWorkerRuntimeState;
-pub(crate) use validation::validate_http_request_parts;
 use validation::{
     RequestBufferError, extract_header_value, generated_span_id, generated_trace_id,
     parse_traceparent, validate_request_headers,
@@ -152,6 +138,11 @@ pub use workers::{
     spawn_listener_worker_group, try_reserve_shard_queue_bytes,
 };
 use x509_parser::{extensions::GeneralName, parse_x509_certificate};
+
+#[cfg(test)]
+pub(crate) use crate::runtime::subsystem_mapping::{
+    load_balancing_backend_inputs, load_balancing_strategy_input, upstream_pool_from_runtime,
+};
 
 struct ListenerRuntimeSettings {
     backend_timeout: Duration,
@@ -171,9 +162,9 @@ struct ListenerRuntimeSettings {
     new_connections_burst: u32,
 }
 
-type LbHeaderLookup<'a> = crate::request_pipeline::RequestHeaderLookup<'a>;
+type LbHeaderLookup<'a> = crate::edge_core::request_execution::RequestHeaderLookup<'a>;
 
-impl QUICListener {
+impl Http3Service {
     fn random_reset_token() -> u128 {
         let mut token = [0u8; RESET_TOKEN_LEN_BYTES];
         rand::thread_rng().fill_bytes(&mut token);
@@ -213,7 +204,7 @@ impl QUICListener {
             Ok(seq) => {
                 connection.last_scid_rotation = now;
                 connection.packets_since_rotation = 0;
-                metrics.inc_scid_rotation();
+                metrics.ingress_observations().inc_scid_rotation();
                 debug!(
                     "Issued new SCID seq={} cid={}",
                     seq,
@@ -278,13 +269,13 @@ impl QUICListener {
         local_addr: SocketAddr,
         packet: &mut [u8],
     ) {
-        self.metrics.inc_ingress_packet();
+        self.metrics.ingress_observations().inc_ingress_packet();
 
         let header = match quiche::Header::from_slice(packet, quiche::MAX_CONN_ID_LEN) {
             Ok(hdr) => hdr,
             Err(_) => {
                 error!("Failed to parse QUIC packet header");
-                self.metrics.inc_ingress_bad_header();
+                self.metrics.ingress_observations().inc_ingress_bad_header();
                 return;
             }
         };
@@ -301,7 +292,9 @@ impl QUICListener {
                 Ok(len) => len,
                 Err(e) => {
                     error!("Version negotiation failed: {:?}", e);
-                    self.metrics.inc_ingress_version_neg_failed();
+                    self.metrics
+                        .ingress_observations()
+                        .inc_ingress_version_neg_failed();
                     return;
                 }
             };
@@ -374,10 +367,12 @@ impl QUICListener {
             && connection.quic.peer_cert().is_none()
         {
             if !connection.tls_client_auth_failure_recorded {
-                self.metrics.record_downstream_tls_handshake_failure(
-                    &Self::listener_label(&self.config),
-                    "missing_client_cert",
-                );
+                self.metrics
+                    .ingress_observations()
+                    .record_downstream_tls_handshake_failure(
+                        &Self::listener_label(&self.config),
+                        "missing_client_cert",
+                    );
                 connection.tls_client_auth_failure_recorded = true;
             }
             warn!(
@@ -393,14 +388,36 @@ impl QUICListener {
             metrics: Arc::clone(&self.metrics),
             resilience: &self.resilience,
             routing_index: &self.routing_index,
-            upstream_pools: &self.upstream_pools,
+            upstream_pools: self
+                .runtime_state
+                .shared_state()
+                .generation_state()
+                .pingora_load_balancing
+                .upstream_pools(),
             upstream_policies: self.upstream_policies.as_ref(),
-            pingora_load_balancing: self.pingora_load_balancing.as_ref(),
-            generation: self.runtime_generation,
+            pingora_load_balancing: self
+                .runtime_state
+                .shared_state()
+                .generation_state()
+                .pingora_load_balancing
+                .as_ref(),
+            generation: self.runtime_state.generation(),
         };
         let exec_ctx = ForwardingExecutionCtx {
-            transport_pool: Arc::clone(&self.transport_pool),
-            backend_endpoints: Arc::clone(&self.backend_endpoints),
+            upstream_executor: UpstreamRequestExecutor::new(Arc::clone(
+                &self
+                    .runtime_state
+                    .shared_state()
+                    .shared_services()
+                    .transport_pool,
+            )),
+            backend_endpoints: Arc::clone(
+                &self
+                    .runtime_state
+                    .shared_state()
+                    .generation_state()
+                    .backend_endpoints,
+            ),
             upstream_inflight: &self.upstream_inflight,
             global_inflight: Arc::clone(&self.global_inflight),
             inflight_acquire_wait: self.inflight_acquire_wait,
@@ -408,7 +425,12 @@ impl QUICListener {
                 .runtime_bundle
                 .as_ref()
                 .and_then(|runtime| runtime.response_cache()),
-            response_cache_namespace: self.response_cache_namespace,
+            response_cache_namespace: self
+                .runtime_bundle
+                .as_ref()
+                .map_or(self.runtime_state.generation(), |runtime| {
+                    runtime.response_cache_namespace()
+                }),
         };
         let progress_config = StreamProgressConfig {
             backend_body_idle_timeout: self.backend_body_idle_timeout,
@@ -483,14 +505,36 @@ impl QUICListener {
             metrics: Arc::clone(&self.metrics),
             resilience: &self.resilience,
             routing_index: &self.routing_index,
-            upstream_pools: &self.upstream_pools,
+            upstream_pools: self
+                .runtime_state
+                .shared_state()
+                .generation_state()
+                .pingora_load_balancing
+                .upstream_pools(),
             upstream_policies: self.upstream_policies.as_ref(),
-            pingora_load_balancing: self.pingora_load_balancing.as_ref(),
-            generation: self.runtime_generation,
+            pingora_load_balancing: self
+                .runtime_state
+                .shared_state()
+                .generation_state()
+                .pingora_load_balancing
+                .as_ref(),
+            generation: self.runtime_state.generation(),
         };
         let exec_ctx = ForwardingExecutionCtx {
-            transport_pool: Arc::clone(&self.transport_pool),
-            backend_endpoints: Arc::clone(&self.backend_endpoints),
+            upstream_executor: UpstreamRequestExecutor::new(Arc::clone(
+                &self
+                    .runtime_state
+                    .shared_state()
+                    .shared_services()
+                    .transport_pool,
+            )),
+            backend_endpoints: Arc::clone(
+                &self
+                    .runtime_state
+                    .shared_state()
+                    .generation_state()
+                    .backend_endpoints,
+            ),
             upstream_inflight: &self.upstream_inflight,
             global_inflight: Arc::clone(&self.global_inflight),
             inflight_acquire_wait: self.inflight_acquire_wait,
@@ -498,7 +542,12 @@ impl QUICListener {
                 .runtime_bundle
                 .as_ref()
                 .and_then(|runtime| runtime.response_cache()),
-            response_cache_namespace: self.response_cache_namespace,
+            response_cache_namespace: self
+                .runtime_bundle
+                .as_ref()
+                .map_or(self.runtime_state.generation(), |runtime| {
+                    runtime.response_cache_namespace()
+                }),
         };
         let progress_config = StreamProgressConfig {
             backend_body_idle_timeout: self.backend_body_idle_timeout,

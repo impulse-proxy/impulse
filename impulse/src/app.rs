@@ -4,25 +4,16 @@ use std::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
-    time::Duration,
 };
 
 use clap::Parser;
 use impulse_config::{runtime::RuntimeConfig, validator::validate as validate_config};
-use impulse_edge::{
-    configure_async_runtime,
-    runtime::{
-        bundle::RuntimeBundleHandle,
-        listener::QUICListener,
-        privilege_drop::{apply_process_privilege_drop, current_process_privilege_state},
-    },
-};
+use impulse_edge::RuntimeSupervisor;
 use log::{error, info, warn};
 
 use crate::{
-    listener_group::{
-        allocate_worker_index_base, collect_finished_listener_groups, log_listener_startup,
-        reconcile_listener_groups, shutdown_listener_groups, spawn_managed_listener_group,
+    privilege_drop::{
+        ProcessPrivilegeState, apply_process_privilege_drop, current_process_privilege_state,
     },
     runtime_guard,
 };
@@ -107,7 +98,7 @@ pub(crate) fn main_entry() {
     }
 
     let control_plane_threads = runtime_config.performance.control_plane_threads.max(1);
-    configure_async_runtime(control_plane_threads);
+    RuntimeSupervisor::configure_async_runtime(control_plane_threads);
 
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -141,7 +132,7 @@ async fn run(
     runtime_config: RuntimeConfig,
     log_config: impulse_config::config::Log,
     tracing_config: impulse_config::config::Tracing,
-    privilege_state: impulse_edge::runtime::privilege_drop::ProcessPrivilegeState,
+    privilege_state: ProcessPrivilegeState,
     config_path: String,
 ) {
     // Must happen inside the runtime: the OTLP tonic exporter spawns a task on
@@ -153,30 +144,16 @@ async fn run(
         tracing_config.sample_ratio,
     );
 
-    let runtime_bundle =
-        match QUICListener::build_runtime_bundle(config_path, log_config, &runtime_config) {
-            Ok(bundle) => bundle,
-            Err(e) => {
-                error!("Failed to initialize shared runtime state: {}", e);
-                std::process::exit(1);
-            }
-        };
-    let shared_state = Arc::clone(&runtime_bundle.shared_state);
-    let runtime_bundle = Arc::new(RuntimeBundleHandle::new(runtime_bundle));
-
     let worker_count = runtime_config.performance.worker_threads.max(1);
     let shard_count = runtime_config.performance.packet_shards_per_worker.max(1);
     let effective_worker_count = worker_count.saturating_mul(shard_count);
-    if let Err(err) = QUICListener::spawn_control_plane_tasks_with_runtime_bundle(
-        &runtime_config,
-        &shared_state,
-        Arc::clone(&runtime_bundle),
-        effective_worker_count,
-    ) {
-        error!("Failed to initialize control-plane tasks: {}", err);
-        std::process::exit(1);
-    }
-
+    let supervisor = match RuntimeSupervisor::start(config_path, log_config, &runtime_config) {
+        Ok(supervisor) => supervisor,
+        Err(err) => {
+            error!("Failed to initialize runtime supervisor: {}", err);
+            std::process::exit(1);
+        }
+    };
     let binds_privileged_port = runtime_config
         .listeners
         .iter()
@@ -191,93 +168,48 @@ async fn run(
 
     let shutdown = Arc::new(AtomicBool::new(false));
     let shutdown_flag = shutdown.clone();
-    let shutdown_lifecycle = Arc::clone(&runtime_bundle);
+    let shutdown_handle = supervisor.signal_handle();
     tokio::spawn(async move {
         wait_for_shutdown_signal().await;
-        // Drive the runtime lifecycle state machine: Running/Draining ->
-        // ShuttingDown. This also gates any concurrent reload commit (Phase 6).
-        shutdown_lifecycle.lifecycle().begin_shutdown();
+        shutdown_handle.request_shutdown();
         shutdown_flag.store(true, Ordering::Relaxed);
     });
 
-    let mut listener_groups = Vec::new();
-    let mut worker_failed = false;
-    for listener_config in runtime_config.listener_runtime_configs() {
-        if shutdown.load(Ordering::Relaxed) {
-            break;
-        }
-
-        let worker_count = listener_config.performance.worker_threads.max(1);
-        let worker_index_base = allocate_worker_index_base(&listener_groups, worker_count);
-        match spawn_managed_listener_group(
-            listener_config,
-            Arc::clone(&shared_state),
-            Arc::clone(&runtime_bundle),
-            worker_index_base,
-        )
+    let mut services = match supervisor
+        .start_services(&runtime_config, effective_worker_count, shutdown.as_ref())
         .await
-        {
-            Ok(group) => {
-                listener_groups.push(group);
-            }
-            Err(err) => {
-                error!("{}", err);
-                worker_failed = true;
-                break;
-            }
+    {
+        Ok(services) => services,
+        Err(err) => {
+            error!("Failed to start runtime services: {}", err);
+            std::process::exit(1);
         }
+    };
+    let mut process_failed = !services.startup_succeeded();
+
+    if !shutdown.load(Ordering::Relaxed)
+        && !process_failed
+        && let Err(err) = apply_privilege_drop(privilege_state, &runtime_config)
+    {
+        error!("{}", err);
+        process_failed = true;
     }
 
-    if !shutdown.load(Ordering::Relaxed) && !worker_failed {
-        log_listener_startup(&runtime_config, &listener_groups);
-        if let Err(err) = apply_privilege_drop(privilege_state, &runtime_config) {
-            error!("{}", err);
-            worker_failed = true;
-        }
+    if !process_failed {
+        supervisor
+            .supervise_services(&mut services, shutdown.as_ref())
+            .await;
     }
 
-    while !shutdown.load(Ordering::Relaxed) && !worker_failed {
-        collect_finished_listener_groups(&mut listener_groups, &mut worker_failed).await;
-        if worker_failed {
-            break;
-        }
-        reconcile_listener_groups(&runtime_bundle, &mut listener_groups, &mut worker_failed).await;
-
-        // Reflect a watchdog-requested drain in the runtime lifecycle: once the
-        // watchdog asks for a restart, workers begin draining, so move the process
-        // Running -> Draining (idempotent while already draining). This keeps the
-        // lifecycle state machine an accurate transition table for drain, not just
-        // reload/shutdown (Phase 6).
-        if runtime_bundle
-            .current_view()
-            .shared_services()
-            .watchdog
-            .restart_requested()
-        {
-            runtime_bundle.lifecycle().begin_drain();
-        }
-
-        if worker_failed {
-            break;
-        }
-
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-
-    // Whether we exited via signal or a worker failure, the process is now
-    // shutting down; ensure the lifecycle reflects it before draining workers.
-    runtime_bundle.lifecycle().begin_shutdown();
-    shutdown_listener_groups(&mut listener_groups, &mut worker_failed).await;
-    // Workers are drained and joined: the shutdown transition is complete.
-    runtime_bundle.lifecycle().finish_shutdown();
+    process_failed |= supervisor.shutdown_services(services).await;
 
     let panic_count = runtime_guard::panic_count();
     if panic_count > 0 {
-        worker_failed = true;
+        process_failed = true;
         error!("Process captured {} panic(s) via panic hook", panic_count);
     }
 
-    if worker_failed {
+    if process_failed {
         impulse_utils::telemetry::init::shutdown_tracing();
         std::process::exit(1);
     }
@@ -320,7 +252,7 @@ fn fatal_startup_error(message: &str, logger_ready: bool, exit_code: i32) -> ! {
 }
 
 fn apply_privilege_drop(
-    privilege_state: impulse_edge::runtime::privilege_drop::ProcessPrivilegeState,
+    privilege_state: ProcessPrivilegeState,
     runtime_config: &RuntimeConfig,
 ) -> Result<(), String> {
     match apply_process_privilege_drop(privilege_state, runtime_config) {

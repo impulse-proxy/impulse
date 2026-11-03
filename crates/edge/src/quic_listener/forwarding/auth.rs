@@ -8,7 +8,7 @@ use std::{
 use http_body_util::Full;
 use hyper_rustls::HttpsConnectorBuilder;
 use hyper_util::client::legacy::{Client, connect::HttpConnector};
-use impulse_config::runtime::RuntimeExternalAuth;
+use impulse_policy::{ExternalAuthPolicy, ExternalAuthRequestHeader};
 use serde_json::Value;
 use tokio::{sync::Mutex, task::AbortHandle};
 
@@ -189,7 +189,7 @@ struct OidcExternalAuthInput {
     client_secret: Option<String>,
     audience: Option<String>,
     scopes: Vec<String>,
-    request_headers: Vec<impulse_config::runtime::RuntimeExternalAuthRequestHeader>,
+    request_headers: Vec<ExternalAuthRequestHeader>,
     timeout: Duration,
 }
 
@@ -244,7 +244,7 @@ fn is_unsafe_forwarded_auth_request_header(name: &[u8]) -> bool {
 pub(super) fn append_auth_request_headers(
     builder: &mut http::request::Builder,
     pending_forward: &PendingForward,
-    configured_headers: &[impulse_config::runtime::RuntimeExternalAuthRequestHeader],
+    configured_headers: &[ExternalAuthRequestHeader],
 ) {
     let request = external_auth_request_from_pending_forward(pending_forward);
     append_external_auth_request_headers(builder, &request, configured_headers);
@@ -253,7 +253,7 @@ pub(super) fn append_auth_request_headers(
 fn append_external_auth_request_headers(
     builder: &mut http::request::Builder,
     request: &ExternalAuthRequest,
-    configured_headers: &[impulse_config::runtime::RuntimeExternalAuthRequestHeader],
+    configured_headers: &[ExternalAuthRequestHeader],
 ) {
     for (name, value) in &request.headers {
         if is_unsafe_forwarded_auth_request_header(name.as_str().as_bytes()) {
@@ -389,7 +389,7 @@ async fn send_auth_request(
 
 async fn run_external_auth_with_timeout(
     request: Arc<ExternalAuthRequest>,
-    external_auth: RuntimeExternalAuth,
+    external_auth: ExternalAuthPolicy,
     timeout: Duration,
 ) -> ExternalAuthResult {
     tokio::time::timeout(timeout, run_external_auth(request, external_auth))
@@ -400,7 +400,7 @@ async fn run_external_auth_with_timeout(
 async fn run_http_external_auth(
     request: Arc<ExternalAuthRequest>,
     endpoint: String,
-    request_headers: Vec<impulse_config::runtime::RuntimeExternalAuthRequestHeader>,
+    request_headers: Vec<ExternalAuthRequestHeader>,
     response_header_allowlist: Vec<String>,
     timeout: Duration,
 ) -> ExternalAuthResult {
@@ -565,11 +565,11 @@ async fn run_oidc_external_auth(input: OidcExternalAuthInput) -> ExternalAuthRes
 
 async fn run_external_auth(
     request: Arc<ExternalAuthRequest>,
-    external_auth: RuntimeExternalAuth,
+    external_auth: ExternalAuthPolicy,
 ) -> ExternalAuthResult {
     let timeout = ExternalAuthExecutionPolicy::from_external_auth(&external_auth).timeout;
     match external_auth {
-        RuntimeExternalAuth::Http {
+        ExternalAuthPolicy::Http {
             endpoint,
             request_headers,
             response_header_allowlist,
@@ -584,7 +584,7 @@ async fn run_external_auth(
             )
             .await
         }
-        RuntimeExternalAuth::Oidc {
+        ExternalAuthPolicy::Oidc {
             discovery_url,
             issuer_url,
             client_id,
@@ -612,7 +612,7 @@ async fn run_external_auth(
 
 pub(crate) async fn execute_external_auth_request(
     request: ExternalAuthRequest,
-    external_auth: RuntimeExternalAuth,
+    external_auth: ExternalAuthPolicy,
 ) -> ExternalAuthResult {
     let timeout = ExternalAuthExecutionPolicy::from_external_auth(&external_auth).timeout;
     run_external_auth_with_timeout(Arc::new(request), external_auth, timeout).await
@@ -620,7 +620,7 @@ pub(crate) async fn execute_external_auth_request(
 
 pub(super) fn start_external_auth_task(
     pending_forward: Arc<PendingForward>,
-    external_auth: RuntimeExternalAuth,
+    external_auth: ExternalAuthPolicy,
 ) -> Result<AuthStart, ProxyError> {
     let task_config = ExternalAuthTaskConfig::from_external_auth(&external_auth);
     let request = external_auth_request_from_pending_forward(&pending_forward);
@@ -642,7 +642,7 @@ pub(super) fn start_external_auth_task(
     })
 }
 
-impl QUICListener {
+impl Http3Service {
     pub(super) fn complete_auth_result(
         stream_id: u64,
         req: &mut RequestEnvelope,
@@ -669,7 +669,7 @@ impl QUICListener {
             ExternalAuthStateTransition::Admitted {
                 request_header_mutations,
             } => {
-                metrics.inc_external_auth_allowed();
+                metrics.policy_observations().inc_external_auth_allowed();
                 if let Err(state_err) =
                     req.transition_awaiting_auth_to_dispatch_ready(request_header_mutations)
                 {
@@ -711,22 +711,24 @@ impl QUICListener {
             }
             ExternalAuthStateTransition::RejectedAuthDenied { decision } => {
                 req.response_status = Some(decision.status().as_u16());
-                metrics.inc_policy_denied();
-                metrics.inc_external_auth_denied();
-                let _ = observe_admission_outcome(
-                    metrics,
-                    RouteOutcomeTarget {
-                        route: req.upstream_name.as_deref().unwrap_or("unrouted"),
-                    },
-                    Some(BackendOutcomeTarget {
-                        upstream: req.upstream_name.as_deref().unwrap_or("unrouted"),
-                        backend_addr: req.backend_addr.as_deref(),
-                        backend_index: req.backend_index,
-                    }),
-                    req.start.elapsed(),
-                    decision.status(),
-                    AdmissionOutcomeClass::AuthDenied,
-                );
+                metrics.policy_observations().inc_policy_denied();
+                metrics.policy_observations().inc_external_auth_denied();
+                let _ = req.complete_with(|| {
+                    observe_admission_outcome(
+                        metrics,
+                        RouteOutcomeTarget {
+                            route: req.upstream_name.as_deref().unwrap_or("unrouted"),
+                        },
+                        Some(BackendOutcomeTarget {
+                            upstream: req.upstream_name.as_deref().unwrap_or("unrouted"),
+                            backend_addr: req.backend_addr.as_deref(),
+                            backend_index: req.backend_index,
+                        }),
+                        req.start.elapsed(),
+                        decision.status(),
+                        AdmissionOutcomeClass::AuthDenied,
+                    )
+                });
                 warn!(
                     "admission denied: request_id={} upstream={} reason=auth_denied status={}",
                     req.request_id,
@@ -734,7 +736,6 @@ impl QUICListener {
                     req.response_status.unwrap_or(0)
                 );
                 Self::send_external_auth_decision_response(h3, quic, stream_id, &decision)?;
-                req.mark_terminal_outcome_recorded();
                 req.transition_to_terminal_with_cleanup(
                     TerminalReason::Rejected(RejectionReason::AuthDenied),
                     metrics,
@@ -746,7 +747,7 @@ impl QUICListener {
                 body,
                 error,
             } => {
-                metrics.inc_external_auth_error();
+                metrics.policy_observations().inc_external_auth_error();
                 if let Some(error) = &error {
                     debug!(
                         "admission denied: request_id={} upstream={} reason=auth_unavailable detail={:?}",
@@ -756,22 +757,23 @@ impl QUICListener {
                     );
                 }
                 req.response_status = Some(status.as_u16());
-                let _ = observe_admission_outcome(
-                    metrics,
-                    RouteOutcomeTarget {
-                        route: req.upstream_name.as_deref().unwrap_or("unrouted"),
-                    },
-                    Some(BackendOutcomeTarget {
-                        upstream: req.upstream_name.as_deref().unwrap_or("unrouted"),
-                        backend_addr: req.backend_addr.as_deref(),
-                        backend_index: req.backend_index,
-                    }),
-                    req.start.elapsed(),
-                    status,
-                    AdmissionOutcomeClass::Failed { timed_out: false },
-                );
+                let _ = req.complete_with(|| {
+                    observe_admission_outcome(
+                        metrics,
+                        RouteOutcomeTarget {
+                            route: req.upstream_name.as_deref().unwrap_or("unrouted"),
+                        },
+                        Some(BackendOutcomeTarget {
+                            upstream: req.upstream_name.as_deref().unwrap_or("unrouted"),
+                            backend_addr: req.backend_addr.as_deref(),
+                            backend_index: req.backend_index,
+                        }),
+                        req.start.elapsed(),
+                        status,
+                        AdmissionOutcomeClass::Failed { timed_out: false },
+                    )
+                });
                 Self::send_simple_response(h3, quic, stream_id, status, body)?;
-                req.mark_terminal_outcome_recorded();
                 req.transition_to_terminal_with_cleanup(
                     TerminalReason::Rejected(RejectionReason::AuthUnavailable),
                     metrics,
@@ -779,24 +781,25 @@ impl QUICListener {
                 Ok(false)
             }
             ExternalAuthStateTransition::TimedOutAuth { status, body } => {
-                metrics.inc_external_auth_timeout();
+                metrics.policy_observations().inc_external_auth_timeout();
                 req.response_status = Some(status.as_u16());
-                let _ = observe_admission_outcome(
-                    metrics,
-                    RouteOutcomeTarget {
-                        route: req.upstream_name.as_deref().unwrap_or("unrouted"),
-                    },
-                    Some(BackendOutcomeTarget {
-                        upstream: req.upstream_name.as_deref().unwrap_or("unrouted"),
-                        backend_addr: req.backend_addr.as_deref(),
-                        backend_index: req.backend_index,
-                    }),
-                    req.start.elapsed(),
-                    status,
-                    AdmissionOutcomeClass::Failed { timed_out: true },
-                );
+                let _ = req.complete_with(|| {
+                    observe_admission_outcome(
+                        metrics,
+                        RouteOutcomeTarget {
+                            route: req.upstream_name.as_deref().unwrap_or("unrouted"),
+                        },
+                        Some(BackendOutcomeTarget {
+                            upstream: req.upstream_name.as_deref().unwrap_or("unrouted"),
+                            backend_addr: req.backend_addr.as_deref(),
+                            backend_index: req.backend_index,
+                        }),
+                        req.start.elapsed(),
+                        status,
+                        AdmissionOutcomeClass::Failed { timed_out: true },
+                    )
+                });
                 Self::send_simple_response(h3, quic, stream_id, status, body)?;
-                req.mark_terminal_outcome_recorded();
                 req.transition_to_terminal_with_cleanup(
                     TerminalReason::TimedOut(TimeoutReason::ExternalAuth),
                     metrics,
@@ -810,7 +813,7 @@ impl QUICListener {
 #[cfg(test)]
 mod tests {
     use impulse_config::runtime::{
-        RuntimeApiKeyAuth, RuntimeAuthPolicy, RuntimeExternalAuthFailureMode,
+        RuntimeApiKeyAuth, RuntimeAuthPolicy, RuntimeExternalAuth, RuntimeExternalAuthFailureMode,
         RuntimeForwardedHeaderPolicy, RuntimeHostPolicy, RuntimeProtocolPolicy,
         RuntimeUpstreamPolicy,
     };
@@ -931,12 +934,9 @@ mod tests {
         );
     }
 
-    use crate::{
-        quic_listener::admission::{
-            AdmissionPolicyDecision, UnauthorizedDecision, evaluate_forwarding_pre_admission_policy,
-        },
-        resilience::{brownout::BrownoutController, scoped_rate_limit::ScopedRateLimiters},
-    };
+    use impulse_contracts::{RequestDecision as AdmissionPolicyDecision, UnauthorizedDecision};
+
+    use crate::quic_listener::admission::evaluate_local_auth_policy;
 
     #[test]
     fn append_auth_request_headers_strips_unsafe_headers_and_overrides_with_configured_values() {
@@ -956,7 +956,7 @@ mod tests {
         append_auth_request_headers(
             &mut builder,
             &pending_forward,
-            &[impulse_config::runtime::RuntimeExternalAuthRequestHeader {
+            &[ExternalAuthRequestHeader {
                 name: "x-role".to_string(),
                 value: "admin".to_string(),
             }],
@@ -1037,22 +1037,7 @@ mod tests {
             response_compression: Default::default(),
             protocol: RuntimeProtocolPolicy::default(),
         };
-        let brownout = BrownoutController::new(false, 100, 90, Vec::new());
-        let scoped_rate_limits = ScopedRateLimiters::new(&[]);
-
-        let decision = evaluate_forwarding_pre_admission_policy(
-            &policy,
-            None,
-            &brownout,
-            0,
-            "api",
-            "GET",
-            "/resource",
-            Some("api.example.com"),
-            "198.51.100.10:443".parse().expect("client addr"),
-            1,
-            &scoped_rate_limits,
-        );
+        let decision = evaluate_local_auth_policy(&policy, None);
 
         assert!(matches!(
             decision,

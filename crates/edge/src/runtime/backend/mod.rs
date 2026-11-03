@@ -4,7 +4,9 @@
 //! inventory types. Lifecycle mutation coordinators remain internal
 //! implementation details.
 
+pub(crate) mod coordination;
 pub mod event;
+pub(crate) mod health_service;
 pub(crate) mod lifecycle;
 pub mod resolution;
 pub mod state;

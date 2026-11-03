@@ -1,11 +1,6 @@
-use super::*;
+use impulse_policy::JwtVerificationKey;
 
-#[derive(Debug, Clone)]
-pub(super) enum JwtVerificationKey<'a> {
-    Hs256Secret(&'a str),
-    RsaPublicKey(PKey<Public>),
-    EcP256PublicKey(EcKey<Public>),
-}
+use super::*;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(super) enum JwtVerificationKeySource {
@@ -13,7 +8,6 @@ pub(super) enum JwtVerificationKeySource {
     StaticAsymmetricKeys,
     RemoteJwks { source_identity: String },
 }
-
 #[derive(Debug, Clone)]
 pub(super) struct ResolvedJwtVerificationKey<'a> {
     pub(super) source: JwtVerificationKeySource,
@@ -579,7 +573,6 @@ fn ensure_rsa_key_strength(key: &PKey<Public>) -> Result<(), JwtValidationFailur
     }
     Ok(())
 }
-
 fn ensure_p256_public_key(ec_key: &EcKey<Public>) -> Result<(), JwtValidationFailure> {
     ec_key
         .check_key()
@@ -591,23 +584,4 @@ fn ensure_p256_public_key(ec_key: &EcKey<Public>) -> Result<(), JwtValidationFai
         ));
     }
     Ok(())
-}
-
-pub(super) fn jose_es256_signature_to_der(
-    signature: &[u8],
-) -> Result<Vec<u8>, JwtValidationFailure> {
-    if signature.len() != 64 {
-        return Err(JwtValidationFailure::new(
-            JwtValidationFailureReason::SignatureInvalid,
-        ));
-    }
-    let r = BigNum::from_slice(&signature[..32])
-        .map_err(|_| JwtValidationFailure::new(JwtValidationFailureReason::SignatureInvalid))?;
-    let s = BigNum::from_slice(&signature[32..])
-        .map_err(|_| JwtValidationFailure::new(JwtValidationFailureReason::SignatureInvalid))?;
-    // `from_private_components` assembles a signature from its (r, s) scalars;
-    // despite the name it involves no private key material.
-    EcdsaSig::from_private_components(r, s)
-        .and_then(|sig| sig.to_der())
-        .map_err(|_| JwtValidationFailure::new(JwtValidationFailureReason::SignatureInvalid))
 }

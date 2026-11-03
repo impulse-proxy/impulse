@@ -1,26 +1,19 @@
 use std::convert::Infallible;
 
 use impulse_config::runtime::RuntimeBackendTlsPolicy;
-use impulse_errors::{
-    HedgeOutcomeTelemetryReason, HedgePolicyDecision, RetryPolicyDecision, is_idempotent_method,
-};
-use impulse_lb::{
-    alternate_backend::AlternateBackendFailureReason, pingora_backend::GenerationSelector,
-};
+use impulse_contracts::{AlternateBackendFailureReason, HedgeOutcomeTelemetryReason};
+use impulse_errors::{HedgePolicyDecision, RetryPolicyDecision, is_idempotent_method};
+use impulse_lb::{BackendSelectionInput, pingora_backend::GenerationSelector};
+use impulse_observability::{HedgeDecisionReason, ResponseCacheOutcome, RetryDecisionReason};
 use impulse_transport::{
-    UpstreamBodyFrame, UpstreamCancellation, UpstreamConnectionReuse, UpstreamExchangeCompletion,
-    UpstreamExchangeOutcome, UpstreamExchangeRequest, UpstreamExchangeResponse,
+    UpstreamBodyFrame, UpstreamExchangeRequest, UpstreamExchangeResponse, UpstreamRequestExecutor,
     UpstreamRequestHead,
 };
 use pingora_cache::{HitStatus, HttpCache, NoCacheReason, lock::LockWaitOutcome};
 
-use super::{
-    selection::{ForwardingSelectionService, MAX_UPSTREAM_RETRY_ATTEMPTS, RetryCoordinator},
-    *,
-};
+use super::{selection::ForwardingSelectionService, *};
 use crate::{
-    metrics::ResponseCacheOutcome,
-    observability::{HedgeDecisionReason, RetryDecisionReason},
+    edge_core::retry::RetryCoordinator,
     runtime::{
         cache::{
             ResponseCacheKeyInput, ResponseCacheRequestEligibilityInput,
@@ -82,7 +75,7 @@ struct H3CacheLookupInput<'a> {
     pending_forward: &'a PendingForward,
     namespace: u64,
     has_body: bool,
-    is_tunnel: bool,
+    tunnel_mode: TunnelMode,
 }
 
 struct H3CacheMiss {
@@ -126,7 +119,7 @@ struct RetryExecutionCtx<'a> {
     backend_endpoints: &'a HashMap<String, BackendEndpoint>,
     pending_forward: &'a PendingForward,
     circuit_breakers: &'a crate::resilience::circuit_breaker::CircuitBreakers,
-    transport: &'a UpstreamTransportPool,
+    executor: &'a UpstreamRequestExecutor,
 }
 
 fn alternate_backend_policy_state(
@@ -138,7 +131,7 @@ fn alternate_backend_policy_state(
     )
 }
 
-impl QUICListener {
+impl Http3Service {
     async fn lookup_h3_response_cache(input: H3CacheLookupInput<'_>) -> H3CacheLookup {
         let H3CacheLookupInput {
             cache_store,
@@ -148,10 +141,12 @@ impl QUICListener {
             pending_forward,
             namespace,
             has_body,
-            is_tunnel,
+            tunnel_mode,
         } = input;
         let bypass = || {
-            metrics.record_response_cache_outcome(ResponseCacheOutcome::Bypass);
+            metrics
+                .ingress_observations()
+                .record_response_cache_outcome(ResponseCacheOutcome::Bypass);
             H3CacheLookup::Bypass
         };
         let mut headers = http::HeaderMap::new();
@@ -163,43 +158,20 @@ impl QUICListener {
                 headers.append(name, value);
             }
         }
-        let cache_control = match headers
-            .get_all(http::header::CACHE_CONTROL)
-            .iter()
-            .map(|value| value.to_str())
-            .collect::<std::result::Result<Vec<_>, _>>()
-        {
-            Ok(values) => values,
-            Err(_) => return bypass(),
-        };
-        let request_disables_cache = cache_control
-            .into_iter()
-            .flat_map(|value| value.split(','))
-            .map(|directive| {
-                directive
-                    .split_once('=')
-                    .map_or(directive, |(name, _)| name)
-            })
-            .any(|directive| {
-                directive.trim().eq_ignore_ascii_case("no-cache")
-                    || directive.trim().eq_ignore_ascii_case("no-store")
-            });
+        let (is_upgrade, is_tunnel) = impulse_http3_ingress::tunnel_cache_flags(tunnel_mode);
         let Ok(representation) =
             evaluate_cache_request_eligibility(ResponseCacheRequestEligibilityInput {
-                policy: &policy,
+                policy: crate::runtime::subsystem_mapping::response_cache_policy_input(&policy),
                 route_auth_enabled,
                 method: pending_forward.method.as_ref(),
                 headers: &headers,
                 has_body,
-                is_upgrade: is_tunnel && !pending_forward.method.eq_ignore_ascii_case("CONNECT"),
+                is_upgrade,
                 is_tunnel,
             })
         else {
             return bypass();
         };
-        if request_disables_cache {
-            return bypass();
-        }
         let Some(authority) = pending_forward.authority.as_deref() else {
             return bypass();
         };
@@ -262,7 +234,9 @@ impl QUICListener {
                     if !spawn_async_task(body_pump, "h3-cache-hit") {
                         return bypass();
                     }
-                    metrics.record_response_cache_outcome(ResponseCacheOutcome::Hit);
+                    metrics
+                        .ingress_observations()
+                        .record_response_cache_outcome(ResponseCacheOutcome::Hit);
                     return H3CacheLookup::Hit(ForwardSuccess::Response {
                         status: response.status,
                         headers: response.headers.clone(),
@@ -272,7 +246,9 @@ impl QUICListener {
                     });
                 }
                 Ok(Some((meta, handler))) => {
-                    metrics.record_response_cache_outcome(ResponseCacheOutcome::Expiry);
+                    metrics
+                        .ingress_observations()
+                        .record_response_cache_outcome(ResponseCacheOutcome::Expiry);
                     cache.cache_found(meta, handler, HitStatus::Expired);
                 }
                 Ok(None) => {}
@@ -280,7 +256,9 @@ impl QUICListener {
             }
             if cache.is_cache_locked() {
                 let outcome = cache.cache_lock_wait().await;
-                metrics.record_response_cache_outcome(ResponseCacheOutcome::LockWait);
+                metrics
+                    .ingress_observations()
+                    .record_response_cache_outcome(ResponseCacheOutcome::LockWait);
                 match outcome {
                     LockWaitOutcome::Done
                     | LockWaitOutcome::TransientError
@@ -292,7 +270,9 @@ impl QUICListener {
                 }
             }
             cache.cache_miss();
-            metrics.record_response_cache_outcome(ResponseCacheOutcome::Miss);
+            metrics
+                .ingress_observations()
+                .record_response_cache_outcome(ResponseCacheOutcome::Miss);
             return H3CacheLookup::Miss(H3CacheMiss {
                 cache: Some(cache),
                 policy: Some(policy),
@@ -305,13 +285,13 @@ impl QUICListener {
         backend: &str,
         request: UpstreamRequest,
         circuit_breakers: &crate::resilience::circuit_breaker::CircuitBreakers,
-        transport: &UpstreamTransportPool,
+        executor: &UpstreamRequestExecutor,
     ) -> Result<UpstreamExchangeResponse, ProxyError> {
         let breaker_permit =
             ForwardingSelectionService::allow_backend_request(circuit_breakers, backend)?;
 
-        let (request, _cancellation, _completion) = Self::into_upstream_exchange_request(request)?;
-        let send_result = transport.send_exchange(backend, request).await;
+        let request = Self::into_upstream_exchange_request(request)?;
+        let send_result = executor.execute(backend, request).await;
         if send_result.is_ok() {
             breaker_permit.record_success();
         } else {
@@ -322,14 +302,7 @@ impl QUICListener {
 
     pub(in crate::quic_listener) fn into_upstream_exchange_request(
         request: UpstreamRequest,
-    ) -> Result<
-        (
-            UpstreamExchangeRequest,
-            oneshot::Sender<()>,
-            oneshot::Receiver<UpstreamExchangeCompletion>,
-        ),
-        ProxyError,
-    > {
+    ) -> Result<UpstreamExchangeRequest, ProxyError> {
         let (parts, mut body) = request.into_parts();
         let (frames, frame_rx) = mpsc::channel(REQUEST_CHUNK_CHANNEL_CAPACITY);
         let body_pump = async move {
@@ -354,31 +327,21 @@ impl QUICListener {
         if !spawn_async_task(body_pump, "upstream-exchange-request-body") {
             return Err(ProxyError::Transport("runtime unavailable".into()));
         }
-        let (cancellation, cancellation_signal) = oneshot::channel();
-        let (completion_signal, completion) = oneshot::channel();
-        Ok((
-            UpstreamExchangeRequest {
-                head: UpstreamRequestHead {
-                    method: parts.method,
-                    uri: parts.uri,
-                    version: parts.version,
-                    headers: parts.headers,
-                },
-                body: frame_rx,
-                cancellation: UpstreamCancellation {
-                    signal: cancellation_signal,
-                },
-                completion: completion_signal,
+        Ok(UpstreamExchangeRequest {
+            head: UpstreamRequestHead {
+                method: parts.method,
+                uri: parts.uri,
+                version: parts.version,
+                headers: parts.headers,
             },
-            cancellation,
-            completion,
-        ))
+            body: frame_rx,
+        })
     }
 
     async fn forward_http1_websocket_tunnel(
         input: WebsocketTunnelForwardInput,
         circuit_breakers: &crate::resilience::circuit_breaker::CircuitBreakers,
-        transport: &UpstreamTransportPool,
+        executor: &UpstreamRequestExecutor,
     ) -> ForwardResult {
         let WebsocketTunnelForwardInput {
             backend,
@@ -388,10 +351,11 @@ impl QUICListener {
         } = input;
         let request = pending_forward.build_http1_websocket_tunnel_request(&endpoint)?;
         let response =
-            Self::send_upstream_request(backend.as_ref(), request, circuit_breakers, transport)
+            Self::send_upstream_request(backend.as_ref(), request, circuit_breakers, executor)
                 .await?;
 
-        if response.head.status != StatusCode::SWITCHING_PROTOCOLS {
+        let upstream_status = response.head.status;
+        if upstream_status != StatusCode::SWITCHING_PROTOCOLS {
             return Ok(ForwardSuccess::Response {
                 status: response.head.status,
                 headers: response.head.headers,
@@ -409,9 +373,14 @@ impl QUICListener {
             .tunnel
             .await
             .map_err(|_| ProxyError::Transport("upstream tunnel task stopped".into()))??;
+        let (mode, io, completion) = tunnel.into_parts();
+        if mode != TunnelMode::Websocket {
+            let detail = "WebSocket exchange returned a CONNECT tunnel lease";
+            completion.fail(ProxyError::Protocol(detail.into()));
+            return Err(ProxyError::Protocol(detail.into()));
+        }
         let (chunk_tx, chunk_rx) = mpsc::channel(RESPONSE_CHUNK_CHANNEL_CAPACITY);
         let fut = async move {
-            let impulse_transport::UpstreamTunnel { io, lifecycle } = tunnel;
             let (mut reader, mut writer) = tokio::io::split(io);
             let write_fut = async {
                 while let Some(chunk) = body_rx.recv().await {
@@ -440,27 +409,21 @@ impl QUICListener {
             match tokio::try_join!(write_fut, read_fut) {
                 Ok(((), ())) => {
                     let _ = chunk_tx.send(ResponseChunk::End).await;
-                    let _ = lifecycle.completion.send(UpstreamExchangeCompletion {
-                        outcome: UpstreamExchangeOutcome::Completed,
-                        connection_reuse: UpstreamConnectionReuse::Close,
-                    });
+                    completion.complete();
                 }
                 Err(err) => {
                     let detail = err.to_string();
                     let _ = chunk_tx
                         .send(ResponseChunk::Error(ProxyError::Transport(detail.clone())))
                         .await;
-                    let _ = lifecycle.completion.send(UpstreamExchangeCompletion {
-                        outcome: UpstreamExchangeOutcome::Failed(ProxyError::Transport(detail)),
-                        connection_reuse: UpstreamConnectionReuse::Close,
-                    });
+                    completion.fail(ProxyError::Transport(detail));
                 }
             }
         };
         let _ = spawn_async_task(fut, "ws-h1-tunnel");
 
         Ok(ForwardSuccess::Tunnel {
-            status: StatusCode::OK,
+            status: impulse_http3_ingress::downstream_tunnel_status(mode, upstream_status),
             headers,
             response_chunk_rx: chunk_rx,
         })
@@ -477,10 +440,7 @@ impl QUICListener {
         match ForwardingSelectionService::select_backend_excluding(
             selector,
             upstream_pool,
-            generation,
-            lb_key,
-            &[primary_index],
-            false,
+            BackendSelectionInput::new(generation, lb_key, &[primary_index], false),
             metrics,
         ) {
             Ok(Some(BackendCandidate { address, .. })) => {
@@ -534,19 +494,15 @@ impl QUICListener {
             backend_endpoints,
             pending_forward,
             circuit_breakers,
-            transport,
+            executor,
         } = retry_ctx;
         let (alternate_backend_available, alternate_backend_failure) =
             alternate_backend_policy_state(alternate_backend);
         let retry_decision = policy.retry_after_error(
             &primary_err,
             policy_telemetry.retry.count,
-            MAX_UPSTREAM_RETRY_ATTEMPTS,
-            ForwardingSelectionService::retry_budget_available(
-                &primary_err,
-                route_name,
-                retry_budget,
-            ),
+            route_name,
+            retry_budget,
             alternate_backend_available,
             alternate_backend_failure,
         );
@@ -596,7 +552,7 @@ impl QUICListener {
             retry_backend.as_str(),
             retry_request,
             circuit_breakers,
-            transport,
+            executor,
         )
         .await
     }
@@ -614,7 +570,7 @@ impl QUICListener {
         let circuit_breakers = Arc::clone(&resilience.circuit_breakers);
         let retry_budget = Arc::clone(&resilience.retry_budget);
         let backend_endpoints = Arc::clone(&exec_ctx.backend_endpoints);
-        let transport = Arc::clone(&exec_ctx.transport_pool);
+        let executor = exec_ctx.upstream_executor.clone();
         let hedge_delay = resilience.hedging_delay;
         let alternate_pool = req.upstream_pool.clone();
         let alternate_selector = shared_ctx
@@ -631,7 +587,11 @@ impl QUICListener {
             .map(|policy| {
                 (
                     policy.response_cache.clone(),
-                    route_auth_requires_cache_bypass(&policy.upstream_auth),
+                    route_auth_requires_cache_bypass(
+                        crate::runtime::subsystem_mapping::response_cache_auth_input(
+                            &policy.upstream_auth,
+                        ),
+                    ),
                 )
             });
         let trace_span_for_upstream = req.trace_span.clone();
@@ -643,7 +603,7 @@ impl QUICListener {
         let hedge_method_allowed = resilience.hedging_method_allowed(&req.method);
         let hedge_configured =
             resilience.hedging_route_enabled_for(pending_forward.upstream_name.as_ref());
-        let hedge_tunnel_request = req.tunnel_mode != TunnelMode::None;
+        let hedge_tunnel_request = req.tunnel_mode.is_tunnel();
         let needs_alternate_before_primary =
             hedge_configured && hedge_method_allowed && bodyless_mode && !hedge_tunnel_request;
         let policy = RetryCoordinator::new(
@@ -657,7 +617,9 @@ impl QUICListener {
             let resolve_alternate = || {
                 alternate_pool.as_ref().map(|upstream_pool| {
                     let Some(selector) = alternate_selector.as_ref() else {
-                        alternate_metrics.inc_pingora_lb_selector_failure();
+                        alternate_metrics
+                            .runtime_observations()
+                            .inc_pingora_lb_selector_failure();
                         return ResolvedAlternateBackend::Unavailable {
                             reason: AlternateBackendFailureReason::PoolUnavailable,
                         };
@@ -679,7 +641,7 @@ impl QUICListener {
             let primary_backend = pending_forward.backend_addr.as_ref();
             let circuit_breakers = circuit_breakers.as_ref();
             let retry_budget = retry_budget.as_ref();
-            let transport_pool = transport.as_ref();
+            let upstream_executor = &executor;
             let mut policy_telemetry = ForwardingPolicyTelemetry::default();
             let result: ForwardResult = async {
                 let cache_miss = if let (
@@ -695,7 +657,7 @@ impl QUICListener {
                         pending_forward: pending_forward.as_ref(),
                         namespace: response_cache_namespace,
                         has_body: !bodyless_mode,
-                        is_tunnel: tunnel_mode != TunnelMode::None,
+                        tunnel_mode,
                     })
                     .await
                     {
@@ -708,20 +670,26 @@ impl QUICListener {
                 };
                 retry_budget.mark_primary(route_name);
 
-                let forward_success: ForwardSuccess = if tunnel_mode == TunnelMode::Websocket
-                    && backend_endpoint.scheme() == BackendScheme::Http
-                {
+                let h1_websocket = impulse_http3_ingress::requires_h1_websocket_adaptation(
+                    tunnel_mode,
+                    backend_endpoint.scheme() == BackendScheme::Http,
+                );
+                let forward_success: ForwardSuccess = if h1_websocket {
                     let Some(body_rx) = websocket_tunnel_body_rx else {
                         return Err(ProxyError::Transport(
                             "websocket H1 tunnels require a downstream body channel".into(),
                         ));
                     };
-                    Self::forward_http1_websocket_tunnel(WebsocketTunnelForwardInput {
-                        backend: Arc::clone(&pending_forward.backend_addr),
-                        endpoint: backend_endpoint.clone(),
-                        pending_forward: Arc::clone(&pending_forward),
-                        body_rx,
-                    }, circuit_breakers, transport_pool)
+                    Self::forward_http1_websocket_tunnel(
+                        WebsocketTunnelForwardInput {
+                            backend: Arc::clone(&pending_forward.backend_addr),
+                            endpoint: backend_endpoint.clone(),
+                            pending_forward: Arc::clone(&pending_forward),
+                            body_rx,
+                        },
+                        circuit_breakers,
+                        upstream_executor,
+                    )
                     .await?
                 } else {
                     let request = request.ok_or_else(|| {
@@ -752,7 +720,7 @@ impl QUICListener {
                                     primary_backend,
                                     request,
                                     circuit_breakers,
-                                    transport_pool,
+                                    upstream_executor,
                                 );
                                 tokio::pin!(primary_fut);
                                 let hedge_sleep = tokio::time::sleep(hedge_delay);
@@ -765,11 +733,7 @@ impl QUICListener {
                                     result?
                                 } else {
                                     match policy.hedge_after_delay(
-                                        ForwardingSelectionService::retry_budget_available(
-                                            &ProxyError::Timeout,
-                                            route_name,
-                                            retry_budget,
-                                        ),
+                                        retry_budget.allow_retry(route_name).is_ok(),
                                     ) {
                                         HedgePolicyDecision::Hedge { reason } => {
                                             policy_telemetry.hedge.record_trigger(reason);
@@ -777,7 +741,7 @@ impl QUICListener {
                                                 hedge_backend.as_str(),
                                                 hedge_request,
                                                 circuit_breakers,
-                                                transport_pool,
+                                                upstream_executor,
                                             );
                                             tokio::pin!(hedge_fut);
                                             tokio::select! {
@@ -843,7 +807,7 @@ impl QUICListener {
                                     primary_backend,
                                     request,
                                     circuit_breakers,
-                                    transport_pool,
+                                    upstream_executor,
                                 )
                                 .await?
                             }
@@ -860,7 +824,7 @@ impl QUICListener {
                                 primary_backend,
                                 request,
                                 circuit_breakers,
-                                transport_pool,
+                                upstream_executor,
                             )
                             .await
                             {
@@ -880,7 +844,7 @@ impl QUICListener {
                                             backend_endpoints: backend_endpoints.as_ref(),
                                             pending_forward: pending_forward.as_ref(),
                                             circuit_breakers,
-                                            transport: transport_pool,
+                                            executor: upstream_executor,
                                         },
                                     )
                                     .await?
@@ -899,7 +863,7 @@ impl QUICListener {
                                 primary_backend,
                                 request,
                                 circuit_breakers,
-                                transport_pool,
+                                upstream_executor,
                             )
                             .await
                             {
@@ -919,7 +883,7 @@ impl QUICListener {
                                             backend_endpoints: backend_endpoints.as_ref(),
                                             pending_forward: pending_forward.as_ref(),
                                             circuit_breakers,
-                                            transport: transport_pool,
+                                            executor: upstream_executor,
                                         },
                                     )
                                     .await?

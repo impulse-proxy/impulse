@@ -3,7 +3,7 @@ use std::{
     sync::{Arc, RwLock},
 };
 
-use impulse_lb::{HealthTransition, upstream_pool::UpstreamPool};
+use impulse_lb::{health::HealthTransition, upstream_pool::UpstreamPool};
 
 use super::health::apply_backend_health_observation;
 use crate::runtime::backend::{
@@ -193,7 +193,8 @@ mod tests {
     mod snapshot_inventory {
         use std::{collections::HashMap, sync::Arc};
 
-        use impulse_lb::HealthTransition;
+        use impulse_contracts::HealthFailureReason;
+        use impulse_lb::health::HealthTransition;
 
         use super::super::{
             super::test_support::{test_active_health_upstream_pool, test_upstream_pool},
@@ -332,7 +333,7 @@ mod tests {
             let failure = evaluate_active_health_check(
                 BackendIdentity::new(placed_backend),
                 BackendHealthObservationOutcome::Failure,
-                Some(impulse_lb::health::HealthFailureReason::Transport),
+                Some(HealthFailureReason::Transport),
                 100,
                 0,
             );

@@ -67,7 +67,7 @@ impl ControlApiServiceCtx {
     pub(super) fn current_generation(
         &self,
     ) -> Option<crate::runtime::bundle::ActiveRuntimeGeneration> {
-        self.current_service_state().generation
+        self.current_service_state().runtime.generation().cloned()
     }
 
     #[cfg(test)]

@@ -1,7 +1,11 @@
 use std::{borrow::Cow, collections::VecDeque, convert::Infallible};
 
 use http_body_util::Full;
-use impulse_config::runtime::RuntimeExternalAuth;
+use impulse_contracts::{
+    BoundedRejectionResponse as AdmissionRejectionResponse,
+    RequestDecision as AdmissionPolicyDecision,
+};
+use impulse_policy::ExternalAuthPolicy;
 use smallvec::SmallVec;
 use tokio::{sync::oneshot, task::AbortHandle};
 
@@ -14,12 +18,9 @@ use super::{
     *,
 };
 use crate::{
-    quic_listener::admission::{
-        AdmissionPolicyDecision, AdmissionRejectionResponse, admission_rejection_response,
-    },
-    request_pipeline::{
-        PipelineRequest, PipelineResolution, PipelineResult, PipelineRoute, TerminalOutcomeGuard,
-        evaluate_pipeline,
+    edge_core::{
+        request_completion::RequestCompletion,
+        request_execution::{EdgeRequestService, RequestExecutionState},
     },
     runtime::connection::{
         auth::{
@@ -128,7 +129,7 @@ impl DispatchReadyCandidate {
 
 pub(super) struct ExternalAuthCandidate {
     pub(super) request: DispatchReadyCandidate,
-    pub(super) external_auth: RuntimeExternalAuth,
+    pub(super) external_auth: ExternalAuthPolicy,
     pub(super) auth_disposition: ExternalAuthFailureDisposition,
 }
 
@@ -199,25 +200,7 @@ impl PendingForward {
     }
 
     fn request_headers_for_http1_websocket_tunnel(&self) -> Cow<'_, [quiche::h3::Header]> {
-        let request_headers = self.request_headers_cow();
-        let has_upgrade = request_headers
-            .iter()
-            .any(|header| header.name().eq_ignore_ascii_case(b"upgrade"));
-        let has_connection = request_headers
-            .iter()
-            .any(|header| header.name().eq_ignore_ascii_case(b"connection"));
-        if has_upgrade && has_connection {
-            return request_headers;
-        }
-
-        let mut request_headers = request_headers.into_owned();
-        if !has_upgrade {
-            request_headers.push(quiche::h3::Header::new(b"upgrade", b"websocket"));
-        }
-        if !has_connection {
-            request_headers.push(quiche::h3::Header::new(b"connection", b"upgrade"));
-        }
-        Cow::Owned(request_headers)
+        impulse_http3_ingress::adapt_h1_websocket_headers(self.request_headers_cow())
     }
 
     #[cfg(test)]
@@ -229,13 +212,11 @@ impl PendingForward {
         &'a self,
         endpoint: &'a BackendEndpoint,
     ) -> impulse_bridge::request::RequestBuildTarget<'a> {
-        impulse_bridge::request::RequestBuildTarget {
+        crate::runtime::subsystem_mapping::bridge_request_target(
             endpoint,
-            policies: impulse_bridge::request::RequestBuildPolicies {
-                host_policy: &self.host_policy,
-                forwarded_header_policy: &self.forwarded_header_policy,
-            },
-        }
+            &self.host_policy,
+            &self.forwarded_header_policy,
+        )
     }
 
     fn request_build_input<'a>(
@@ -337,7 +318,10 @@ impl PendingForward {
         impulse_bridge::request::build_h1_request(
             self.request_build_target(endpoint),
             self.request_build_input(
-                "GET",
+                impulse_http3_ingress::adapt_h1_websocket_method(
+                    TunnelMode::Websocket,
+                    &self.method,
+                ),
                 request_headers.as_ref(),
                 &[],
                 BoxBody::new(Full::new(Bytes::new())),
@@ -348,7 +332,7 @@ impl PendingForward {
     }
 }
 
-impl QUICListener {
+impl Http3Service {
     fn build_request_intake(descriptor: IntakeRequestDescriptor<'_>) -> IntakeRequestCandidate {
         let IntakeRequestDescriptor {
             quic_trace_id,
@@ -401,7 +385,7 @@ impl QUICListener {
                     authority: authority.map(str::to_string),
                     start: request_start,
                     total_request_deadline: request_start,
-                    terminal_outcome: TerminalOutcomeGuard::default(),
+                    completion: RequestCompletion::default(),
                 },
                 request_mode,
                 request_body: request_mode.initial_body_state(),
@@ -467,9 +451,7 @@ impl QUICListener {
         let metrics = shared_ctx.metrics.as_ref();
         let resilience = shared_ctx.resilience;
         let resolution_context = ResolutionContext::new(
-            shared_ctx.routing_index,
             shared_ctx.upstream_pools,
-            shared_ctx.upstream_policies,
             shared_ctx.pingora_load_balancing,
             shared_ctx.generation,
             metrics,
@@ -492,49 +474,68 @@ impl QUICListener {
                 .and_then(|header| std::str::from_utf8(header.value()).ok())
                 .map(str::to_string)
         };
-        let resolved: PipelineResult<ForwardTargetResolution> =
-            Self::resolve_forwarding_target(ForwardTargetResolutionInput {
-                request: TargetResolutionRequest::new(
-                    method,
-                    path,
-                    authority,
-                    Some(sticky_cid_key),
-                    Some(&lb_header_lookup),
-                ),
-                context: resolution_context,
-                observation: ResolutionObservation::new(metrics, request_start.elapsed()),
-            })
-            .map(|target| {
-                let PipelineResolution {
-                    route: _,
-                    policy,
-                    admission,
-                } = evaluate_pipeline(
-                    resilience,
-                    PipelineRoute::new(&target.upstream_name, &target.upstream_policy),
-                    PipelineRequest {
+        let request_input = impulse_http3_ingress::Http3RequestExecutionInput {
+            method,
+            path,
+            authority,
+            peer_address,
+            headers: Some(&lb_header_lookup),
+        };
+        let request_service = EdgeRequestService::new(
+            shared_ctx.routing_index,
+            shared_ctx.upstream_policies,
+            resilience,
+        );
+        let request_adapter = impulse_http3_ingress::Http3IngressAdapter::new(request_service);
+        let resolved = request_adapter
+            .execute(request_input)
+            .map_err(|error| {
+                let error = Self::request_resolution_error(path, error);
+                Self::observe_route_resolution_failure(
+                    &TargetResolutionRequest::new(
                         method,
                         path,
                         authority,
-                        peer_address,
-                        headers: Some(&lb_header_lookup),
-                    },
+                        Some(sticky_cid_key),
+                        Some(&lb_header_lookup),
+                    ),
+                    &error,
+                    metrics,
+                    request_start.elapsed(),
                 );
-
-                PipelineResolution {
+                error
+            })
+            .and_then(|execution| {
+                let RequestExecutionState {
+                    route,
+                    policy,
+                    admission,
+                } = execution;
+                Self::resolve_forwarding_target(ForwardTargetResolutionInput {
+                    request: TargetResolutionRequest::new(
+                        method,
+                        path,
+                        authority,
+                        Some(sticky_cid_key),
+                        Some(&lb_header_lookup),
+                    ),
+                    route,
+                    context: resolution_context,
+                    observation: ResolutionObservation::new(metrics, request_start.elapsed()),
+                })
+                .map(|target| RequestExecutionState {
                     route: target,
                     policy,
                     admission,
-                }
+                })
             });
 
         let prepared = match resolved {
-            Ok(PipelineResolution {
+            Ok(RequestExecutionState {
                 route:
                     ForwardTargetResolution {
                         upstream_name,
                         upstream_pool,
-                        upstream_policy: _,
                         route_path_len,
                         route_host_specific,
                         route_reason,
@@ -555,27 +556,30 @@ impl QUICListener {
                     route_host_specific,
                     backend_lb: Some(backend_lb.clone()),
                 };
-                metrics.set_brownout_active(resilience.brownout.is_active());
-                let rejection_response = admission_rejection_response(&admission);
+                metrics
+                    .policy_observations()
+                    .set_brownout_active(resilience.brownout.is_active());
+                let rejection_response = admission.rejection_response();
                 match admission {
                     AdmissionPolicyDecision::AdmitReady => {}
                     AdmissionPolicyDecision::Unauthorized(_) => {
-                        intake.state.context.terminal_outcome.record();
-                        metrics.inc_policy_denied();
-                        let _ = observe_admission_outcome(
-                            metrics,
-                            RouteOutcomeTarget {
-                                route: &upstream_name,
-                            },
-                            Some(BackendOutcomeTarget {
-                                upstream: &upstream_name,
-                                backend_addr: Some(backend_addr.as_str()),
-                                backend_index: Some(backend_index),
-                            }),
-                            request_start.elapsed(),
-                            http::StatusCode::UNAUTHORIZED,
-                            AdmissionOutcomeClass::AuthDenied,
-                        );
+                        metrics.policy_observations().inc_policy_denied();
+                        let _ = intake.state.context.completion.complete_with(|| {
+                            observe_admission_outcome(
+                                metrics,
+                                RouteOutcomeTarget {
+                                    route: &upstream_name,
+                                },
+                                Some(BackendOutcomeTarget {
+                                    upstream: &upstream_name,
+                                    backend_addr: Some(backend_addr.as_str()),
+                                    backend_index: Some(backend_index),
+                                }),
+                                request_start.elapsed(),
+                                http::StatusCode::UNAUTHORIZED,
+                                AdmissionOutcomeClass::AuthDenied,
+                            )
+                        });
                         warn!(
                             "admission denied: upstream={} reason=auth_denied",
                             upstream_name
@@ -601,22 +605,23 @@ impl QUICListener {
                         )));
                     }
                     AdmissionPolicyDecision::RateLimited(decision) => {
-                        intake.state.context.terminal_outcome.record();
-                        metrics.inc_request_rate_limited();
-                        let _ = observe_admission_outcome(
-                            metrics,
-                            RouteOutcomeTarget {
-                                route: &upstream_name,
-                            },
-                            Some(BackendOutcomeTarget {
-                                upstream: &upstream_name,
-                                backend_addr: Some(backend_addr.as_str()),
-                                backend_index: Some(backend_index),
-                            }),
-                            request_start.elapsed(),
-                            http::StatusCode::TOO_MANY_REQUESTS,
-                            AdmissionOutcomeClass::RateLimited,
-                        );
+                        metrics.policy_observations().inc_request_rate_limited();
+                        let _ = intake.state.context.completion.complete_with(|| {
+                            observe_admission_outcome(
+                                metrics,
+                                RouteOutcomeTarget {
+                                    route: &upstream_name,
+                                },
+                                Some(BackendOutcomeTarget {
+                                    upstream: &upstream_name,
+                                    backend_addr: Some(backend_addr.as_str()),
+                                    backend_index: Some(backend_index),
+                                }),
+                                request_start.elapsed(),
+                                http::StatusCode::TOO_MANY_REQUESTS,
+                                AdmissionOutcomeClass::RateLimited,
+                            )
+                        });
                         warn!(
                             "admission denied: upstream={} reason=rate_limited rule={}",
                             decision.route, decision.rule_name
@@ -642,23 +647,28 @@ impl QUICListener {
                         )));
                     }
                     AdmissionPolicyDecision::Overloaded(decision) => {
-                        intake.state.context.terminal_outcome.record();
-                        let _ = observe_admission_outcome(
-                            metrics,
-                            RouteOutcomeTarget {
-                                route: &upstream_name,
-                            },
-                            Some(BackendOutcomeTarget {
-                                upstream: &upstream_name,
-                                backend_addr: Some(backend_addr.as_str()),
-                                backend_index: Some(backend_index),
-                            }),
-                            request_start.elapsed(),
-                            http::StatusCode::SERVICE_UNAVAILABLE,
-                            AdmissionOutcomeClass::OverloadShed {
-                                reason: Some(decision.reason.metrics_reason()),
-                            },
-                        );
+                        let _ = intake.state.context.completion.complete_with(|| {
+                            observe_admission_outcome(
+                                metrics,
+                                RouteOutcomeTarget {
+                                    route: &upstream_name,
+                                },
+                                Some(BackendOutcomeTarget {
+                                    upstream: &upstream_name,
+                                    backend_addr: Some(backend_addr.as_str()),
+                                    backend_index: Some(backend_index),
+                                }),
+                                request_start.elapsed(),
+                                http::StatusCode::SERVICE_UNAVAILABLE,
+                                AdmissionOutcomeClass::OverloadShed {
+                                    reason: Some(
+                                        crate::quic_listener::admission::overload_metrics_reason(
+                                            decision.reason,
+                                        ),
+                                    ),
+                                },
+                            )
+                        });
                         let Some(response) = rejection_response.as_ref() else {
                             warn!(
                                 "admission rejection response missing: upstream={} reason=overloaded",
@@ -744,7 +754,7 @@ impl QUICListener {
                 })
             }
             Err(err) => {
-                intake.state.context.terminal_outcome.record();
+                intake.state.context.completion.complete();
                 let (status, body): (http::StatusCode, &[u8]) = match &err {
                     ProxyError::Bridge(_) => (http::StatusCode::BAD_REQUEST, b"invalid request\n"),
                     ProxyError::Transport(_) | ProxyError::Pool(_) => {
@@ -811,7 +821,7 @@ impl QUICListener {
                     Err(err) => {
                         match evaluate_external_auth_completion(Err(err), auth_disposition) {
                             ExternalAuthCompletion::FailOpen { timed_out, error } => {
-                                metrics.inc_external_auth_error();
+                                metrics.policy_observations().inc_external_auth_error();
                                 if timed_out {
                                     warn!(
                                         "external auth failed open: request_id={} upstream={} reason=auth_timeout",
@@ -834,7 +844,7 @@ impl QUICListener {
                                 timed_out,
                                 error,
                             } => {
-                                metrics.inc_external_auth_error();
+                                metrics.policy_observations().inc_external_auth_error();
                                 let _ = observe_admission_outcome(
                                     metrics,
                                     RouteOutcomeTarget {

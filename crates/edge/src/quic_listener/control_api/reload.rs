@@ -13,16 +13,18 @@ use super::{
     admin_auth::ControlApiRoute,
     admin_identity::{AdminIdentity, ControlApiRequestContext},
     audit::{AdminAuditAction, AdminAuditEventType, AdminAuditGeneration, AdminAuditResult},
-    security::ControlApiSecurityPolicy,
     *,
 };
 use crate::runtime::{
     activation::{
         ActivationRequest, ActivationResult, RejectedChangeKind, ReloadConfigInput, ReloadPlan,
-        RollbackRequest, RollbackResult, RuntimeActivationService, RuntimeRejectionReason,
+        RollbackRequest, RollbackResult, RuntimeRejectionReason,
     },
-    bundle::{ActiveRuntimeGeneration, RuntimeBundleHandle},
-    policy::{ReloadCompatibilityAuthority, TransitionRejection},
+    bundle::RuntimeBundleHandle,
+    supervisor::RuntimeSupervisor,
+    tls::lifecycle::{
+        record_listener_tls_inventory, rotate_listener_tls_material, stage_listener_tls_rotation,
+    },
 };
 
 mod activate;
@@ -31,36 +33,39 @@ mod preview;
 pub(super) mod request_body;
 pub(super) mod rollback;
 
-impl QUICListener {
+impl Http3Service {
     pub(super) fn reload_listener_certs(
         listener_runtime_configs: &HashMap<String, ListenerRuntimeConfig>,
         listener_tls_store: &ListenerTlsReloadStore,
         metrics: &Metrics,
     ) -> Response<Full<Bytes>> {
-        let mut staged = Vec::with_capacity(listener_runtime_configs.len());
-        let mut failures = Vec::new();
-        for (listener_label, listener_config) in listener_runtime_configs {
-            let reloaded_state = match Self::build_listener_tls_reload_state(listener_config) {
-                Ok(mut state) => {
-                    state.last_reload_status = "cert_reload_applied".to_string();
-                    state
-                }
-                Err(err) => {
-                    failures.push(json!({
-                        "listener": listener_label,
-                        "status": "failed",
-                        "reason": "listener_tls_invalid",
-                        "error": err.to_string(),
-                    }));
-                    continue;
-                }
-            };
-            staged.push((listener_label.clone(), reloaded_state));
-        }
+        let staged_rotation = stage_listener_tls_rotation(
+            listener_runtime_configs,
+            Self::build_listener_tls_reload_state,
+        );
+        let failures = staged_rotation
+            .failures
+            .into_iter()
+            .map(|(listener, error)| {
+                json!({
+                    "listener": listener,
+                    "status": "failed",
+                    "reason": "listener_tls_invalid",
+                    "error": error.to_string(),
+                })
+            })
+            .collect::<Vec<_>>();
+        let staged = staged_rotation.states;
 
         if !failures.is_empty() {
-            metrics.record_control_plane_cert_reload("failed", "cert_reload_failed");
-            metrics.record_secret_reload("listeners", "failed", "cert_reload_failed");
+            metrics
+                .runtime_observations()
+                .record_control_plane_cert_reload("failed", "cert_reload_failed");
+            metrics.runtime_observations().record_secret_reload(
+                "listeners",
+                "failed",
+                "cert_reload_failed",
+            );
             return Self::json_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 json!({
@@ -71,11 +76,17 @@ impl QUICListener {
             );
         }
 
-        let generations = match listener_tls_store.replace_listeners(&staged) {
+        let generations = match rotate_listener_tls_material(listener_tls_store, &staged) {
             Ok(generations) => generations,
             Err(err) => {
-                metrics.record_control_plane_cert_reload("failed", "cert_reload_failed");
-                metrics.record_secret_reload("listeners", "failed", "cert_reload_failed");
+                metrics
+                    .runtime_observations()
+                    .record_control_plane_cert_reload("failed", "cert_reload_failed");
+                metrics.runtime_observations().record_secret_reload(
+                    "listeners",
+                    "failed",
+                    "cert_reload_failed",
+                );
                 return Self::json_response(
                     StatusCode::INTERNAL_SERVER_ERROR,
                     json!({
@@ -90,11 +101,7 @@ impl QUICListener {
         let mut reloaded = Vec::with_capacity(staged.len());
         let mut last_loaded_at_unix_ms = 0u64;
         for (listener_label, reloaded_state) in staged {
-            Self::update_listener_tls_expiry_metrics(
-                metrics,
-                &listener_label,
-                &reloaded_state.inventory,
-            );
+            record_listener_tls_inventory(metrics, &listener_label, &reloaded_state.inventory);
             last_loaded_at_unix_ms = last_loaded_at_unix_ms.max(reloaded_state.loaded_at_unix_ms);
             reloaded.push(json!({
                 "listener": listener_label,
@@ -109,10 +116,18 @@ impl QUICListener {
             }));
         }
         if last_loaded_at_unix_ms > 0 {
-            metrics.set_secret_last_success_unixtime("listeners", last_loaded_at_unix_ms / 1_000);
+            metrics
+                .runtime_observations()
+                .set_secret_last_success_unixtime("listeners", last_loaded_at_unix_ms / 1_000);
         }
-        metrics.record_control_plane_cert_reload("success", "cert_reload_applied");
-        metrics.record_secret_reload("listeners", "success", "cert_reload_applied");
+        metrics
+            .runtime_observations()
+            .record_control_plane_cert_reload("success", "cert_reload_applied");
+        metrics.runtime_observations().record_secret_reload(
+            "listeners",
+            "success",
+            "cert_reload_applied",
+        );
 
         Self::json_response(
             StatusCode::ACCEPTED,
@@ -132,16 +147,18 @@ impl QUICListener {
     ) -> Response<Full<Bytes>> {
         let runtime_state = state.current_service_state();
         let active_generation = runtime_state
-            .generation
-            .as_ref()
+            .generation()
             .map(|current| current.generation());
-        Self::emit_control_api_audit_event(
+        AdministrativeSecurity::emit_control_api_audit_event(
             &runtime_state.security,
             identity.as_ref(),
             request_context.as_ref(),
             AdminAuditEventType::CertReload,
             AdminAuditAction::CertReloadAttempt,
-            Self::control_api_audit_target_for_route(ControlApiRoute::ReloadCerts, None),
+            AdministrativeSecurity::control_api_audit_target_for_route(
+                ControlApiRoute::ReloadCerts,
+                None,
+            ),
             AdminAuditGeneration {
                 active_generation,
                 ..Default::default()
@@ -158,7 +175,7 @@ impl QUICListener {
             live_metrics.as_ref(),
         );
         let succeeded = response.status().is_success();
-        Self::emit_control_api_audit_event(
+        AdministrativeSecurity::emit_control_api_audit_event(
             &runtime_state.security,
             identity.as_ref(),
             request_context.as_ref(),
@@ -168,7 +185,10 @@ impl QUICListener {
             } else {
                 AdminAuditAction::CertReloadResult
             },
-            Self::control_api_audit_target_for_route(ControlApiRoute::ReloadCerts, None),
+            AdministrativeSecurity::control_api_audit_target_for_route(
+                ControlApiRoute::ReloadCerts,
+                None,
+            ),
             AdminAuditGeneration {
                 active_generation,
                 ..Default::default()
@@ -194,16 +214,18 @@ impl QUICListener {
     ) -> Response<Full<Bytes>> {
         let runtime_state = state.current_service_state();
         let active_generation = runtime_state
-            .generation
-            .as_ref()
+            .generation()
             .map(|current| current.generation());
-        Self::emit_control_api_audit_event(
+        AdministrativeSecurity::emit_control_api_audit_event(
             &runtime_state.security,
             identity.as_ref(),
             request_context.as_ref(),
             AdminAuditEventType::RuntimeRestart,
             AdminAuditAction::RuntimeRestartAttempt,
-            Self::control_api_audit_target_for_route(ControlApiRoute::Restart, None),
+            AdministrativeSecurity::control_api_audit_target_for_route(
+                ControlApiRoute::Restart,
+                None,
+            ),
             AdminAuditGeneration {
                 active_generation,
                 ..Default::default()
@@ -213,13 +235,16 @@ impl QUICListener {
         );
         let watchdog = runtime_state.watchdog();
         if !watchdog.enabled() {
-            Self::emit_control_api_audit_event(
+            AdministrativeSecurity::emit_control_api_audit_event(
                 &runtime_state.security,
                 identity.as_ref(),
                 request_context.as_ref(),
                 AdminAuditEventType::RuntimeRestart,
                 AdminAuditAction::RuntimeRestartResult,
-                Self::control_api_audit_target_for_route(ControlApiRoute::Restart, None),
+                AdministrativeSecurity::control_api_audit_target_for_route(
+                    ControlApiRoute::Restart,
+                    None,
+                ),
                 AdminAuditGeneration {
                     active_generation,
                     ..Default::default()
@@ -237,13 +262,16 @@ impl QUICListener {
         }
 
         let accepted = watchdog.request_restart("admin_runtime_api");
-        Self::emit_control_api_audit_event(
+        AdministrativeSecurity::emit_control_api_audit_event(
             &runtime_state.security,
             identity.as_ref(),
             request_context.as_ref(),
             AdminAuditEventType::RuntimeRestart,
             AdminAuditAction::RuntimeRestartResult,
-            Self::control_api_audit_target_for_route(ControlApiRoute::Restart, None),
+            AdministrativeSecurity::control_api_audit_target_for_route(
+                ControlApiRoute::Restart,
+                None,
+            ),
             AdminAuditGeneration {
                 active_generation,
                 ..Default::default()
@@ -271,282 +299,6 @@ impl QUICListener {
                 "reason": if accepted { "admin_runtime_api" } else { "restart pending or cooldown active" },
             }),
         )
-    }
-
-    pub(crate) fn evaluate_runtime_reload_compatibility(
-        current: &ActiveRuntimeGeneration,
-        next: &RuntimeBundle,
-    ) -> Result<(), Vec<TransitionRejection>> {
-        if let Some(rejection) = Self::validate_runtime_reload_compatibility(current.bundle(), next)
-        {
-            return Err(vec![rejection]);
-        }
-        if let Some(rejection) =
-            Self::validate_control_api_reload_compatibility(current.bundle(), next)
-        {
-            return Err(vec![rejection]);
-        }
-        if let Some(rejection) = Self::validate_metrics_reload_compatibility(current.bundle(), next)
-        {
-            return Err(vec![rejection]);
-        }
-        Self::validate_startup_owned_reload_compatibility(current.bundle(), next)
-    }
-
-    pub(super) fn validate_runtime_reload_compatibility(
-        current: &RuntimeBundle,
-        next: &RuntimeBundle,
-    ) -> Option<TransitionRejection> {
-        let current_listeners = &current
-            .shared_state
-            .generation_state()
-            .listener_runtime_configs;
-        let next_listeners = &next
-            .shared_state
-            .generation_state()
-            .listener_runtime_configs;
-        if next_listeners.len() < current_listeners.len()
-            && let Some(label) = current_listeners
-                .keys()
-                .find(|label| !next_listeners.contains_key(*label))
-        {
-            return Some(TransitionRejection::listener_bind_changed(label));
-        }
-
-        for (label, listener_config) in next_listeners.iter() {
-            if let Err(err) = Self::build_listener_tls_reload_state(listener_config) {
-                return Some(TransitionRejection::resource_preflight_failed(
-                    "Pingora listener TLS",
-                    label,
-                    err.to_string(),
-                ));
-            }
-            if current_listeners.contains_key(label) {
-                continue;
-            }
-            let worker_count = listener_config.performance.worker_threads.max(1);
-            if worker_count > 1 {
-                if let Err(err) = Self::bind_reuseport_sockets(listener_config, worker_count) {
-                    return Some(TransitionRejection::resource_preflight_failed(
-                        "QUIC listener",
-                        label,
-                        err.to_string(),
-                    ));
-                }
-            } else if let Err(err) = Self::bind_socket(listener_config, false) {
-                return Some(TransitionRejection::resource_preflight_failed(
-                    "QUIC listener",
-                    label,
-                    err.to_string(),
-                ));
-            }
-
-            let bind = format!(
-                "{}:{}",
-                listener_config.listen.listen.address, listener_config.listen.listen.port
-            );
-            if let Err(err) = Self::probe_tcp_bind(&bind, "Pingora listener") {
-                return Some(TransitionRejection::resource_preflight_failed(
-                    "Pingora listener",
-                    label,
-                    err,
-                ));
-            }
-        }
-        None
-    }
-
-    pub(super) fn validate_control_api_reload_compatibility(
-        current: &RuntimeBundle,
-        next: &RuntimeBundle,
-    ) -> Option<TransitionRejection> {
-        let next_control_api = &next.runtime_config.observability.control_api;
-        if !next_control_api.enabled {
-            return None;
-        }
-
-        let Some(listener_config) = next.runtime_config.primary_listener_runtime_config() else {
-            return Some(TransitionRejection::raw_resource_message(
-                "runtime reload rejected: no effective listeners configured for control API TLS",
-            ));
-        };
-        let primary_listener_label = Self::listener_label(&listener_config);
-        if next
-            .shared_state
-            .shared_services()
-            .listener_tls_store
-            .certificate_resolver(&primary_listener_label)
-            .is_none()
-        {
-            return Some(TransitionRejection::raw_resource_message(format!(
-                "runtime reload rejected: control API TLS config missing for listener '{}'",
-                primary_listener_label
-            )));
-        }
-
-        let security = ControlApiSecurityPolicy::from_config(
-            next_control_api,
-            Arc::clone(&next.shared_state.shared_services().metrics),
-        );
-        if let Err(err) =
-            Self::build_control_api_server_tls_config(&listener_config, &security.client_auth)
-        {
-            return Some(TransitionRejection::resource_preflight_failed(
-                "control API TLS",
-                primary_listener_label,
-                err.to_string(),
-            ));
-        }
-
-        let current_control_api = &current.runtime_config.observability.control_api;
-        let bind_changed = !current_control_api.enabled
-            || current_control_api.address != next_control_api.address
-            || current_control_api.port != next_control_api.port;
-        if bind_changed {
-            let bind = format!("{}:{}", next_control_api.address, next_control_api.port);
-            if let Err(err) = Self::probe_tcp_bind(&bind, "control API endpoint") {
-                return Some(TransitionRejection::resource_preflight_failed(
-                    "control API endpoint",
-                    bind,
-                    err,
-                ));
-            }
-        }
-        None
-    }
-
-    pub(super) fn validate_metrics_reload_compatibility(
-        current: &RuntimeBundle,
-        next: &RuntimeBundle,
-    ) -> Option<TransitionRejection> {
-        let next_metrics = &next.runtime_config.observability.metrics;
-        if !next_metrics.enabled {
-            return None;
-        }
-
-        let current_metrics = &current.runtime_config.observability.metrics;
-        let bind_changed = !current_metrics.enabled
-            || current_metrics.address != next_metrics.address
-            || current_metrics.port != next_metrics.port;
-        if bind_changed {
-            let bind = format!("{}:{}", next_metrics.address, next_metrics.port);
-            if let Err(err) = Self::probe_tcp_bind(&bind, "metrics endpoint") {
-                return Some(TransitionRejection::resource_preflight_failed(
-                    "metrics endpoint",
-                    bind,
-                    err,
-                ));
-            }
-        }
-        if next_metrics.allow_non_loopback {
-            let Some(listener_config) = next.runtime_config.primary_listener_runtime_config()
-            else {
-                return Some(TransitionRejection::raw_resource_message(
-                    "runtime reload rejected: no effective listeners configured for metrics TLS",
-                ));
-            };
-            let security = ControlApiSecurityPolicy::from_config(
-                &next.runtime_config.observability.control_api,
-                Arc::clone(&next.shared_state.shared_services().metrics),
-            );
-            let label = Self::listener_label(&listener_config);
-            if let Err(err) =
-                Self::build_control_api_server_tls_config(&listener_config, &security.client_auth)
-            {
-                return Some(TransitionRejection::resource_preflight_failed(
-                    "metrics TLS",
-                    label,
-                    err.to_string(),
-                ));
-            }
-        }
-        None
-    }
-
-    pub(super) fn validate_startup_owned_reload_compatibility(
-        current: &RuntimeBundle,
-        next: &RuntimeBundle,
-    ) -> Result<(), Vec<TransitionRejection>> {
-        let mut authority = ReloadCompatibilityAuthority::new();
-
-        let cache_storage_limits = |runtime: &RuntimeBundle| {
-            runtime.runtime_config.upstreams.values().fold(
-                None,
-                |limits: Option<(usize, usize)>, upstream| {
-                    let policy = &upstream.policy.response_cache;
-                    Some(limits.map_or(
-                        (policy.max_bytes, policy.max_entries),
-                        |(max_bytes, max_entries)| {
-                            (
-                                max_bytes.max(policy.max_bytes),
-                                max_entries.max(policy.max_entries),
-                            )
-                        },
-                    ))
-                },
-            )
-        };
-        let current_cache_limits = cache_storage_limits(current);
-        let next_cache_limits = cache_storage_limits(next);
-        authority.note_restart_required_change(
-            "upstreams[].cache.max_bytes",
-            &current_cache_limits.map(|limits| limits.0),
-            &next_cache_limits.map(|limits| limits.0),
-        );
-        authority.note_restart_required_change(
-            "upstreams[].cache.max_entries",
-            &current_cache_limits.map(|limits| limits.1),
-            &next_cache_limits.map(|limits| limits.1),
-        );
-
-        authority.note_restart_required_change(
-            "log.file.enabled",
-            &current.startup.log_config.file.enabled,
-            &next.startup.log_config.file.enabled,
-        );
-        authority.note_restart_required_change(
-            "log.file.path",
-            &current.startup.log_config.file.path,
-            &next.startup.log_config.file.path,
-        );
-        authority.note_restart_required_change(
-            "log.format",
-            &current.startup.log_config.format,
-            &next.startup.log_config.format,
-        );
-
-        let current_tracing = &current.runtime_config.observability.tracing;
-        let next_tracing = &next.runtime_config.observability.tracing;
-        authority.note_restart_required_change(
-            "observability.tracing.enabled",
-            &current_tracing.enabled,
-            &next_tracing.enabled,
-        );
-        authority.note_restart_required_change(
-            "observability.tracing.service_name",
-            &current_tracing.service_name,
-            &next_tracing.service_name,
-        );
-        authority.note_restart_required_change(
-            "observability.tracing.otlp_endpoint",
-            &current_tracing.otlp_endpoint,
-            &next_tracing.otlp_endpoint,
-        );
-        authority.note_restart_required_change(
-            "observability.tracing.sample_ratio",
-            &current_tracing.sample_ratio,
-            &next_tracing.sample_ratio,
-        );
-
-        let current_perf = &current.runtime_config.performance;
-        let next_perf = &next.runtime_config.performance;
-        authority.note_restart_required_change(
-            "performance.control_plane_threads",
-            &current_perf.control_plane_threads,
-            &next_perf.control_plane_threads,
-        );
-
-        authority.into_result()
     }
 }
 
@@ -674,7 +426,7 @@ mod tests {
         let oversized = vec![b'a'; MAX_CONTROL_API_JSON_BODY_BYTES + 1];
 
         let response =
-            QUICListener::collect_control_api_json_body_bounded(Full::new(Bytes::from(oversized)))
+            Http3Service::collect_control_api_json_body_bounded(Full::new(Bytes::from(oversized)))
                 .await
                 .expect_err("oversized control-plane JSON body must be rejected");
         let response = *response;

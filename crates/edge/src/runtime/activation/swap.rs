@@ -4,11 +4,12 @@ use impulse_errors::ProxyError;
 
 use super::{service::StagedRuntimeReloadPlan, *};
 use crate::runtime::{
+    builder::RuntimeBuilder,
     bundle::{
         ActiveRuntimeGeneration, RuntimeBundle, RuntimeBundleHandle, RuntimeGenerationRecordStatus,
     },
     generation::CarriedProcessSharedServices,
-    listener::QUICListener,
+    listener::Http3Service,
 };
 
 pub(super) fn commit_staged_runtime_reload(
@@ -43,7 +44,7 @@ pub(super) fn commit_runtime_bundle_swap(
 ) -> Result<GenerationId, ProxyError> {
     let current_log_level = handle.current_view().startup().log_config.level.clone();
     let next_log_level = next_runtime.startup.log_config.level.clone();
-    QUICListener::spawn_generation_background_tasks_for_runtime(
+    Http3Service::spawn_generation_background_tasks_for_runtime(
         &next_runtime.runtime_config,
         next_runtime.shared_state.as_ref(),
     );
@@ -69,17 +70,14 @@ pub(super) fn prepare_rollback_bundle(
     candidate_generation: GenerationId,
 ) -> Result<RuntimeBundle, Box<RejectedChange>> {
     let carried = CarriedProcessSharedServices::from_active(current.shared_services());
-    let next_shared_state = QUICListener::build_shared_state_for_generation(
-        &target.runtime_config,
-        Some(carried),
-        candidate_generation,
-    )
-    .map_err(|err| {
-        Box::new(RejectedChange::resource_preparation_failed(
-            "runtime rollback",
-            err.to_string(),
-        ))
-    })?;
+    let next_shared_state =
+        RuntimeBuilder::rebuild_generation(&target.runtime_config, carried, candidate_generation)
+            .map_err(|err| {
+            Box::new(RejectedChange::resource_preparation_failed(
+                "runtime rollback",
+                err.to_string(),
+            ))
+        })?;
 
     Ok(RuntimeBundle {
         generation: candidate_generation,

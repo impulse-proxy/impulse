@@ -6,13 +6,20 @@
 
 pub mod activation;
 pub mod backend;
+pub(crate) mod builder;
 pub mod bundle;
 pub mod cache;
 pub(crate) mod connection;
 pub(crate) mod generation;
+pub mod ingress;
 pub mod listener;
+pub(crate) mod listener_group;
+pub(crate) mod operations;
 pub mod policy;
-pub mod privilege_drop;
 pub mod shared_state;
+pub(crate) mod subsystem_mapping;
+pub mod supervisor;
 pub(crate) mod tasks;
 pub(crate) mod tls;
+pub(crate) mod transport;
+pub(crate) mod watchdog;

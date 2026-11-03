@@ -13,9 +13,4 @@ pingora-core = { workspace = true, features = ["rustls"] }
 pingora-http.workspace = true
 rustls-pki-types.workspace = true
 impulse-errors = { path = "../errors" }
-impulse-config = { path = "../config" }
-
-[dev-dependencies]
-http-body-util.workspace = true
-hyper = { workspace = true, features = ["http1", "server"] }
-hyper-util = { workspace = true, features = ["tokio"] }
+impulse-contracts = { path = "../contracts" }

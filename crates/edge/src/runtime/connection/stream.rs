@@ -2,7 +2,14 @@ use std::{collections::VecDeque, sync::Arc, time::Instant};
 
 use bytes::Bytes;
 use http::StatusCode;
+pub(crate) use impulse_contracts::{
+    BackendFailureReason, CancellationReason, CompletionReason, RejectionReason, TerminalReason,
+    TimeoutReason, TunnelMode,
+};
 use impulse_errors::ProxyError;
+pub(crate) use impulse_http3_ingress::{
+    RequestBodyState, RequestMode, ResponseEmissionState, StreamAdmissionState, StreamPhase,
+};
 use tokio::{
     sync::{OwnedSemaphorePermit, mpsc, oneshot},
     task::AbortHandle,
@@ -11,7 +18,7 @@ use tracing::Span;
 
 use crate::{
     OverloadShedReason,
-    request_pipeline::TerminalOutcomeGuard,
+    edge_core::request_completion::RequestCompletion,
     resilience::{adaptive_admission::AdaptivePermit, route_queue::RouteQueuePermit},
     runtime::connection::{
         auth::{ExternalAuthFailureDisposition, ExternalAuthResult},
@@ -20,228 +27,15 @@ use crate::{
     },
 };
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum StreamPhase {
-    /// Still receiving request headers/body from the QUIC client.
-    ReceivingRequest,
-    /// Request fully received; waiting for the upstream response.
-    AwaitingUpstream,
-    /// Upstream responded; streaming response back to the QUIC client.
-    SendingResponse,
-    /// Stream finished cleanly.
-    Completed,
-    /// Stream terminated.
-    Terminal,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum StreamAdmissionState {
-    /// Request admission is still pending an external auth/authz decision.
-    WaitingForAuth,
-    /// Request cleared admission checks and may proceed to upstream forwarding.
-    ReadyToForward,
-    /// Request was denied by admission/auth checks and should not be forwarded.
-    Denied,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TunnelMode {
-    None,
-    Connect,
-    Websocket,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RequestMode {
-    Normal,
-    Bodyless,
-    HeadLike,
-    ConnectTunnel,
-    WebsocketTunnel,
-}
-
-impl RequestMode {
-    pub fn from_intake(
-        tunnel_mode: TunnelMode,
-        method: &str,
-        content_length: Option<usize>,
-    ) -> Self {
-        match tunnel_mode {
-            TunnelMode::Connect => Self::ConnectTunnel,
-            TunnelMode::Websocket => Self::WebsocketTunnel,
-            TunnelMode::None
-                if content_length.unwrap_or(0) == 0 && method.eq_ignore_ascii_case("HEAD") =>
-            {
-                Self::HeadLike
-            }
-            TunnelMode::None
-                if content_length.unwrap_or(0) == 0 && method.eq_ignore_ascii_case("GET") =>
-            {
-                Self::Bodyless
-            }
-            TunnelMode::None => Self::Normal,
-        }
-    }
-
-    pub fn is_tunnel(self) -> bool {
-        matches!(self, Self::ConnectTunnel | Self::WebsocketTunnel)
-    }
-
-    pub fn suppresses_response_body(self) -> bool {
-        matches!(self, Self::HeadLike)
-    }
-
-    pub fn bodyless_mode(self) -> bool {
-        matches!(self, Self::Bodyless | Self::HeadLike)
-    }
-
-    pub fn tunnel_mode(self) -> TunnelMode {
-        match self {
-            Self::Normal | Self::Bodyless | Self::HeadLike => TunnelMode::None,
-            Self::ConnectTunnel => TunnelMode::Connect,
-            Self::WebsocketTunnel => TunnelMode::Websocket,
-        }
-    }
-
-    pub fn initial_body_state(self) -> RequestBodyState {
-        if self.bodyless_mode() {
-            RequestBodyState::FinReceived
-        } else {
-            RequestBodyState::Open
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RequestBodyState {
-    Open,
-    Buffered,
-    FinReceived,
-    ClosedToUpstream,
-}
-
-impl RequestBodyState {
-    pub fn from_runtime(
-        request_fin_received: bool,
-        has_buffered_body: bool,
-        forward_open: bool,
-    ) -> Self {
-        if forward_open {
-            if has_buffered_body {
-                Self::Buffered
-            } else if request_fin_received {
-                Self::FinReceived
-            } else {
-                Self::Open
-            }
-        } else if request_fin_received {
-            Self::ClosedToUpstream
-        } else if has_buffered_body {
-            Self::Buffered
-        } else {
-            Self::Open
-        }
-    }
-
-    pub fn on_buffered(self) -> Self {
-        match self {
-            Self::ClosedToUpstream => Self::ClosedToUpstream,
-            _ => Self::Buffered,
-        }
-    }
-
-    pub fn on_downstream_finished(self) -> Self {
-        match self {
-            Self::ClosedToUpstream => Self::ClosedToUpstream,
-            _ => Self::FinReceived,
-        }
-    }
-
-    pub fn on_forward_closed(self) -> Self {
-        Self::ClosedToUpstream
-    }
-
-    pub fn request_fin_received(self) -> bool {
-        matches!(self, Self::FinReceived | Self::ClosedToUpstream)
-    }
-
-    pub fn can_accept_downstream_body(self) -> bool {
-        matches!(self, Self::Open | Self::Buffered)
-    }
-
-    pub fn forwarding_complete(self) -> bool {
-        matches!(self, Self::ClosedToUpstream)
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ResponseEmissionState {
-    DeferredHeaders,
-    HeadersSent,
-    StreamingBody,
-    TrailersPending,
-    EndPending,
-}
-
 #[derive(Debug)]
 pub(crate) enum ResponseBackpressureState {
     Ready,
     Blocked(ResponseChunk),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CompletionReason {
-    ResponseStreamFinished,
-    ImmediateResponse,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CancellationReason {
-    ClientReset,
-    ConnectionClosed,
-    OperatorAbort,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TimeoutReason {
-    RequestBodyIdle,
-    RequestBodyTotal,
-    ExternalAuth,
-    TotalRequest,
-    AwaitingUpstream,
-    ResponseBodyIdle,
-    ResponseBodyTotal,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RejectionReason {
-    AuthDenied,
-    AuthUnavailable,
-    ValidationFailed,
-    RateLimited,
-    QuotaDenied,
-    Overloaded,
-    RequestBodyNotAllowed,
-    RequestBodyTooLarge,
-    ResponsePrebufferCap,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BackendFailureReason {
-    DispatchSpawnFailed,
-    UpstreamResultChannelDropped,
-    UpstreamTimeout,
-    UpstreamTransport,
-    UpstreamProtocol,
-    UpstreamTls,
-    UpstreamBridge,
-    ResponseWriteFailed,
-    ResponseStreamAborted,
-}
-
 #[derive(Debug, Clone)]
 pub struct RequestContext {
-    pub request_id: u64,
+    pub request_id: impulse_contracts::RequestId,
     pub trace_id: Option<String>,
     pub span_id: Option<String>,
     pub traceparent: Option<String>,
@@ -251,7 +45,7 @@ pub struct RequestContext {
     pub authority: Option<String>,
     pub start: Instant,
     pub total_request_deadline: Instant,
-    pub(crate) terminal_outcome: TerminalOutcomeGuard,
+    pub(crate) completion: RequestCompletion,
 }
 
 #[derive(Debug, Clone)]
@@ -423,37 +217,6 @@ pub struct BackendFailedState {
     pub snapshot: TerminalSnapshot,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum TerminalReason {
-    Completed(CompletionReason),
-    Cancelled(CancellationReason),
-    TimedOut(TimeoutReason),
-    Rejected(RejectionReason),
-    BackendFailed(BackendFailureReason),
-}
-
-impl TerminalReason {
-    pub(crate) fn terminal_status(self, snapshot: &TerminalSnapshot) -> Option<StatusCode> {
-        snapshot.response_status
-    }
-
-    pub(crate) fn into_terminal_state(self, snapshot: TerminalSnapshot) -> TerminalState {
-        match self {
-            Self::Completed(reason) => {
-                TerminalState::Completed(CompletedState { reason, snapshot })
-            }
-            Self::Cancelled(reason) => {
-                TerminalState::Cancelled(CancelledState { reason, snapshot })
-            }
-            Self::TimedOut(reason) => TerminalState::TimedOut(TimedOutState { reason, snapshot }),
-            Self::Rejected(reason) => TerminalState::Rejected(RejectedState { reason, snapshot }),
-            Self::BackendFailed(reason) => {
-                TerminalState::BackendFailed(BackendFailedState { reason, snapshot })
-            }
-        }
-    }
-}
-
 pub enum TerminalState {
     Completed(CompletedState),
     Cancelled(CancelledState),
@@ -463,6 +226,22 @@ pub enum TerminalState {
 }
 
 impl TerminalState {
+    pub(crate) fn from_reason(reason: TerminalReason, snapshot: TerminalSnapshot) -> Self {
+        match reason {
+            TerminalReason::Completed(reason) => {
+                Self::Completed(CompletedState { reason, snapshot })
+            }
+            TerminalReason::Cancelled(reason) => {
+                Self::Cancelled(CancelledState { reason, snapshot })
+            }
+            TerminalReason::TimedOut(reason) => Self::TimedOut(TimedOutState { reason, snapshot }),
+            TerminalReason::Rejected(reason) => Self::Rejected(RejectedState { reason, snapshot }),
+            TerminalReason::BackendFailed(reason) => {
+                Self::BackendFailed(BackendFailedState { reason, snapshot })
+            }
+        }
+    }
+
     pub fn terminal_status(&self) -> Option<StatusCode> {
         match self {
             Self::Completed(state) => state.snapshot.response_status,

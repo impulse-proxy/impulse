@@ -1,6 +1,6 @@
 use super::*;
 
-impl QUICListener {
+impl Http3Service {
     pub(crate) fn register_jwt_jwks_metrics(metrics: &Arc<crate::Metrics>) {
         if let Ok(mut sink) = jwt_jwks_metrics_sink().write() {
             *sink = Arc::downgrade(metrics);
@@ -22,11 +22,6 @@ impl QUICListener {
             return Ok(());
         }
 
-        // Preflight can run for startup checks, preview, or validation using a
-        // candidate config. Those paths must not evict unrelated live JWKS
-        // entries from the process-global cache.
-        JwtJwksSharedCache::shared().register_sources(sources.iter());
-
         let require_ready = sources
             .into_iter()
             .filter(|source| matches!(source.startup_behavior, JwksStartupBehavior::RequireReady))
@@ -42,38 +37,27 @@ impl QUICListener {
                 .map_err(|err| format!("failed to create JWKS startup runtime: {err}"))?;
             runtime.block_on(async move {
                 for source in require_ready {
-                    refresh_jwks_source_once(source.clone(), trigger)
-                        .await
-                        .map_err(|failure| {
-                            format!(
-                                "jwks require-ready preflight failed source_id={} endpoint={} trigger={} startup_behavior=require_ready detail={}",
-                                source.source_identity,
-                                source.public_endpoint(),
-                                trigger,
-                                failure
-                            )
-                        })?;
-                    let snapshot = JwtJwksSharedCache::shared()
-                        .snapshot(&source.source_identity, Instant::now())
-                        .ok_or_else(|| {
-                            format!(
-                                "jwks require-ready preflight failed source_id={} endpoint={} trigger={} startup_behavior=require_ready detail=missing_cache_snapshot",
-                                source.source_identity,
-                                source.public_endpoint(),
-                                trigger
-                            )
-                        })?;
-                    if !jwt_jwks_cache_state_usable(snapshot.state) {
-                        return Err(format!(
-                            "jwks require-ready preflight failed source_id={} endpoint={} trigger={} startup_behavior=require_ready state={} detail={}",
+                    let keys = fetch_and_normalize_jwks(
+                        &source.jwks_url,
+                        &source.allowed_algorithms,
+                        source.request_timeout,
+                    )
+                    .await
+                    .map_err(|failure| {
+                        format!(
+                            "jwks require-ready preflight failed source_id={} endpoint={} trigger={} startup_behavior=require_ready detail={}",
                             source.source_identity,
                             source.public_endpoint(),
                             trigger,
-                            jwt_jwks_cache_state_name(snapshot.state),
-                            snapshot.last_error.unwrap_or_else(|| {
-                                "jwks source has no usable keys after startup preflight"
-                                    .to_string()
-                            })
+                            failure
+                        )
+                    })?;
+                    if keys.is_empty() {
+                        return Err(format!(
+                            "jwks require-ready preflight failed source_id={} endpoint={} trigger={} startup_behavior=require_ready detail=no_usable_keys",
+                            source.source_identity,
+                            source.public_endpoint(),
+                            trigger
                         ));
                     }
                 }
@@ -89,18 +73,22 @@ impl QUICListener {
         .map_err(impulse_errors::ProxyError::Transport)
     }
 }
-impl QUICListener {
+impl Http3Service {
     pub(crate) fn spawn_jwks_refresh(
         config: &RuntimeConfig,
+        generation: u64,
         task_registry: Arc<RuntimeTaskRegistry>,
     ) {
-        let sources = runtime_jwks_sources(config);
+        let mut sources = runtime_jwks_sources(config);
+        for source in &mut sources {
+            source.generation = generation;
+        }
         if sources.is_empty() {
-            JwtJwksSharedCache::shared().reconcile_sources([].iter().copied());
+            JwtJwksSharedCache::shared().reconcile_sources(generation, [].iter().copied());
             return;
         }
 
-        JwtJwksSharedCache::shared().reconcile_sources(sources.iter());
+        JwtJwksSharedCache::shared().reconcile_sources(generation, sources.iter());
         let Some(handle) = runtime_handle() else {
             log::error!("JWKS refresh disabled: no Tokio runtime available");
             return;
@@ -108,7 +96,7 @@ impl QUICListener {
 
         for source in sources {
             let task_source = source.clone();
-            let registration = spawn_supervised_async_task(
+            task_registry.spawn_supervised(
                 &handle,
                 "jwks-refresh",
                 None,
@@ -146,7 +134,6 @@ impl QUICListener {
                     }
                 },
             );
-            task_registry.register(registration);
         }
     }
 }

@@ -9,10 +9,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use impulse_config::{
-    config::Backend,
-    runtime::{RuntimeLoadBalancingStrategy, RuntimeUpstream},
-};
 #[cfg(test)]
 use pingora_load_balancing::discovery::Static as StaticDiscovery;
 pub use pingora_load_balancing::{
@@ -24,7 +20,10 @@ use pingora_load_balancing::{
     selection::{Random as PingoraRandom, RoundRobin as PingoraRoundRobin},
 };
 
-use crate::pingora_discovery::ImpulseServiceDiscovery;
+use crate::{
+    BackendInput, LoadBalancingStrategy, pingora_discovery::ImpulseServiceDiscovery,
+    upstream_pool::UpstreamPool,
+};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BackendSelectionResult<P> {
@@ -399,35 +398,24 @@ where
         }
     }
 
-    fn new(
-        strategy: RuntimeLoadBalancingStrategy,
-        view: GenerationBackendView,
-    ) -> Result<Self, String> {
+    fn new(strategy: LoadBalancingStrategy, view: GenerationBackendView) -> Result<Self, String> {
         let kind = match strategy {
-            RuntimeLoadBalancingStrategy::RoundRobin => GenerationSelectorKind::WeightedRoundRobin(
+            LoadBalancingStrategy::RoundRobin => GenerationSelectorKind::WeightedRoundRobin(
                 GenerationWeightedRoundRobin::from_backend_view(view),
             ),
-            RuntimeLoadBalancingStrategy::Random => GenerationSelectorKind::WeightedRandom(
+            LoadBalancingStrategy::Random => GenerationSelectorKind::WeightedRandom(
                 GenerationWeightedRandom::from_backend_view(view),
             ),
-            RuntimeLoadBalancingStrategy::ConsistentHash => {
+            LoadBalancingStrategy::ConsistentHash => {
                 GenerationSelectorKind::Ketama(GenerationKetama::from_backend_view(view))
             }
-            RuntimeLoadBalancingStrategy::StickyCid => {
+            LoadBalancingStrategy::StickyCid => {
                 GenerationSelectorKind::StickyCid(GenerationStickyCid::from_backend_view(view))
             }
-            RuntimeLoadBalancingStrategy::LeastConnections => {
+            LoadBalancingStrategy::LeastConnections => {
                 GenerationSelectorKind::CustomLeastConnections(view)
             }
-            RuntimeLoadBalancingStrategy::LatencyAware => {
-                GenerationSelectorKind::CustomLatencyAware(view)
-            }
-            RuntimeLoadBalancingStrategy::Other => {
-                return Err(format!(
-                    "unsupported load-balancing strategy for upstream '{}'",
-                    view.upstream_name()
-                ));
-            }
+            LoadBalancingStrategy::LatencyAware => GenerationSelectorKind::CustomLatencyAware(view),
         };
         Ok(Self { kind })
     }
@@ -557,11 +545,14 @@ impl PingoraDiscoveryUpdate {
     }
 }
 
+/// Generation-scoped owner of backend pools, discovery membership, readiness,
+/// and selector state.
 pub struct PingoraLoadBalancingRuntimeState<T> {
     generation: u64,
+    upstream_pools: HashMap<String, Arc<RwLock<UpstreamPool>>>,
     selectors: HashMap<String, Arc<GenerationSelector<T>>>,
     discoveries: HashMap<String, ImpulseServiceDiscovery>,
-    backend_health: RwLock<HashMap<String, bool>>,
+    backend_readiness: RwLock<HashMap<String, bool>>,
     health_registry: Arc<HealthRegistry>,
 }
 
@@ -569,27 +560,31 @@ impl<T> PingoraLoadBalancingRuntimeState<T>
 where
     T: Clone + Send + Sync + 'static,
 {
-    pub fn set_backend_health(&self, configured_address: &str, healthy: bool) {
-        let mut backend_health = self
-            .backend_health
+    pub fn set_backend_readiness(&self, configured_address: &str, ready: bool) {
+        let mut backend_readiness = self
+            .backend_readiness
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        backend_health.insert(configured_address.to_string(), healthy);
+        backend_readiness.insert(configured_address.to_string(), ready);
         for selector in self.selectors.values() {
-            selector.set_backend_enabled(configured_address, healthy);
+            selector.set_backend_enabled(configured_address, ready);
         }
     }
 
     pub fn new(
         generation: u64,
-        backend_views: impl IntoIterator<
-            Item = (String, RuntimeLoadBalancingStrategy, GenerationBackendView),
-        >,
+        upstream_pools: HashMap<String, Arc<RwLock<UpstreamPool>>>,
+        backend_views: impl IntoIterator<Item = (String, LoadBalancingStrategy, GenerationBackendView)>,
         health_registry: Arc<HealthRegistry>,
     ) -> Result<Self, String> {
         let mut selectors = HashMap::new();
         let mut discoveries = HashMap::new();
         for (upstream_name, strategy, view) in backend_views {
+            if !upstream_pools.contains_key(&upstream_name) {
+                return Err(format!(
+                    "upstream '{upstream_name}' has a selector but no backend pool"
+                ));
+            }
             if view.generation() != generation {
                 return Err(format!(
                     "upstream '{upstream_name}' belongs to runtime generation {}, expected {generation}",
@@ -616,12 +611,21 @@ where
                 discoveries.insert(upstream_name, discovery);
             }
         }
+        if let Some(upstream_name) = upstream_pools
+            .keys()
+            .find(|upstream_name| !selectors.contains_key(*upstream_name))
+        {
+            return Err(format!(
+                "upstream '{upstream_name}' has a backend pool but no selector"
+            ));
+        }
 
         Ok(Self {
             generation,
+            upstream_pools,
             selectors,
             discoveries,
-            backend_health: RwLock::new(HashMap::new()),
+            backend_readiness: RwLock::new(HashMap::new()),
             health_registry,
         })
     }
@@ -632,6 +636,14 @@ where
 
     pub fn selector(&self, upstream_name: &str) -> Option<&Arc<GenerationSelector<T>>> {
         self.selectors.get(upstream_name)
+    }
+
+    pub fn upstream_pool(&self, upstream_name: &str) -> Option<&Arc<RwLock<UpstreamPool>>> {
+        self.upstream_pools.get(upstream_name)
+    }
+
+    pub fn upstream_pools(&self) -> &HashMap<String, Arc<RwLock<UpstreamPool>>> {
+        &self.upstream_pools
     }
 
     pub fn len(&self) -> usize {
@@ -673,7 +685,7 @@ where
         let started = Instant::now();
         selector.rebuild().await?;
         if let Some(healthy) = self
-            .backend_health
+            .backend_readiness
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(configured_address)
@@ -692,22 +704,22 @@ where
 }
 
 impl GenerationBackendView {
-    pub fn from_runtime_upstream<F>(
+    pub fn new<F>(
         generation: u64,
         upstream_name: impl Into<String>,
-        upstream: &RuntimeUpstream,
+        backend_inputs: &[BackendInput],
         map_backend: F,
         health_registry: Arc<HealthRegistry>,
     ) -> Result<Self, String>
     where
-        F: FnMut(usize, &Backend) -> Result<PingoraBackend, String>,
+        F: FnMut(&BackendInput) -> Result<PingoraBackend, String>,
     {
         let upstream_name = upstream_name.into();
         let mut map_backend = map_backend;
-        let discovery = ImpulseServiceDiscovery::from_runtime_upstream(
+        let discovery = ImpulseServiceDiscovery::new(
             generation,
             &upstream_name,
-            upstream,
+            backend_inputs,
             &mut map_backend,
         )?;
         let view =
@@ -783,8 +795,7 @@ impl<T> PingoraBackendIdentity<T> {
 }
 
 pub fn map_validated_backend<T>(
-    backend: &Backend,
-    index: usize,
+    backend: &BackendInput,
     address: SocketAddr,
     tls_identity: T,
 ) -> Result<PingoraBackend, String>
@@ -793,14 +804,18 @@ where
 {
     let mut mapped = PingoraBackend::new_with_weight(
         &address.to_string(),
-        usize::try_from(backend.weight)
-            .map_err(|_| format!("backend '{}' weight exceeds platform limits", backend.id))?,
+        usize::try_from(backend.weight().get()).map_err(|_| {
+            format!(
+                "backend '{}' weight exceeds platform limits",
+                backend.backend_id()
+            )
+        })?,
     )
-    .map_err(|error| format!("failed to map backend '{}': {error}", backend.id))?;
+    .map_err(|error| format!("failed to map backend '{}': {error}", backend.backend_id()))?;
     mapped.ext.insert(PingoraBackendIdentity {
-        backend_id: backend.id.clone(),
-        configured_address: backend.address.clone(),
-        index,
+        backend_id: backend.backend_id().to_string(),
+        configured_address: backend.configured_address().to_string(),
+        index: backend.index(),
         tls_identity,
     });
     Ok(mapped)
@@ -813,6 +828,7 @@ mod tests {
         hash::{Hash, Hasher},
     };
 
+    use impulse_config::config::Backend;
     use pingora_load_balancing::discovery::ServiceDiscovery;
 
     use super::*;
@@ -840,24 +856,31 @@ mod tests {
 
     fn hostname_backend_view(generation: u64) -> GenerationBackendView {
         let upstream = runtime_upstream_from_addresses("round-robin", None, &[HOSTNAME_BACKEND]);
-        GenerationBackendView::from_runtime_upstream(
+        let backend_inputs = crate::test_support::backend_inputs(&upstream);
+        GenerationBackendView::new(
             generation,
             "api",
-            &upstream,
-            |index, backend| {
-                map_validated_backend(backend, index, SocketAddr::from(([0, 0, 0, 0], 8080)), ())
-            },
+            &backend_inputs,
+            |backend| map_validated_backend(backend, SocketAddr::from(([0, 0, 0, 0], 8080)), ()),
             health_registry(),
         )
         .expect("hostname backend view")
     }
 
     fn hostname_runtime() -> PingoraLoadBalancingRuntimeState<()> {
+        let upstream = runtime_upstream_from_addresses("round-robin", None, &[HOSTNAME_BACKEND]);
+        let upstream_pools = HashMap::from([(
+            "api".to_string(),
+            Arc::new(RwLock::new(
+                crate::test_support::upstream_pool(&upstream).expect("hostname upstream pool"),
+            )),
+        )]);
         PingoraLoadBalancingRuntimeState::new(
             GENERATION,
+            upstream_pools,
             [(
                 "api".to_string(),
-                RuntimeLoadBalancingStrategy::RoundRobin,
+                LoadBalancingStrategy::RoundRobin,
                 hostname_backend_view(GENERATION),
             )],
             health_registry(),
@@ -893,7 +916,8 @@ mod tests {
                     weight: *weight,
                     health_check: None,
                 };
-                map_validated_backend(&backend, index, address, ())
+                let input = crate::test_support::backend_input(index, &backend);
+                map_validated_backend(&input, address, ())
             })
             .collect::<Result<BTreeSet<_>, _>>()
             .expect("map test backends");
@@ -914,6 +938,20 @@ mod tests {
         }
     }
 
+    fn upstream_pools(count: usize) -> HashMap<String, Arc<RwLock<UpstreamPool>>> {
+        let addresses = (0..count)
+            .map(|index| format!("http://127.0.0.1:{}", 8_000 + index))
+            .collect::<Vec<_>>();
+        let address_refs = addresses.iter().map(String::as_str).collect::<Vec<_>>();
+        let upstream = runtime_upstream_from_addresses("round-robin", None, &address_refs);
+        HashMap::from([(
+            "api".to_string(),
+            Arc::new(RwLock::new(
+                crate::test_support::upstream_pool(&upstream).expect("test upstream pool"),
+            )),
+        )])
+    }
+
     #[test]
     fn validated_backend_mapping_preserves_weight() {
         let backend = Backend {
@@ -923,20 +961,18 @@ mod tests {
             health_check: None,
         };
 
-        let mapped =
-            map_validated_backend(&backend, 0, SocketAddr::from(([127, 0, 0, 1], 8000)), ())
-                .expect("map backend");
+        let input = crate::test_support::backend_input(0, &backend);
+        let mapped = map_validated_backend(&input, SocketAddr::from(([127, 0, 0, 1], 8000)), ())
+            .expect("map backend");
 
         assert_eq!(mapped.weight, 3);
     }
 
     #[test]
     fn selector_readiness_excludes_unhealthy_backends() {
-        let selector = GenerationSelector::<()>::new(
-            RuntimeLoadBalancingStrategy::RoundRobin,
-            backend_view(&[1, 1]),
-        )
-        .expect("round-robin selector");
+        let selector =
+            GenerationSelector::<()>::new(LoadBalancingStrategy::RoundRobin, backend_view(&[1, 1]))
+                .expect("round-robin selector");
         selector
             .synchronize_readiness(|index| index == 1)
             .expect("synchronize readiness");
@@ -955,10 +991,10 @@ mod tests {
     #[test]
     fn retry_exclusions_apply_to_every_pingora_strategy() {
         for strategy in [
-            RuntimeLoadBalancingStrategy::RoundRobin,
-            RuntimeLoadBalancingStrategy::Random,
-            RuntimeLoadBalancingStrategy::ConsistentHash,
-            RuntimeLoadBalancingStrategy::StickyCid,
+            LoadBalancingStrategy::RoundRobin,
+            LoadBalancingStrategy::Random,
+            LoadBalancingStrategy::ConsistentHash,
+            LoadBalancingStrategy::StickyCid,
         ] {
             let selector = GenerationSelector::<()>::new(strategy, backend_view(&[1, 1]))
                 .expect("Pingora selector");
@@ -982,9 +1018,10 @@ mod tests {
     fn runtime_and_selection_preserve_selector_generation() {
         let runtime = PingoraLoadBalancingRuntimeState::<()>::new(
             GENERATION,
+            upstream_pools(2),
             [(
                 "api".to_string(),
-                RuntimeLoadBalancingStrategy::ConsistentHash,
+                LoadBalancingStrategy::ConsistentHash,
                 backend_view(&[1, 1]),
             )],
             health_registry(),
@@ -1007,9 +1044,10 @@ mod tests {
         assert!(
             PingoraLoadBalancingRuntimeState::<()>::new(
                 GENERATION + 1,
+                upstream_pools(1),
                 [(
                     "api".to_string(),
-                    RuntimeLoadBalancingStrategy::RoundRobin,
+                    LoadBalancingStrategy::RoundRobin,
                     backend_view(&[1]),
                 )],
                 health_registry(),

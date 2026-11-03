@@ -1,7 +1,9 @@
-use std::{sync::Arc, time::SystemTime};
+use std::sync::Arc;
 
 use bytes::Bytes;
+use impulse_contracts::HealthFailureReason;
 use impulse_errors::{UpstreamProxyErrorKind, classify_upstream_proxy_error};
+use impulse_observability::ResponseCacheOutcome;
 use impulse_transport::{UpstreamBody, UpstreamBodyFrame};
 use pingora_cache::{CacheMeta, HttpCache, NoCacheReason};
 use pingora_core::protocols::http::compression::Algorithm;
@@ -10,33 +12,29 @@ use tokio::sync::mpsc::error::TryRecvError;
 
 use super::*;
 use crate::{
-    metrics::ResponseCacheOutcome,
-    request_pipeline::{
-        ResponseCompressionAction, ResponseCompressionInput, ensure_vary_accept_encoding,
-        evaluate_response_compression,
+    edge_core::{
+        body_guardrails::{
+            BodyLimitKind, BodyTimeoutKind, ProgressiveEmissionPolicy,
+            RESPONSE_BODY_TOO_LARGE_BODY, ResponseBodyGuardrailConfig,
+            ResponseBodyGuardrailDecision, ResponseBodyGuardrailInput,
+            checked_response_body_guardrails, is_unknown_length_response_prebuffer_reason,
+            response_body_limit_reason, response_chunk_ranges,
+        },
+        request_execution::{
+            ResponseCompressionAction, ResponseCompressionPolicyInput, apply_gzip_response_headers,
+        },
+        response_processing::{
+            ResponseCacheDecision, ResponseProcessingInput, ResponseProcessingResult,
+            process_response,
+        },
     },
-    runtime::{
-        cache::{
-            ResponseCacheResponseEligibilityInput, evaluate_cache_response_eligibility,
-            response_cache_ttl,
+    runtime::connection::{
+        auth::ExternalAuthDecision,
+        response::{
+            ImmediateResponseStart, ResponseBodyPumpPlan, ResponseChunk, ResponseStartDecision,
+            ResponseStartMetadata, ResponseStartObservation,
         },
-        connection::{
-            auth::ExternalAuthDecision,
-            guardrails::{
-                BodyLimitKind, BodyTimeoutKind, ProgressiveEmissionPolicy,
-                RESPONSE_BODY_TOO_LARGE_BODY, ResponseBodyGuardrailConfig,
-                ResponseBodyGuardrailDecision, ResponseBodyGuardrailInput,
-                checked_response_body_guardrails, is_unknown_length_response_prebuffer_reason,
-                response_body_limit_reason, response_chunk_ranges,
-            },
-            response::{
-                ImmediateResponseStart, ResponseBodyPumpPlan, ResponseChunk, ResponseStartDecision,
-                ResponseStartMetadata, ResponseStartObservation,
-            },
-            stream::{
-                BackendFailureReason, CompletionReason, ResponseEmissionState, TimeoutReason,
-            },
-        },
+        stream::{BackendFailureReason, CompletionReason, ResponseEmissionState, TimeoutReason},
     },
 };
 
@@ -51,35 +49,9 @@ struct ResponseCompressionByteMetrics {
 impl Drop for ResponseCompressionByteMetrics {
     fn drop(&mut self) {
         self.metrics
+            .ingress_observations()
             .add_response_compression_bytes(self.input, self.output);
     }
-}
-
-fn apply_gzip_response_headers(headers: &mut http::HeaderMap) {
-    headers.insert(
-        http::header::CONTENT_ENCODING,
-        http::HeaderValue::from_static("gzip"),
-    );
-    headers.remove(http::header::CONTENT_LENGTH);
-    headers.remove(http::header::ACCEPT_RANGES);
-    ensure_vary_accept_encoding(headers);
-
-    let Some(etag) = headers.get(http::header::ETAG).cloned() else {
-        return;
-    };
-    if etag.as_bytes().starts_with(b"W/") {
-        return;
-    }
-    if etag.as_bytes().starts_with(b"\"") {
-        let mut weak = Vec::with_capacity(etag.as_bytes().len() + 2);
-        weak.extend_from_slice(b"W/");
-        weak.extend_from_slice(etag.as_bytes());
-        if let Ok(weak) = http::HeaderValue::from_bytes(&weak) {
-            headers.insert(http::header::ETAG, weak);
-            return;
-        }
-    }
-    headers.remove(http::header::ETAG);
 }
 
 fn prepare_response_cache(
@@ -89,41 +61,38 @@ fn prepare_response_cache(
     )>,
     status: http::StatusCode,
     headers: &http::HeaderMap,
+    decision: ResponseCacheDecision,
     metrics: &Metrics,
 ) -> Option<HttpCache> {
-    let (mut cache, policy) = cache_miss?;
-    if status != http::StatusCode::OK
-        || evaluate_cache_response_eligibility(ResponseCacheResponseEligibilityInput { headers })
-            .is_err()
-    {
-        metrics.record_response_cache_outcome(ResponseCacheOutcome::Rejection);
+    let (mut cache, _policy) = cache_miss?;
+    let ResponseCacheDecision::Store {
+        stored_at,
+        fresh_until,
+    } = decision
+    else {
+        metrics
+            .ingress_observations()
+            .record_response_cache_outcome(ResponseCacheOutcome::Rejection);
         cache.disable(NoCacheReason::OriginNotCache);
         return None;
-    }
+    };
     let Ok(mut response) = ResponseHeader::build(status, Some(headers.len())) else {
-        metrics.record_response_cache_outcome(ResponseCacheOutcome::Rejection);
+        metrics
+            .ingress_observations()
+            .record_response_cache_outcome(ResponseCacheOutcome::Rejection);
         cache.disable(NoCacheReason::StorageError);
         return None;
     };
     for (name, value) in headers {
         if response.append_header(name.clone(), value.clone()).is_err() {
-            metrics.record_response_cache_outcome(ResponseCacheOutcome::Rejection);
+            metrics
+                .ingress_observations()
+                .record_response_cache_outcome(ResponseCacheOutcome::Rejection);
             cache.disable(NoCacheReason::StorageError);
             return None;
         }
     }
-    let now = SystemTime::now();
-    let Some(ttl) = response_cache_ttl(&response, policy.max_ttl_secs, now) else {
-        metrics.record_response_cache_outcome(ResponseCacheOutcome::Rejection);
-        cache.disable(NoCacheReason::OriginNotCache);
-        return None;
-    };
-    let Some(fresh_until) = now.checked_add(ttl) else {
-        metrics.record_response_cache_outcome(ResponseCacheOutcome::Rejection);
-        cache.disable(NoCacheReason::StorageError);
-        return None;
-    };
-    cache.set_cache_meta(CacheMeta::new(fresh_until, now, 0, 0, response));
+    cache.set_cache_meta(CacheMeta::new(fresh_until, stored_at, 0, 0, response));
     Some(cache)
 }
 
@@ -228,52 +197,47 @@ fn response_body_wait_timeout_reason(
     }
 }
 
+#[cfg(test)]
 fn simple_response_headers(status: http::StatusCode, body: &[u8]) -> Vec<quiche::h3::Header> {
-    vec![
-        quiche::h3::Header::new(b":status", status.as_str().as_bytes()),
-        quiche::h3::Header::new(b"content-type", b"text/plain"),
-        quiche::h3::Header::new(b"content-length", body.len().to_string().as_bytes()),
-    ]
+    impulse_http3_ingress::response_headers_with_defaults(
+        status,
+        body,
+        std::iter::empty::<(&[u8], &[u8])>(),
+        None,
+    )
 }
 
+#[cfg(test)]
 fn overload_response_headers(body: &[u8], retry_after_seconds: u32) -> Vec<quiche::h3::Header> {
     let retry_after = retry_after_seconds.max(1).to_string();
-    vec![
-        quiche::h3::Header::new(
-            b":status",
-            http::StatusCode::SERVICE_UNAVAILABLE.as_str().as_bytes(),
-        ),
-        quiche::h3::Header::new(b"content-type", b"text/plain"),
-        quiche::h3::Header::new(b"retry-after", retry_after.as_bytes()),
-        quiche::h3::Header::new(b"content-length", body.len().to_string().as_bytes()),
-    ]
+    impulse_http3_ingress::response_headers_with_defaults(
+        http::StatusCode::SERVICE_UNAVAILABLE,
+        body,
+        std::iter::empty::<(&[u8], &[u8])>(),
+        Some((b"retry-after", retry_after.as_bytes())),
+    )
 }
 
+#[cfg(test)]
 fn admission_rejection_headers(
-    response: &crate::quic_listener::admission::AdmissionRejectionResponse,
+    response: &impulse_contracts::BoundedRejectionResponse,
 ) -> Vec<quiche::h3::Header> {
-    let mut headers = vec![
-        quiche::h3::Header::new(b":status", response.status.as_str().as_bytes()),
-        quiche::h3::Header::new(b"content-type", b"text/plain"),
-    ];
+    let retry_after = response
+        .retry_after_seconds
+        .map(|seconds| seconds.max(1).to_string());
+    let mut headers = Vec::with_capacity(2);
     if let Some(challenge) = response.www_authenticate {
-        headers.push(quiche::h3::Header::new(
-            b"www-authenticate",
-            challenge.as_bytes(),
-        ));
+        headers.push((b"www-authenticate".as_slice(), challenge.as_bytes()));
     }
-    if let Some(retry_after_seconds) = response.retry_after_seconds {
-        let retry_after = retry_after_seconds.max(1).to_string();
-        headers.push(quiche::h3::Header::new(
-            b"retry-after",
-            retry_after.as_bytes(),
-        ));
+    if let Some(retry_after) = retry_after.as_deref() {
+        headers.push((b"retry-after".as_slice(), retry_after.as_bytes()));
     }
-    headers.push(quiche::h3::Header::new(
-        b"content-length",
-        response.body.len().to_string().as_bytes(),
-    ));
-    headers
+    impulse_http3_ingress::response_headers_with_defaults(
+        response.status,
+        response.body,
+        headers,
+        None,
+    )
 }
 
 #[cfg(test)]
@@ -292,7 +256,7 @@ fn response_headers_with_defaults_and_extra(
     headers: &[(String, String)],
     extra_header: Option<(&str, &str)>,
 ) -> Vec<quiche::h3::Header> {
-    response_headers_with_defaults_and_extra_bytes(
+    impulse_http3_ingress::response_headers_with_defaults(
         status,
         body,
         headers
@@ -302,55 +266,7 @@ fn response_headers_with_defaults_and_extra(
     )
 }
 
-fn response_headers_with_defaults_and_extra_bytes<'a, I>(
-    status: http::StatusCode,
-    body: &[u8],
-    headers: I,
-    extra_header: Option<(&'a [u8], &'a [u8])>,
-) -> Vec<quiche::h3::Header>
-where
-    I: IntoIterator<Item = (&'a [u8], &'a [u8])>,
-{
-    let headers = headers.into_iter();
-    let mut resp_headers =
-        Vec::with_capacity(headers.size_hint().0 + usize::from(extra_header.is_some()) + 3);
-    resp_headers.push(quiche::h3::Header::new(
-        b":status",
-        status.as_str().as_bytes(),
-    ));
-    let mut has_content_type = false;
-    let mut has_content_length = false;
-    for (name, value) in headers {
-        if name.eq_ignore_ascii_case(http::header::CONTENT_TYPE.as_str().as_bytes()) {
-            has_content_type = true;
-        }
-        if name.eq_ignore_ascii_case(http::header::CONTENT_LENGTH.as_str().as_bytes()) {
-            has_content_length = true;
-        }
-        resp_headers.push(quiche::h3::Header::new(name, value));
-    }
-    if let Some((name, value)) = extra_header {
-        if name.eq_ignore_ascii_case(http::header::CONTENT_TYPE.as_str().as_bytes()) {
-            has_content_type = true;
-        }
-        if name.eq_ignore_ascii_case(http::header::CONTENT_LENGTH.as_str().as_bytes()) {
-            has_content_length = true;
-        }
-        resp_headers.push(quiche::h3::Header::new(name, value));
-    }
-    if !has_content_type {
-        resp_headers.push(quiche::h3::Header::new(b"content-type", b"text/plain"));
-    }
-    if !has_content_length {
-        resp_headers.push(quiche::h3::Header::new(
-            b"content-length",
-            body.len().to_string().as_bytes(),
-        ));
-    }
-    resp_headers
-}
-
-impl QUICListener {
+impl Http3Service {
     #[allow(clippy::too_many_arguments)]
     fn fail_response_start_state_transition(
         stream_id: u64,
@@ -400,28 +316,13 @@ impl QUICListener {
             req.response_status = Some(http::StatusCode::INTERNAL_SERVER_ERROR.as_u16());
         } else {
             req.response_status = Some(status.as_u16());
-            let _ = h3.send_body(quic, stream_id, b"", true);
+            let _ = impulse_http3_ingress::send_response_body(h3, quic, stream_id, b"", true);
         }
         req.transition_to_terminal_with_cleanup(
             TerminalReason::BackendFailed(BackendFailureReason::UpstreamProtocol),
             metrics,
         );
         Ok(true)
-    }
-
-    fn response_start_header_block(
-        status: http::StatusCode,
-        headers: &[(Vec<u8>, Vec<u8>)],
-    ) -> Vec<quiche::h3::Header> {
-        let mut h3_headers = Vec::with_capacity(headers.len() + 1);
-        h3_headers.push(quiche::h3::Header::new(
-            b":status",
-            status.as_str().as_bytes(),
-        ));
-        for (name, value) in headers {
-            h3_headers.push(quiche::h3::Header::new(name, value));
-        }
-        h3_headers
     }
 
     fn into_deferred_response_start_chunk(
@@ -461,7 +362,11 @@ impl QUICListener {
             } => (status, headers, None, Some(response_chunk_rx), None, false),
         };
         let request_mode = req.request_mode();
-        let tunnel_response = is_tunnel_response(req.tunnel_mode, status);
+        let tunnel_response = impulse_http3_ingress::tunnel_response_established(
+            req.tunnel_mode,
+            &req.method,
+            status,
+        );
         let response_body_mode = if tunnel_response {
             ResponseBodyMode::TunnelSuccess
         } else if request_mode.suppresses_response_body() {
@@ -473,23 +378,50 @@ impl QUICListener {
             .get(http::header::CONTENT_LENGTH)
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.parse::<usize>().ok());
-        let normalized_response = normalize_upstream_response(ResponseNormalizationInput {
-            upstream: impulse_bridge::response::UpstreamResponseView {
-                status,
-                headers: &resp_headers,
-            },
+        let mut request_headers = http::HeaderMap::new();
+        let compression_policy = if let Some(pending_forward) = req.pending_forward() {
+            for header in pending_forward.original_request_headers() {
+                if let (Ok(name), Ok(value)) = (
+                    http::header::HeaderName::from_bytes(header.name()),
+                    http::HeaderValue::from_bytes(header.value()),
+                ) {
+                    request_headers.append(name, value);
+                }
+            }
+            crate::runtime::subsystem_mapping::response_compression_policy_input(
+                &pending_forward.response_compression,
+            )
+        } else {
+            ResponseCompressionPolicyInput {
+                enabled: false,
+                minimum_size_bytes: 0,
+            }
+        };
+        let processed_response = process_response(ResponseProcessingInput {
+            status,
+            upstream_headers: &resp_headers,
             body_mode: response_body_mode,
             constraints: ResponseProtocolConstraints {
                 protocol: ResponseNormalizationProtocol::Http3,
                 preserve_upgrade: false,
             },
+            request_method: &req.method,
+            request_headers: &request_headers,
+            compression: compression_policy,
+            cache_max_ttl_secs: cache_miss.as_ref().map(|(_, policy)| policy.max_ttl_secs),
+            now: std::time::SystemTime::now(),
         });
-        let body_forwarding_enabled = matches!(
-            normalized_response.emission.body,
-            ResponseBodyPolicy::Forward
-        );
-        let progressive_body_emission_allowed =
-            !normalized_response.emission.emit_end_stream_on_headers;
+        let ResponseProcessingResult {
+            headers: mut response_headers,
+            body_forwarding_enabled,
+            emit_end_stream_on_headers,
+            compression,
+            cache,
+        } = processed_response;
+        if matches!(compression.action, ResponseCompressionAction::Gzip) {
+            apply_gzip_response_headers(&mut response_headers);
+        }
+        let progressive_body_emission_allowed = !emit_end_stream_on_headers;
         let response_guardrails = ResponseBodyGuardrailConfig {
             idle_timeout: progress_config.backend_body_idle_timeout,
             total_timeout: progress_config.backend_body_total_timeout,
@@ -538,38 +470,14 @@ impl QUICListener {
             };
         }
 
-        let mut response_headers = http::HeaderMap::new();
-        for header in normalized_response.headers {
-            response_headers.append(header.name, header.value);
+        if req.pending_forward().is_some() {
+            metrics
+                .ingress_observations()
+                .record_response_compression_outcome(compression.action);
         }
-        let mut compress_response = false;
-        if let Some(pending_forward) = req.pending_forward() {
-            let mut request_headers = http::HeaderMap::new();
-            for header in pending_forward.original_request_headers() {
-                if let (Ok(name), Ok(value)) = (
-                    http::header::HeaderName::from_bytes(header.name()),
-                    http::HeaderValue::from_bytes(header.value()),
-                ) {
-                    request_headers.append(name, value);
-                }
-            }
-            let compression = evaluate_response_compression(ResponseCompressionInput {
-                policy: &pending_forward.response_compression,
-                request_method: &req.method,
-                request_headers: &request_headers,
-                response_status: status,
-                response_headers: &resp_headers,
-            });
-            metrics.record_response_compression_outcome(compression.action);
-            compress_response = matches!(compression.action, ResponseCompressionAction::Gzip);
-            if compress_response {
-                apply_gzip_response_headers(&mut response_headers);
-            } else if compression.vary_accept_encoding {
-                ensure_vary_accept_encoding(&mut response_headers);
-            }
-        }
+        let compress_response = matches!(compression.action, ResponseCompressionAction::Gzip);
         let mut response_cache =
-            prepare_response_cache(cache_miss, status, &response_headers, metrics);
+            prepare_response_cache(cache_miss, status, &response_headers, cache, metrics);
         let mut headers: Vec<(Vec<u8>, Vec<u8>)> = response_headers
             .iter()
             .map(|(name, value)| (name.as_str().as_bytes().to_vec(), value.as_bytes().to_vec()))
@@ -581,7 +489,7 @@ impl QUICListener {
 
         let defer_headers_until_body_validated = matches!(
             preflight_guardrail,
-            Ok(crate::runtime::connection::guardrails::EvaluatedResponseBodyGuardrail {
+            Ok(crate::edge_core::body_guardrails::EvaluatedResponseBodyGuardrail {
                 streaming,
                 ..
             }) if matches!(
@@ -594,7 +502,7 @@ impl QUICListener {
             backend_used: !cache_hit,
         };
 
-        if normalized_response.emission.emit_end_stream_on_headers {
+        if emit_end_stream_on_headers {
             if let Some(cache) = response_cache.take() {
                 let mut cache_fill = ResponseCacheFill::new(Some(cache));
                 let _ = spawn_async_task(
@@ -720,7 +628,7 @@ impl QUICListener {
         match result {
             Ok(_) => {
                 error!("Unexpected successful forward result in error handler path");
-                metrics.inc_backend_error();
+                metrics.request_observations().inc_backend_error();
                 let _ = crate::runtime::connection::outcome::observe_status_outcome(
                     metrics,
                     route_target,
@@ -756,7 +664,9 @@ impl QUICListener {
             }
             Err(ProxyError::Pool(PoolError::BackendOverloaded(reason))) => {
                 let overload_reason = if is_unknown_length_response_prebuffer_reason(&reason) {
-                    metrics.inc_response_prebuffer_limit_reject();
+                    metrics
+                        .request_observations()
+                        .inc_response_prebuffer_limit_reject();
                     OverloadShedReason::ResponsePrebufferCap
                 } else {
                     OverloadShedReason::BackendInflight
@@ -781,7 +691,7 @@ impl QUICListener {
                 )
             }
             Err(ProxyError::Pool(PoolError::CircuitOpen(reason))) => {
-                metrics.inc_circuit_breaker_rejected();
+                metrics.policy_observations().inc_circuit_breaker_rejected();
                 let circuit_open = ProxyError::Pool(PoolError::CircuitOpen(reason));
                 let _ = crate::runtime::connection::outcome::observe_proxy_error_outcome(
                     metrics,
@@ -813,7 +723,7 @@ impl QUICListener {
                     }
                     _ => {}
                 }
-                metrics.inc_backend_error();
+                metrics.request_observations().inc_backend_error();
                 let _ = crate::runtime::connection::outcome::observe_status_outcome(
                     metrics,
                     route_target,
@@ -839,7 +749,7 @@ impl QUICListener {
                         backend_addr,
                         err
                     );
-                    metrics.inc_backend_error();
+                    metrics.request_observations().inc_backend_error();
                     let _ = crate::runtime::connection::outcome::observe_status_outcome(
                         metrics,
                         route_target,
@@ -883,7 +793,7 @@ impl QUICListener {
 
                 match classified.kind {
                     UpstreamProxyErrorKind::Timeout => {
-                        metrics.inc_timeout();
+                        metrics.request_observations().inc_timeout();
                         let _ = crate::runtime::connection::outcome::observe_proxy_error_outcome(
                             metrics,
                             route_target,
@@ -920,7 +830,7 @@ impl QUICListener {
                         )
                     }
                     UpstreamProxyErrorKind::Protocol => {
-                        metrics.inc_backend_error();
+                        metrics.request_observations().inc_backend_error();
                         let _ = crate::runtime::connection::outcome::observe_status_outcome(
                             metrics,
                             route_target,
@@ -938,7 +848,7 @@ impl QUICListener {
                         )
                     }
                     UpstreamProxyErrorKind::Transport => {
-                        metrics.inc_backend_error();
+                        metrics.request_observations().inc_backend_error();
                         let _ = crate::runtime::connection::outcome::observe_status_outcome(
                             metrics,
                             route_target,
@@ -967,11 +877,7 @@ impl QUICListener {
         status: http::StatusCode,
         body: &[u8],
     ) -> Result<(), quiche::h3::Error> {
-        let resp_headers = simple_response_headers(status, body);
-
-        h3.send_response(quic, stream_id, &resp_headers, false)?;
-        h3.send_body(quic, stream_id, body, true)?;
-        Ok(())
+        impulse_http3_ingress::write_simple_response(h3, quic, stream_id, status, body)
     }
 
     pub(super) fn send_overload_response(
@@ -981,24 +887,40 @@ impl QUICListener {
         body: &[u8],
         retry_after_seconds: u32,
     ) -> Result<(), quiche::h3::Error> {
-        let resp_headers = overload_response_headers(body, retry_after_seconds);
-
-        h3.send_response(quic, stream_id, &resp_headers, false)?;
-        h3.send_body(quic, stream_id, body, true)?;
-        Ok(())
+        impulse_http3_ingress::write_overload_response(
+            h3,
+            quic,
+            stream_id,
+            body,
+            retry_after_seconds,
+        )
     }
 
     pub(super) fn send_admission_rejection_response(
         h3: &mut quiche::h3::Connection,
         quic: &mut quiche::Connection,
         stream_id: u64,
-        response: &crate::quic_listener::admission::AdmissionRejectionResponse,
+        response: &impulse_contracts::BoundedRejectionResponse,
     ) -> Result<(), quiche::h3::Error> {
-        let headers = admission_rejection_headers(response);
-
-        h3.send_response(quic, stream_id, &headers, false)?;
-        h3.send_body(quic, stream_id, response.body, true)?;
-        Ok(())
+        let retry_after = response
+            .retry_after_seconds
+            .map(|seconds| seconds.max(1).to_string());
+        let mut headers = Vec::with_capacity(2);
+        if let Some(challenge) = response.www_authenticate {
+            headers.push((b"www-authenticate".as_slice(), challenge.as_bytes()));
+        }
+        if let Some(retry_after) = retry_after.as_deref() {
+            headers.push((b"retry-after".as_slice(), retry_after.as_bytes()));
+        }
+        impulse_http3_ingress::write_complete_response(
+            h3,
+            quic,
+            stream_id,
+            response.status,
+            response.body,
+            headers,
+            None,
+        )
     }
 
     fn send_response_with_headers_and_extra(
@@ -1010,17 +932,17 @@ impl QUICListener {
         headers: &[(String, String)],
         extra_header: Option<(&str, &str)>,
     ) -> Result<(), quiche::h3::Error> {
-        let resp_headers = response_headers_with_defaults_and_extra_bytes(
+        impulse_http3_ingress::write_complete_response(
+            h3,
+            quic,
+            stream_id,
             status,
             body,
             headers
                 .iter()
                 .map(|(name, value)| (name.as_bytes(), value.as_bytes())),
             extra_header.map(|(name, value)| (name.as_bytes(), value.as_bytes())),
-        );
-        h3.send_response(quic, stream_id, &resp_headers, false)?;
-        h3.send_body(quic, stream_id, body, true)?;
-        Ok(())
+        )
     }
 
     pub(super) fn send_external_auth_decision_response(
@@ -1073,11 +995,21 @@ impl QUICListener {
         metadata: &ResponseStartMetadata,
         end_stream: bool,
     ) -> Result<(), ProxyError> {
-        let h3_headers = Self::response_start_header_block(metadata.status, &metadata.headers);
-        h3.send_response(quic, stream_id, &h3_headers, end_stream)
-            .map_err(|err| {
-                ProxyError::Protocol(format!("failed to send HTTP/3 response headers: {:?}", err))
-            })
+        impulse_http3_ingress::send_response_head(
+            h3,
+            quic,
+            stream_id,
+            metadata.status,
+            metadata
+                .headers
+                .iter()
+                .map(|(name, value)| (name.as_slice(), value.as_slice())),
+            end_stream,
+        )
+        .map_err(|err| {
+            ProxyError::Protocol(format!("failed to send HTTP/3 response headers: {:?}", err))
+        })
+        .map(|_| ())
     }
 
     fn spawn_response_body_pump(
@@ -1357,9 +1289,9 @@ impl QUICListener {
                     && let (Some(addr), Some(idx)) = (&req.backend_addr, req.backend_index)
                 {
                     if status.is_server_error() {
-                        metrics.inc_health_failure(
-                            impulse_lb::health::HealthFailureReason::HttpStatus5xx,
-                        );
+                        metrics
+                            .policy_observations()
+                            .inc_health_failure(HealthFailureReason::HttpStatus5xx);
                     }
                     let transition = crate::runtime::connection::outcome::observe_backend_response_status_and_log(
                         crate::runtime::connection::outcome::BackendHealthObservationInput {
@@ -1445,9 +1377,10 @@ impl QUICListener {
                     }
                 }
                 req.response_status = Some(metadata.status.as_u16());
-                req.mark_terminal_outcome_recorded();
+                let _ = req.complete_with(|| {
+                    Self::observe_response_start_transition(req, &observation, shared_ctx)
+                });
                 req.transition_streaming_to_completed(CompletionReason::ImmediateResponse, metrics);
-                Self::observe_response_start_transition(req, &observation, shared_ctx);
                 Ok(true)
             }
             ResponseStartDecision::StreamingPrebuilt {
@@ -1473,8 +1406,9 @@ impl QUICListener {
                         state_err.attempted(),
                     );
                 }
-                Self::observe_response_start_transition(req, &observation, shared_ctx);
-                req.mark_terminal_outcome_recorded();
+                let _ = req.complete_with(|| {
+                    Self::observe_response_start_transition(req, &observation, shared_ctx)
+                });
                 Ok(false)
             }
             ResponseStartDecision::StreamingBodyPump {
@@ -1517,8 +1451,9 @@ impl QUICListener {
                         state_err.attempted(),
                     );
                 }
-                Self::observe_response_start_transition(req, &observation, shared_ctx);
-                req.mark_terminal_outcome_recorded();
+                let _ = req.complete_with(|| {
+                    Self::observe_response_start_transition(req, &observation, shared_ctx)
+                });
                 Ok(false)
             }
             ResponseStartDecision::BackendFailure(err) => Err(err),
@@ -1560,8 +1495,16 @@ impl QUICListener {
             };
             match chunk {
                 ResponseChunk::Start { status, headers } => {
-                    let h3_headers = Self::response_start_header_block(status, &headers);
-                    match h3.send_response(quic, stream_id, &h3_headers, false) {
+                    match impulse_http3_ingress::send_response_head(
+                        h3,
+                        quic,
+                        stream_id,
+                        status,
+                        headers
+                            .iter()
+                            .map(|(name, value)| (name.as_slice(), value.as_slice())),
+                        false,
+                    ) {
                         Ok(_) => {
                             req.set_response_emission_state(ResponseEmissionState::HeadersSent);
                         }
@@ -1574,7 +1517,7 @@ impl QUICListener {
                                 "HTTP/3 send_response protocol error on stream {}: {:?}",
                                 stream_id, err
                             );
-                            metrics.inc_backend_error();
+                            metrics.request_observations().inc_backend_error();
                             let _ = crate::runtime::connection::outcome::observe_status_outcome(
                                 metrics,
                                 Self::request_outcome_route_target(req),
@@ -1594,7 +1537,9 @@ impl QUICListener {
                         }
                     }
                 }
-                ResponseChunk::Data(data) => match h3.send_body(quic, stream_id, &data, false) {
+                ResponseChunk::Data(data) => match impulse_http3_ingress::send_response_body(
+                    h3, quic, stream_id, &data, false,
+                ) {
                     Ok(_) => {
                         req.set_response_emission_state(ResponseEmissionState::StreamingBody);
                     }
@@ -1607,7 +1552,7 @@ impl QUICListener {
                             "HTTP/3 send_body data protocol error on stream {}: {:?}",
                             stream_id, err
                         );
-                        metrics.inc_backend_error();
+                        metrics.request_observations().inc_backend_error();
                         let _ = crate::runtime::connection::outcome::observe_status_outcome(
                             metrics,
                             Self::request_outcome_route_target(req),
@@ -1629,11 +1574,14 @@ impl QUICListener {
                     }
                 },
                 ResponseChunk::Trailers { headers } => {
-                    let mut h3_headers = Vec::with_capacity(headers.len());
-                    for (name, value) in &headers {
-                        h3_headers.push(quiche::h3::Header::new(name, value));
-                    }
-                    match h3.send_additional_headers(quic, stream_id, &h3_headers, false, false) {
+                    match impulse_http3_ingress::send_response_trailers(
+                        h3,
+                        quic,
+                        stream_id,
+                        headers
+                            .iter()
+                            .map(|(name, value)| (name.as_slice(), value.as_slice())),
+                    ) {
                         Ok(_) => {
                             req.set_response_emission_state(ResponseEmissionState::TrailersPending);
                         }
@@ -1646,7 +1594,7 @@ impl QUICListener {
                                 "HTTP/3 send_additional_headers protocol error on stream {}: {:?}",
                                 stream_id, err
                             );
-                            metrics.inc_backend_error();
+                            metrics.request_observations().inc_backend_error();
                             let _ = crate::runtime::connection::outcome::observe_status_outcome(
                                 metrics,
                                 Self::request_outcome_route_target(req),
@@ -1668,46 +1616,49 @@ impl QUICListener {
                         }
                     }
                 }
-                ResponseChunk::End => match h3.send_body(quic, stream_id, b"", true) {
-                    Ok(_) => {
-                        req.set_response_emission_state(ResponseEmissionState::EndPending);
-                        req.transition_streaming_to_completed(
-                            CompletionReason::ResponseStreamFinished,
-                            metrics,
-                        );
-                        terminal = true;
-                        break;
+                ResponseChunk::End => {
+                    match impulse_http3_ingress::send_response_body(h3, quic, stream_id, b"", true)
+                    {
+                        Ok(_) => {
+                            req.set_response_emission_state(ResponseEmissionState::EndPending);
+                            req.transition_streaming_to_completed(
+                                CompletionReason::ResponseStreamFinished,
+                                metrics,
+                            );
+                            terminal = true;
+                            break;
+                        }
+                        Err(quiche::h3::Error::StreamBlocked) => {
+                            req.set_pending_chunk(Some(ResponseChunk::End));
+                            break;
+                        }
+                        Err(err) => {
+                            error!(
+                                "HTTP/3 send_body end protocol error on stream {}: {:?}",
+                                stream_id, err
+                            );
+                            metrics.request_observations().inc_backend_error();
+                            let _ = crate::runtime::connection::outcome::observe_status_outcome(
+                                metrics,
+                                Self::request_outcome_route_target(req),
+                                Self::request_outcome_backend_target(req),
+                                req.start.elapsed(),
+                                req.response_status
+                                    .and_then(|status| http::StatusCode::from_u16(status).ok())
+                                    .unwrap_or(http::StatusCode::BAD_GATEWAY),
+                            );
+                            resilience
+                                .adaptive_admission
+                                .observe(req.start.elapsed(), true);
+                            req.transition_streaming_to_backend_failed(
+                                BackendFailureReason::ResponseWriteFailed,
+                                metrics,
+                            );
+                            terminal = true;
+                            break;
+                        }
                     }
-                    Err(quiche::h3::Error::StreamBlocked) => {
-                        req.set_pending_chunk(Some(ResponseChunk::End));
-                        break;
-                    }
-                    Err(err) => {
-                        error!(
-                            "HTTP/3 send_body end protocol error on stream {}: {:?}",
-                            stream_id, err
-                        );
-                        metrics.inc_backend_error();
-                        let _ = crate::runtime::connection::outcome::observe_status_outcome(
-                            metrics,
-                            Self::request_outcome_route_target(req),
-                            Self::request_outcome_backend_target(req),
-                            req.start.elapsed(),
-                            req.response_status
-                                .and_then(|status| http::StatusCode::from_u16(status).ok())
-                                .unwrap_or(http::StatusCode::BAD_GATEWAY),
-                        );
-                        resilience
-                            .adaptive_admission
-                            .observe(req.start.elapsed(), true);
-                        req.transition_streaming_to_backend_failed(
-                            BackendFailureReason::ResponseWriteFailed,
-                            metrics,
-                        );
-                        terminal = true;
-                        break;
-                    }
-                },
+                }
                 ResponseChunk::Error(err) => {
                     let classified = classify_upstream_proxy_error(&err);
                     if !req.response_headers_sent() {
@@ -1728,10 +1679,8 @@ impl QUICListener {
                     } else {
                         // The advertised response is incomplete, so a clean FIN would
                         // incorrectly present truncated bytes as a successful response.
-                        let _ = quic.stream_shutdown(
-                            stream_id,
-                            quiche::Shutdown::Write,
-                            0x102, // H3_INTERNAL_ERROR
+                        let _ = impulse_http3_ingress::cancel_response_stream(
+                            quic, stream_id, 0x102, // H3_INTERNAL_ERROR
                         );
                     }
                     let upstream_name = routing_index.lookup(&req.path, req.authority.as_deref());
@@ -1779,7 +1728,7 @@ impl QUICListener {
                     }
                     match err {
                         ProxyError::Timeout => {
-                            metrics.inc_timeout();
+                            metrics.request_observations().inc_timeout();
                             let _ =
                                 crate::runtime::connection::outcome::observe_proxy_error_outcome(
                                     metrics,
@@ -1804,7 +1753,9 @@ impl QUICListener {
                         ProxyError::Pool(PoolError::BackendOverloaded(reason)) => {
                             let overload_reason =
                                 if is_unknown_length_response_prebuffer_reason(&reason) {
-                                    metrics.inc_response_prebuffer_limit_reject();
+                                    metrics
+                                        .request_observations()
+                                        .inc_response_prebuffer_limit_reject();
                                     OverloadShedReason::ResponsePrebufferCap
                                 } else {
                                     OverloadShedReason::BackendInflight
@@ -1833,7 +1784,7 @@ impl QUICListener {
                             );
                         }
                         _ => {
-                            metrics.inc_backend_error();
+                            metrics.request_observations().inc_backend_error();
                             let _ =
                                 crate::runtime::connection::outcome::observe_proxy_error_outcome(
                                     metrics,
@@ -1876,7 +1827,7 @@ impl QUICListener {
                     break;
                 }
                 ResponseChunk::Timeout(reason) => {
-                    metrics.inc_timeout();
+                    metrics.request_observations().inc_timeout();
                     let _ = crate::runtime::connection::outcome::observe_proxy_error_outcome(
                         metrics,
                         Self::request_outcome_route_target(req),
@@ -1897,7 +1848,9 @@ impl QUICListener {
                             b"upstream timeout\n",
                         );
                     } else {
-                        let _ = h3.send_body(quic, stream_id, b"", true);
+                        let _ = impulse_http3_ingress::send_response_body(
+                            h3, quic, stream_id, b"", true,
+                        );
                     }
                     resilience
                         .adaptive_admission
@@ -1915,14 +1868,12 @@ impl QUICListener {
 
 #[cfg(test)]
 mod tests {
+    use impulse_contracts::BoundedRejectionResponse as AdmissionRejectionResponse;
     use quiche::h3::NameValue;
 
     use super::*;
-    use crate::{
-        quic_listener::admission::AdmissionRejectionResponse,
-        runtime::connection::auth::{
-            ExternalAuthChallengeResponse, ExternalAuthDenyResponse, ExternalAuthRedirectResponse,
-        },
+    use crate::runtime::connection::auth::{
+        ExternalAuthChallengeResponse, ExternalAuthDenyResponse, ExternalAuthRedirectResponse,
     };
 
     fn header_value<'a>(headers: &'a [quiche::h3::Header], name: &[u8]) -> Option<&'a [u8]> {
@@ -2132,12 +2083,12 @@ mod tests {
 
     #[test]
     fn deferred_response_start_chunk_moves_headers_only_for_deferred_metadata() {
-        let deferred = QUICListener::into_deferred_response_start_chunk(ResponseStartMetadata {
+        let deferred = Http3Service::into_deferred_response_start_chunk(ResponseStartMetadata {
             status: http::StatusCode::OK,
             headers: vec![(b"x-test".to_vec(), b"1".to_vec())],
             headers_deferred: true,
         });
-        let immediate = QUICListener::into_deferred_response_start_chunk(ResponseStartMetadata {
+        let immediate = Http3Service::into_deferred_response_start_chunk(ResponseStartMetadata {
             status: http::StatusCode::OK,
             headers: vec![(b"x-test".to_vec(), b"1".to_vec())],
             headers_deferred: false,

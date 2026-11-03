@@ -6,7 +6,6 @@ pub(in crate::quic_listener) struct MetricsTlsState {
     listener_tls_generation: u64,
     server_config: Arc<RustlsServerConfig>,
 }
-
 #[derive(Clone)]
 pub(in crate::quic_listener) struct MetricsEndpointState {
     pub(in crate::quic_listener) endpoint: MetricsEndpoint,
@@ -33,7 +32,7 @@ impl MetricsServiceCtx {
                 ProxyError::Transport("no effective listeners configured".to_string())
             })?;
         let security = runtime.control_api_security();
-        QUICListener::build_control_api_server_tls_config(&listener, &security.client_auth)
+        Http3Service::build_control_api_server_tls_config(&listener, &security.client_auth)
             .map(Some)
     }
 
@@ -65,7 +64,7 @@ impl MetricsServiceCtx {
             .ok_or_else(|| {
                 ProxyError::Transport("no effective listeners configured".to_string())
             })?;
-        let primary_listener_label = QUICListener::listener_label(&listener);
+        let primary_listener_label = Http3Service::listener_label(&listener);
         let runtime_generation = self.runtime.current_generation().map(|g| g.generation());
         let listener_tls_generation = runtime
             .listener_tls_store()
@@ -78,7 +77,7 @@ impl MetricsServiceCtx {
         });
         if needs_refresh {
             let security = runtime.control_api_security();
-            let server_config = QUICListener::build_control_api_server_tls_config(
+            let server_config = Http3Service::build_control_api_server_tls_config(
                 &listener,
                 &security.client_auth,
             )?;
@@ -92,13 +91,5 @@ impl MetricsServiceCtx {
         Ok(tls_state
             .as_ref()
             .map(|state| Arc::clone(&state.server_config)))
-    }
-}
-
-impl QUICListener {
-    pub(in crate::quic_listener) fn current_metrics_endpoint_state(
-        service_ctx: &MetricsServiceCtx,
-    ) -> MetricsEndpointState {
-        service_ctx.current_state()
     }
 }

@@ -7,7 +7,7 @@ pub(super) enum ControlApiActivationError {
     Activation(Box<ActivationResult>),
 }
 
-impl QUICListener {
+impl Http3Service {
     pub(in crate::quic_listener::control_api) async fn handle_control_api_runtime_activate(
         req: Request<Incoming>,
         state: &crate::quic_listener::runtime_state::ControlApiServiceCtx,
@@ -142,17 +142,16 @@ impl QUICListener {
             Self::control_api_json_body_or_default::<ControlApiRuntimePlanRequest>(req)
                 .await
                 .map_err(|response| {
-                    Self::emit_control_api_audit_event(
+                    AdministrativeSecurity::emit_control_api_audit_event(
                         &runtime_state.security,
                         identity.as_ref(),
                         request_context.as_ref(),
                         event_type,
                         result_action,
-                        Self::control_api_audit_target_for_route(route, None),
+                        AdministrativeSecurity::control_api_audit_target_for_route(route, None),
                         AdminAuditGeneration {
                             active_generation: runtime_state
-                                .generation
-                                .as_ref()
+                                .generation()
                                 .map(|current| current.generation()),
                             ..Default::default()
                         },
@@ -166,7 +165,7 @@ impl QUICListener {
             .is_some_and(|expected| expected.is_current(current_auth_generation));
         if !authorization_is_current {
             return Err(ControlApiActivationError::Response(Box::new(
-                Self::stale_control_api_connection_response(),
+                stale_control_api_connection_response(),
             )));
         }
         if let Some(response) =
@@ -231,7 +230,7 @@ impl QUICListener {
                 Self::control_api_not_found_response(),
             )));
         };
-        let Some(runtime) = runtime_state.generation.clone() else {
+        let Some(runtime) = runtime_state.runtime.generation().cloned() else {
             return Err(ControlApiActivationError::Response(Box::new(
                 Self::json_response(
                     StatusCode::INTERNAL_SERVER_ERROR,
@@ -251,13 +250,13 @@ impl QUICListener {
         let reload_input =
             Self::control_api_reload_config_input(&runtime, plan_request.config_path);
         let config_path = Some(reload_input.source_label().to_string());
-        Self::emit_control_api_audit_event(
+        AdministrativeSecurity::emit_control_api_audit_event(
             &runtime_state.security,
             identity.as_ref(),
             request_context.as_ref(),
             event_type,
             attempt_action,
-            Self::control_api_audit_target_for_route(route, config_path.clone()),
+            AdministrativeSecurity::control_api_audit_target_for_route(route, config_path.clone()),
             AdminAuditGeneration {
                 active_generation: Some(runtime.generation()),
                 ..Default::default()
@@ -270,10 +269,10 @@ impl QUICListener {
             &activation_request,
             &reload_input,
         );
-        let Some(activation) = Self::run_control_api_blocking({
+        let Some(activation) = run_control_api_blocking({
             let runtime_bundle_handle = Arc::clone(&runtime_bundle_handle);
             move || {
-                RuntimeActivationService::activate_reload(
+                RuntimeSupervisor::activate_reload(
                     &runtime_bundle_handle,
                     activation_request,
                     reload_input,
@@ -283,17 +282,17 @@ impl QUICListener {
         .await
         else {
             return Err(ControlApiActivationError::Response(Box::new(
-                Self::control_api_internal_error_response(),
+                control_api_internal_error_response(),
             )));
         };
         Self::record_control_api_activation_outcome(&runtime_bundle_handle, &activation);
-        Self::emit_control_api_audit_event(
+        AdministrativeSecurity::emit_control_api_audit_event(
             &runtime_state.security,
             identity.as_ref(),
             request_context.as_ref(),
             event_type,
             result_action,
-            Self::control_api_audit_target_for_route(route, config_path.clone()),
+            AdministrativeSecurity::control_api_audit_target_for_route(route, config_path.clone()),
             AdminAuditGeneration {
                 active_generation: Some(activation.active_generation),
                 candidate_generation: Some(activation.history_entry.generation),
@@ -307,13 +306,13 @@ impl QUICListener {
             Some(control_api_activation_reason(&activation)),
         );
         if let Some((action, result, reason)) = upstream_mtls_material_audit_event(&activation) {
-            Self::emit_control_api_audit_event(
+            AdministrativeSecurity::emit_control_api_audit_event(
                 &runtime_state.security,
                 identity.as_ref(),
                 request_context.as_ref(),
                 AdminAuditEventType::UpstreamMtlsMaterial,
                 action,
-                Self::control_api_audit_target_for_route(route, config_path),
+                AdministrativeSecurity::control_api_audit_target_for_route(route, config_path),
                 AdminAuditGeneration {
                     active_generation: Some(activation.active_generation),
                     candidate_generation: Some(activation.history_entry.generation),
@@ -352,10 +351,14 @@ impl QUICListener {
         let current = handle.current_view();
         let metrics = Arc::clone(&current.shared_services().metrics);
         let outcome = activation.outcome_reason();
-        metrics.record_runtime_activation_outcome(outcome);
+        metrics
+            .runtime_observations()
+            .record_runtime_activation_outcome(outcome);
         record_control_api_secret_metrics(current.runtime_config(), metrics.as_ref(), activation);
         if let Some(reason) = activation.primary_rejection_reason() {
-            metrics.inc_runtime_rejection_reason(reason);
+            metrics
+                .runtime_observations()
+                .inc_runtime_rejection_reason(reason);
             warn!(
                 "runtime activation rejected active_generation={} candidate_generation={} reason={} error={}",
                 activation.active_generation,
@@ -443,7 +446,9 @@ fn record_control_api_secret_metrics(
             .iter()
             .any(|entry| entry.secret_material_changed)
         {
-            metrics.record_secret_reload("upstreams", "success", &reason);
+            metrics
+                .runtime_observations()
+                .record_secret_reload("upstreams", "success", &reason);
             if let Some(last_loaded_at_unix_ms) = runtime_config
                 .upstreams
                 .values()
@@ -464,6 +469,7 @@ fn record_control_api_secret_metrics(
                 .max()
             {
                 metrics
+                    .runtime_observations()
                     .set_secret_last_success_unixtime("upstreams", last_loaded_at_unix_ms / 1_000);
             }
         }
@@ -474,12 +480,16 @@ fn record_control_api_secret_metrics(
         classify_upstream_mtls_material_outcome(activation),
         Some(UpstreamMtlsMaterialOutcome::ResolutionFailed | UpstreamMtlsMaterialOutcome::Invalid)
     ) {
-        metrics.record_secret_reload("upstreams", "failed", &reason);
+        metrics
+            .runtime_observations()
+            .record_secret_reload("upstreams", "failed", &reason);
     }
     if let Some((provider, resolve_reason)) =
         classify_secret_resolution_failure(activation_error(activation))
     {
-        metrics.record_secret_resolve(provider, "failed", resolve_reason);
+        metrics
+            .runtime_observations()
+            .record_secret_resolve(provider, "failed", resolve_reason);
     }
 }
 

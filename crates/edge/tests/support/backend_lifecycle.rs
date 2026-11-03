@@ -16,13 +16,13 @@ use http::{StatusCode, Uri};
 use http_body_util::Full;
 use hyper::{Request, Response, body::Incoming};
 use impulse_config::config::{Config, Upstream};
+use impulse_contracts::HealthFailureReason;
 use impulse_edge::runtime::{
     backend::state::{BackendLifecycleInventorySnapshot, BackendLifecycleSnapshot},
     bundle::RuntimeBundleHandle,
 };
 use impulse_lb::{
-    HealthTransition,
-    health::HealthFailureReason,
+    health::HealthTransition,
     upstream_pool::{UpstreamBackendRuntimeState, UpstreamPoolMembershipSummary},
 };
 
@@ -147,7 +147,7 @@ impl BackendLifecycleHarness {
         Ok(current
             .shared_services()
             .backend_lifecycle
-            .snapshot_inventory(&current.state().upstream_pools))
+            .snapshot_inventory(current.state().pingora_load_balancing.upstream_pools()))
     }
 
     pub(crate) fn backend_snapshot(
@@ -170,7 +170,8 @@ impl BackendLifecycleHarness {
         let current = handle.current_view();
         let pool = current
             .state()
-            .upstream_pools
+            .pingora_load_balancing
+            .upstream_pools()
             .get(upstream_name)
             .ok_or_else(|| format!("missing upstream pool '{upstream_name}'"))?;
         let guard = pool
@@ -237,7 +238,8 @@ impl BackendLifecycleHarness {
         let current = handle.current_view();
         let pool = current
             .state()
-            .upstream_pools
+            .pingora_load_balancing
+            .upstream_pools()
             .get(upstream_name)
             .cloned()
             .ok_or_else(|| format!("missing upstream pool '{upstream_name}'"))?;

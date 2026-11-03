@@ -8,8 +8,9 @@ use std::{
 };
 
 use async_trait::async_trait;
-use impulse_config::{config::Backend, runtime::RuntimeUpstream};
 use pingora_load_balancing::{Backend as PingoraBackend, discovery::ServiceDiscovery};
+
+use crate::BackendInput;
 
 #[derive(Clone)]
 pub(crate) struct ImpulseServiceDiscovery {
@@ -37,25 +38,21 @@ impl DiscoveryPublication {
 }
 
 impl ImpulseServiceDiscovery {
-    pub(crate) fn from_runtime_upstream<F>(
+    pub(crate) fn new<F>(
         generation: u64,
         upstream_name: &str,
-        upstream: &RuntimeUpstream,
+        backend_inputs: &[BackendInput],
         mut map_backend: F,
     ) -> Result<Self, String>
     where
-        F: FnMut(usize, &Backend) -> Result<PingoraBackend, String>,
+        F: FnMut(&BackendInput) -> Result<PingoraBackend, String>,
     {
-        let backends = upstream
-            .backends
+        let backends = backend_inputs
             .iter()
-            .enumerate()
-            .map(|(index, backend)| {
-                map_backend(index, &backend.backend).map(|backend| BTreeSet::from([backend]))
-            })
+            .map(|backend| map_backend(backend).map(|backend| BTreeSet::from([backend])))
             .collect::<Result<Vec<_>, _>>()?;
 
-        if backend_snapshot(&backends).len() != upstream.backends.len() {
+        if backend_snapshot(&backends).len() != backend_inputs.len() {
             return Err(format!(
                 "upstream '{upstream_name}' contains backends that collapse to the same Pingora identity"
             ));
@@ -65,10 +62,9 @@ impl ImpulseServiceDiscovery {
             generation,
             upstream_name: upstream_name.to_string(),
             backend_addresses: Arc::new(
-                upstream
-                    .backends
+                backend_inputs
                     .iter()
-                    .map(|backend| backend.backend.address.clone())
+                    .map(|backend| backend.configured_address().to_string())
                     .collect(),
             ),
             backends: Arc::new(RwLock::new(backends)),

@@ -1,5 +1,8 @@
 use std::sync::Arc;
 
+use impulse_config::runtime::ListenerRuntimeConfig;
+use impulse_runtime::RuntimeStateView;
+
 use crate::runtime::generation::{RuntimeGenerationState, RuntimeSharedServices};
 
 /// Shared runtime services plus the currently published generation-owned state.
@@ -36,29 +39,64 @@ impl SharedRuntimeState {
     }
 
     pub fn bind_metrics_worker_slot(&self, slot: usize) {
-        self.shared_services.metrics.bind_worker_slot(slot);
+        self.shared_services
+            .metrics
+            .runtime_observations()
+            .bind_worker_slot(slot);
     }
 
     pub fn inc_ingress_queue_drop(&self) {
-        self.shared_services.metrics.inc_ingress_queue_drop();
+        self.shared_services
+            .metrics
+            .ingress_observations()
+            .inc_ingress_queue_drop();
     }
 
     pub fn inc_ingress_queue_drop_bytes(&self, bytes: usize) {
         self.shared_services
             .metrics
+            .ingress_observations()
             .inc_ingress_queue_drop_bytes(bytes);
     }
 
     pub fn set_ingress_queue_bytes(&self, bytes: usize) {
-        self.shared_services.metrics.set_ingress_queue_bytes(bytes);
+        self.shared_services
+            .metrics
+            .ingress_observations()
+            .set_ingress_queue_bytes(bytes);
     }
 
     pub fn snapshot_backend_health(&self) -> (usize, usize) {
         let summary = self
             .shared_services
             .backend_lifecycle
-            .snapshot_inventory(&self.generation_state.upstream_pools)
+            .snapshot_inventory(
+                self.generation_state
+                    .pingora_load_balancing
+                    .upstream_pools(),
+            )
             .summary();
         (summary.healthy_backends, summary.total_backends)
+    }
+}
+
+impl RuntimeStateView for SharedRuntimeState {
+    type SharedServices = RuntimeSharedServices;
+    type GenerationState = RuntimeGenerationState;
+    type ListenerConfig = ListenerRuntimeConfig;
+
+    fn shared_services(&self) -> &Self::SharedServices {
+        self.shared_services()
+    }
+
+    fn generation_state(&self) -> &Self::GenerationState {
+        self.generation_state()
+    }
+
+    fn listener_runtime_config(&self, label: &str) -> Option<Self::ListenerConfig> {
+        self.generation_state
+            .listener_runtime_configs
+            .get(label)
+            .cloned()
     }
 }

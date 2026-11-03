@@ -88,8 +88,10 @@ mod test_support {
         let runtime = test_runtime_config(interval, "127.0.0.1:8080");
 
         Arc::new(RwLock::new(
-            UpstreamPool::from_runtime_upstream(runtime.upstreams.get("api").expect("upstream"))
-                .expect("pool"),
+            crate::quic_listener::upstream_pool_from_runtime(
+                runtime.upstreams.get("api").expect("upstream"),
+            )
+            .expect("pool"),
         ))
     }
 

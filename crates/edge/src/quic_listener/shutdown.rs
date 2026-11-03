@@ -4,10 +4,10 @@ use log::{error, info, warn};
 
 use crate::{
     constants::MAX_DATAGRAM_SIZE_BYTES,
-    runtime::{connection::quic::QuicConnection, listener::QUICListener},
+    runtime::{connection::quic::QuicConnection, listener::Http3Service},
 };
 
-impl QUICListener {
+impl Http3Service {
     pub fn start_draining(&mut self) {
         if self.draining {
             return;

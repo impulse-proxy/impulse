@@ -6,12 +6,8 @@
 
 use std::time::Duration;
 
-use impulse_config::runtime::{
-    RuntimeAlternateBackendPolicy, RuntimeLoadBalancingPolicy, RuntimeLoadBalancingStrategy,
-    RuntimeRequestKeySpec, RuntimeUpstream,
-};
-
 use crate::{
+    BackendInput, LoadBalancingStrategy, RequestKeyInput,
     backend::BackendState,
     backend_pool::BackendPool,
     health::{HealthFailureReason, HealthTransition},
@@ -32,28 +28,42 @@ pub struct UpstreamBackendRuntimeState {
     pub ewma_latency_ms: Option<f64>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AlternateBackendPolicy {
+    pub readonly_lb_pick: bool,
+    pub healthy_fallback: bool,
+}
+
 pub struct UpstreamPool {
     pool: BackendPool,
     load_balancer: Option<LoadBalancing>,
-    lb_policy: RuntimeLoadBalancingPolicy,
+    strategy: LoadBalancingStrategy,
+    request_key: Option<RequestKeyInput>,
+    alternate_backend: AlternateBackendPolicy,
 }
 
 impl UpstreamPool {
-    pub fn from_runtime_upstream(upstream: &RuntimeUpstream) -> Result<Self, String> {
-        let backends = upstream
-            .backends
-            .iter()
-            .map(|backend| BackendState::new(&backend.backend))
+    pub fn new(
+        backends: impl IntoIterator<Item = BackendInput>,
+        strategy: LoadBalancingStrategy,
+        request_key: Option<RequestKeyInput>,
+    ) -> Self {
+        let backends = backends
+            .into_iter()
+            .map(|backend| BackendState::new(&backend))
             .collect();
+        let load_balancer = LoadBalancing::from_strategy(strategy);
 
-        let lb_policy = upstream.load_balancing.clone();
-        let load_balancer = LoadBalancing::from_runtime_strategy(lb_policy.strategy)?;
-
-        Ok(Self {
+        Self {
             pool: BackendPool::new_from_states(backends),
             load_balancer,
-            lb_policy,
-        })
+            strategy,
+            request_key,
+            alternate_backend: AlternateBackendPolicy {
+                readonly_lb_pick: strategy.supports_readonly_alternate_pick(),
+                healthy_fallback: true,
+            },
+        }
     }
 
     pub fn pick(&mut self, _key: &str) -> Option<usize> {
@@ -160,25 +170,21 @@ impl UpstreamPool {
         }
     }
 
-    pub fn lb_policy(&self) -> &RuntimeLoadBalancingPolicy {
-        &self.lb_policy
+    pub fn lb_strategy(&self) -> LoadBalancingStrategy {
+        self.strategy
     }
 
-    pub fn lb_strategy(&self) -> RuntimeLoadBalancingStrategy {
-        self.lb_policy.strategy
+    pub fn lb_key_spec(&self) -> Option<&RequestKeyInput> {
+        self.request_key.as_ref()
     }
 
-    pub fn lb_key_spec(&self) -> Option<&RuntimeRequestKeySpec> {
-        self.lb_policy.key_spec.as_ref()
-    }
-
-    pub fn alternate_backend_policy(&self) -> RuntimeAlternateBackendPolicy {
-        self.lb_policy.alternate_backend
+    pub fn alternate_backend_policy(&self) -> AlternateBackendPolicy {
+        self.alternate_backend
     }
 
     #[cfg(test)]
-    pub(crate) fn set_alternate_backend_policy(&mut self, policy: RuntimeAlternateBackendPolicy) {
-        self.lb_policy.alternate_backend = policy;
+    pub(crate) fn set_alternate_backend_policy(&mut self, policy: AlternateBackendPolicy) {
+        self.alternate_backend = policy;
     }
 }
 
@@ -188,11 +194,13 @@ mod tests {
 
     use impulse_config::{
         config::{Backend, Config, HealthCheck, Listen, LoadBalancing, RouteMatch, Tls, Upstream},
-        runtime::{RuntimeConfig, RuntimeLoadBalancingStrategy, RuntimeRequestKeySpec},
+        runtime::RuntimeConfig,
     };
 
-    use super::UpstreamPool;
-    use crate::{health::HealthFailureReason, test_support::runtime_upstream_from_addresses};
+    use crate::{
+        LoadBalancingStrategy, RequestKeyInput, health::HealthFailureReason,
+        test_support::runtime_upstream_from_addresses,
+    };
 
     fn runtime_upstream_from_backends(
         lb_type: &str,
@@ -256,7 +264,7 @@ mod tests {
             None,
             &["http://127.0.0.1:7001", "http://127.0.0.1:7002"],
         );
-        let mut pool = UpstreamPool::from_runtime_upstream(&runtime_upstream)
+        let mut pool = crate::test_support::upstream_pool(&runtime_upstream)
             .expect("runtime pool should build");
 
         let idx = pool.pick_without_begin("key").expect("readonly pick");
@@ -278,7 +286,7 @@ mod tests {
 
     #[test]
     fn runtime_pool_contract_preserves_lb_key_spec_and_alternate_policy() {
-        let consistent = UpstreamPool::from_runtime_upstream(&runtime_upstream_from_addresses(
+        let consistent = crate::test_support::upstream_pool(&runtime_upstream_from_addresses(
             "consistent-hash",
             Some("header:x-user-id"),
             &["http://127.0.0.1:7001", "http://127.0.0.1:7002"],
@@ -286,28 +294,25 @@ mod tests {
         .expect("consistent-hash runtime pool should build");
         assert_eq!(
             consistent.lb_strategy(),
-            RuntimeLoadBalancingStrategy::ConsistentHash
+            LoadBalancingStrategy::ConsistentHash
         );
         assert!(matches!(
             consistent.lb_key_spec(),
-            Some(RuntimeRequestKeySpec::Header(name)) if name == "x-user-id"
+            Some(RequestKeyInput::Header(name)) if name == "x-user-id"
         ));
         assert!(!consistent.alternate_backend_policy().readonly_lb_pick);
         assert!(consistent.alternate_backend_policy().healthy_fallback);
 
-        let round_robin = UpstreamPool::from_runtime_upstream(&runtime_upstream_from_addresses(
+        let round_robin = crate::test_support::upstream_pool(&runtime_upstream_from_addresses(
             "round-robin",
             Some("authority"),
             &["http://127.0.0.1:7001", "http://127.0.0.1:7002"],
         ))
         .expect("round-robin runtime pool should build");
-        assert_eq!(
-            round_robin.lb_strategy(),
-            RuntimeLoadBalancingStrategy::RoundRobin
-        );
+        assert_eq!(round_robin.lb_strategy(), LoadBalancingStrategy::RoundRobin);
         assert!(matches!(
             round_robin.lb_key_spec(),
-            Some(RuntimeRequestKeySpec::Authority)
+            Some(RequestKeyInput::Authority)
         ));
         assert!(round_robin.alternate_backend_policy().readonly_lb_pick);
         assert!(round_robin.alternate_backend_policy().healthy_fallback);
@@ -320,7 +325,7 @@ mod tests {
             None,
             &["http://127.0.0.1:7001", "http://127.0.0.1:7002"],
         );
-        let mut pool = UpstreamPool::from_runtime_upstream(&runtime_upstream)
+        let mut pool = crate::test_support::upstream_pool(&runtime_upstream)
             .expect("runtime pool should build");
 
         let before = pool.membership_summary();
@@ -337,7 +342,7 @@ mod tests {
             .expect("health transition");
         assert!(matches!(
             unhealthy,
-            crate::HealthTransition::BecameUnhealthy
+            crate::health::HealthTransition::BecameUnhealthy
         ));
         let after_failure = pool.membership_summary();
         assert_eq!(after_failure.total_backends, 2);
@@ -358,7 +363,7 @@ mod tests {
     fn observed_request_failure_records_penalty_without_forcing_health_transition() {
         let runtime_upstream =
             runtime_upstream_from_addresses("least-connections", None, &["http://127.0.0.1:7001"]);
-        let mut pool = UpstreamPool::from_runtime_upstream(&runtime_upstream)
+        let mut pool = crate::test_support::upstream_pool(&runtime_upstream)
             .expect("runtime pool should build");
 
         let transition =
@@ -381,20 +386,21 @@ mod tests {
             None,
             &["http://127.0.0.1:7001", "http://127.0.0.1:7002"],
         );
-        let mut pool = UpstreamPool::from_runtime_upstream(&runtime_upstream)
+        let mut pool = crate::test_support::upstream_pool(&runtime_upstream)
             .expect("runtime pool should build");
-        pool.pool.backends[0].health_check = Some(HealthCheck {
-            path: "/health".to_string(),
-            interval: 0,
-            timeout_ms: 1000,
-            failure_threshold: 1,
-            success_threshold: 2,
-            cooldown_ms: 10_000,
-        });
+        pool.pool.backends[0].health_check =
+            Some(crate::test_support::health_input(&HealthCheck {
+                path: "/health".to_string(),
+                interval: 0,
+                timeout_ms: 1000,
+                failure_threshold: 1,
+                success_threshold: 2,
+                cooldown_ms: 10_000,
+            }));
 
         assert!(matches!(
             pool.mark_backend_request_failure(0, HealthFailureReason::Transport),
-            Some(crate::HealthTransition::BecameUnhealthy)
+            Some(crate::health::HealthTransition::BecameUnhealthy)
         ));
         pool.pool.reconcile_readmit_at(
             std::time::Instant::now() + std::time::Duration::from_millis(10_001),
@@ -413,7 +419,7 @@ mod tests {
         pool.finish_request(0, std::time::Duration::from_millis(10), Some(200));
         assert!(matches!(
             pool.mark_backend_request_success(0),
-            Some(crate::HealthTransition::BecameHealthy)
+            Some(crate::health::HealthTransition::BecameHealthy)
         ));
     }
 
@@ -435,12 +441,12 @@ mod tests {
                 }),
             }],
         );
-        let mut pool = UpstreamPool::from_runtime_upstream(&runtime_upstream)
+        let mut pool = crate::test_support::upstream_pool(&runtime_upstream)
             .expect("runtime pool should build");
 
         assert!(matches!(
             pool.mark_backend_failure_from_active_check(0),
-            Some(crate::HealthTransition::BecameUnhealthy)
+            Some(crate::health::HealthTransition::BecameUnhealthy)
         ));
         assert!(!pool.is_backend_healthy(0));
 
@@ -449,7 +455,7 @@ mod tests {
 
         assert!(matches!(
             pool.mark_backend_healthy(0),
-            Some(crate::HealthTransition::BecameHealthy)
+            Some(crate::health::HealthTransition::BecameHealthy)
         ));
     }
 
@@ -457,20 +463,21 @@ mod tests {
     fn passive_request_success_requires_verified_probe_threshold() {
         let runtime_upstream =
             runtime_upstream_from_addresses("least-connections", None, &["http://127.0.0.1:7001"]);
-        let mut pool = UpstreamPool::from_runtime_upstream(&runtime_upstream)
+        let mut pool = crate::test_support::upstream_pool(&runtime_upstream)
             .expect("runtime pool should build");
-        pool.pool.backends[0].health_check = Some(HealthCheck {
-            path: "/health".to_string(),
-            interval: 0,
-            timeout_ms: 1000,
-            failure_threshold: 1,
-            success_threshold: 2,
-            cooldown_ms: 10_000,
-        });
+        pool.pool.backends[0].health_check =
+            Some(crate::test_support::health_input(&HealthCheck {
+                path: "/health".to_string(),
+                interval: 0,
+                timeout_ms: 1000,
+                failure_threshold: 1,
+                success_threshold: 2,
+                cooldown_ms: 10_000,
+            }));
 
         assert!(matches!(
             pool.mark_backend_request_failure(0, HealthFailureReason::Transport),
-            Some(crate::HealthTransition::BecameUnhealthy)
+            Some(crate::health::HealthTransition::BecameUnhealthy)
         ));
         pool.pool.reconcile_readmit_at(
             std::time::Instant::now() + std::time::Duration::from_millis(10_001),
@@ -485,7 +492,7 @@ mod tests {
 
         assert!(matches!(
             pool.mark_backend_request_success(0),
-            Some(crate::HealthTransition::BecameHealthy)
+            Some(crate::health::HealthTransition::BecameHealthy)
         ));
         let runtime = pool.backend_runtime_state(0).expect("runtime state");
         assert!(runtime.healthy);

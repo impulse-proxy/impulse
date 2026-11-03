@@ -10,8 +10,8 @@ use super::{
     *,
 };
 use crate::runtime::{
+    activation::compatibility::evaluate_runtime_reload_compatibility,
     bundle::{RuntimeBundle, RuntimeBundleHandle, RuntimeGenerationRecordStatus},
-    listener::QUICListener,
     policy::render_rejections,
 };
 
@@ -388,8 +388,7 @@ impl RuntimeActivationService {
             }
         };
 
-        let compatibility_rejections =
-            QUICListener::evaluate_runtime_reload_compatibility(&current, &prepared);
+        let compatibility_rejections = evaluate_runtime_reload_compatibility(&current, &prepared);
         if let Err(rejections) = compatibility_rejections {
             let rejected_changes = rejections
                 .iter()

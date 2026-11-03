@@ -27,9 +27,12 @@ use impulse_config::config::{
     HealthCheck, Listen, LoadBalancing, Log, LogFormat, Security, Tls, UpstreamTls,
 };
 use impulse_edge::{
-    MAX_DATAGRAM_SIZE_BYTES, MAX_UDP_PAYLOAD_BYTES, QUIC_IDLE_TIMEOUT_MS, QUIC_INITIAL_MAX_DATA,
-    QUIC_INITIAL_MAX_STREAMS_BIDI, QUIC_INITIAL_MAX_STREAMS_UNI, QUIC_INITIAL_STREAM_DATA,
-    runtime::listener::QUICListener,
+    constants::{
+        MAX_DATAGRAM_SIZE_BYTES, MAX_UDP_PAYLOAD_BYTES, QUIC_IDLE_TIMEOUT_MS,
+        QUIC_INITIAL_MAX_DATA, QUIC_INITIAL_MAX_STREAMS_BIDI, QUIC_INITIAL_MAX_STREAMS_UNI,
+        QUIC_INITIAL_STREAM_DATA,
+    },
+    runtime::listener::Http3Service,
 };
 use support::{net::local_listener_bind_available, request_path as request_support};
 
@@ -217,7 +220,7 @@ struct ListenerLoopReport {
 }
 
 fn spawn_listener_loop(
-    mut listener: QUICListener,
+    mut listener: Http3Service,
 ) -> (
     std::net::SocketAddr,
     Arc<AtomicBool>,
@@ -240,7 +243,7 @@ fn stop_listener_loop(stop: Arc<AtomicBool>, handle: thread::JoinHandle<()>) {
 }
 
 fn spawn_listener_loop_with_report(
-    mut listener: QUICListener,
+    mut listener: Http3Service,
 ) -> (
     std::net::SocketAddr,
     Arc<AtomicBool>,
@@ -475,7 +478,7 @@ fn run_h3_client_multiple_requests(
     Ok((max_spare_dcids, requests_done))
 }
 
-fn assert_cid_sync_invariants(listener: &QUICListener) {
+fn assert_cid_sync_invariants(listener: &Http3Service) {
     for (primary_key, connection) in listener.connections() {
         assert_eq!(
             primary_key.as_ref(),
@@ -551,11 +554,11 @@ mod scid;
 // stays synchronous and deterministic.
 // ---------------------------------------------------------------------------
 
-fn make_listener() -> (QUICListener, std::net::SocketAddr) {
+fn make_listener() -> (Http3Service, std::net::SocketAddr) {
     let dir = tempdir().expect("failed to create temp dir");
     let (cert, key) = write_test_certs(&dir);
     let config = make_config(0, cert, key, "127.0.0.1:1".to_string());
-    let listener = QUICListener::new(config).expect("failed to create listener");
+    let listener = Http3Service::new(config).expect("failed to create listener");
     let addr = listener.socket.local_addr().expect("local_addr");
     (listener, addr)
 }
@@ -565,7 +568,7 @@ fn send_udp(to: std::net::SocketAddr, payload: &[u8]) {
     sock.send_to(payload, to).expect("send_to");
 }
 
-fn assert_maps_empty(listener: &QUICListener) {
+fn assert_maps_empty(listener: &Http3Service) {
     assert!(
         listener.connections().is_empty(),
         "connections map must be empty after malformed traffic, had {} entries",

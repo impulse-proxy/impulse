@@ -16,7 +16,7 @@ use tracing::Span;
 
 use crate::{
     Metrics, OverloadShedReason,
-    request_pipeline::TerminalOutcomeGuard,
+    edge_core::request_completion::RequestCompletion,
     runtime::connection::{
         auth::{ExternalAuthResult, PendingHeaderMutation},
         outcome::{
@@ -37,7 +37,7 @@ use crate::{
 };
 
 pub struct RequestEnvelope {
-    pub request_id: u64,
+    pub request_id: impulse_contracts::RequestId,
     pub trace_id: Option<String>,
     pub span_id: Option<String>,
     pub traceparent: Option<String>,
@@ -66,7 +66,7 @@ pub struct RequestEnvelope {
     pub retry_count: u8,
     pub error_kind: Option<&'static str>,
     pub terminal_overload_reason: Option<OverloadShedReason>,
-    pub(crate) terminal_outcome: TerminalOutcomeGuard,
+    pub(crate) completion: RequestCompletion,
     pub(crate) empty_request_body_runtime: RequestBodyRuntime,
     pub execution: RequestExecutionState,
 }
@@ -88,7 +88,7 @@ impl RequestStateError {
 }
 
 impl RequestEnvelope {
-    pub fn request_id(&self) -> u64 {
+    pub fn request_id(&self) -> impulse_contracts::RequestId {
         self.request_id
     }
 
@@ -140,7 +140,7 @@ impl RequestEnvelope {
             retry_count,
             error_kind,
             terminal_overload_reason: None,
-            terminal_outcome: context.terminal_outcome.clone(),
+            completion: context.completion.clone(),
             empty_request_body_runtime: RequestBodyRuntime::empty(context.start),
             execution: RequestExecutionState::DispatchReady(state),
         }
@@ -194,19 +194,24 @@ impl RequestEnvelope {
             retry_count,
             error_kind,
             terminal_overload_reason: None,
-            terminal_outcome: context.terminal_outcome.clone(),
+            completion: context.completion.clone(),
             empty_request_body_runtime: RequestBodyRuntime::empty(context.start),
             execution: RequestExecutionState::AwaitingAuth(state),
         }
     }
 
-    pub fn mark_terminal_outcome_recorded(&mut self) {
-        self.terminal_outcome.record();
+    #[cfg(test)]
+    pub(crate) fn mark_request_completed(&self) {
+        self.completion.complete();
+    }
+
+    pub fn complete_with<T>(&self, record: impl FnOnce() -> T) -> Option<T> {
+        self.completion.complete_with(record)
     }
 
     #[cfg(test)]
-    pub(crate) fn terminal_outcome_recorded(&self) -> bool {
-        self.terminal_outcome.is_recorded()
+    pub(crate) fn request_completed(&self) -> bool {
+        self.completion.is_complete()
     }
 
     pub fn phase(&self) -> StreamPhase {
@@ -830,15 +835,14 @@ impl RequestEnvelope {
         }
 
         let snapshot = self.terminal_snapshot();
-        let terminal_state = reason.into_terminal_state(snapshot.clone());
-        if self.terminal_outcome.record() {
-            let _ = observe_terminal_request_outcome(metrics, &terminal_state);
-        }
+        let terminal_state = TerminalState::from_reason(reason, snapshot.clone());
+        let _ = self
+            .completion
+            .complete_with(|| observe_terminal_request_outcome(metrics, &terminal_state));
         let should_finalize_backend = self.execution.should_finalize_backend_accounting();
         let buffered_body_bytes = Self::buffered_request_body_bytes(&self.execution);
-        let finalize_status = reason
-            .terminal_status(&snapshot)
-            .or(snapshot.response_status)
+        let finalize_status = snapshot
+            .response_status
             .map(|status| status.as_u16())
             .or(Some(503));
 
@@ -866,7 +870,9 @@ impl RequestEnvelope {
         }
 
         if buffered_body_bytes > 0 {
-            metrics.release_request_buffer(buffered_body_bytes);
+            metrics
+                .request_observations()
+                .release_request_buffer(buffered_body_bytes);
         }
 
         self.execution = RequestExecutionState::Terminal(terminal_state);
@@ -943,7 +949,7 @@ impl RequestEnvelope {
                 authority: self.authority.clone(),
                 start: self.start,
                 total_request_deadline: self.total_request_deadline,
-                terminal_outcome: self.terminal_outcome.clone(),
+                completion: self.completion.clone(),
             },
             routing,
             request_mode: RequestMode::from_intake(self.tunnel_mode, &self.method, None),
@@ -987,7 +993,7 @@ pub struct PendingForward {
     pub backend_lb: Option<Arc<str>>,
     pub lb_key: Arc<str>,
     pub client_addr: SocketAddr,
-    pub request_id: u64,
+    pub request_id: impulse_contracts::RequestId,
     pub trace_id: Option<Arc<str>>,
     pub span_id: Option<Arc<str>>,
     pub traceparent: Option<Arc<str>>,
@@ -1058,7 +1064,7 @@ mod tests {
             authority: Some("example.com".into()),
             start,
             total_request_deadline: start + Duration::from_secs(30),
-            terminal_outcome: TerminalOutcomeGuard::default(),
+            completion: RequestCompletion::default(),
         }
     }
 
@@ -1135,7 +1141,7 @@ mod tests {
             retry_count: 0,
             error_kind: None,
             terminal_overload_reason: None,
-            terminal_outcome: context.terminal_outcome.clone(),
+            completion: context.completion.clone(),
             empty_request_body_runtime: RequestBodyRuntime::empty(start),
             execution: RequestExecutionState::Admitted(AdmittedState {
                 context,
@@ -1179,7 +1185,11 @@ mod tests {
         let (mut req, global_sem, upstream_sem, _adaptive, route_limiter) =
             make_admitted_envelope(start, body_buf, 7, false);
 
-        assert!(metrics.try_reserve_request_buffer(7, 64));
+        assert!(
+            metrics
+                .request_observations()
+                .try_reserve_request_buffer(7, 64)
+        );
 
         let phase = req.transition_to_terminal_with_cleanup(
             TerminalReason::Rejected(
@@ -1190,7 +1200,7 @@ mod tests {
 
         assert_eq!(phase, StreamPhase::ReceivingRequest);
         assert_eq!(req.phase(), StreamPhase::Terminal);
-        assert!(req.terminal_outcome_recorded());
+        assert!(req.request_completed());
         assert_eq!(metrics.request_buffered_bytes.load(Ordering::Relaxed), 0);
         assert_eq!(metrics.requests_failure.load(Ordering::Relaxed), 1);
         assert_eq!(global_sem.available_permits(), 1);
@@ -1226,7 +1236,7 @@ mod tests {
             StatusCode::OK,
         )
         .expect("awaiting upstream to streaming response");
-        req.mark_terminal_outcome_recorded();
+        req.mark_request_completed();
 
         let phase = req.transition_to_terminal_with_cleanup(
             TerminalReason::BackendFailed(BackendFailureReason::ResponseStreamAborted),
@@ -1235,7 +1245,7 @@ mod tests {
 
         assert_eq!(phase, StreamPhase::SendingResponse);
         assert_eq!(req.phase(), StreamPhase::Terminal);
-        assert!(req.terminal_outcome_recorded());
+        assert!(req.request_completed());
         assert_eq!(metrics.requests_failure.load(Ordering::Relaxed), 0);
         assert_eq!(global_sem.available_permits(), 1);
         assert_eq!(upstream_sem.available_permits(), 1);
@@ -1273,7 +1283,7 @@ mod tests {
             retry_count: 0,
             error_kind: None,
             terminal_overload_reason: None,
-            terminal_outcome: context.terminal_outcome.clone(),
+            completion: context.completion.clone(),
             empty_request_body_runtime: RequestBodyRuntime::empty(start),
             execution: RequestExecutionState::DispatchReady(DispatchReadyState {
                 context,

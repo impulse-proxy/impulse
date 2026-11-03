@@ -5,10 +5,7 @@ use std::{
     path::PathBuf,
 };
 
-use impulse_config::runtime::RuntimeBackendTransportKind;
-use pingora_core::upstreams::peer::Proxy;
-
-use crate::TlsClientConfig;
+use crate::{UpstreamProtocol, UpstreamProxyInput, UpstreamTlsInput};
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct PingoraUpstreamProxyIdentity {
@@ -18,8 +15,8 @@ pub(crate) struct PingoraUpstreamProxyIdentity {
     pub(crate) headers: BTreeMap<String, Vec<u8>>,
 }
 
-impl From<&Proxy> for PingoraUpstreamProxyIdentity {
-    fn from(proxy: &Proxy) -> Self {
+impl From<&UpstreamProxyInput> for PingoraUpstreamProxyIdentity {
+    fn from(proxy: &UpstreamProxyInput) -> Self {
         Self {
             next_hop: proxy.next_hop.to_path_buf(),
             host: proxy.host.clone(),
@@ -32,7 +29,7 @@ impl From<&Proxy> for PingoraUpstreamProxyIdentity {
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct PingoraUpstreamConnectionIdentity {
     pub(crate) address: SocketAddr,
-    pub(crate) protocol: RuntimeBackendTransportKind,
+    pub(crate) protocol: UpstreamProtocol,
     pub(crate) sni: String,
     pub(crate) verify_certificates: bool,
     pub(crate) strict_sni: bool,
@@ -56,10 +53,10 @@ impl PingoraBackendHealthIdentity {
 impl PingoraUpstreamConnectionIdentity {
     pub(crate) fn new(
         address: SocketAddr,
-        protocol: RuntimeBackendTransportKind,
+        protocol: UpstreamProtocol,
         sni: String,
-        tls: Option<&TlsClientConfig>,
-        proxy: Option<&Proxy>,
+        tls: Option<&UpstreamTlsInput>,
+        proxy: Option<&UpstreamProxyInput>,
         generation: u64,
     ) -> Self {
         Self {
@@ -67,7 +64,7 @@ impl PingoraUpstreamConnectionIdentity {
             protocol,
             sni,
             verify_certificates: tls.is_some_and(|tls| tls.verify_certificates),
-            strict_sni: tls.is_some_and(|tls| tls.strict_sni),
+            strict_sni: tls.is_some_and(|tls| tls.verify_hostname),
             ca_file_fingerprint_sha256: tls.and_then(|tls| tls.ca_file_fingerprint_sha256.clone()),
             ca_dir_fingerprint_sha256: tls.and_then(|tls| tls.ca_dir_fingerprint_sha256.clone()),
             client_certificate_fingerprint_sha256: tls
@@ -94,16 +91,14 @@ impl PingoraUpstreamConnectionIdentity {
 mod tests {
     use std::{collections::HashSet, net::SocketAddr};
 
-    use impulse_config::runtime::RuntimeBackendTransportKind;
-
     use super::*;
 
-    fn identity(tls: &TlsClientConfig, generation: u64) -> PingoraUpstreamConnectionIdentity {
+    fn identity(tls: &UpstreamTlsInput, generation: u64) -> PingoraUpstreamConnectionIdentity {
         PingoraUpstreamConnectionIdentity::new(
             "127.0.0.1:8443"
                 .parse::<SocketAddr>()
                 .expect("socket address"),
-            RuntimeBackendTransportKind::H2,
+            UpstreamProtocol::Http2,
             "backend.internal".to_string(),
             Some(tls),
             None,
@@ -113,7 +108,7 @@ mod tests {
 
     #[test]
     fn equivalent_backends_share_one_health_probe_identity() {
-        let tls = TlsClientConfig::default();
+        let tls = UpstreamTlsInput::default();
         let identities = HashSet::from([
             identity(&tls, 7).health_identity(),
             identity(&tls, 7).health_identity(),
@@ -124,12 +119,12 @@ mod tests {
 
     #[test]
     fn tls_security_identity_prevents_health_probe_sharing() {
-        let baseline = TlsClientConfig {
+        let baseline = UpstreamTlsInput {
             ca_file_fingerprint_sha256: Some("ca-a".to_string()),
             ca_dir_fingerprint_sha256: Some("ca-dir-a".to_string()),
             client_certificate_fingerprint_sha256: Some("cert-a".to_string()),
             client_key_fingerprint_sha256: Some("key-a".to_string()),
-            ..TlsClientConfig::default()
+            ..UpstreamTlsInput::default()
         };
         let baseline_identity = identity(&baseline, 7).health_identity();
         let mut different_sni = identity(&baseline, 7);
@@ -137,27 +132,27 @@ mod tests {
         assert_ne!(different_sni.health_identity(), baseline_identity);
 
         let variants = [
-            TlsClientConfig {
+            UpstreamTlsInput {
                 verify_certificates: false,
                 ..baseline.clone()
             },
-            TlsClientConfig {
-                strict_sni: false,
+            UpstreamTlsInput {
+                verify_hostname: false,
                 ..baseline.clone()
             },
-            TlsClientConfig {
+            UpstreamTlsInput {
                 ca_file_fingerprint_sha256: Some("ca-b".to_string()),
                 ..baseline.clone()
             },
-            TlsClientConfig {
+            UpstreamTlsInput {
                 ca_dir_fingerprint_sha256: Some("ca-dir-b".to_string()),
                 ..baseline.clone()
             },
-            TlsClientConfig {
+            UpstreamTlsInput {
                 client_certificate_fingerprint_sha256: Some("cert-b".to_string()),
                 ..baseline.clone()
             },
-            TlsClientConfig {
+            UpstreamTlsInput {
                 client_key_fingerprint_sha256: Some("key-b".to_string()),
                 ..baseline.clone()
             },
@@ -170,7 +165,7 @@ mod tests {
 
     #[test]
     fn runtime_generations_do_not_share_health_probe_identity() {
-        let tls = TlsClientConfig::default();
+        let tls = UpstreamTlsInput::default();
 
         assert_ne!(
             identity(&tls, 7).health_identity(),

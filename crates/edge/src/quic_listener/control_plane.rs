@@ -2,26 +2,34 @@ use std::sync::Arc;
 
 use impulse_config::runtime::RuntimeConfig;
 use impulse_errors::ProxyError;
+use impulse_operations::watchdog::WatchdogCoordinator;
 use log::error;
 
 use super::{
-    QUICListener,
-    pingora_health::PingoraHealthServiceInput,
+    Http3Service,
+    control_api::service::ControlApiEndpointService,
+    metrics::service::MetricsEndpointService,
     runtime_handle,
     runtime_state::{ControlPlaneStartup, WatchdogServiceCtx},
-    spawn_supervised_async_task,
 };
 use crate::{
     resilience::quota::QuotaRuntime,
-    runtime::{bundle::RuntimeBundleHandle, shared_state::SharedRuntimeState},
-    watchdog::{
-        config::WatchdogRuntimeConfig,
-        service::run_watchdog_service,
-        state::{WatchdogServiceState, WatchdogSpawnState},
+    runtime::{
+        backend::{
+            coordination::spawn_pingora_discovery_refresh,
+            health_service::{PingoraHealthServiceInput, spawn_pingora_health_service},
+        },
+        bundle::RuntimeBundleHandle,
+        shared_state::SharedRuntimeState,
+        subsystem_mapping::watchdog_runtime_config,
+        watchdog::{
+            service::run_watchdog_service,
+            state::{WatchdogServiceState, WatchdogSpawnState},
+        },
     },
 };
 
-impl QUICListener {
+impl Http3Service {
     pub fn spawn_control_plane_tasks(
         config: &RuntimeConfig,
         shared_state: &SharedRuntimeState,
@@ -54,8 +62,8 @@ impl QUICListener {
             Self::configure_expected_workers(runtime.watchdog().as_ref(), startup.worker_count);
         });
         Self::spawn_generation_background_tasks(&startup);
-        Self::spawn_metrics_endpoint(&startup)?;
-        Self::spawn_control_api_endpoint(&startup)?;
+        MetricsEndpointService::spawn_metrics_endpoint(&startup)?;
+        ControlApiEndpointService::spawn_control_api_endpoint(&startup)?;
         Ok(())
     }
 
@@ -68,7 +76,8 @@ impl QUICListener {
             Self::register_jwt_jwks_metrics(&runtime.metrics());
             QuotaRuntime::register_metrics(&runtime.metrics());
             let task_registry = runtime.generation_tasks();
-            Self::spawn_pingora_discovery_refresh(
+            spawn_pingora_discovery_refresh(
+                runtime_handle(),
                 runtime.runtime_config(),
                 runtime.transport_pool(),
                 runtime.backend_dns_resolver(),
@@ -76,18 +85,24 @@ impl QUICListener {
                 runtime.metrics(),
                 Arc::clone(&task_registry),
             );
-            Self::spawn_jwks_refresh(runtime.runtime_config(), Arc::clone(&task_registry));
             let pingora_load_balancing = runtime.pingora_load_balancing();
-            Self::spawn_pingora_health_service(PingoraHealthServiceInput {
-                generation: pingora_load_balancing.generation(),
-                upstream_pools: runtime.upstream_pools().clone(),
-                transport_pool: runtime.transport_pool(),
-                backend_health_checks: runtime.backend_health_checks(),
-                pingora_load_balancing,
-                backend_lifecycle: runtime.backend_lifecycle(),
-                metrics: runtime.metrics(),
-                generation_tasks: Arc::clone(&task_registry),
-            });
+            Self::spawn_jwks_refresh(
+                runtime.runtime_config(),
+                pingora_load_balancing.generation(),
+                Arc::clone(&task_registry),
+            );
+            spawn_pingora_health_service(
+                runtime_handle(),
+                PingoraHealthServiceInput {
+                    generation: pingora_load_balancing.generation(),
+                    transport_pool: runtime.transport_pool(),
+                    backend_health_checks: runtime.backend_health_checks(),
+                    pingora_load_balancing,
+                    backend_lifecycle: runtime.backend_lifecycle(),
+                    metrics: runtime.metrics(),
+                    generation_tasks: Arc::clone(&task_registry),
+                },
+            );
             Self::spawn_watchdog_service(WatchdogServiceCtx::new(runtime, task_registry));
         });
     }
@@ -110,10 +125,7 @@ impl QUICListener {
         });
     }
 
-    fn configure_expected_workers(
-        watchdog: &crate::watchdog::coordinator::WatchdogCoordinator,
-        worker_count: usize,
-    ) {
+    fn configure_expected_workers(watchdog: &WatchdogCoordinator, worker_count: usize) {
         watchdog.set_expected_workers(worker_count.max(1));
     }
 
@@ -131,19 +143,18 @@ impl QUICListener {
             }
         };
 
-        let registration = spawn_supervised_async_task(
+        spawn_state.task_registry.spawn_supervised(
             &handle,
             "watchdog",
             Some(Arc::clone(&spawn_state.service.metrics)),
             run_watchdog_service(spawn_state.service),
         );
-        spawn_state.task_registry.register(registration);
     }
 
     pub(super) fn watchdog_spawn_state(service_ctx: WatchdogServiceCtx) -> WatchdogSpawnState {
         WatchdogSpawnState {
             service: WatchdogServiceState {
-                config: WatchdogRuntimeConfig::from(
+                config: watchdog_runtime_config(
                     &service_ctx
                         .runtime
                         .runtime_config()

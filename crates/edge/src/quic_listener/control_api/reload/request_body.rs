@@ -27,7 +27,7 @@ pub(in crate::quic_listener::control_api) struct ControlApiRuntimeRollbackPayloa
     pub(in crate::quic_listener::control_api) expected_active_generation: Option<u64>,
 }
 
-impl QUICListener {
+impl Http3Service {
     pub(super) async fn control_api_json_body<T>(
         req: Request<Incoming>,
     ) -> Result<T, Box<Response<Full<Bytes>>>>

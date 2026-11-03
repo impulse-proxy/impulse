@@ -3,19 +3,19 @@ use std::sync::atomic::AtomicUsize;
 use super::{state::ControlApiPaths, *};
 use crate::{
     quic_listener::{
-        control_api::security::ControlApiSecurityPolicy,
-        runtime_state::{ControlApiServiceCtx, ControlPlaneRuntimeView},
+        control_api::security::ControlApiSecurityPolicy, runtime_state::ControlApiServiceCtx,
     },
     runtime::{
         backend::state::{BackendLifecycleInventorySnapshot, BackendLifecycleInventorySummary},
         bundle::{ActiveRuntimeGeneration, RuntimeBundleHandle},
+        operations::{OperationalObservabilityView, OperationalRuntimeView},
     },
 };
 
 #[derive(Clone)]
 pub(super) struct ControlApiServiceState {
-    pub(super) runtime: ControlPlaneRuntimeView,
-    pub(super) generation: Option<ActiveRuntimeGeneration>,
+    pub(super) runtime: OperationalRuntimeView,
+    pub(super) observability: OperationalObservabilityView,
     runtime_bundle_handle: Option<Arc<RuntimeBundleHandle>>,
     pub(super) endpoint: ControlApiConfig,
     pub(super) security: Arc<ControlApiSecurityPolicy>,
@@ -25,11 +25,12 @@ pub(super) struct ControlApiServiceState {
 }
 
 impl ControlApiServiceState {
+    pub(super) fn generation(&self) -> Option<&ActiveRuntimeGeneration> {
+        self.runtime.generation()
+    }
+
     pub(super) fn auth_policy_generation(&self) -> (Option<u64>, Option<u64>) {
-        let runtime_generation = self
-            .generation
-            .as_ref()
-            .map(|generation| generation.generation());
+        let runtime_generation = self.generation().map(|generation| generation.generation());
         let listener_tls_generation = self
             .primary_listener_label
             .as_deref()
@@ -50,11 +51,11 @@ impl ControlApiServiceState {
     }
 
     pub(super) fn metrics(&self) -> Arc<Metrics> {
-        self.runtime.metrics()
+        self.observability.metrics()
     }
 
     pub(super) fn watchdog(&self) -> Arc<WatchdogCoordinator> {
-        self.runtime.watchdog()
+        self.observability.watchdog()
     }
 
     pub(super) fn resilience(&self) -> Arc<RuntimeResilience> {
@@ -62,9 +63,7 @@ impl ControlApiServiceState {
     }
 
     pub(super) fn snapshot_backend_inventory(&self) -> BackendLifecycleInventorySnapshot {
-        self.runtime
-            .backend_lifecycle()
-            .snapshot_inventory(self.runtime.upstream_pools())
+        self.observability.backend_inventory()
     }
 
     pub(super) fn snapshot_backend_health(&self) -> BackendLifecycleInventorySummary {
@@ -78,22 +77,6 @@ pub(super) struct ControlApiListenerBinding {
     pub(super) active_connections: Arc<AtomicUsize>,
 }
 
-pub(super) struct ConnectionSlotGuard {
-    active_connections: Arc<AtomicUsize>,
-}
-
-impl ConnectionSlotGuard {
-    pub(super) fn new(active_connections: Arc<AtomicUsize>) -> Self {
-        Self { active_connections }
-    }
-}
-
-impl Drop for ConnectionSlotGuard {
-    fn drop(&mut self) {
-        self.active_connections.fetch_sub(1, Ordering::AcqRel);
-    }
-}
-
 impl ControlApiServiceCtx {
     pub(super) fn current_service_state(&self) -> ControlApiServiceState {
         let runtime = self.runtime.current_view();
@@ -102,10 +85,27 @@ impl ControlApiServiceCtx {
         let endpoint = runtime.runtime_config().observability.control_api.clone();
         let security = runtime.control_api_security();
         let paths = ControlApiPaths::from_endpoint(&endpoint);
-        ControlApiServiceState {
-            primary_listener_label: runtime.primary_listener_label().map(ToOwned::to_owned),
-            runtime,
+        let backend_inventory = runtime
+            .backend_lifecycle()
+            .snapshot_inventory(runtime.upstream_pools());
+        let runtime_view = OperationalRuntimeView::new(
+            runtime.runtime_config().clone(),
             generation,
+            runtime.resilience(),
+            runtime.listener_runtime_configs(),
+            runtime.listener_tls_store(),
+            runtime.primary_listener_label().map(ToOwned::to_owned),
+            runtime.expected_workers(),
+        );
+        let observability = OperationalObservabilityView::new(
+            runtime.metrics(),
+            runtime.watchdog(),
+            backend_inventory,
+        );
+        ControlApiServiceState {
+            primary_listener_label: runtime_view.primary_listener_label().map(ToOwned::to_owned),
+            runtime: runtime_view,
+            observability,
             runtime_bundle_handle,
             endpoint,
             security,

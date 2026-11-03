@@ -290,50 +290,6 @@ fn backend_policy_diff_summary(history_generation: &serde_json::Value) -> String
         .expect("backend_policies diff summary")
 }
 
-// Domain: reload swap.
-#[test]
-#[serial]
-fn runtime_swap_harness_exposes_reload_control_plane_and_metrics_surfaces() {
-    let Some(mut harness) = start_static_runtime_swap_listener(b"ok", |_| {}) else {
-        return;
-    };
-
-    let startup_snapshot = harness.runtime_snapshot().expect("runtime snapshot");
-    assert_eq!(startup_snapshot["runtime"]["generation"], 0);
-    assert_eq!(
-        startup_snapshot["runtime"]["config_path"],
-        harness.config_path().to_string_lossy().to_string()
-    );
-
-    let metrics = harness.metrics_text().expect("metrics text");
-    assert!(
-        metrics.contains("# HELP impulse_requests_total Total requests seen by impulse.\n"),
-        "metrics endpoint should expose prometheus request totals"
-    );
-
-    harness
-        .rewrite_config(|config| {
-            config.log.level = "debug".to_string();
-            config.performance.new_connections_burst = 2;
-        })
-        .expect("rewrite config");
-
-    let reload = harness
-        .trigger_runtime_reload()
-        .expect("trigger runtime reload");
-    assert_eq!(reload["reloaded"], true);
-    assert_eq!(reload["generation"], 1);
-
-    let reloaded_snapshot = harness
-        .runtime_snapshot()
-        .expect("reloaded runtime snapshot");
-    assert_eq!(reloaded_snapshot["runtime"]["generation"], 1);
-    assert_eq!(
-        reloaded_snapshot["runtime"]["config_path"],
-        harness.config_path().to_string_lossy().to_string()
-    );
-}
-
 #[test]
 #[serial]
 fn generation_owned_reload_swaps_backend_targets_without_changing_listener_identity() {

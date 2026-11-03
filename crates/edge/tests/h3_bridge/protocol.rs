@@ -11,7 +11,7 @@ fn http3_to_http2_preserves_response_trailers() {
     let rt = tokio::runtime::Runtime::new().expect("runtime");
     let backend_addr = rt.block_on(start_h2_backend_with_trailers(&cert, &key));
     let config = make_h2_config(0, backend_addr, cert, key);
-    let listener = QUICListener::new(config).expect("failed to create listener");
+    let listener = Http3Service::new(config).expect("failed to create listener");
     let listen_addr = listener.socket.local_addr().unwrap();
     let _listener_task = ListenerTaskGuard::spawn(&rt, listener);
 
@@ -400,7 +400,7 @@ fn http3_head_suppresses_response_body() {
     let rt = tokio::runtime::Runtime::new().expect("runtime");
     let backend_addr = rt.block_on(start_h2_backend_with_regression_routes());
     let config = make_config(0, backend_addr.to_string(), cert, key);
-    let listener = QUICListener::new(config).expect("failed to create listener");
+    let listener = Http3Service::new(config).expect("failed to create listener");
     let listen_addr = listener.socket.local_addr().unwrap();
     let _listener_task = ListenerTaskGuard::spawn(&rt, listener);
 
@@ -437,7 +437,7 @@ fn http3_websocket_legacy_upgrade_is_rejected() {
     let rt = tokio::runtime::Runtime::new().expect("runtime");
     let backend_addr = rt.block_on(start_h1_backend_with_websocket_upgrade());
     let config = make_config(0, format!("http://{backend_addr}"), cert, key);
-    let listener = QUICListener::new(config).expect("failed to create listener");
+    let listener = Http3Service::new(config).expect("failed to create listener");
     let listen_addr = listener.socket.local_addr().unwrap();
     let _listener_task = ListenerTaskGuard::spawn(&rt, listener);
 
@@ -476,7 +476,7 @@ fn http3_websocket_extended_connect_tunnels_to_http1_upstream() {
     config.resilience.protocol.allow_connect = true;
     config.resilience.protocol.connect_allowed_ports = vec![443];
     config.resilience.protocol.connect_allowed_authorities = vec!["localhost:443".to_string()];
-    let listener = QUICListener::new(config).expect("failed to create listener");
+    let listener = Http3Service::new(config).expect("failed to create listener");
     let listen_addr = listener.socket.local_addr().unwrap();
     let _listener_task = ListenerTaskGuard::spawn(&rt, listener);
 
@@ -518,7 +518,7 @@ fn http3_to_http2_preserves_grpc_error_trailers() {
     let rt = tokio::runtime::Runtime::new().expect("runtime");
     let backend_addr = rt.block_on(start_h2_backend_with_grpc_routes(&cert, &key));
     let config = make_h2_config(0, backend_addr, cert, key);
-    let listener = QUICListener::new(config).expect("failed to create listener");
+    let listener = Http3Service::new(config).expect("failed to create listener");
     let listen_addr = listener.socket.local_addr().unwrap();
     let _listener_task = ListenerTaskGuard::spawn(&rt, listener);
 
@@ -572,7 +572,7 @@ fn grpc_timeout_returns_recoverable_proxy_error() {
     let mut config = make_h2_config(0, backend_addr, cert, key);
     config.performance.backend_timeout_ms = 150;
     config.performance.backend_connect_timeout_ms = 150;
-    let listener = QUICListener::new(config).expect("failed to create listener");
+    let listener = Http3Service::new(config).expect("failed to create listener");
     let listen_addr = listener.socket.local_addr().unwrap();
     let _listener_task = ListenerTaskGuard::spawn(&rt, listener);
 

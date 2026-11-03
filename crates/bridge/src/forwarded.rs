@@ -1,8 +1,9 @@
 use std::net::IpAddr;
 
 use http::HeaderValue;
-use impulse_config::config::{ForwardedHeaderPolicy, ForwardedHeaderPolicyMode};
 use impulse_errors::BridgeError;
+
+use crate::{ForwardedHeaderMode, ForwardingPolicyInput};
 
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct ForwardedHeaderChains<'a> {
@@ -21,7 +22,7 @@ pub(crate) struct ForwardedHeaderValues {
 }
 
 pub fn build_forwarded_header_values(
-    policy: &ForwardedHeaderPolicy,
+    policy: ForwardingPolicyInput,
     inbound: ForwardedHeaderChains<'_>,
     client_ip: IpAddr,
     host_value: &str,
@@ -60,13 +61,13 @@ pub fn build_forwarded_header_values(
 }
 
 pub fn merge_forwarded_chain(
-    mode: ForwardedHeaderPolicyMode,
+    mode: ForwardedHeaderMode,
     inbound: &[&[u8]],
     current: Option<&[u8]>,
 ) -> Result<Option<HeaderValue>, BridgeError> {
     match mode {
-        ForwardedHeaderPolicyMode::Preserve => join_header_chain(inbound),
-        ForwardedHeaderPolicyMode::Append => {
+        ForwardedHeaderMode::Preserve => join_header_chain(inbound),
+        ForwardedHeaderMode::Append => {
             let mut values = smallvec::SmallVec::<[&[u8]; 4]>::with_capacity(inbound.len() + 1);
             values.extend_from_slice(inbound);
             if let Some(current) = current {
@@ -74,7 +75,7 @@ pub fn merge_forwarded_chain(
             }
             join_header_chain(&values)
         }
-        ForwardedHeaderPolicyMode::Overwrite => current
+        ForwardedHeaderMode::Overwrite => current
             .map(HeaderValue::from_bytes)
             .transpose()
             .map_err(|_| BridgeError::InvalidHeader),
@@ -114,12 +115,11 @@ pub fn escape_forwarded_host(host: &str) -> String {
 mod tests {
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
-    use impulse_config::config::{ForwardedHeaderPolicy, ForwardedHeaderPolicyMode};
-
     use super::{
         ForwardedHeaderChains, build_forwarded_header_values, escape_forwarded_host,
         forwarded_for_value, merge_forwarded_chain,
     };
+    use crate::{ForwardedHeaderMode, ForwardingPolicyInput};
 
     #[test]
     fn escape_forwarded_host_escapes_backslash_and_quote() {
@@ -150,31 +150,27 @@ mod tests {
         let current = b"for=2.2.2.2";
 
         let preserved =
-            merge_forwarded_chain(ForwardedHeaderPolicyMode::Preserve, &inbound, Some(current))
+            merge_forwarded_chain(ForwardedHeaderMode::Preserve, &inbound, Some(current))
                 .unwrap()
                 .unwrap();
         assert_eq!(preserved.as_bytes(), b"for=1.1.1.1");
 
-        let appended =
-            merge_forwarded_chain(ForwardedHeaderPolicyMode::Append, &inbound, Some(current))
-                .unwrap()
-                .unwrap();
+        let appended = merge_forwarded_chain(ForwardedHeaderMode::Append, &inbound, Some(current))
+            .unwrap()
+            .unwrap();
         assert_eq!(appended.as_bytes(), b"for=1.1.1.1, for=2.2.2.2");
 
-        let overwritten = merge_forwarded_chain(
-            ForwardedHeaderPolicyMode::Overwrite,
-            &inbound,
-            Some(current),
-        )
-        .unwrap()
-        .unwrap();
+        let overwritten =
+            merge_forwarded_chain(ForwardedHeaderMode::Overwrite, &inbound, Some(current))
+                .unwrap()
+                .unwrap();
         assert_eq!(overwritten.as_bytes(), b"for=2.2.2.2");
     }
 
     #[test]
     fn build_forwarded_header_values_overwrite_drops_inbound() {
-        let policy = ForwardedHeaderPolicy {
-            mode: ForwardedHeaderPolicyMode::Overwrite,
+        let policy = ForwardingPolicyInput {
+            mode: ForwardedHeaderMode::Overwrite,
         };
         let inbound_fwd = [b"for=9.9.9.9".as_slice()];
         let inbound_xff = [b"9.9.9.9".as_slice()];
@@ -187,8 +183,7 @@ mod tests {
             x_forwarded_host: &inbound_xfh,
         };
         let ip = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 10));
-        let out =
-            build_forwarded_header_values(&policy, inbound, ip, "app.example").expect("build");
+        let out = build_forwarded_header_values(policy, inbound, ip, "app.example").expect("build");
 
         assert_eq!(out.x_forwarded_for.unwrap().as_bytes(), b"203.0.113.10");
         assert_eq!(out.x_forwarded_proto.unwrap().as_bytes(), b"https");
@@ -205,8 +200,8 @@ mod tests {
 
     #[test]
     fn build_forwarded_header_values_append_keeps_inbound() {
-        let policy = ForwardedHeaderPolicy {
-            mode: ForwardedHeaderPolicyMode::Append,
+        let policy = ForwardingPolicyInput {
+            mode: ForwardedHeaderMode::Append,
         };
         let inbound_xff = [b"1.1.1.1".as_slice()];
         let inbound = ForwardedHeaderChains {
@@ -216,14 +211,14 @@ mod tests {
             x_forwarded_host: &[],
         };
         let ip = IpAddr::V4(Ipv4Addr::new(2, 2, 2, 2));
-        let out = build_forwarded_header_values(&policy, inbound, ip, "h").expect("build");
+        let out = build_forwarded_header_values(policy, inbound, ip, "h").expect("build");
         assert_eq!(out.x_forwarded_for.unwrap().as_bytes(), b"1.1.1.1, 2.2.2.2");
     }
 
     #[test]
     fn build_forwarded_header_values_preserve_ignores_current_for_chain() {
-        let policy = ForwardedHeaderPolicy {
-            mode: ForwardedHeaderPolicyMode::Preserve,
+        let policy = ForwardingPolicyInput {
+            mode: ForwardedHeaderMode::Preserve,
         };
         let inbound_xff = [b"8.8.8.8".as_slice()];
         let inbound = ForwardedHeaderChains {
@@ -233,7 +228,7 @@ mod tests {
             x_forwarded_host: &[],
         };
         let ip = IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4));
-        let out = build_forwarded_header_values(&policy, inbound, ip, "h").expect("build");
+        let out = build_forwarded_header_values(policy, inbound, ip, "h").expect("build");
         // Preserve keeps only inbound chain values for XFF
         assert_eq!(out.x_forwarded_for.unwrap().as_bytes(), b"8.8.8.8");
     }

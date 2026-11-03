@@ -1,15 +1,17 @@
 //! Canonical activation, preview, and rollback contract for runtime generations.
 //!
-//! This module intentionally contains *only* the typed domain vocabulary for
-//! config validation, reload preview, activation, rollback, and history. It does
-//! not perform any runtime mutation itself. Control-plane handlers and future
-//! activation services should consume these types rather than inventing
-//! endpoint-local request/result payloads.
+//! This module owns staged planning, compatibility validation, publication,
+//! rollback, and generation history together with their typed contracts.
+//! Control-plane handlers translate requests and responses without owning
+//! runtime mutation.
 
+pub use impulse_observability::{RuntimeOperationOutcomeReason, RuntimeRejectionReason};
+pub use impulse_runtime::GenerationId;
 use serde::{Deserialize, Serialize};
 
 use crate::runtime::policy::{TransitionRejection, TransitionRejectionKind};
 
+pub(crate) mod compatibility;
 mod diff;
 mod history;
 mod planning;
@@ -17,9 +19,6 @@ mod service;
 mod swap;
 
 pub(crate) use self::service::RuntimeActivationService;
-
-/// Stable identifier for a published or staged runtime generation.
-pub type GenerationId = u64;
 
 /// Milliseconds since the Unix epoch.
 ///
@@ -228,119 +227,6 @@ pub enum RejectedChangeKind {
     InvalidConfiguration,
     IllegalTransition,
     RuntimeStateUnavailable,
-}
-
-/// Stable operator-visible rejection reason shared across logs, metrics, and
-/// control-plane responses.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
-#[serde(rename_all = "snake_case")]
-pub enum RuntimeRejectionReason {
-    InvalidConfig,
-    StartupOwnedChange,
-    BindConflict,
-    ResourcePrepareFailed,
-    IncompatibleReload,
-    UnknownGeneration,
-    RollbackNotAllowed,
-}
-
-impl RuntimeRejectionReason {
-    #[must_use]
-    pub fn slug(self) -> &'static str {
-        match self {
-            Self::InvalidConfig => "invalid_config",
-            Self::StartupOwnedChange => "startup_owned_change",
-            Self::BindConflict => "bind_conflict",
-            Self::ResourcePrepareFailed => "resource_prepare_failed",
-            Self::IncompatibleReload => "incompatible_reload",
-            Self::UnknownGeneration => "unknown_generation",
-            Self::RollbackNotAllowed => "rollback_not_allowed",
-        }
-    }
-}
-
-/// Stable operator-visible outcome reason shared across activation and rollback
-/// observability surfaces.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
-#[serde(rename_all = "snake_case")]
-pub enum RuntimeOperationOutcomeReason {
-    Applied,
-    InvalidConfig,
-    StartupOwnedChange,
-    BindConflict,
-    ResourcePrepareFailed,
-    IncompatibleReload,
-    UnknownGeneration,
-    RollbackNotAllowed,
-}
-
-impl RuntimeOperationOutcomeReason {
-    pub const COUNT: usize = 8;
-    pub const ALL: [Self; Self::COUNT] = [
-        Self::Applied,
-        Self::InvalidConfig,
-        Self::StartupOwnedChange,
-        Self::BindConflict,
-        Self::ResourcePrepareFailed,
-        Self::IncompatibleReload,
-        Self::UnknownGeneration,
-        Self::RollbackNotAllowed,
-    ];
-
-    #[must_use]
-    pub const fn index(self) -> usize {
-        match self {
-            Self::Applied => 0,
-            Self::InvalidConfig => 1,
-            Self::StartupOwnedChange => 2,
-            Self::BindConflict => 3,
-            Self::ResourcePrepareFailed => 4,
-            Self::IncompatibleReload => 5,
-            Self::UnknownGeneration => 6,
-            Self::RollbackNotAllowed => 7,
-        }
-    }
-
-    #[must_use]
-    pub fn slug(self) -> &'static str {
-        match self {
-            Self::Applied => "applied",
-            Self::InvalidConfig => "invalid_config",
-            Self::StartupOwnedChange => "startup_owned_change",
-            Self::BindConflict => "bind_conflict",
-            Self::ResourcePrepareFailed => "resource_prepare_failed",
-            Self::IncompatibleReload => "incompatible_reload",
-            Self::UnknownGeneration => "unknown_generation",
-            Self::RollbackNotAllowed => "rollback_not_allowed",
-        }
-    }
-
-    #[must_use]
-    pub fn result_label(self) -> &'static str {
-        match self {
-            Self::Applied => "success",
-            Self::InvalidConfig
-            | Self::StartupOwnedChange
-            | Self::BindConflict
-            | Self::ResourcePrepareFailed
-            | Self::IncompatibleReload
-            | Self::UnknownGeneration
-            | Self::RollbackNotAllowed => "failure",
-        }
-    }
-
-    #[must_use]
-    pub fn from_rejection_reason(reason: RuntimeRejectionReason) -> Self {
-        match reason {
-            RuntimeRejectionReason::InvalidConfig => Self::InvalidConfig,
-            RuntimeRejectionReason::StartupOwnedChange => Self::StartupOwnedChange,
-            RuntimeRejectionReason::BindConflict => Self::BindConflict,
-            RuntimeRejectionReason::ResourcePrepareFailed => Self::ResourcePrepareFailed,
-            RuntimeRejectionReason::IncompatibleReload => Self::IncompatibleReload,
-            RuntimeRejectionReason::UnknownGeneration => Self::UnknownGeneration,
-            RuntimeRejectionReason::RollbackNotAllowed => Self::RollbackNotAllowed,
-        }
-    }
 }
 
 impl From<TransitionRejectionKind> for RejectedChangeKind {

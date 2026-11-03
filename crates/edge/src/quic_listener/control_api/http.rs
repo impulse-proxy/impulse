@@ -6,7 +6,7 @@ use super::{
     *,
 };
 
-impl QUICListener {
+impl Http3Service {
     pub(super) async fn handle_control_api_request(
         mut req: Request<Incoming>,
         state: &ControlApiState,
@@ -25,20 +25,19 @@ impl QUICListener {
         let request_context = req.extensions().get::<ControlApiRequestContext>().cloned();
         let service_state = state.current_service_state();
         let active_generation = service_state
-            .generation
-            .as_ref()
+            .generation()
             .map(|current| current.generation());
         match route {
             ControlApiRoute::Health => Self::render_control_api_health(state),
             ControlApiRoute::Ready => Self::render_control_api_ready(state),
             ControlApiRoute::Runtime => {
-                Self::emit_control_api_audit_event(
+                AdministrativeSecurity::emit_control_api_audit_event(
                     &service_state.security,
                     identity.as_ref(),
                     request_context.as_ref(),
                     AdminAuditEventType::RuntimeSnapshot,
                     AdminAuditAction::RuntimeSnapshotRead,
-                    Self::control_api_audit_target_for_route(route, None),
+                    AdministrativeSecurity::control_api_audit_target_for_route(route, None),
                     AdminAuditGeneration {
                         active_generation,
                         ..Default::default()
@@ -64,13 +63,13 @@ impl QUICListener {
                 Self::handle_control_api_runtime_rollback(req, state).await
             }
             ControlApiRoute::RuntimeHistory => {
-                Self::emit_control_api_audit_event(
+                AdministrativeSecurity::emit_control_api_audit_event(
                     &service_state.security,
                     identity.as_ref(),
                     request_context.as_ref(),
                     AdminAuditEventType::RuntimeSnapshot,
                     AdminAuditAction::RuntimeSnapshotRead,
-                    Self::control_api_audit_target_for_route(route, None),
+                    AdministrativeSecurity::control_api_audit_target_for_route(route, None),
                     AdminAuditGeneration {
                         active_generation,
                         ..Default::default()
@@ -81,13 +80,13 @@ impl QUICListener {
                 Self::render_control_api_runtime_history(state)
             }
             ControlApiRoute::RuntimeHistoryGeneration(generation) => {
-                Self::emit_control_api_audit_event(
+                AdministrativeSecurity::emit_control_api_audit_event(
                     &service_state.security,
                     identity.as_ref(),
                     request_context.as_ref(),
                     AdminAuditEventType::RuntimeSnapshot,
                     AdminAuditAction::RuntimeSnapshotRead,
-                    Self::control_api_audit_target_for_route(route, None),
+                    AdministrativeSecurity::control_api_audit_target_for_route(route, None),
                     AdminAuditGeneration {
                         active_generation,
                         target_generation: Some(generation),

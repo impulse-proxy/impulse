@@ -1,8 +1,7 @@
 //! Impulse-owned fallback load-balancing strategies.
 
-use impulse_config::runtime::RuntimeLoadBalancingStrategy;
-
 use crate::{
+    LoadBalancingStrategy,
     algorithms::{latency_aware::LatencyAware, least_connections::LeastConnections},
     backend_pool::BackendPool,
 };
@@ -13,23 +12,16 @@ pub enum LoadBalancing {
 }
 
 impl LoadBalancing {
-    pub fn from_runtime_strategy(
-        strategy: RuntimeLoadBalancingStrategy,
-    ) -> Result<Option<Self>, String> {
+    pub fn from_strategy(strategy: LoadBalancingStrategy) -> Option<Self> {
         match strategy {
-            RuntimeLoadBalancingStrategy::RoundRobin
-            | RuntimeLoadBalancingStrategy::ConsistentHash
-            | RuntimeLoadBalancingStrategy::Random
-            | RuntimeLoadBalancingStrategy::StickyCid => Ok(None),
-            RuntimeLoadBalancingStrategy::LeastConnections => {
-                Ok(Some(Self::LeastConnections(LeastConnections::new())))
+            LoadBalancingStrategy::RoundRobin
+            | LoadBalancingStrategy::ConsistentHash
+            | LoadBalancingStrategy::Random
+            | LoadBalancingStrategy::StickyCid => None,
+            LoadBalancingStrategy::LeastConnections => {
+                Some(Self::LeastConnections(LeastConnections::new()))
             }
-            RuntimeLoadBalancingStrategy::LatencyAware => {
-                Ok(Some(Self::LatencyAware(LatencyAware::new())))
-            }
-            RuntimeLoadBalancingStrategy::Other => {
-                Err("unsupported load balancing strategy".to_string())
-            }
+            LoadBalancingStrategy::LatencyAware => Some(Self::LatencyAware(LatencyAware::new())),
         }
     }
 

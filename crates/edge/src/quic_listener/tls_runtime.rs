@@ -8,7 +8,8 @@ use std::{
 
 use super::*;
 use crate::quic_listener::control_api::security::{
-    ControlApiClientAuthPolicy, ControlApiClientVerifierState,
+    AdminClientAuthMode, ControlApiClientAuthPolicy, ControlApiClientVerifierState,
+    control_api_security_policy_from_config,
 };
 
 const MAX_TLS_PEM_BYTES: u64 = 1024 * 1024;
@@ -37,7 +38,7 @@ impl LoadedListenerIdentity {
         cert_field: &str,
         cert_path: &str,
     ) -> Result<Self, ProxyError> {
-        QUICListener::validate_tls_certificate_validity(&metadata, cert_field, cert_path)?;
+        Http3Service::validate_tls_certificate_validity(&metadata, cert_field, cert_path)?;
         Ok(Self {
             identity,
             certified_key,
@@ -90,7 +91,7 @@ impl QuicSniCertMaterial {
         cert_path: &str,
         key_path: &str,
     ) -> Result<Self, ProxyError> {
-        QUICListener::validate_boring_certificate_key(&leaf, &key, cert_path, key_path)?;
+        Http3Service::validate_boring_certificate_key(&leaf, &key, cert_path, key_path)?;
         Ok(Self { leaf, chain, key })
     }
 }
@@ -103,7 +104,7 @@ impl ResolvesServerCert for FallbackServerCertResolver {
     }
 }
 
-impl QUICListener {
+impl Http3Service {
     fn read_tls_pem_file_with_limit(path: &str, field_name: &str) -> Result<Vec<u8>, ProxyError> {
         let file = File::open(path).map_err(|err| {
             ProxyError::Tls(format!("failed to read {field_name} '{path}': {err}"))
@@ -166,50 +167,33 @@ impl QUICListener {
                 client_auth_ca.ca_file, client_auth_ca.certificate_count
             );
         }
-        let mut quic_config = Self::build_quic_config_from_loaded(&loaded_tls)?;
-
-        quic_config
-            .set_application_protos(quiche::h3::APPLICATION_PROTOCOL)
-            .map_err(|err| {
-                ProxyError::Transport(format!("failed to set ALPN protocols: {:?}", err))
-            })?;
-        quic_config.set_max_idle_timeout(
-            timeout_policy
-                .quic_max_idle
-                .as_millis()
-                .try_into()
-                .unwrap_or(u64::MAX),
-        );
-        quic_config.set_max_recv_udp_payload_size(MAX_UDP_PAYLOAD_BYTES);
-        quic_config.set_max_send_udp_payload_size(MAX_UDP_PAYLOAD_BYTES);
-        quic_config.set_initial_max_data(transport_policy.quic_initial_max_data);
-        quic_config
-            .set_initial_max_stream_data_bidi_local(transport_policy.quic_initial_max_stream_data);
-        quic_config
-            .set_initial_max_stream_data_bidi_remote(transport_policy.quic_initial_max_stream_data);
-        quic_config.set_initial_max_stream_data_uni(transport_policy.quic_initial_max_stream_data);
-        quic_config.set_initial_max_streams_bidi(transport_policy.quic_initial_max_streams_bidi);
-        quic_config.set_initial_max_streams_uni(transport_policy.quic_initial_max_streams_uni);
-        quic_config.set_disable_active_migration(true);
+        let tls_context = Self::build_quic_ssl_context_builder(&loaded_tls)?;
+        let quic_config = impulse_http3_ingress::build_http3_tls_config(
+            tls_context,
+            impulse_http3_ingress::Http3TlsSettings {
+                max_idle_timeout_millis: timeout_policy
+                    .quic_max_idle
+                    .as_millis()
+                    .try_into()
+                    .unwrap_or(u64::MAX),
+                max_udp_payload_bytes: MAX_UDP_PAYLOAD_BYTES,
+                initial_max_data: transport_policy.quic_initial_max_data,
+                initial_max_stream_data: transport_policy.quic_initial_max_stream_data,
+                initial_max_streams_bidi: transport_policy.quic_initial_max_streams_bidi,
+                initial_max_streams_uni: transport_policy.quic_initial_max_streams_uni,
+                client_auth_enabled: loaded_tls.client_auth.enabled,
+            },
+        )
+        .map_err(ProxyError::Transport)?;
 
         if loaded_tls.client_auth.enabled {
             info!(
                 "Downstream mTLS enabled (require_client_cert={})",
                 loaded_tls.client_auth.require_client_cert
             );
-        } else {
-            quic_config.verify_peer(false);
         }
 
         Ok(quic_config)
-    }
-
-    fn build_quic_config_from_loaded(
-        loaded_tls: &LoadedListenerTlsMaterial,
-    ) -> Result<Config, ProxyError> {
-        let tls_ctx_builder = Self::build_quic_ssl_context_builder(loaded_tls)?;
-        Config::with_boring_ssl_ctx_builder(quiche::PROTOCOL_VERSION, tls_ctx_builder)
-            .map_err(|err| ProxyError::Transport(format!("failed to create QUIC config: {err}")))
     }
 
     fn build_quic_ssl_context_builder(
@@ -453,25 +437,22 @@ impl QUICListener {
         current_generation: u64,
         listener_tls_store: &ListenerTlsReloadStore,
     ) -> Result<Option<u64>, ProxyError> {
-        let next_generation = listener_tls_store
-            .generation(listener_label)
-            .ok_or_else(|| {
-                ProxyError::Transport(format!(
-                    "missing TLS reload state for listener '{}'",
-                    listener_label
-                ))
-            })?;
-        if next_generation == current_generation {
-            return Ok(None);
-        }
-        Ok(Some(next_generation))
+        crate::runtime::tls::lifecycle::listener_tls_generation_if_changed(
+            listener_label,
+            current_generation,
+            listener_tls_store,
+        )
     }
 
     fn sync_tls_reload_state_if_needed(&mut self) -> Result<(), ProxyError> {
         let Some(current_generation) = Self::tls_reload_generation_if_needed(
             &self.listener_label,
             self.tls_reload_generation,
-            &self.listener_tls_store,
+            &self
+                .runtime_state
+                .shared_state()
+                .shared_services()
+                .listener_tls_store,
         )?
         else {
             return Ok(());
@@ -491,8 +472,7 @@ impl QUICListener {
             return self.sync_tls_reload_state_if_needed();
         };
 
-        let (runtime, response_cache_namespace) =
-            runtime_bundle.current_view_with_response_cache_namespace();
+        let runtime = runtime_bundle.current_view();
         let current_tls_generation = runtime
             .shared_services()
             .listener_tls_store
@@ -503,7 +483,7 @@ impl QUICListener {
                     self.listener_label
                 ))
             })?;
-        if runtime.generation() == self.runtime_generation
+        if runtime.generation() == self.runtime_state.generation()
             && current_tls_generation == self.tls_reload_generation
         {
             return Ok(());
@@ -516,16 +496,11 @@ impl QUICListener {
             )));
         };
 
-        let shared = runtime.shared_services();
-        let generation = runtime.state();
         self.config = listener_config;
-        self.listener_tls_store = Arc::clone(&shared.listener_tls_store);
-        self.transport_pool = Arc::clone(&shared.transport_pool);
-        self.backend_endpoints = Arc::clone(&generation.backend_endpoints);
-        self.backend_dns_resolver = shared.backend_dns_resolver.clone();
+        self.runtime_state = crate::runtime::listener::ListenerRuntimeState::Managed(runtime);
+        let shared = self.runtime_state.shared_state().shared_services();
+        let generation = self.runtime_state.shared_state().generation_state();
         self.upstream_policies = Arc::clone(&generation.upstream_policies);
-        self.upstream_pools = generation.upstream_pools.clone();
-        self.pingora_load_balancing = Arc::clone(&generation.pingora_load_balancing);
         self.upstream_inflight = generation.upstream_inflight.clone();
         self.global_inflight = Arc::clone(&generation.global_inflight);
         self.routing_index = Arc::clone(&generation.routing_index);
@@ -559,12 +534,11 @@ impl QUICListener {
             settings.new_connections_burst,
         );
         self.quic_config = Self::build_quic_config(&self.config)?;
-        self.runtime_generation = runtime.generation();
-        self.response_cache_namespace = response_cache_namespace;
         self.tls_reload_generation = current_tls_generation;
         info!(
             "Reloaded runtime configuration for listener {} at generation {}",
-            self.listener_label, self.runtime_generation
+            self.listener_label,
+            self.runtime_state.generation()
         );
         Ok(())
     }
@@ -945,18 +919,15 @@ impl QUICListener {
         Self::build_client_cert_verifier(&listener_tls.client_auth, client_auth_ca.as_ref(), true)
     }
 
-    pub(in crate::quic_listener) fn build_control_api_server_tls_config(
+    pub(crate) fn build_control_api_server_tls_config(
         config: &ListenerRuntimeConfig,
         client_auth: &ControlApiClientAuthPolicy,
     ) -> Result<Arc<RustlsServerConfig>, ProxyError> {
         let loaded_tls = Self::load_listener_tls_material(config)?;
 
         let builder = match client_auth.mode {
-            impulse_config::config::ControlApiClientAuthMode::Disabled => {
-                RustlsServerConfig::builder().with_no_client_auth()
-            }
-            impulse_config::config::ControlApiClientAuthMode::Optional
-            | impulse_config::config::ControlApiClientAuthMode::Required => {
+            AdminClientAuthMode::Disabled => RustlsServerConfig::builder().with_no_client_auth(),
+            AdminClientAuthMode::Optional | AdminClientAuthMode::Required => {
                 let roots =
                     Self::load_control_api_client_auth_roots(client_auth)?.ok_or_else(|| {
                         ProxyError::Tls(
@@ -965,10 +936,7 @@ impl QUICListener {
                         )
                     })?;
                 let verifier_builder = WebPkiClientVerifier::builder(roots);
-                let verifier = if matches!(
-                    client_auth.mode,
-                    impulse_config::config::ControlApiClientAuthMode::Required
-                ) {
+                let verifier = if matches!(client_auth.mode, AdminClientAuthMode::Required) {
                     verifier_builder.build()
                 } else {
                     verifier_builder.allow_unauthenticated().build()
@@ -1005,6 +973,15 @@ impl QUICListener {
         let mut tls_config = builder.with_cert_resolver(resolver);
         tls_config.alpn_protocols = vec![b"http/1.1".to_vec()];
         Ok(Arc::new(tls_config))
+    }
+
+    pub(crate) fn preflight_control_api_server_tls_config(
+        config: &ListenerRuntimeConfig,
+        control_api: &ControlApiConfig,
+        metrics: Arc<Metrics>,
+    ) -> Result<(), ProxyError> {
+        let security = control_api_security_policy_from_config(control_api, metrics);
+        Self::build_control_api_server_tls_config(config, &security.client_auth).map(|_| ())
     }
 
     fn validate_loaded_sni_identity(
@@ -1058,54 +1035,15 @@ impl QUICListener {
         let certificate_resolver = Self::build_server_cert_resolver_from_loaded(&loaded_tls)?;
         Ok(ListenerTlsReloadState {
             generation: 0,
-            loaded_at_unix_ms: crate::watchdog::time::now_millis(),
+            loaded_at_unix_ms: impulse_operations::watchdog::now_millis(),
             last_reload_status: "loaded".to_string(),
             inventory,
             certificate_resolver,
         })
     }
 
-    pub(super) fn build_listener_tls_reload_store(
-        config: &RuntimeConfig,
-    ) -> Result<ListenerTlsReloadStore, ProxyError> {
-        let mut listeners = HashMap::new();
-        for listener_config in config.listener_runtime_configs() {
-            let listener_label = Self::listener_label(&listener_config);
-            let state = Self::build_listener_tls_reload_state(&listener_config)?;
-            listeners.insert(listener_label, state);
-        }
-        Ok(ListenerTlsReloadStore::new(listeners))
-    }
-
-    pub(super) fn listener_label(config: &ListenerRuntimeConfig) -> String {
-        format!(
-            "{}:{}",
-            config.listen.listen.address, config.listen.listen.port
-        )
-    }
-
-    pub(super) fn update_listener_tls_expiry_metrics(
-        metrics: &Metrics,
-        listener_label: &str,
-        inventory: &ListenerTlsInventory,
-    ) {
-        let mut certs = Vec::with_capacity(inventory.sni_identities.len() + 1);
-        certs.push((
-            "__default__".to_string(),
-            inventory.default_identity.metadata.not_after_unix_seconds,
-        ));
-        certs.extend(
-            inventory
-                .sni_identities
-                .iter()
-                .map(|(server_name, identity)| {
-                    (
-                        server_name.clone(),
-                        identity.metadata.not_after_unix_seconds,
-                    )
-                }),
-        );
-        metrics.replace_downstream_tls_cert_expiry(listener_label, certs);
+    pub(crate) fn listener_label(config: &ListenerRuntimeConfig) -> String {
+        crate::runtime::tls::lifecycle::listener_label(config)
     }
 
     pub(super) fn classify_downstream_tls_cert_selection<'a>(
@@ -1183,10 +1121,14 @@ impl QUICListener {
             .unwrap_or("none");
         let client_cert_present = connection.quic.peer_cert().is_some();
 
-        self.metrics.inc_downstream_tls_handshake_success();
         self.metrics
+            .ingress_observations()
+            .inc_downstream_tls_handshake_success();
+        self.metrics
+            .ingress_observations()
             .record_downstream_tls_cert_selection(&listener_label, selection);
         self.metrics
+            .ingress_observations()
             .record_downstream_tls_alpn(&listener_label, alpn);
         debug!(
             "QUIC TLS established listener={} peer={} sni={:?} selection={} cert='{}' alpn={} client_cert_present={}",
@@ -1243,6 +1185,7 @@ impl QUICListener {
         };
         let reason = Self::classify_downstream_tls_failure_reason(&reason_text);
         self.metrics
+            .ingress_observations()
             .record_downstream_tls_handshake_failure(&Self::listener_label(&self.config), reason);
         connection.tls_handshake_failure_recorded = true;
         debug!(
@@ -1260,19 +1203,17 @@ mod tests {
     use std::sync::Arc;
 
     use boring::{pkey::PKey, x509::X509};
-    use impulse_config::{
-        config::{ClientAuth, ControlApiClientAuthMode},
-        runtime::RuntimeTlsIdentity,
-    };
+    use impulse_config::{config::ClientAuth, runtime::RuntimeTlsIdentity};
     use rcgen::{Certificate, CertificateParams, SanType};
     use rustls::RootCertStore;
     use tempfile::tempdir;
 
     use super::{
-        LoadedClientAuthCa, MAX_TLS_PEM_BYTES, QUICListener, RuntimeTlsCertificateMetadata,
+        Http3Service, LoadedClientAuthCa, MAX_TLS_PEM_BYTES, RuntimeTlsCertificateMetadata,
     };
     use crate::quic_listener::control_api::security::{
-        ControlApiClientAuthPolicy, ControlApiClientCaMaterial, ControlApiClientVerifierState,
+        AdminClientAuthMode, ControlApiClientAuthPolicy, ControlApiClientCaMaterial,
+        ControlApiClientVerifierState,
     };
 
     fn write_test_identity_files(dir: &std::path::Path) -> RuntimeTlsIdentity {
@@ -1296,7 +1237,7 @@ mod tests {
         ca_dir: Option<String>,
     ) -> ControlApiClientAuthPolicy {
         ControlApiClientAuthPolicy {
-            mode: ControlApiClientAuthMode::Required,
+            mode: AdminClientAuthMode::Required,
             verifier: ControlApiClientVerifierState::Configured(ControlApiClientCaMaterial {
                 ca_file,
                 ca_dir,
@@ -1310,7 +1251,7 @@ mod tests {
         let path = dir.path().join("oversized.pem");
         std::fs::write(&path, vec![b'A'; (MAX_TLS_PEM_BYTES as usize) + 1]).expect("write");
 
-        let err = QUICListener::read_tls_pem_file_with_limit(
+        let err = Http3Service::read_tls_pem_file_with_limit(
             path.to_str().expect("utf-8 path"),
             "SNI cert",
         )
@@ -1330,7 +1271,7 @@ mod tests {
         )
         .expect("oversized cert");
 
-        let err = match QUICListener::build_quic_ssl_context_builder_for_identity(
+        let err = match Http3Service::build_quic_ssl_context_builder_for_identity(
             &identity,
             &ClientAuth::default(),
             None,
@@ -1358,7 +1299,7 @@ mod tests {
             .remove(0);
         let key = PKey::private_key_from_pem(&key_pem).expect("parse key");
 
-        let error = QUICListener::validate_boring_certificate_key(
+        let error = Http3Service::validate_boring_certificate_key(
             &certificate,
             &key,
             &first.cert_path,
@@ -1385,7 +1326,7 @@ mod tests {
         };
 
         assert!(
-            QUICListener::validate_tls_certificate_validity(
+            Http3Service::validate_tls_certificate_validity(
                 &expired,
                 "listen.tls.default_identity.cert",
                 "/tmp/expired.pem",
@@ -1393,7 +1334,7 @@ mod tests {
             .is_err()
         );
         assert!(
-            QUICListener::validate_tls_certificate_validity(
+            Http3Service::validate_tls_certificate_validity(
                 &future,
                 "listen.tls.default_identity.cert",
                 "/tmp/future.pem",
@@ -1412,7 +1353,7 @@ mod tests {
         )
         .expect("oversized key");
 
-        let err = match QUICListener::build_quic_ssl_context_builder_for_identity(
+        let err = match Http3Service::build_quic_ssl_context_builder_for_identity(
             &identity,
             &ClientAuth::default(),
             None,
@@ -1445,7 +1386,7 @@ mod tests {
             roots: Arc::new(RootCertStore::empty()),
         };
 
-        let err = match QUICListener::build_quic_ssl_context_builder_for_identity(
+        let err = match Http3Service::build_quic_ssl_context_builder_for_identity(
             &identity,
             &client_auth,
             Some(&loaded_ca),
@@ -1471,7 +1412,7 @@ mod tests {
         )
         .expect("write huge pem");
 
-        let err = QUICListener::load_control_api_client_auth_roots(
+        let err = Http3Service::load_control_api_client_auth_roots(
             &control_api_client_auth_policy(None, Some(ca_dir.to_string_lossy().to_string())),
         )
         .expect_err("oversized ca_dir entry must be rejected");
@@ -1491,7 +1432,7 @@ mod tests {
         let identity = write_test_identity_files(&ca_dir);
         std::fs::rename(&identity.cert_path, ca_dir.join("root.pem")).expect("rename cert");
 
-        let roots = QUICListener::load_control_api_client_auth_roots(
+        let roots = Http3Service::load_control_api_client_auth_roots(
             &control_api_client_auth_policy(None, Some(ca_dir.to_string_lossy().to_string())),
         )
         .expect("load roots")

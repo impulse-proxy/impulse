@@ -15,19 +15,17 @@ use impulse_config::{
     runtime::{ListenerRuntimeConfig, RuntimeConfig},
     validator::validate,
 };
-use pingora_core::{
-    listeners::ConnectionFilter, server::configuration::ServerConf,
-    services::Service as PingoraService,
-};
+use impulse_pingora_ingress::ConnectionAdmission;
+use pingora_core::{server::configuration::ServerConf, services::Service as PingoraService};
 
 use super::{
-    PingoraConnectionAdmissionState, PingoraConnectionFilter, PingoraListenerTask,
+    PingoraConnectionAdmissionState, PingoraListenerTask, PingoraRuntimeConnectionAdmission,
     pingora_ingress_services, spawn_pingora_ingress_listener,
 };
 use crate::runtime::{
     bundle::RuntimeBundleHandle,
     connection::{PerSourceTokenBucket, TokenBucket},
-    listener::QUICListener,
+    listener::Http3Service,
 };
 
 #[path = "../../tests/support/mod.rs"]
@@ -54,7 +52,7 @@ impl PingoraTestService {
         validate(&config).map_err(|error| format!("config validation failed: {error}"))?;
         let runtime_config = RuntimeConfig::from_config(&config)
             .map_err(|error| format!("runtime config: {error}"))?;
-        let bundle = QUICListener::build_runtime_bundle(
+        let bundle = Http3Service::build_runtime_bundle(
             "pingora-parity-test".to_string(),
             config.log.clone(),
             &runtime_config,
@@ -119,7 +117,7 @@ fn pingora_listener_runtime(config: Config) -> (Arc<RuntimeBundleHandle>, Listen
     let listener = runtime_config
         .primary_listener_runtime_config()
         .expect("primary listener config");
-    let bundle = QUICListener::build_runtime_bundle(
+    let bundle = Http3Service::build_runtime_bundle(
         "pingora-listener-lifecycle-test".to_string(),
         config.log,
         &runtime_config,
@@ -167,9 +165,9 @@ fn connection_admission_config(
 fn test_connection_filter(
     runtime: &Arc<RuntimeBundleHandle>,
     listener: &ListenerRuntimeConfig,
-) -> PingoraConnectionFilter {
+) -> PingoraRuntimeConnectionAdmission {
     let policy = &listener.policies.transport;
-    PingoraConnectionFilter {
+    PingoraRuntimeConnectionAdmission {
         runtime: runtime.as_ref().clone(),
         listener_label: format!(
             "{}:{}",
@@ -232,7 +230,7 @@ fn pingora_connection_filter_applies_reloaded_generation_limits() {
     let mut reloaded = config;
     reloaded.performance.new_connections_burst = 2;
     let runtime_config = RuntimeConfig::from_config(&reloaded).expect("reload runtime config");
-    let mut bundle = QUICListener::build_runtime_bundle(
+    let mut bundle = Http3Service::build_runtime_bundle(
         "pingora-connection-admission-reload-test".to_string(),
         reloaded.log,
         &runtime_config,

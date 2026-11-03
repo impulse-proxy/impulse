@@ -1,147 +1,30 @@
 use std::{
     collections::VecDeque,
-    sync::{
-        Arc, RwLock,
-        atomic::{AtomicU64, Ordering},
-    },
+    sync::{Arc, RwLock},
     time::Duration,
 };
 
-use impulse_config::runtime::{ListenerRuntimeConfig, RuntimeConfig};
+use impulse_config::runtime::RuntimeConfig;
 use impulse_errors::ProxyError;
 use log::{info, warn};
 
 use crate::runtime::{
     activation::{GenerationChangeEvent, GenerationHistoryEntry},
-    cache::BoundedPingoraMemoryCache,
-    generation::{
-        RuntimeGenerationState, RuntimeGenerationView, RuntimeSharedServices,
-        StartupOwnedRuntimeState,
-    },
+    cache::{BoundedPingoraMemoryCache, RuntimeCacheStorage},
+    generation::{RuntimeGenerationView, StartupOwnedRuntimeState},
     policy::RuntimeLifecycleState,
     shared_state::SharedRuntimeState,
+    transport::{activate_transport_pool_generation, drain_transport_pool_generation},
 };
 
-/// The fully assembled runtime generation published to listener workers.
-///
-/// A bundle is the canonical boundary between configuration/build time and live
-/// worker execution: startup-owned state, generation-owned state, and shared
-/// services are packaged together and swapped as one unit.
-#[derive(Clone)]
-pub struct RuntimeBundle {
-    pub generation: u64,
-    pub startup: StartupOwnedRuntimeState,
-    pub runtime_config: RuntimeConfig,
-    pub shared_state: Arc<SharedRuntimeState>,
-}
+pub type RuntimeBundle =
+    impulse_runtime::RuntimeBundle<StartupOwnedRuntimeState, RuntimeConfig, SharedRuntimeState>;
 
-impl RuntimeBundle {
-    pub fn startup(&self) -> &StartupOwnedRuntimeState {
-        &self.startup
-    }
-
-    pub fn generation_view(&self) -> RuntimeGenerationView<'_> {
-        RuntimeGenerationView {
-            generation: self.generation,
-            startup: &self.startup,
-            runtime_config: &self.runtime_config,
-            shared: self.shared_state.shared_services(),
-            state: self.shared_state.generation_state(),
-        }
-    }
-
-    pub fn listener_runtime_config(&self, label: &str) -> Option<ListenerRuntimeConfig> {
-        self.generation_view().listener_runtime_config(label)
-    }
-}
-
-fn bounded_response_cache(runtime: &RuntimeBundle) -> Option<&'static BoundedPingoraMemoryCache> {
-    let state = runtime.shared_state.generation_state();
-    let mut policies = state
-        .upstream_policies
-        .values()
-        .map(|policy| policy.response_cache.clone());
-    let mut storage_policy = policies.next()?;
-    for policy in policies {
-        storage_policy.max_bytes = storage_policy.max_bytes.max(policy.max_bytes);
-        storage_policy.max_entries = storage_policy.max_entries.max(policy.max_entries);
-        storage_policy.max_object_bytes =
-            storage_policy.max_object_bytes.max(policy.max_object_bytes);
-    }
-    Some(Box::leak(Box::new(BoundedPingoraMemoryCache::new(
-        &storage_policy,
-        Arc::clone(&runtime.shared_state.shared_services().metrics),
-    ))))
-}
-
-fn response_cache_namespaces_compatible(current: &RuntimeBundle, next: &RuntimeBundle) -> bool {
-    let current = current
-        .runtime_config
-        .upstreams
-        .iter()
-        .filter(|(_, upstream)| upstream.policy.response_cache.enabled)
-        .collect::<Vec<_>>();
-    let next_count = next
-        .runtime_config
-        .upstreams
-        .values()
-        .filter(|upstream| upstream.policy.response_cache.enabled)
-        .count();
-
-    current.len() == next_count
-        && current.into_iter().all(|(name, upstream)| {
-            next.runtime_config
-                .upstreams
-                .get(name)
-                .filter(|candidate| candidate.policy.response_cache.enabled)
-                .is_some_and(|candidate| {
-                    upstream.route == candidate.route && upstream.policy == candidate.policy
-                })
-        })
-}
-
-/// Read-only view of the generation currently installed in the process.
-///
-/// This wrapper gives callers stable access to the active bundle without
-/// exposing the swap mechanism itself.
-#[derive(Clone)]
-pub struct ActiveRuntimeGeneration {
-    bundle: Arc<RuntimeBundle>,
-}
-
-impl ActiveRuntimeGeneration {
-    pub fn bundle(&self) -> &RuntimeBundle {
-        self.bundle.as_ref()
-    }
-
-    pub fn generation(&self) -> u64 {
-        self.bundle.generation
-    }
-
-    pub fn startup(&self) -> &StartupOwnedRuntimeState {
-        &self.bundle.startup
-    }
-
-    pub fn runtime_config(&self) -> &RuntimeConfig {
-        &self.bundle.runtime_config
-    }
-
-    pub fn shared_services(&self) -> &RuntimeSharedServices {
-        self.bundle.shared_state.shared_services()
-    }
-
-    pub fn state(&self) -> &RuntimeGenerationState {
-        self.bundle.shared_state.generation_state()
-    }
-
-    pub fn view(&self) -> RuntimeGenerationView<'_> {
-        self.bundle.generation_view()
-    }
-
-    pub fn listener_runtime_config(&self, label: &str) -> Option<ListenerRuntimeConfig> {
-        self.bundle.listener_runtime_config(label)
-    }
-}
+pub type ActiveRuntimeGeneration = impulse_runtime::ActiveRuntimeGeneration<
+    StartupOwnedRuntimeState,
+    RuntimeConfig,
+    SharedRuntimeState,
+>;
 
 const MAX_ARCHIVED_RUNTIME_GENERATIONS: usize = 8;
 const MAX_GENERATION_HISTORY_ENTRIES: usize = 32;
@@ -245,8 +128,7 @@ impl RuntimeGenerationRecord {
 #[derive(Clone)]
 pub struct RuntimeBundleHandle {
     inner: Arc<RwLock<Arc<RuntimeBundle>>>,
-    response_cache: Option<&'static BoundedPingoraMemoryCache>,
-    response_cache_namespace: Arc<AtomicU64>,
+    response_cache: RuntimeCacheStorage,
     history: Arc<RwLock<VecDeque<RuntimeGenerationRecord>>>,
     generation_history: Arc<RwLock<VecDeque<GenerationHistoryEntry>>>,
     generation_events: Arc<RwLock<VecDeque<GenerationChangeEvent>>>,
@@ -261,12 +143,14 @@ impl RuntimeBundleHandle {
         // here (see `begin_drain`/`begin_shutdown`).
         let lifecycle = RuntimeLifecycleState::new();
         let _ = lifecycle.mark_running();
-        let response_cache = bounded_response_cache(&bundle);
-        let response_cache_namespace = bundle.generation;
+        let response_cache = RuntimeCacheStorage::new(
+            &bundle.runtime_config,
+            bundle.generation,
+            Arc::clone(&bundle.shared_state.shared_services().metrics),
+        );
         let handle = Self {
             inner: Arc::new(RwLock::new(Arc::new(bundle))),
             response_cache,
-            response_cache_namespace: Arc::new(AtomicU64::new(response_cache_namespace)),
             history: Arc::new(RwLock::new(VecDeque::new())),
             generation_history: Arc::new(RwLock::new(VecDeque::new())),
             generation_events: Arc::new(RwLock::new(VecDeque::new())),
@@ -282,7 +166,11 @@ impl RuntimeBundleHandle {
     }
 
     pub(crate) fn response_cache(&self) -> Option<&'static BoundedPingoraMemoryCache> {
-        self.response_cache
+        self.response_cache.cache()
+    }
+
+    pub(crate) fn response_cache_namespace(&self) -> u64 {
+        self.response_cache.namespace()
     }
 
     pub(crate) fn current_with_response_cache_namespace(&self) -> (Arc<RuntimeBundle>, u64) {
@@ -290,17 +178,7 @@ impl RuntimeBundleHandle {
             .inner
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        (
-            Arc::clone(&guard),
-            self.response_cache_namespace.load(Ordering::Acquire),
-        )
-    }
-
-    pub(crate) fn current_view_with_response_cache_namespace(
-        &self,
-    ) -> (ActiveRuntimeGeneration, u64) {
-        let (bundle, namespace) = self.current_with_response_cache_namespace();
-        (ActiveRuntimeGeneration { bundle }, namespace)
+        (Arc::clone(&guard), self.response_cache.namespace())
     }
 
     /// The shared process lifecycle state machine (Phase 6). All clones of this
@@ -349,13 +227,25 @@ impl RuntimeBundleHandle {
     }
 
     pub fn current_view(&self) -> ActiveRuntimeGeneration {
-        ActiveRuntimeGeneration {
-            bundle: self.current(),
-        }
+        ActiveRuntimeGeneration::new(self.current())
     }
 
     pub fn current_generation(&self) -> u64 {
         self.current_view().generation()
+    }
+
+    pub fn retire_background_tasks(&self, timeout: Duration) {
+        let current = self.current();
+        current
+            .shared_state
+            .generation_state()
+            .generation_tasks
+            .drain(timeout);
+        current
+            .shared_state
+            .shared_services()
+            .process_tasks
+            .drain(timeout);
     }
 
     pub fn with_current_generation<R>(&self, f: impl FnOnce(ActiveRuntimeGeneration) -> R) -> R {
@@ -476,15 +366,15 @@ impl RuntimeBundleHandle {
     /// The swap replaces the whole [`RuntimeBundle`] pointer. By ownership class
     /// (see [`crate::runtime::policy::OwnedRuntimeState`]):
     ///
-    /// - **Generation-owned** ([`RuntimeGenerationState`]): fully replaced. The
+    /// - **Generation-owned** ([`crate::runtime::generation::RuntimeGenerationState`]): fully replaced. The
     ///   old generation's state is retired below.
     /// - **Startup-owned** ([`StartupOwnedRuntimeState`]): the caller
     ///   (`build_runtime_reload_plan`) carries the current values forward, and the
     ///   reload validator has already rejected any startup-owned change as
     ///   restart-required, so the swap must not observe a change here.
-    /// - **Process-shared** ([`RuntimeSharedServices`]): logically one instance
+    /// - **Process-shared** ([`crate::runtime::generation::RuntimeSharedServices`]): logically one instance
     ///   per process; in the current implementation the reload rebuilds it (see
-    ///   the note on `RuntimeSharedServices`).
+    ///   the note on `crate::runtime::generation::RuntimeSharedServices`).
     ///
     /// The active generation is only mutated at the single `mem::replace`; every
     /// failure path before it leaves the running generation intact.
@@ -509,7 +399,7 @@ impl RuntimeBundleHandle {
         let next_tasks = Arc::clone(&bundle.shared_state.generation_state().generation_tasks);
 
         if let Some(rejection) = self.lifecycle.check_reload_allowed().rejection() {
-            next_tasks.abort_generation();
+            next_tasks.cancel();
             warn!(
                 "runtime reload commit rejected in lifecycle phase {:?}: refusing to install generation {}",
                 self.lifecycle.phase(),
@@ -526,7 +416,7 @@ impl RuntimeBundleHandle {
             let mut guard = match self.inner.write() {
                 Ok(guard) => guard,
                 Err(_) => {
-                    next_tasks.abort_generation();
+                    next_tasks.cancel();
                     return Err(ProxyError::Transport(
                         "runtime bundle lock poisoned".to_string(),
                     ));
@@ -536,26 +426,29 @@ impl RuntimeBundleHandle {
             if let Some(expected_generation) = expected_generation
                 && previous_generation != expected_generation
             {
-                next_tasks.abort_generation();
+                next_tasks.cancel();
                 return Err(ProxyError::Transport(format!(
                     "runtime generation conflict: expected active generation {}, found {}",
                     expected_generation, previous_generation
                 )));
             }
-            let rotate_response_cache_namespace =
-                !response_cache_namespaces_compatible(guard.as_ref(), &bundle);
-            bundle
-                .shared_state
-                .shared_services()
-                .transport_pool
-                .rotate_pingora_pool(generation);
+            let rotate_response_cache_namespace = !self
+                .response_cache
+                .namespaces_compatible(&guard.runtime_config, &bundle.runtime_config);
+            activate_transport_pool_generation(
+                bundle
+                    .shared_state
+                    .shared_services()
+                    .transport_pool
+                    .as_ref(),
+                generation,
+            );
             // --- old-generation teardown boundary: BEGIN ---
             // The previous bundle's generation-owned state is now unreachable to
             // new readers; existing readers keep their clone until it drains.
             let previous = std::mem::replace(&mut *guard, Arc::new(bundle));
             if rotate_response_cache_namespace {
-                self.response_cache_namespace
-                    .store(generation, Ordering::Release);
+                self.response_cache.rotate_namespace(generation);
             }
             previous
         };
@@ -566,12 +459,14 @@ impl RuntimeBundleHandle {
             .shared_state
             .generation_state()
             .generation_tasks
-            .retire_generation(Duration::from_secs(5));
-        previous
-            .shared_state
-            .shared_services()
-            .transport_pool
-            .drain_pingora_pool();
+            .drain(Duration::from_secs(5));
+        drain_transport_pool_generation(
+            previous
+                .shared_state
+                .shared_services()
+                .transport_pool
+                .as_ref(),
+        );
         // --- old-generation teardown boundary: END ---
         info!(
             "runtime generation swap committed: {} -> {} (lifecycle phase {:?})",
@@ -597,28 +492,34 @@ impl RuntimeBundleHandle {
             .len();
         let metrics = &current.shared_state.shared_services().metrics;
         let generation_state = current.shared_state.generation_state();
-        metrics.reconcile_runtime_metric_labels(
-            generation_state
-                .upstream_policies
-                .keys()
-                .map(String::as_str),
-            generation_state
-                .backend_endpoints
-                .keys()
-                .map(String::as_str),
-            generation_state
-                .listener_runtime_configs
-                .keys()
-                .map(String::as_str),
-            generation_state
-                .resilience
-                .quota
-                .policies
-                .iter()
-                .map(|policy| policy.name.as_str()),
-        );
-        metrics.set_runtime_active_generation(current.generation);
-        metrics.set_runtime_history_depth(history_depth);
+        metrics
+            .runtime_observations()
+            .reconcile_runtime_metric_labels(
+                generation_state
+                    .upstream_policies
+                    .keys()
+                    .map(String::as_str),
+                generation_state
+                    .backend_endpoints
+                    .keys()
+                    .map(String::as_str),
+                generation_state
+                    .listener_runtime_configs
+                    .keys()
+                    .map(String::as_str),
+                generation_state
+                    .resilience
+                    .quota
+                    .policies
+                    .iter()
+                    .map(|policy| policy.name.as_str()),
+            );
+        metrics
+            .runtime_observations()
+            .set_runtime_active_generation(current.generation);
+        metrics
+            .runtime_observations()
+            .set_runtime_history_depth(history_depth);
     }
 
     fn archive_previous_generation(
@@ -698,10 +599,9 @@ mod tests {
     };
     use rcgen::{Certificate, CertificateParams, SanType};
     use tempfile::tempdir;
-    use tokio::sync::oneshot;
 
     use super::*;
-    use crate::runtime::{listener::QUICListener, tasks::RuntimeTaskRegistration};
+    use crate::runtime::listener::Http3Service;
 
     fn write_test_cert_for_name(dir: &Path, cert_name: &str, dns_name: &str) -> (String, String) {
         let mut params = CertificateParams::new(vec![dns_name.to_string()]);
@@ -791,7 +691,7 @@ mod tests {
         config: &ImpulseConfigConfig,
     ) -> RuntimeBundle {
         let runtime_config = RuntimeConfig::from_config(config).expect("runtime config");
-        let mut bundle = QUICListener::build_runtime_bundle(
+        let mut bundle = Http3Service::build_runtime_bundle(
             config_path.to_string(),
             config.log.clone(),
             &runtime_config,
@@ -875,13 +775,11 @@ mod tests {
         assert_eq!(handle.current_generation(), 1);
     }
 
-    struct CompletionSignal(Option<oneshot::Sender<()>>);
+    struct CompletionSignal(Arc<AtomicBool>);
 
     impl Drop for CompletionSignal {
         fn drop(&mut self) {
-            if let Some(sender) = self.0.take() {
-                let _ = sender.send(());
-            }
+            self.0.store(true, Ordering::Release);
         }
     }
 
@@ -889,23 +787,19 @@ mod tests {
         bundle: &RuntimeBundle,
         completed: Arc<AtomicBool>,
     ) -> tokio::task::AbortHandle {
-        let (completion_tx, completion_rx) = oneshot::channel();
-        let task = tokio::spawn(async move {
-            let _completion = CompletionSignal(Some(completion_tx));
-            future::pending::<()>().await;
-        });
-        let abort = task.abort_handle();
-        let join = task;
-        tokio::spawn(async move {
-            let _ = join.await;
-            completed.store(true, Ordering::Release);
-        });
+        let completion = CompletionSignal(completed);
         bundle
             .shared_state
             .generation_state()
             .generation_tasks
-            .register(RuntimeTaskRegistration::new(abort.clone(), completion_rx));
-        abort
+            .spawn_supervised_for_test(
+                &tokio::runtime::Handle::current(),
+                "test-generation-task",
+                async move {
+                    let _completion = completion;
+                    future::pending::<()>().await;
+                },
+            )
     }
 
     mod runtime_generation_view_ownership {

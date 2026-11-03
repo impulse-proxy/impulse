@@ -1,6 +1,8 @@
-use ::http::{Method, header};
+use ::http::Method;
 use bytes::Bytes;
 use http_body_util::Full;
+pub(super) use impulse_operations::administrative::ControlApiRoute;
+use impulse_operations::administrative::{AdministrativeSecurity, AuthenticationOutcome};
 
 use super::{
     admin_identity::{AdminIdentity, AdminRole, ControlApiRequestContext},
@@ -14,49 +16,6 @@ use super::{
 };
 
 type ControlApiGateError = Box<Response<Full<Bytes>>>;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum ControlApiRoute {
-    Health,
-    Ready,
-    Runtime,
-    RuntimeValidate,
-    RuntimePreview,
-    RuntimeActivate,
-    RuntimeRollback,
-    RuntimeHistory,
-    RuntimeHistoryGeneration(u64),
-    ReloadCerts,
-    ReloadRuntime,
-    Restart,
-}
-
-impl ControlApiRoute {
-    fn minimum_role(self, security: &ControlApiSecurityPolicy) -> Option<AdminRole> {
-        match self {
-            Self::Health => security
-                .authorization
-                .protect_health
-                .then_some(AdminRole::from(security.authorization.runtime_read_role)),
-            Self::Ready => security
-                .authorization
-                .protect_ready
-                .then_some(AdminRole::from(security.authorization.runtime_read_role)),
-            Self::Runtime | Self::RuntimeHistory | Self::RuntimeHistoryGeneration(_) => {
-                Some(AdminRole::from(security.authorization.runtime_read_role))
-            }
-            Self::RuntimeValidate
-            | Self::RuntimePreview
-            | Self::RuntimeActivate
-            | Self::RuntimeRollback
-            | Self::ReloadCerts
-            | Self::ReloadRuntime => {
-                Some(AdminRole::from(security.authorization.runtime_mutate_role))
-            }
-            Self::Restart => Some(AdminRole::from(security.authorization.restart_role)),
-        }
-    }
-}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum AuthorizationDecision {
@@ -74,14 +33,7 @@ pub(super) enum AuthorizationDecision {
     },
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-enum AuthenticationOutcome {
-    Authenticated(AdminIdentity),
-    Missing,
-    Invalid(&'static str),
-}
-
-impl QUICListener {
+impl Http3Service {
     pub(super) fn control_api_request_route_for<B>(
         req: &::http::Request<B>,
         paths: &ControlApiPaths,
@@ -128,76 +80,13 @@ impl QUICListener {
         }
     }
 
-    pub(super) fn bearer_token_from_authorization_header(raw: &str) -> Option<&str> {
-        let raw = raw.trim();
-        let split = raw.find(char::is_whitespace)?;
-        let (scheme, rest) = raw.split_at(split);
-        if !scheme.eq_ignore_ascii_case("bearer") {
-            return None;
-        }
-        let token = rest.trim_start();
-        if token.is_empty() {
-            return None;
-        }
-        Some(token)
-    }
-
-    fn authenticate_control_api_request<B>(
-        req: &::http::Request<B>,
-        security: &ControlApiSecurityPolicy,
-    ) -> AuthenticationOutcome {
-        let request_ctx = req.extensions().get::<ControlApiRequestContext>().cloned();
-        if matches!(
-            security.client_auth.mode,
-            impulse_config::config::ControlApiClientAuthMode::Required
-        ) && request_ctx
-            .as_ref()
-            .and_then(|context| context.mtls_identity.as_ref())
-            .is_none()
-        {
-            return AuthenticationOutcome::Missing;
-        }
-        let token_match = match req.headers().get(header::AUTHORIZATION) {
-            Some(value) => {
-                let Ok(raw) = value.to_str() else {
-                    return AuthenticationOutcome::Invalid("invalid_authorization_header");
-                };
-                let Some(provided) = Self::bearer_token_from_authorization_header(raw) else {
-                    return AuthenticationOutcome::Invalid("invalid_bearer_token");
-                };
-                match Self::control_api_token_match(provided, security) {
-                    Some(token) => Some(token),
-                    None => return AuthenticationOutcome::Invalid("invalid_bearer_token"),
-                }
-            }
-            None => None,
-        };
-
-        let has_bearer = token_match.is_some();
-        let has_mtls = request_ctx
-            .as_ref()
-            .and_then(|context| context.mtls_identity.as_ref())
-            .is_some();
-        match Self::build_admin_identity(
-            request_ctx,
-            token_match,
-            security.identity_source.as_ref(),
-        ) {
-            Some(identity) => AuthenticationOutcome::Authenticated(identity),
-            None if has_bearer && has_mtls => {
-                AuthenticationOutcome::Invalid("conflicting_authentication_principals")
-            }
-            None => AuthenticationOutcome::Missing,
-        }
-    }
-
     #[cfg(test)]
     pub(super) fn control_api_is_authorized_for<B>(
         req: &::http::Request<B>,
         security: &ControlApiSecurityPolicy,
     ) -> bool {
         matches!(
-            Self::authenticate_control_api_request(req, security),
+            AdministrativeSecurity::authenticate_control_api_request(req, security),
             AuthenticationOutcome::Authenticated(_)
         )
     }
@@ -210,8 +99,7 @@ impl QUICListener {
         let service_state = state.current_service_state();
         let request_context = req.extensions().get::<ControlApiRequestContext>().cloned();
         let active_generation = service_state
-            .generation
-            .as_ref()
+            .generation()
             .map(|current| current.generation());
         Self::enforce_control_api_source_policy(
             req,
@@ -233,7 +121,10 @@ impl QUICListener {
             .as_ref()
             .map(|context| context.peer_addr.ip());
 
-        let decision = match Self::authenticate_control_api_request(req, &service_state.security) {
+        let decision = match AdministrativeSecurity::authenticate_control_api_request(
+            req,
+            &service_state.security,
+        ) {
             AuthenticationOutcome::Missing => {
                 if throttle_ip.is_some_and(|ip| service_state.auth_throttle.is_blocked(ip)) {
                     AuthorizationDecision::Deny {
@@ -286,7 +177,7 @@ impl QUICListener {
                 if let Some(ip) = throttle_ip {
                     service_state.auth_throttle.record_success(ip);
                 }
-                Self::emit_control_api_auth_audit_event(
+                AdministrativeSecurity::emit_control_api_auth_audit_event(
                     &service_state.security,
                     Some(&identity),
                     request_context.as_ref(),
@@ -330,7 +221,7 @@ impl QUICListener {
                 route,
             } => {
                 if status == StatusCode::UNAUTHORIZED {
-                    Self::emit_control_api_auth_audit_event(
+                    AdministrativeSecurity::emit_control_api_auth_audit_event(
                         &service_state.security,
                         identity.as_ref(),
                         request_context.as_ref(),
@@ -340,7 +231,7 @@ impl QUICListener {
                         reason,
                     );
                 } else {
-                    Self::emit_control_api_route_denial_audit_event(
+                    AdministrativeSecurity::emit_control_api_route_denial_audit_event(
                         &service_state.security,
                         identity.as_ref(),
                         request_context.as_ref(),
@@ -371,7 +262,7 @@ impl QUICListener {
         }
         let request_context = req.extensions().get::<ControlApiRequestContext>().cloned();
         let Some(request_context) = request_context else {
-            Self::emit_control_api_auth_audit_event(
+            AdministrativeSecurity::emit_control_api_auth_audit_event(
                 security,
                 None,
                 None,
@@ -397,7 +288,7 @@ impl QUICListener {
         ) {
             Ok(source_ip) => source_ip,
             Err(SourceIpExtractionError::MalformedForwardingHeaders) => {
-                Self::emit_control_api_auth_audit_event(
+                AdministrativeSecurity::emit_control_api_auth_audit_event(
                     security,
                     None,
                     Some(&request_context),
@@ -418,7 +309,7 @@ impl QUICListener {
         match security.evaluate_source_policy(source_ip) {
             ControlApiSourcePolicyDecision::Allow => Ok(()),
             ControlApiSourcePolicyDecision::Deny { reason } => {
-                Self::emit_control_api_auth_audit_event(
+                AdministrativeSecurity::emit_control_api_auth_audit_event(
                     security,
                     None,
                     Some(&request_context),
@@ -427,7 +318,7 @@ impl QUICListener {
                     AdminAuditResult::Denied,
                     reason,
                 );
-                Self::emit_control_api_route_denial_audit_event(
+                AdministrativeSecurity::emit_control_api_route_denial_audit_event(
                     security,
                     None,
                     Some(&request_context),
@@ -487,9 +378,10 @@ impl QUICListener {
         };
         let mut response = Self::json_response(status, response);
         if status == StatusCode::TOO_MANY_REQUESTS {
-            response
-                .headers_mut()
-                .insert(header::RETRY_AFTER, ::http::HeaderValue::from_static("60"));
+            response.headers_mut().insert(
+                ::http::header::RETRY_AFTER,
+                ::http::HeaderValue::from_static("60"),
+            );
         }
         response
     }

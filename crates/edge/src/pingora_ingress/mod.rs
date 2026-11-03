@@ -1,46 +1,51 @@
 use std::{
     convert::Infallible,
-    sync::{
-        Arc, Mutex, RwLock,
-        atomic::{AtomicUsize, Ordering},
-    },
-    time::{Duration, Instant, SystemTime},
+    sync::{Arc, Mutex, RwLock, atomic::Ordering},
+    time::{Duration, Instant},
 };
 
 use async_trait::async_trait;
 use bytes::Bytes;
 use http_body_util::{Full, combinators::BoxBody};
 use impulse_bridge::response::{
-    ResponseBodyMode, ResponseBodyPolicy, ResponseNormalizationInput,
-    ResponseNormalizationProtocol, ResponseProtocolConstraints, UpstreamResponseView,
-    normalize_response_trailers, normalize_upstream_response,
+    ResponseBodyMode, ResponseNormalizationProtocol, ResponseProtocolConstraints,
+    normalize_response_trailers,
 };
 use impulse_config::{backend_endpoint::BackendScheme, runtime::ListenerRuntimeConfig};
+use impulse_contracts::{
+    AlternateBackendFailureReason, HealthFailureReason, RequestDecision as AdmissionPolicyDecision,
+    RetryAttemptTelemetryReason, TunnelMode,
+};
 use impulse_errors::{
-    BridgeError, PoolError, ProxyError, RetryAttemptTelemetryReason, RetryPolicyDecision,
-    RetryPolicyDenialReason, classify_upstream_proxy_error, is_idempotent_method,
+    BridgeError, PoolError, ProxyError, RetryPolicyDecision, classify_upstream_proxy_error,
+    is_idempotent_method,
 };
-use impulse_lb::{alternate_backend::AlternateBackendFailureReason, upstream_pool::UpstreamPool};
-use impulse_transport::{classify_pingora_h1_error, classify_pingora_h2_error};
-use pingora_cache::{
-    CacheKey, CacheMeta, CachePhase, NoCacheReason, RespCacheable, cache_control::CacheControl,
+use impulse_lb::{BackendSelectionInput, upstream_pool::UpstreamPool};
+use impulse_observability::ResponseCacheOutcome;
+pub use impulse_pingora_ingress::PingoraListenerTask;
+use impulse_pingora_ingress::{
+    ConnectionAdmission, PingoraDrainState, PingoraIngressAdapter, PingoraListenerConfig,
+    PingoraRequestContext as IngressRequestContext, PingoraRequestService, PingoraUpstreamProtocol,
+    apply_normalized_request_headers, apply_normalized_response_headers, build_response_header,
+    classify_pingora_proxy_error, classify_tunnel, configure_tunnel_peer, configure_tunnel_proxy,
+    create_listener_service, pingora_peer_protocol, spawn_listener, tunnel_cache_flags,
+    tunnel_response_established, write_downstream_response, write_error_response,
+    write_local_response,
 };
-#[cfg(unix)]
-use pingora_core::server::{Fds, ListenFds};
+use pingora_cache::{CacheKey, CacheMeta, CachePhase, NoCacheReason, RespCacheable};
 use pingora_core::{
     Error, HTTPStatus, InternalError, Result,
     apps::{HttpServerApp, HttpServerOptions, ReusedHttpStream, ServerApp},
-    listeners::{ConnectionFilter, TcpSocketOptions, tls::TlsSettings},
     protocols::{
         Stream,
         http::{ServerSession, compression::Algorithm},
     },
     server::{ShutdownWatch, configuration::ServerConf},
-    services::{Service as PingoraServiceLifecycle, listening::Service},
-    upstreams::peer::{ALPN, HttpPeer},
+    services::listening::Service,
+    upstreams::peer::HttpPeer,
 };
 use pingora_http::{RequestHeader, ResponseHeader};
-use pingora_proxy::{HttpProxy, ProxyHttp, Session, http_proxy};
+use pingora_proxy::{HttpProxy, Session, http_proxy};
 use quiche::h3::NameValue;
 use rustls::{
     server::{ClientHello, ResolvesServerCert},
@@ -49,28 +54,37 @@ use rustls::{
 
 use crate::{
     REQUEST_ID_COUNTER,
-    metrics::ResponseCacheOutcome,
-    quic_listener::{
-        AdmissionPolicyDecision, BackendCandidate, ForwardingSelectionService,
-        MAX_UPSTREAM_RETRY_ATTEMPTS, RetryCoordinator, TargetResolutionRequest,
-        admission_rejection_response, evaluate_post_auth_quota_policy,
-        execute_external_auth_request, validate_http_request_parts,
+    edge_core::{
+        body_guardrails::{
+            BodyTimeoutKind, REQUEST_BODY_TOO_LARGE_BODY, RESPONSE_BODY_TOO_LARGE_BODY,
+            RequestBodyGuardrailConfig, RequestBodyGuardrailDecision, RequestBodyGuardrailInput,
+            ResponseBodyGuardrailConfig, ResponseBodyGuardrailDecision, ResponseBodyGuardrailInput,
+            checked_request_body_ingress, checked_response_body_guardrails,
+            evaluate_request_body_timeouts,
+        },
+        request_completion::RequestCompletion,
+        request_execution::{
+            EdgeRequestService, RequestExecutionInput, ResolvedRequestPolicy, ResolvedRouteTarget,
+            ResponseCompressionAction, RouteResolutionError, evaluate_post_auth_quota_policy,
+        },
+        request_validation::validate_http_request_parts,
+        response_processing::{
+            ResponseCacheDecision, ResponseProcessingInput, ResponseProcessingResult,
+            process_response,
+        },
+        retry::RetryCoordinator,
     },
-    request_pipeline::{
-        PipelineRequest, PipelineRoute, ResolvedRequestPolicy, ResolvedRouteTarget,
-        ResponseCompressionAction, ResponseCompressionInput, RouteResolutionError,
-        TerminalOutcomeGuard, ensure_vary_accept_encoding, evaluate_pipeline,
-        evaluate_response_compression, resolve_route,
+    quic_listener::{
+        BackendCandidate, ForwardingSelectionService, TargetResolutionRequest,
+        execute_external_auth_request,
     },
     resilience::quota::QuotaIdentityContext,
     runtime::{
         bundle::{RuntimeBundle, RuntimeBundleHandle},
         cache::{
-            BoundedPingoraMemoryCache, ResponseCacheKeyInput, ResponseCacheRepresentation,
-            ResponseCacheRequestEligibilityInput, ResponseCacheResponseEligibilityInput,
-            canonical_response_cache_key, evaluate_cache_request_eligibility,
-            evaluate_cache_response_eligibility, response_cache_ttl,
-            route_auth_requires_cache_bypass,
+            ResponseCacheKeyInput, ResponseCacheRepresentation,
+            ResponseCacheRequestEligibilityInput, canonical_response_cache_key,
+            evaluate_cache_request_eligibility, route_auth_requires_cache_bypass,
         },
         connection::{
             PerSourceTokenBucket, TokenBucket,
@@ -78,14 +92,6 @@ use crate::{
                 ExternalAuthDecision, ExternalAuthRequest, ExternalAuthStateTransition,
                 PendingHeaderMutation, apply_auth_request_mutations,
                 resolve_external_auth_state_transition,
-            },
-            guardrails::{
-                BodyTimeoutKind, REQUEST_BODY_TOO_LARGE_BODY, RESPONSE_BODY_TOO_LARGE_BODY,
-                RequestBodyGuardrailConfig, RequestBodyGuardrailDecision,
-                RequestBodyGuardrailInput, ResponseBodyGuardrailConfig,
-                ResponseBodyGuardrailDecision, ResponseBodyGuardrailInput,
-                checked_request_body_ingress, checked_response_body_guardrails,
-                evaluate_request_body_timeouts,
             },
             outcome::{
                 AdmissionOutcomeClass, BackendHealthObservationInput, BackendOutcomeTarget,
@@ -96,56 +102,39 @@ use crate::{
                 observe_status_outcome,
             },
         },
-        listener::QUICListener,
+        listener::Http3Service,
         tls::store::ListenerTlsReloadStore,
     },
 };
 
 const RESPONSE_GZIP_LEVEL: u32 = 6;
 
-pub(crate) struct PingoraRequestContext {
+pub(crate) struct PingoraEdgeRequestState {
     pub(crate) runtime: Arc<RuntimeBundle>,
     response_cache_namespace: u64,
     pub(crate) route: Option<ResolvedRouteTarget>,
     pub(crate) policy: Option<ResolvedRequestPolicy>,
     auth_header_mutations: Vec<PendingHeaderMutation>,
-    pub(crate) terminal_outcome: TerminalOutcomeGuard,
-    started_at: Instant,
+    pub(crate) completion: RequestCompletion,
     terminal_classification: Option<PingoraTerminalClassification>,
-    method: Option<String>,
-    path: Option<String>,
-    authority: Option<String>,
-    content_length: Option<usize>,
-    body_bytes_received: usize,
-    request_body_last_progress_at: Instant,
-    body_limit_exempt: bool,
-    response_body_bytes_received: usize,
-    response_body_started_at: Option<Instant>,
-    response_body_last_progress_at: Option<Instant>,
-    response_body_suppressed: bool,
-    response_body_limit_exempt: bool,
-    response_content_length: Option<usize>,
-    response_compression_vary: bool,
+    response_processing: Option<ResponseProcessingResult>,
     response_cache_representation: Option<ResponseCacheRepresentation>,
     response_cache_bypass_recorded: bool,
-    request_body_replayable: bool,
-    retry_count: u8,
-    retry_backend: Option<(String, usize)>,
-    lb_key: Option<String>,
-    request_id: u64,
     selected_backend: Option<PingoraSelectedBackend>,
     drain: Arc<PingoraDrainState>,
 }
+
+pub(crate) type PingoraRequestContext = IngressRequestContext<PingoraEdgeRequestState>;
 
 enum PingoraTerminalClassification {
     Admission(AdmissionOutcomeClass),
     Error(ProxyError),
 }
 
-impl Drop for PingoraRequestContext {
+impl Drop for PingoraEdgeRequestState {
     fn drop(&mut self) {
-        self.terminal_outcome.record();
-        self.drain.active_requests.fetch_sub(1, Ordering::AcqRel);
+        self.completion.complete();
+        self.drain.request_finished();
     }
 }
 
@@ -167,22 +156,21 @@ impl Drop for PingoraSelectedBackend {
     }
 }
 
-pub(crate) struct PingoraIngressService {
+pub(crate) struct PingoraEdgeRequestService {
     runtime: RuntimeBundleHandle,
-    response_cache: Option<&'static BoundedPingoraMemoryCache>,
     drain: Arc<PingoraDrainState>,
 }
 
-impl PingoraIngressService {
-    fn select_backend(
-        &self,
+impl PingoraEdgeRequestService {
+    fn process_response_head(
         session: &Session,
-        ctx: &mut PingoraRequestContext,
-    ) -> Result<PingoraSelectedBackend> {
-        let route = ctx.route.as_ref().ok_or_else(|| {
+        upstream_response: &ResponseHeader,
+        ctx: &PingoraRequestContext,
+    ) -> Result<ResponseProcessingResult> {
+        let policy = ctx.policy.as_ref().ok_or_else(|| {
             Error::explain(
                 InternalError,
-                "Pingora ingress request filter did not resolve a route",
+                "Pingora ingress request filter did not resolve a request policy",
             )
         })?;
         let method = ctx.method.as_deref().ok_or_else(|| {
@@ -191,27 +179,73 @@ impl PingoraIngressService {
                 "Pingora ingress request filter did not validate a method",
             )
         })?;
-        let path = ctx.path.as_deref().ok_or_else(|| {
+        let tunnel_response =
+            tunnel_response_established(ctx.tunnel_mode, method, upstream_response.status);
+        let body_mode = if tunnel_response {
+            ResponseBodyMode::TunnelSuccess
+        } else if method.eq_ignore_ascii_case("HEAD") {
+            ResponseBodyMode::HeadRequest
+        } else {
+            ResponseBodyMode::Normal
+        };
+        Ok(process_response(ResponseProcessingInput {
+            status: upstream_response.status,
+            upstream_headers: &upstream_response.headers,
+            body_mode,
+            constraints: pingora_response_constraints(tunnel_response),
+            request_method: method,
+            request_headers: &session.req_header().headers,
+            compression: crate::runtime::subsystem_mapping::response_compression_policy_input(
+                &policy.response_compression,
+            ),
+            cache_max_ttl_secs: ctx
+                .response_cache_representation
+                .is_some()
+                .then_some(policy.local_auth_policy.response_cache.max_ttl_secs),
+            now: std::time::SystemTime::now(),
+        }))
+    }
+
+    fn select_backend(
+        &self,
+        session: &Session,
+        ctx: &mut PingoraRequestContext,
+    ) -> Result<PingoraSelectedBackend> {
+        let upstream_name = ctx
+            .route
+            .as_ref()
+            .map(|route| Arc::clone(&route.upstream_name))
+            .ok_or_else(|| {
+                Error::explain(
+                    InternalError,
+                    "Pingora ingress request filter did not resolve a route",
+                )
+            })?;
+        let method = ctx.method.clone().ok_or_else(|| {
+            Error::explain(
+                InternalError,
+                "Pingora ingress request filter did not validate a method",
+            )
+        })?;
+        let path = ctx.path.clone().ok_or_else(|| {
             Error::explain(
                 InternalError,
                 "Pingora ingress request filter did not validate a path",
             )
         })?;
+        let authority = ctx.authority.clone();
+        let retry_backend = ctx.retry_backend.take();
         let state = ctx.runtime.shared_state.generation_state();
         let pool = state
-            .upstream_pools
-            .get(route.upstream_name.as_ref())
+            .pingora_load_balancing
+            .upstream_pool(upstream_name.as_ref())
             .cloned()
             .ok_or_else(|| {
                 Error::explain(
                     InternalError,
-                    format!(
-                        "Pingora ingress upstream pool is missing: {}",
-                        route.upstream_name
-                    ),
+                    format!("Pingora ingress upstream pool is missing: {upstream_name}"),
                 )
             })?;
-        let retry_backend = ctx.retry_backend.take();
         let (backend_addr, backend_index) = if let Some((address, index)) = retry_backend {
             let pool = pool.read().map_err(|_| {
                 Error::explain(InternalError, "Pingora ingress upstream pool lock poisoned")
@@ -235,27 +269,25 @@ impl PingoraIngressService {
                     .map(str::to_owned)
             };
             let selection_request = TargetResolutionRequest::new(
-                method,
-                path,
-                ctx.authority.as_deref(),
+                &method,
+                &path,
+                authority.as_deref(),
                 None,
                 Some(&header_lookup),
             );
             let selector = state
                 .pingora_load_balancing
-                .selector(route.upstream_name.as_ref())
+                .selector(upstream_name.as_ref())
                 .ok_or_else(|| {
                     ctx.runtime
                         .shared_state
                         .shared_services()
                         .metrics
+                        .runtime_observations()
                         .inc_pingora_lb_selector_failure();
                     Error::explain(
                         InternalError,
-                        format!(
-                            "Pingora ingress selector is missing: {}",
-                            route.upstream_name
-                        ),
+                        format!("Pingora ingress selector is missing: {upstream_name}"),
                     )
                 })?;
             let selected = ForwardingSelectionService::select_backend(
@@ -273,7 +305,7 @@ impl PingoraIngressService {
                 .generation_state()
                 .resilience
                 .retry_budget
-                .mark_primary(route.upstream_name.as_ref());
+                .mark_primary(upstream_name.as_ref());
             (selected.backend_addr, selected.backend_index)
         };
         Ok(PingoraSelectedBackend {
@@ -296,12 +328,12 @@ pub(crate) struct PingoraConnectionLimitedApp {
 }
 
 struct PingoraRequestDeadlineApp {
-    proxy: Arc<HttpProxy<PingoraIngressService>>,
+    proxy: Arc<HttpProxy<PingoraIngressAdapter<PingoraEdgeRequestService>>>,
     runtime: RuntimeBundleHandle,
     listener_label: String,
 }
 
-struct PingoraConnectionFilter {
+pub(crate) struct PingoraRuntimeConnectionAdmission {
     runtime: RuntimeBundleHandle,
     listener_label: String,
     state: Mutex<PingoraConnectionAdmissionState>,
@@ -315,26 +347,26 @@ struct PingoraConnectionAdmissionState {
     global: TokenBucket,
 }
 
-impl std::fmt::Debug for PingoraConnectionFilter {
+impl std::fmt::Debug for PingoraRuntimeConnectionAdmission {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
-            .debug_struct("PingoraConnectionFilter")
+            .debug_struct("PingoraRuntimeConnectionAdmission")
             .finish_non_exhaustive()
     }
 }
 
 #[async_trait]
-impl ConnectionFilter for PingoraConnectionFilter {
+impl ConnectionAdmission for PingoraRuntimeConnectionAdmission {
     async fn should_accept(&self, addr: Option<&std::net::SocketAddr>) -> bool {
         let current = self.runtime.current();
         let metrics = &current.shared_state.shared_services().metrics;
         let Some(listener) = current.listener_runtime_config(&self.listener_label) else {
-            metrics.inc_ingress_rate_limited();
+            metrics.ingress_observations().inc_ingress_rate_limited();
             return false;
         };
         let policy = &listener.policies.transport;
         let Ok(mut state) = self.state.lock() else {
-            metrics.inc_ingress_rate_limited();
+            metrics.ingress_observations().inc_ingress_rate_limited();
             return false;
         };
         if state.generation != current.generation {
@@ -352,45 +384,15 @@ impl ConnectionFilter for PingoraConnectionFilter {
             state.generation = current.generation;
         }
         if !state.global.try_consume() {
-            metrics.inc_ingress_rate_limited();
+            metrics.ingress_observations().inc_ingress_rate_limited();
             return false;
         }
         drop(state);
         let source_allowed = addr.is_none_or(|addr| self.per_source.try_consume(addr.ip()));
         if !source_allowed {
-            metrics.inc_ingress_rate_limited();
+            metrics.ingress_observations().inc_ingress_rate_limited();
         }
         source_allowed
-    }
-}
-
-#[derive(Default)]
-struct PingoraDrainState {
-    active_requests: AtomicUsize,
-    active_connections: AtomicUsize,
-}
-
-struct PingoraConnectionPermit {
-    drain: Arc<PingoraDrainState>,
-}
-
-impl PingoraConnectionPermit {
-    fn try_acquire(drain: &Arc<PingoraDrainState>, limit: usize) -> Option<Self> {
-        drain
-            .active_connections
-            .try_update(Ordering::AcqRel, Ordering::Acquire, |active| {
-                (active < limit).then_some(active + 1)
-            })
-            .ok()?;
-        Some(Self {
-            drain: Arc::clone(drain),
-        })
-    }
-}
-
-impl Drop for PingoraConnectionPermit {
-    fn drop(&mut self) {
-        self.drain.active_connections.fetch_sub(1, Ordering::AcqRel);
     }
 }
 
@@ -434,8 +436,7 @@ impl ServerApp for PingoraConnectionLimitedApp {
     ) -> Option<Stream> {
         let current = self.runtime.current();
         let listener = current.listener_runtime_config(&self.listener_label)?;
-        let permit = PingoraConnectionPermit::try_acquire(
-            &self.drain,
+        let permit = self.drain.try_acquire_connection(
             listener
                 .policies
                 .transport
@@ -447,6 +448,7 @@ impl ServerApp for PingoraConnectionLimitedApp {
                 .shared_state
                 .shared_services()
                 .metrics
+                .ingress_observations()
                 .inc_connection_cap_reject();
             return None;
         };
@@ -480,126 +482,6 @@ impl ResolvesServerCert for RotatingServerCertResolver {
     }
 }
 
-pub struct PingoraListenerTask {
-    address: String,
-    #[cfg(unix)]
-    listen_fds: ListenFds,
-    shutdown: tokio::sync::watch::Sender<bool>,
-    task: Option<tokio::task::JoinHandle<()>>,
-    drain: Arc<PingoraDrainState>,
-    forced_drained: bool,
-}
-
-impl PingoraListenerTask {
-    pub async fn wait_until_ready(&mut self) -> std::result::Result<(), String> {
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-        loop {
-            if self
-                .task
-                .as_ref()
-                .is_some_and(tokio::task::JoinHandle::is_finished)
-            {
-                return match self.collect_finished().await {
-                    Some(Err(error)) => Err(error),
-                    _ => Err(format!(
-                        "Pingora listener {} stopped during startup",
-                        self.address
-                    )),
-                };
-            }
-            #[cfg(unix)]
-            if self.listen_fds.lock().get(&self.address).is_some() {
-                return Ok(());
-            }
-            #[cfg(not(unix))]
-            if tokio::time::timeout(
-                Duration::from_millis(50),
-                tokio::net::TcpStream::connect(&self.address),
-            )
-            .await
-            .is_ok_and(|result| result.is_ok())
-            {
-                return Ok(());
-            }
-            if tokio::time::Instant::now() >= deadline {
-                return Err(format!(
-                    "Timed out waiting for Pingora listener {}",
-                    self.address
-                ));
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    }
-
-    pub fn request_shutdown(&self) {
-        let _ = self.shutdown.send(true);
-    }
-
-    pub fn active_requests(&self) -> usize {
-        self.drain.active_requests.load(Ordering::Acquire)
-    }
-
-    pub async fn collect_finished(&mut self) -> Option<std::result::Result<(), String>> {
-        if !self
-            .task
-            .as_ref()
-            .is_some_and(tokio::task::JoinHandle::is_finished)
-        {
-            return None;
-        }
-        let task = self.task.take()?;
-        Some(
-            task.await
-                .map_err(|error| format!("Pingora listener {} failed: {error}", self.address)),
-        )
-    }
-
-    pub fn stopped(&self) -> bool {
-        self.forced_drained || (self.task.is_none() && self.active_requests() == 0)
-    }
-
-    pub fn force_drain(&mut self) -> usize {
-        self.forced_drained = true;
-        self.active_requests()
-    }
-
-    pub async fn drain(mut self, timeout: Duration) -> std::result::Result<usize, String> {
-        self.request_shutdown();
-        let deadline = tokio::time::Instant::now() + timeout;
-        if let Some(mut task) = self.task.take() {
-            match tokio::time::timeout_at(deadline, &mut task).await {
-                Ok(result) => result.map_err(|error| {
-                    format!("Pingora listener {} failed: {error}", self.address)
-                })?,
-                Err(_) => {
-                    task.abort();
-                    let _ = task.await;
-                    return Ok(self.active_requests());
-                }
-            }
-        }
-        loop {
-            let active = self.active_requests();
-            if active == 0 {
-                return Ok(0);
-            }
-            if tokio::time::Instant::now() >= deadline {
-                return Ok(active);
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    }
-}
-
-impl Drop for PingoraListenerTask {
-    fn drop(&mut self) {
-        self.request_shutdown();
-        if let Some(task) = self.task.as_ref() {
-            task.abort();
-        }
-    }
-}
-
 pub fn spawn_pingora_ingress_listener(
     runtime: Arc<RuntimeBundleHandle>,
     listener: ListenerRuntimeConfig,
@@ -608,34 +490,13 @@ pub fn spawn_pingora_ingress_listener(
         "{}:{}",
         listener.listen.listen.address, listener.listen.listen.port
     );
-    let (mut service, drain) = pingora_ingress_service_for_listener(
+    let (service, drain) = pingora_ingress_service_for_listener(
         &Arc::new(ServerConf::default()),
         runtime.as_ref().clone(),
         listener,
     )
     .map_err(|error| format!("Failed to create Pingora listener {address}: {error}"))?;
-    let (shutdown, shutdown_watch) = tokio::sync::watch::channel(false);
-    #[cfg(unix)]
-    let listen_fds: ListenFds = Arc::new(Fds::new().into());
-    #[cfg(unix)]
-    let service_listen_fds = Arc::clone(&listen_fds);
-    let task = tokio::spawn(async move {
-        #[cfg(unix)]
-        service
-            .start_service(Some(service_listen_fds), shutdown_watch, 1)
-            .await;
-        #[cfg(not(unix))]
-        service.start_service(shutdown_watch, 1).await;
-    });
-    Ok(PingoraListenerTask {
-        address,
-        #[cfg(unix)]
-        listen_fds,
-        shutdown,
-        task: Some(task),
-        drain,
-        forced_drained: false,
-    })
+    Ok(spawn_listener(address, service, drain))
 }
 
 #[cfg(test)]
@@ -670,10 +531,9 @@ fn pingora_ingress_service_for_listener(
         listener.listen.listen.address, listener.listen.listen.port
     );
     let current = runtime.current();
-    let response_cache = runtime.response_cache();
     let tls_store = Arc::clone(&current.shared_state.shared_services().listener_tls_store);
     let transport_policy = &listener.policies.transport;
-    let connection_filter = Arc::new(PingoraConnectionFilter {
+    let connection_admission = Arc::new(PingoraRuntimeConnectionAdmission {
         runtime: runtime.clone(),
         listener_label: listener_label.clone(),
         state: Mutex::new(PingoraConnectionAdmissionState {
@@ -690,7 +550,7 @@ fn pingora_ingress_service_for_listener(
             transport_policy.new_connections_burst,
         ),
     });
-    let tls_state = QUICListener::build_listener_tls_reload_state(&listener).map_err(|error| {
+    let tls_state = Http3Service::build_listener_tls_reload_state(&listener).map_err(|error| {
         Error::because(
             InternalError,
             format!("failed to prepare Pingora ingress TLS for '{listener_label}'"),
@@ -706,41 +566,41 @@ fn pingora_ingress_service_for_listener(
                 error,
             )
         })?;
+    let client_certificate_verifier = Http3Service::build_listener_client_cert_verifier(
+        &listener.listen.tls,
+    )
+    .map_err(|error| {
+        Error::because(
+            InternalError,
+            format!(
+                "failed to configure Pingora ingress client authentication for '{listener_label}'"
+            ),
+            error,
+        )
+    })?;
     let identity = &listener.listen.tls.default_identity;
-    let mut tls = TlsSettings::intermediate(&identity.cert_path, &identity.key_path)?;
-    tls.set_cert_resolver(Arc::new(RotatingServerCertResolver {
-        listener: listener_label.clone(),
-        store: tls_store,
-    }));
-    if let Some(verifier) = QUICListener::build_listener_client_cert_verifier(&listener.listen.tls)
-        .map_err(|error| {
-            Error::because(
-                InternalError,
-                format!(
-                    "failed to configure Pingora ingress client authentication for '{listener_label}'"
-                ),
-                error,
-            )
-        })?
-    {
-        tls.set_client_cert_verifier(verifier);
-    }
-    tls.enable_h2();
+    let listener_config = PingoraListenerConfig {
+        address: listener_label.clone(),
+        certificate_path: identity.cert_path.clone(),
+        private_key_path: identity.key_path.clone(),
+        reuse_port: listener.performance.reuseport,
+        certificate_resolver: Arc::new(RotatingServerCertResolver {
+            listener: listener_label.clone(),
+            store: tls_store,
+        }),
+        client_certificate_verifier,
+    };
 
     let drain = Arc::new(PingoraDrainState::default());
     let mut proxy = http_proxy(
         configuration,
-        PingoraIngressService {
+        PingoraIngressAdapter::new(PingoraEdgeRequestService {
             runtime: runtime.clone(),
-            response_cache,
             drain: Arc::clone(&drain),
-        },
+        }),
     );
-    let mut options = HttpServerOptions::default();
-    options.allow_connect_method_proxying = true;
-    proxy.server_options = Some(options);
-    let mut service = Service::new(
-        format!("Impulse Pingora Ingress {listener_label}"),
+    configure_tunnel_proxy(&mut proxy);
+    let service = create_listener_service(
         PingoraConnectionLimitedApp {
             proxy: Arc::new(PingoraRequestDeadlineApp {
                 proxy: Arc::new(proxy),
@@ -751,61 +611,40 @@ fn pingora_ingress_service_for_listener(
             listener_label: listener_label.clone(),
             drain: Arc::clone(&drain),
         },
-    );
-    service.set_connection_filter(connection_filter);
-    let socket_options = listener.performance.reuseport.then(|| {
-        let mut options = TcpSocketOptions::default();
-        options.so_reuseport = Some(true);
-        options
-    });
-    service.add_tls_with_settings(&listener_label, socket_options, tls);
+        listener_config,
+        connection_admission,
+    )?;
     Ok((service, drain))
 }
 
 #[async_trait]
-impl ProxyHttp for PingoraIngressService {
-    type CTX = PingoraRequestContext;
+impl PingoraRequestService for PingoraEdgeRequestService {
+    type Context = PingoraRequestContext;
 
-    fn new_ctx(&self) -> Self::CTX {
-        self.drain.active_requests.fetch_add(1, Ordering::AcqRel);
+    fn new_context(&self) -> Self::Context {
+        self.drain.request_started();
         let (runtime, response_cache_namespace) =
             self.runtime.current_with_response_cache_namespace();
-        PingoraRequestContext {
-            runtime,
-            response_cache_namespace,
-            route: None,
-            policy: None,
-            auth_header_mutations: Vec::new(),
-            terminal_outcome: TerminalOutcomeGuard::default(),
-            started_at: Instant::now(),
-            terminal_classification: None,
-            method: None,
-            path: None,
-            authority: None,
-            content_length: None,
-            body_bytes_received: 0,
-            request_body_last_progress_at: Instant::now(),
-            body_limit_exempt: false,
-            response_body_bytes_received: 0,
-            response_body_started_at: None,
-            response_body_last_progress_at: None,
-            response_body_suppressed: false,
-            response_body_limit_exempt: false,
-            response_content_length: None,
-            response_compression_vary: false,
-            response_cache_representation: None,
-            response_cache_bypass_recorded: false,
-            request_body_replayable: false,
-            retry_count: 0,
-            retry_backend: None,
-            lb_key: None,
-            request_id: REQUEST_ID_COUNTER.fetch_add(1, Ordering::Relaxed),
-            selected_backend: None,
-            drain: Arc::clone(&self.drain),
-        }
+        IngressRequestContext::new(
+            PingoraEdgeRequestState {
+                runtime,
+                response_cache_namespace,
+                route: None,
+                policy: None,
+                auth_header_mutations: Vec::new(),
+                completion: RequestCompletion::default(),
+                terminal_classification: None,
+                response_processing: None,
+                response_cache_representation: None,
+                response_cache_bypass_recorded: false,
+                selected_backend: None,
+                drain: Arc::clone(&self.drain),
+            },
+            REQUEST_ID_COUNTER.fetch_add(1, Ordering::Relaxed),
+        )
     }
 
-    async fn request_filter(&self, session: &mut Session, ctx: &mut Self::CTX) -> Result<bool> {
+    async fn request_filter(&self, session: &mut Session, ctx: &mut Self::Context) -> Result<bool> {
         let runtime = Arc::clone(&ctx.runtime);
         let state = runtime.shared_state.generation_state();
         let shared = runtime.shared_state.shared_services();
@@ -828,57 +667,18 @@ impl ProxyHttp for PingoraIngressService {
                 ctx.terminal_classification = Some(PingoraTerminalClassification::Error(
                     ProxyError::Bridge(BridgeError::InvalidHeader),
                 ));
-                shared.metrics.inc_request_validation_reject();
+                shared
+                    .metrics
+                    .request_observations()
+                    .inc_request_validation_reject();
                 if is_policy {
-                    shared.metrics.inc_policy_denied();
+                    shared.metrics.policy_observations().inc_policy_denied();
                 }
                 write_local_response(session, status, body, None, None).await?;
                 return Ok(true);
             }
         };
 
-        let route = match resolve_route(
-            &state.routing_index,
-            &validated.method,
-            &validated.path,
-            validated.authority.as_deref(),
-        ) {
-            Ok(route) => route,
-            Err(RouteResolutionError::EmptyMethodOrPath) => {
-                write_local_response(
-                    session,
-                    http::StatusCode::BAD_REQUEST,
-                    b"invalid request\n",
-                    None,
-                    None,
-                )
-                .await?;
-                return Ok(true);
-            }
-            Err(RouteResolutionError::NoRoute) => {
-                write_local_response(
-                    session,
-                    http::StatusCode::BAD_GATEWAY,
-                    b"no route\n",
-                    None,
-                    None,
-                )
-                .await?;
-                return Ok(true);
-            }
-        };
-        let Some(upstream_policy) = state.upstream_policies.get(route.upstream_name.as_ref())
-        else {
-            write_local_response(
-                session,
-                http::StatusCode::BAD_GATEWAY,
-                b"no route\n",
-                None,
-                None,
-            )
-            .await?;
-            return Ok(true);
-        };
         let Some(peer_address) = session
             .client_addr()
             .and_then(|address| address.as_inet())
@@ -901,27 +701,50 @@ impl ProxyHttp for PingoraIngressService {
                 .and_then(|value| value.to_str().ok())
                 .map(str::to_owned)
         };
-        let pipeline = evaluate_pipeline(
+        let request_service = EdgeRequestService::new(
+            &state.routing_index,
+            &state.upstream_policies,
             &state.resilience,
-            PipelineRoute::new(route.upstream_name.as_ref(), upstream_policy),
-            PipelineRequest {
-                method: &validated.method,
-                path: &validated.path,
-                authority: validated.authority.as_deref(),
-                peer_address,
-                headers: Some(&header_lookup),
-            },
         );
+        let execution = match request_service.execute(RequestExecutionInput {
+            method: &validated.method,
+            path: &validated.path,
+            authority: validated.authority.as_deref(),
+            peer_address,
+            headers: Some(&header_lookup),
+        }) {
+            Ok(execution) => execution,
+            Err(RouteResolutionError::EmptyMethodOrPath) => {
+                write_local_response(
+                    session,
+                    http::StatusCode::BAD_REQUEST,
+                    b"invalid request\n",
+                    None,
+                    None,
+                )
+                .await?;
+                return Ok(true);
+            }
+            Err(RouteResolutionError::NoRoute | RouteResolutionError::MissingUpstreamPolicy) => {
+                write_local_response(
+                    session,
+                    http::StatusCode::BAD_GATEWAY,
+                    b"no route\n",
+                    None,
+                    None,
+                )
+                .await?;
+                return Ok(true);
+            }
+        };
+        let route = &execution.route;
         shared
             .metrics
+            .policy_observations()
             .set_brownout_active(state.resilience.brownout.is_active());
-        let body_limit_exempt = validated.method.eq_ignore_ascii_case("CONNECT")
-            || impulse_bridge::websocket::legacy_websocket_upgrade_requested(
-                &validated.method,
-                &bridge_headers(&request.headers),
-            );
+        let tunnel_mode = classify_tunnel(&validated.method, validated.websocket_tunnel);
         let external_auth_request =
-            pipeline
+            execution
                 .policy
                 .external_auth
                 .as_ref()
@@ -938,21 +761,24 @@ impl ProxyHttp for PingoraIngressService {
         ctx.path = Some(validated.path);
         ctx.authority = validated.authority;
         ctx.content_length = validated.content_length;
-        ctx.body_limit_exempt = body_limit_exempt;
+        ctx.tunnel_mode = tunnel_mode;
 
-        if let Some(response) = admission_rejection_response(&pipeline.admission) {
-            match pipeline.admission {
+        if let Some(response) = execution.admission.rejection_response() {
+            match execution.admission {
                 AdmissionPolicyDecision::Unauthorized(_) => {
                     ctx.terminal_classification = Some(PingoraTerminalClassification::Admission(
                         AdmissionOutcomeClass::AuthDenied,
                     ));
-                    shared.metrics.inc_policy_denied();
+                    shared.metrics.policy_observations().inc_policy_denied();
                 }
                 AdmissionPolicyDecision::RateLimited(_) => {
                     ctx.terminal_classification = Some(PingoraTerminalClassification::Admission(
                         AdmissionOutcomeClass::RateLimited,
                     ));
-                    shared.metrics.inc_request_rate_limited()
+                    shared
+                        .metrics
+                        .policy_observations()
+                        .inc_request_rate_limited()
                 }
                 AdmissionPolicyDecision::Overloaded(_) => {
                     ctx.terminal_classification = Some(PingoraTerminalClassification::Admission(
@@ -995,7 +821,7 @@ impl ProxyHttp for PingoraIngressService {
                 buffered_bytes: 0,
                 next_chunk_bytes: 0,
                 declared_content_length: ctx.content_length,
-                exempt_from_body_size_cap: body_limit_exempt,
+                exempt_from_body_size_cap: tunnel_mode.is_tunnel(),
             },
         )
         .is_err()
@@ -1012,7 +838,7 @@ impl ProxyHttp for PingoraIngressService {
         }
 
         if let (Some(external_auth), Some(mut auth_request)) = (
-            pipeline.policy.external_auth.as_ref(),
+            execution.policy.external_auth.as_ref(),
             external_auth_request,
         ) {
             let selected = self.select_backend(session, ctx)?;
@@ -1024,12 +850,18 @@ impl ProxyHttp for PingoraIngressService {
                 ExternalAuthStateTransition::Admitted {
                     request_header_mutations,
                 } => {
-                    shared.metrics.inc_external_auth_allowed();
+                    shared
+                        .metrics
+                        .policy_observations()
+                        .inc_external_auth_allowed();
                     ctx.auth_header_mutations = request_header_mutations;
                 }
                 ExternalAuthStateTransition::RejectedAuthDenied { decision } => {
-                    shared.metrics.inc_policy_denied();
-                    shared.metrics.inc_external_auth_denied();
+                    shared.metrics.policy_observations().inc_policy_denied();
+                    shared
+                        .metrics
+                        .policy_observations()
+                        .inc_external_auth_denied();
                     ctx.terminal_classification = Some(PingoraTerminalClassification::Admission(
                         AdmissionOutcomeClass::AuthDenied,
                     ));
@@ -1037,7 +869,10 @@ impl ProxyHttp for PingoraIngressService {
                     return Ok(true);
                 }
                 ExternalAuthStateTransition::RejectedAuthUnavailable { status, body, .. } => {
-                    shared.metrics.inc_external_auth_error();
+                    shared
+                        .metrics
+                        .policy_observations()
+                        .inc_external_auth_error();
                     ctx.terminal_classification = Some(PingoraTerminalClassification::Admission(
                         AdmissionOutcomeClass::Failed { timed_out: false },
                     ));
@@ -1045,7 +880,10 @@ impl ProxyHttp for PingoraIngressService {
                     return Ok(true);
                 }
                 ExternalAuthStateTransition::TimedOutAuth { status, body } => {
-                    shared.metrics.inc_external_auth_timeout();
+                    shared
+                        .metrics
+                        .policy_observations()
+                        .inc_external_auth_timeout();
                     ctx.terminal_classification = Some(PingoraTerminalClassification::Admission(
                         AdmissionOutcomeClass::Failed { timed_out: true },
                     ));
@@ -1084,7 +922,10 @@ impl ProxyHttp for PingoraIngressService {
         {
             let response = rejection.as_response();
             if response.status == http::StatusCode::TOO_MANY_REQUESTS {
-                shared.metrics.inc_request_rate_limited();
+                shared
+                    .metrics
+                    .policy_observations()
+                    .inc_request_rate_limited();
             }
             ctx.terminal_classification = Some(PingoraTerminalClassification::Admission(
                 AdmissionOutcomeClass::QuotaDenied,
@@ -1100,49 +941,42 @@ impl ProxyHttp for PingoraIngressService {
             return Ok(true);
         }
 
-        if pipeline.policy.response_compression.enabled {
+        if execution.policy.response_compression.enabled {
             session.upstream_compression.adjust_level(0);
             session
                 .upstream_compression
                 .adjust_algorithm_level(Algorithm::Gzip, RESPONSE_GZIP_LEVEL);
         }
-        ctx.policy = Some(pipeline.policy);
+        ctx.policy = Some(execution.policy);
         ctx.request_body_replayable = session.is_body_empty();
         Ok(false)
     }
 
-    fn request_cache_filter(&self, session: &mut Session, ctx: &mut Self::CTX) -> Result<()> {
+    fn request_cache_filter(&self, session: &mut Session, ctx: &mut Self::Context) -> Result<()> {
         let (Some(cache), Some(policy), Some(method)) = (
-            self.response_cache,
+            self.runtime.response_cache(),
             ctx.policy.as_ref(),
             ctx.method.as_deref(),
         ) else {
             return Ok(());
         };
         let cache_policy = &policy.local_auth_policy.response_cache;
-        let is_tunnel = method.eq_ignore_ascii_case("CONNECT");
-        if CacheControl::from_req_headers(session.req_header())
-            .is_some_and(|cache_control| cache_control.no_cache() || cache_control.no_store())
-        {
-            ctx.runtime
-                .shared_state
-                .shared_services()
-                .metrics
-                .record_response_cache_outcome(ResponseCacheOutcome::Bypass);
-            ctx.response_cache_bypass_recorded = true;
-            return Ok(());
-        }
+        let (is_upgrade, is_tunnel) = tunnel_cache_flags(ctx.tunnel_mode);
         let has_body = !session.is_body_empty();
         let representation =
             evaluate_cache_request_eligibility(ResponseCacheRequestEligibilityInput {
-                policy: cache_policy,
+                policy: crate::runtime::subsystem_mapping::response_cache_policy_input(
+                    cache_policy,
+                ),
                 route_auth_enabled: route_auth_requires_cache_bypass(
-                    &policy.local_auth_policy.upstream_auth,
+                    crate::runtime::subsystem_mapping::response_cache_auth_input(
+                        &policy.local_auth_policy.upstream_auth,
+                    ),
                 ),
                 method,
                 headers: &session.req_header().headers,
                 has_body,
-                is_upgrade: ctx.body_limit_exempt && !is_tunnel,
+                is_upgrade,
                 is_tunnel,
             });
         let Ok(representation) = representation else {
@@ -1150,6 +984,7 @@ impl ProxyHttp for PingoraIngressService {
                 .shared_state
                 .shared_services()
                 .metrics
+                .ingress_observations()
                 .record_response_cache_outcome(ResponseCacheOutcome::Bypass);
             ctx.response_cache_bypass_recorded = true;
             return Ok(());
@@ -1159,7 +994,7 @@ impl ProxyHttp for PingoraIngressService {
         Ok(())
     }
 
-    fn cache_key_callback(&self, session: &Session, ctx: &mut Self::CTX) -> Result<CacheKey> {
+    fn cache_key_callback(&self, session: &Session, ctx: &mut Self::Context) -> Result<CacheKey> {
         let representation = ctx.response_cache_representation.ok_or_else(|| {
             Error::explain(InternalError, "response cache representation is missing")
         })?;
@@ -1198,62 +1033,36 @@ impl ProxyHttp for PingoraIngressService {
 
     fn response_cache_filter(
         &self,
-        _session: &Session,
+        session: &Session,
         response: &ResponseHeader,
-        ctx: &mut Self::CTX,
+        ctx: &mut Self::Context,
     ) -> Result<RespCacheable> {
-        let Some(policy) = ctx.policy.as_ref() else {
+        let processed = match ctx.response_processing.clone() {
+            Some(processed) => processed,
+            None => Self::process_response_head(session, response, ctx)?,
+        };
+        let ResponseCacheDecision::Store {
+            stored_at,
+            fresh_until,
+        } = processed.cache
+        else {
             ctx.runtime
                 .shared_state
                 .shared_services()
                 .metrics
+                .ingress_observations()
                 .record_response_cache_outcome(ResponseCacheOutcome::Rejection);
             return Ok(RespCacheable::Uncacheable(NoCacheReason::Custom(
                 "impulse_policy",
             )));
         };
-        if response.status != http::StatusCode::OK
-            || evaluate_cache_response_eligibility(ResponseCacheResponseEligibilityInput {
-                headers: &response.headers,
-            })
-            .is_err()
-        {
-            ctx.runtime
-                .shared_state
-                .shared_services()
-                .metrics
-                .record_response_cache_outcome(ResponseCacheOutcome::Rejection);
-            return Ok(RespCacheable::Uncacheable(NoCacheReason::Custom(
-                "impulse_policy",
-            )));
-        }
-        let now = SystemTime::now();
-        let Some(ttl) = response_cache_ttl(
-            response,
-            policy.local_auth_policy.response_cache.max_ttl_secs,
-            now,
-        ) else {
-            ctx.runtime
-                .shared_state
-                .shared_services()
-                .metrics
-                .record_response_cache_outcome(ResponseCacheOutcome::Rejection);
-            return Ok(RespCacheable::Uncacheable(NoCacheReason::OriginNotCache));
-        };
-        let Some(fresh_until) = now.checked_add(ttl) else {
-            ctx.runtime
-                .shared_state
-                .shared_services()
-                .metrics
-                .record_response_cache_outcome(ResponseCacheOutcome::Rejection);
-            return Ok(RespCacheable::Uncacheable(NoCacheReason::OriginNotCache));
-        };
+        let normalized = build_response_header(response.status, &processed.headers)?;
         Ok(RespCacheable::Cacheable(CacheMeta::new(
             fresh_until,
-            now,
+            stored_at,
             0,
             0,
-            response.clone(),
+            normalized,
         )))
     }
 
@@ -1262,7 +1071,7 @@ impl ProxyHttp for PingoraIngressService {
         session: &mut Session,
         body: &mut Option<Bytes>,
         _end_of_stream: bool,
-        ctx: &mut Self::CTX,
+        ctx: &mut Self::Context,
     ) -> Result<()> {
         let now = Instant::now();
         let timeouts = &ctx.runtime.runtime_config.policies.timeouts;
@@ -1280,7 +1089,7 @@ impl ProxyHttp for PingoraIngressService {
                 buffered_bytes: 0,
                 next_chunk_bytes: body.as_ref().map_or(0, Bytes::len),
                 declared_content_length: ctx.content_length,
-                exempt_from_body_size_cap: ctx.body_limit_exempt,
+                exempt_from_body_size_cap: ctx.tunnel_mode.is_tunnel(),
             },
         );
         if let RequestBodyGuardrailDecision::Timeout { kind } = timeout {
@@ -1290,12 +1099,12 @@ impl ProxyHttp for PingoraIngressService {
                 BodyTimeoutKind::Idle => "request body idle timeout",
                 BodyTimeoutKind::Total => "request body total timeout",
             };
-            session
-                .respond_error_with_body(
-                    http::StatusCode::REQUEST_TIMEOUT.as_u16(),
-                    Bytes::from(format!("{detail}\n")),
-                )
-                .await?;
+            write_error_response(
+                session,
+                http::StatusCode::REQUEST_TIMEOUT,
+                Bytes::from(format!("{detail}\n")),
+            )
+            .await?;
             return Error::e_explain(HTTPStatus(408), detail);
         }
         let max_request_body_bytes = ctx
@@ -1318,7 +1127,7 @@ impl ProxyHttp for PingoraIngressService {
                 buffered_bytes: 0,
                 next_chunk_bytes: body.as_ref().map_or(0, Bytes::len),
                 declared_content_length: ctx.content_length,
-                exempt_from_body_size_cap: ctx.body_limit_exempt,
+                exempt_from_body_size_cap: ctx.tunnel_mode.is_tunnel(),
             },
         );
         match next {
@@ -1330,12 +1139,12 @@ impl ProxyHttp for PingoraIngressService {
                 Ok(())
             }
             Err(_) => {
-                session
-                    .respond_error_with_body(
-                        http::StatusCode::PAYLOAD_TOO_LARGE.as_u16(),
-                        Bytes::from_static(REQUEST_BODY_TOO_LARGE_BODY),
-                    )
-                    .await?;
+                write_error_response(
+                    session,
+                    http::StatusCode::PAYLOAD_TOO_LARGE,
+                    Bytes::from_static(REQUEST_BODY_TOO_LARGE_BODY),
+                )
+                .await?;
                 Error::e_explain(HTTPStatus(413), "request body too large")
             }
         }
@@ -1344,7 +1153,7 @@ impl ProxyHttp for PingoraIngressService {
     async fn upstream_peer(
         &self,
         session: &mut Session,
-        ctx: &mut Self::CTX,
+        ctx: &mut Self::Context,
     ) -> Result<Box<HttpPeer>> {
         if ctx.retry_backend.is_some() || ctx.selected_backend.is_none() {
             ctx.selected_backend = Some(self.select_backend(session, ctx)?);
@@ -1364,9 +1173,7 @@ impl ProxyHttp for PingoraIngressService {
             .map_err(|error| {
                 Error::because(InternalError, "backend peer creation failed", error)
             })?;
-        if ctx.body_limit_exempt {
-            peer.options.alpn = ALPN::H1;
-        }
+        configure_tunnel_peer(ctx.tunnel_mode, &mut peer);
         let body_idle = ctx
             .runtime
             .runtime_config
@@ -1385,16 +1192,10 @@ impl ProxyHttp for PingoraIngressService {
         &self,
         _session: &mut Session,
         peer: &HttpPeer,
-        ctx: &mut Self::CTX,
+        ctx: &mut Self::Context,
         error: Box<Error>,
     ) -> Box<Error> {
-        handle_pingora_proxy_failure(
-            ctx,
-            error,
-            matches!(peer.options.alpn, ALPN::H2),
-            false,
-            true,
-        )
+        handle_pingora_proxy_failure(ctx, error, pingora_peer_protocol(peer), false, true)
     }
 
     fn error_while_proxy(
@@ -1402,13 +1203,13 @@ impl ProxyHttp for PingoraIngressService {
         peer: &HttpPeer,
         session: &mut Session,
         error: Box<Error>,
-        ctx: &mut Self::CTX,
+        ctx: &mut Self::Context,
         reused: bool,
     ) -> Box<Error> {
         handle_pingora_proxy_failure(
             ctx,
             error,
-            matches!(peer.options.alpn, ALPN::H2),
+            pingora_peer_protocol(peer),
             reused,
             session.response_written().is_none(),
         )
@@ -1418,7 +1219,7 @@ impl ProxyHttp for PingoraIngressService {
         &self,
         session: &mut Session,
         upstream_request: &mut RequestHeader,
-        ctx: &mut Self::CTX,
+        ctx: &mut Self::Context,
     ) -> Result<()> {
         let policy = ctx.policy.as_ref().ok_or_else(|| {
             Error::explain(
@@ -1472,13 +1273,11 @@ impl ProxyHttp for PingoraIngressService {
             .headers
             .get("traceparent")
             .and_then(|value| value.to_str().ok());
-        let target = impulse_bridge::request::RequestBuildTarget {
+        let target = crate::runtime::subsystem_mapping::bridge_request_target(
             endpoint,
-            policies: impulse_bridge::request::RequestBuildPolicies {
-                host_policy: &policy.host_policy,
-                forwarded_header_policy: &policy.forwarded_header_policy,
-            },
-        };
+            &policy.host_policy,
+            &policy.forwarded_header_policy,
+        );
         let auth_header_mutations = ctx
             .auth_header_mutations
             .iter()
@@ -1527,14 +1326,7 @@ impl ProxyHttp for PingoraIngressService {
             )
         })?;
 
-        let existing_headers = upstream_request.headers.keys().cloned().collect::<Vec<_>>();
-        for name in existing_headers {
-            upstream_request.remove_header(&name);
-        }
-        for (name, value) in normalized.headers() {
-            upstream_request.append_header(name.clone(), value.clone())?;
-        }
-        Ok(())
+        apply_normalized_request_headers(upstream_request, normalized.headers())
     }
 
     async fn adjust_upstream_modules(
@@ -1542,47 +1334,33 @@ impl ProxyHttp for PingoraIngressService {
         session: &mut Session,
         upstream_response: &ResponseHeader,
         _end_of_stream: bool,
-        ctx: &mut Self::CTX,
+        ctx: &mut Self::Context,
     ) -> Result<()> {
         if upstream_response.status.is_informational() {
             return Ok(());
         }
-        let policy = ctx.policy.as_ref().ok_or_else(|| {
-            Error::explain(
-                InternalError,
-                "Pingora ingress request filter did not resolve a request policy",
-            )
-        })?;
-        let method = ctx.method.as_deref().ok_or_else(|| {
-            Error::explain(
-                InternalError,
-                "Pingora ingress request filter did not validate a method",
-            )
-        })?;
         ctx.response_content_length = upstream_response
             .headers
             .get(http::header::CONTENT_LENGTH)
             .and_then(|value| value.to_str().ok())
             .and_then(|value| value.parse::<usize>().ok());
-        let compression = evaluate_response_compression(ResponseCompressionInput {
-            policy: &policy.response_compression,
-            request_method: method,
-            request_headers: &session.req_header().headers,
-            response_status: upstream_response.status,
-            response_headers: &upstream_response.headers,
-        });
+        let processed = Self::process_response_head(session, upstream_response, ctx)?;
         ctx.runtime
             .shared_state
             .shared_services()
             .metrics
-            .record_response_compression_outcome(compression.action);
-        ctx.response_compression_vary = compression.vary_accept_encoding;
+            .ingress_observations()
+            .record_response_compression_outcome(processed.compression.action);
         session.upstream_compression.adjust_level(0);
-        if matches!(compression.action, ResponseCompressionAction::Gzip) {
+        if matches!(
+            processed.compression.action,
+            ResponseCompressionAction::Gzip
+        ) {
             session
                 .upstream_compression
                 .adjust_algorithm_level(Algorithm::Gzip, RESPONSE_GZIP_LEVEL);
         }
+        ctx.response_processing = Some(processed);
         Ok(())
     }
 
@@ -1590,13 +1368,18 @@ impl ProxyHttp for PingoraIngressService {
         &self,
         session: &mut Session,
         upstream_response: &mut ResponseHeader,
-        ctx: &mut Self::CTX,
+        ctx: &mut Self::Context,
     ) -> Result<()> {
         let now = Instant::now();
         let timeouts = &ctx.runtime.runtime_config.policies.timeouts;
-        if ctx.selected_backend.as_ref().is_some_and(|selected| {
-            selected.selected_at.elapsed() >= timeouts.backend_total_request
-        }) {
+        let backend_total_request = timeouts.backend_total_request;
+        let backend_body_idle = timeouts.backend_body_idle;
+        let backend_body_total = timeouts.backend_body_total;
+        if ctx
+            .selected_backend
+            .as_ref()
+            .is_some_and(|selected| selected.selected_at.elapsed() >= backend_total_request)
+        {
             ctx.terminal_classification =
                 Some(PingoraTerminalClassification::Error(ProxyError::Timeout));
             return Error::e_explain(HTTPStatus(504), "upstream request total timeout");
@@ -1607,17 +1390,8 @@ impl ProxyHttp for PingoraIngressService {
                 "Pingora ingress request filter did not validate a method",
             )
         })?;
-        let tunnel_response = ctx.body_limit_exempt
-            && (upstream_response.status == http::StatusCode::SWITCHING_PROTOCOLS
-                || (method.eq_ignore_ascii_case("CONNECT")
-                    && upstream_response.status.is_success()));
-        let body_mode = if tunnel_response {
-            ResponseBodyMode::TunnelSuccess
-        } else if method.eq_ignore_ascii_case("HEAD") {
-            ResponseBodyMode::HeadRequest
-        } else {
-            ResponseBodyMode::Normal
-        };
+        let tunnel_response =
+            tunnel_response_established(ctx.tunnel_mode, method, upstream_response.status);
         let content_length = ctx.response_content_length.or_else(|| {
             upstream_response
                 .headers
@@ -1625,15 +1399,16 @@ impl ProxyHttp for PingoraIngressService {
                 .and_then(|value| value.to_str().ok())
                 .and_then(|value| value.parse::<usize>().ok())
         });
-        let normalized = normalize_upstream_response(ResponseNormalizationInput {
-            upstream: UpstreamResponseView {
-                status: upstream_response.status,
-                headers: &upstream_response.headers,
-            },
-            body_mode,
-            constraints: pingora_response_constraints(tunnel_response),
-        });
-        let body_suppressed = matches!(normalized.emission.body, ResponseBodyPolicy::Suppress);
+        let current_response = Self::process_response_head(session, upstream_response, ctx)?;
+        let mut processed = ctx
+            .response_processing
+            .clone()
+            .unwrap_or_else(|| current_response.clone());
+        processed.headers = current_response.headers;
+        if upstream_response.status != http::StatusCode::NOT_MODIFIED {
+            ctx.response_processing = Some(processed.clone());
+        }
+        let body_suppressed = !processed.body_forwarding_enabled;
         let max_response_body_bytes = ctx
             .runtime
             .runtime_config
@@ -1642,8 +1417,8 @@ impl ProxyHttp for PingoraIngressService {
             .max_response_body_bytes;
         if checked_response_body_guardrails(
             ResponseBodyGuardrailConfig {
-                idle_timeout: timeouts.backend_body_idle,
-                total_timeout: timeouts.backend_body_total,
+                idle_timeout: backend_body_idle,
+                total_timeout: backend_body_total,
                 max_body_bytes: max_response_body_bytes,
                 unknown_length_prebuffer_bytes: max_response_body_bytes,
                 chunk_bytes: usize::MAX,
@@ -1656,7 +1431,7 @@ impl ProxyHttp for PingoraIngressService {
                 next_chunk_bytes: 0,
                 declared_content_length: content_length,
                 headers_emitted: false,
-                progressive_emission_allowed: !normalized.emission.emit_end_stream_on_headers,
+                progressive_emission_allowed: !processed.emit_end_stream_on_headers,
                 body_forwarding_enabled: !body_suppressed,
                 exempt_from_body_size_cap: tunnel_response,
             },
@@ -1667,37 +1442,16 @@ impl ProxyHttp for PingoraIngressService {
                 Some(PingoraTerminalClassification::Error(ProxyError::Pool(
                     PoolError::BackendOverloaded("response body limit exceeded".into()),
                 )));
-            session
-                .respond_error_with_body(
-                    http::StatusCode::SERVICE_UNAVAILABLE.as_u16(),
-                    Bytes::from_static(RESPONSE_BODY_TOO_LARGE_BODY),
-                )
-                .await?;
+            write_error_response(
+                session,
+                http::StatusCode::SERVICE_UNAVAILABLE,
+                Bytes::from_static(RESPONSE_BODY_TOO_LARGE_BODY),
+            )
+            .await?;
             return Error::e_explain(HTTPStatus(503), "upstream response body too large");
         }
 
-        let existing_headers = upstream_response
-            .headers
-            .keys()
-            .cloned()
-            .collect::<Vec<_>>();
-        for name in existing_headers {
-            upstream_response.remove_header(&name);
-        }
-        for header in normalized.headers {
-            upstream_response.append_header(header.name, header.value)?;
-        }
-        if ctx.response_compression_vary {
-            let mut vary_headers = http::HeaderMap::new();
-            for value in upstream_response.headers.get_all(http::header::VARY).iter() {
-                vary_headers.append(http::header::VARY, value.clone());
-            }
-            ensure_vary_accept_encoding(&mut vary_headers);
-            upstream_response.remove_header(&http::header::VARY);
-            for value in vary_headers.get_all(http::header::VARY).iter() {
-                upstream_response.append_header(http::header::VARY, value.clone())?;
-            }
-        }
+        apply_normalized_response_headers(upstream_response, &processed.headers)?;
         ctx.response_body_bytes_received = 0;
         ctx.response_body_started_at = Some(now);
         ctx.response_body_last_progress_at = Some(now);
@@ -1707,12 +1461,27 @@ impl ProxyHttp for PingoraIngressService {
         Ok(())
     }
 
+    async fn response_filter(
+        &self,
+        _session: &mut Session,
+        response: &mut ResponseHeader,
+        ctx: &mut Self::Context,
+    ) -> Result<()> {
+        if response.status == http::StatusCode::SWITCHING_PROTOCOLS
+            && ctx.tunnel_mode == TunnelMode::Websocket
+        {
+            response.insert_header(http::header::CONNECTION, "upgrade")?;
+            response.insert_header(http::header::UPGRADE, "websocket")?;
+        }
+        Ok(())
+    }
+
     fn upstream_response_body_filter(
         &self,
         _session: &mut Session,
         body: &mut Option<Bytes>,
         _end_of_stream: bool,
-        ctx: &mut Self::CTX,
+        ctx: &mut Self::Context,
     ) -> Result<Option<Duration>> {
         if ctx.response_body_suppressed {
             *body = None;
@@ -1804,7 +1573,7 @@ impl ProxyHttp for PingoraIngressService {
         &self,
         _session: &mut Session,
         upstream_trailers: &mut http::HeaderMap,
-        ctx: &mut Self::CTX,
+        ctx: &mut Self::Context,
     ) -> Result<()> {
         let normalized = normalize_response_trailers(
             upstream_trailers,
@@ -1817,8 +1586,8 @@ impl ProxyHttp for PingoraIngressService {
         Ok(())
     }
 
-    async fn logging(&self, session: &mut Session, error: Option<&Error>, ctx: &mut Self::CTX) {
-        if !ctx.terminal_outcome.record() {
+    async fn logging(&self, session: &mut Session, error: Option<&Error>, ctx: &mut Self::Context) {
+        if !ctx.completion.complete() {
             return;
         }
 
@@ -1848,21 +1617,35 @@ impl ProxyHttp for PingoraIngressService {
         let metrics = &ctx.runtime.shared_state.shared_services().metrics;
         match session.cache.phase() {
             CachePhase::Hit | CachePhase::Revalidated => {
-                metrics.record_response_cache_outcome(ResponseCacheOutcome::Hit);
+                metrics
+                    .ingress_observations()
+                    .record_response_cache_outcome(ResponseCacheOutcome::Hit);
             }
             CachePhase::Miss => {
-                metrics.record_response_cache_outcome(ResponseCacheOutcome::Miss);
+                metrics
+                    .ingress_observations()
+                    .record_response_cache_outcome(ResponseCacheOutcome::Miss);
             }
             CachePhase::Expired => {
-                metrics.record_response_cache_outcome(ResponseCacheOutcome::Expiry);
-                metrics.record_response_cache_outcome(ResponseCacheOutcome::Miss);
+                metrics
+                    .ingress_observations()
+                    .record_response_cache_outcome(ResponseCacheOutcome::Expiry);
+                metrics
+                    .ingress_observations()
+                    .record_response_cache_outcome(ResponseCacheOutcome::Miss);
             }
             CachePhase::Stale | CachePhase::StaleUpdating => {
-                metrics.record_response_cache_outcome(ResponseCacheOutcome::Expiry);
-                metrics.record_response_cache_outcome(ResponseCacheOutcome::Hit);
+                metrics
+                    .ingress_observations()
+                    .record_response_cache_outcome(ResponseCacheOutcome::Expiry);
+                metrics
+                    .ingress_observations()
+                    .record_response_cache_outcome(ResponseCacheOutcome::Hit);
             }
             CachePhase::Bypass if !ctx.response_cache_bypass_recorded => {
-                metrics.record_response_cache_outcome(ResponseCacheOutcome::Bypass);
+                metrics
+                    .ingress_observations()
+                    .record_response_cache_outcome(ResponseCacheOutcome::Bypass);
             }
             CachePhase::Disabled(_)
             | CachePhase::Uninit
@@ -1871,10 +1654,14 @@ impl ProxyHttp for PingoraIngressService {
             | CachePhase::RevalidatedNoCache(_) => {}
         }
         if session.cache.lock_duration().is_some() {
-            metrics.record_response_cache_outcome(ResponseCacheOutcome::LockWait);
+            metrics
+                .ingress_observations()
+                .record_response_cache_outcome(ResponseCacheOutcome::LockWait);
         }
         if let Some(("gzip", input, output, _duration)) = session.upstream_compression.get_info() {
-            metrics.add_response_compression_bytes(input, output);
+            metrics
+                .ingress_observations()
+                .add_response_compression_bytes(input, output);
         }
         match (&ctx.terminal_classification, status) {
             (Some(PingoraTerminalClassification::Admission(outcome)), Some(status)) => {
@@ -1959,7 +1746,7 @@ impl ProxyHttp for PingoraIngressService {
 fn handle_pingora_proxy_failure(
     ctx: &mut PingoraRequestContext,
     mut error: Box<Error>,
-    h2: bool,
+    protocol: PingoraUpstreamProtocol,
     reused: bool,
     retry_safe: bool,
 ) -> Box<Error> {
@@ -1972,11 +1759,7 @@ fn handle_pingora_proxy_failure(
         return error;
     }
     selected.failure_handled = true;
-    let proxy_error = if h2 {
-        classify_pingora_h2_error(&error, reused)
-    } else {
-        classify_pingora_h1_error(&error)
-    };
+    let proxy_error = classify_pingora_proxy_error(&error, protocol, reused);
     if let Some(selected) = ctx.selected_backend.as_mut() {
         selected.finish_status = Some(if matches!(proxy_error, ProxyError::Timeout) {
             http::StatusCode::SERVICE_UNAVAILABLE.as_u16()
@@ -2006,14 +1789,18 @@ fn handle_pingora_proxy_failure(
         Some(selector) => Some(ForwardingSelectionService::select_backend_excluding(
             selector,
             &selected.pool,
-            ctx.runtime.generation,
-            ctx.lb_key.as_deref().unwrap_or_default(),
-            &[selected.index],
-            false,
+            BackendSelectionInput::new(
+                ctx.runtime.generation,
+                ctx.lb_key.as_deref().unwrap_or_default(),
+                &[selected.index],
+                false,
+            ),
             metrics,
         )),
         None => {
-            metrics.inc_pingora_lb_selector_failure();
+            metrics
+                .runtime_observations()
+                .inc_pingora_lb_selector_failure();
             None
         }
     };
@@ -2036,42 +1823,34 @@ fn handle_pingora_proxy_failure(
         ctx.request_body_replayable && retry_safe,
         false,
         false,
-        ctx.body_limit_exempt,
+        ctx.tunnel_mode.is_tunnel(),
     );
     let decision = retry.retry_after_error(
         &proxy_error,
         ctx.retry_count,
-        MAX_UPSTREAM_RETRY_ATTEMPTS,
-        true,
+        route_name,
+        &ctx.runtime
+            .shared_state
+            .generation_state()
+            .resilience
+            .retry_budget,
         retry_backend.is_some(),
         alternate_failure,
     );
     let metrics = &ctx.runtime.shared_state.shared_services().metrics;
     let retrying = match decision {
-        RetryPolicyDecision::Retry { reason }
-            if ctx
-                .runtime
-                .shared_state
-                .generation_state()
-                .resilience
-                .retry_budget
-                .allow_retry(route_name)
-                .is_ok() =>
-        {
-            metrics.inc_retry_attempt(RetryAttemptTelemetryReason::from(reason));
+        RetryPolicyDecision::Retry { reason } => {
+            metrics
+                .policy_observations()
+                .inc_retry_attempt(RetryAttemptTelemetryReason::from(reason));
             ctx.retry_count = ctx.retry_count.saturating_add(1);
             ctx.retry_backend = retry_backend;
             error.set_retry(true);
             true
         }
-        RetryPolicyDecision::Retry { .. } => {
-            metrics.inc_retry_denied(RetryPolicyDenialReason::BudgetDenied);
-            error.set_retry(false);
-            false
-        }
         RetryPolicyDecision::DoNotRetry { denial } => {
             if let Some(denial) = denial {
-                metrics.inc_retry_denied(denial);
+                metrics.policy_observations().inc_retry_denied(denial);
             }
             error.set_retry(false);
             false
@@ -2086,7 +1865,7 @@ fn handle_pingora_proxy_failure(
 }
 
 fn record_pingora_backend_failure(ctx: &mut PingoraRequestContext, error: &ProxyError) {
-    let Some(selected) = ctx.selected_backend.as_mut() else {
+    let Some(selected) = ctx.selected_backend.as_ref() else {
         return;
     };
     if selected.passive_health_recorded {
@@ -2098,14 +1877,20 @@ fn record_pingora_backend_failure(ctx: &mut PingoraRequestContext, error: &Proxy
     let Some(classified) = classify_upstream_proxy_error(error) else {
         return;
     };
-    selected.passive_health_recorded = true;
+    let upstream_name = Arc::clone(&route.upstream_name);
+    let backend_addr = selected.address.clone();
+    let backend_index = selected.index;
+    let upstream_pool = Arc::clone(&selected.pool);
+    if let Some(selected) = ctx.selected_backend.as_mut() {
+        selected.passive_health_recorded = true;
+    }
     let shared = ctx.runtime.shared_state.shared_services();
     let transition = observe_classified_backend_failure_and_log(ClassifiedBackendFailureInput {
         metrics_phase: "pingora_ingress",
-        upstream_name: route.upstream_name.as_ref(),
-        backend_addr: &selected.address,
-        backend_index: selected.index,
-        upstream_pool: Some(&selected.pool),
+        upstream_name: upstream_name.as_ref(),
+        backend_addr: &backend_addr,
+        backend_index,
+        upstream_pool: Some(&upstream_pool),
         metrics: shared.metrics.as_ref(),
         classified: &classified,
     });
@@ -2115,30 +1900,36 @@ fn record_pingora_backend_failure(ctx: &mut PingoraRequestContext, error: &Proxy
             .generation_state()
             .pingora_load_balancing
             .as_ref(),
-        &selected.address,
+        &backend_addr,
         transition,
     );
 }
 
 fn record_pingora_backend_response(ctx: &mut PingoraRequestContext, status: http::StatusCode) {
-    let Some(selected) = ctx.selected_backend.as_mut() else {
+    let Some(selected) = ctx.selected_backend.as_ref() else {
         return;
     };
     if selected.passive_health_recorded {
         return;
     }
-    selected.passive_health_recorded = true;
+    let backend_addr = selected.address.clone();
+    let backend_index = selected.index;
+    let upstream_pool = Arc::clone(&selected.pool);
+    if let Some(selected) = ctx.selected_backend.as_mut() {
+        selected.passive_health_recorded = true;
+    }
     if status.is_server_error() {
         ctx.runtime
             .shared_state
             .shared_services()
             .metrics
-            .inc_health_failure(impulse_lb::health::HealthFailureReason::HttpStatus5xx);
+            .policy_observations()
+            .inc_health_failure(HealthFailureReason::HttpStatus5xx);
     }
     let transition = observe_backend_response_status_and_log(BackendHealthObservationInput {
-        backend_addr: &selected.address,
-        backend_index: selected.index,
-        upstream_pool: Some(&selected.pool),
+        backend_addr: &backend_addr,
+        backend_index,
+        upstream_pool: Some(&upstream_pool),
         status,
     });
     apply_passive_readiness_to_pingora(
@@ -2147,7 +1938,7 @@ fn record_pingora_backend_response(ctx: &mut PingoraRequestContext, status: http
             .generation_state()
             .pingora_load_balancing
             .as_ref(),
-        &selected.address,
+        &backend_addr,
         transition,
     );
 }
@@ -2194,61 +1985,7 @@ async fn write_external_auth_decision_response(
             )),
         ),
     };
-    let mut response = ResponseHeader::build(status, Some(headers.len() + 3))?;
-    let mut has_content_type = false;
-    let mut has_content_length = false;
-    for (name, value) in headers {
-        let (Ok(name), Ok(value)) = (
-            http::header::HeaderName::from_bytes(name.as_bytes()),
-            http::header::HeaderValue::from_str(value),
-        ) else {
-            continue;
-        };
-        has_content_type |= name == http::header::CONTENT_TYPE;
-        has_content_length |= name == http::header::CONTENT_LENGTH;
-        response.append_header(name, value)?;
-    }
-    if let Some((name, value)) = extra_header {
-        response.append_header(name, value)?;
-    }
-    if !has_content_type {
-        response.insert_header(
-            http::header::CONTENT_TYPE,
-            http::HeaderValue::from_static("text/plain"),
-        )?;
-    }
-    if !has_content_length {
-        response.insert_header(http::header::CONTENT_LENGTH, body.len().to_string())?;
-    }
-    session
-        .write_response_header(Box::new(response), false)
-        .await?;
-    session
-        .write_response_body(Some(Bytes::copy_from_slice(body)), true)
-        .await
-}
-
-async fn write_local_response(
-    session: &mut Session,
-    status: http::StatusCode,
-    body: &'static [u8],
-    www_authenticate: Option<&'static str>,
-    retry_after_seconds: Option<u32>,
-) -> Result<()> {
-    let mut response = ResponseHeader::build(status, Some(3))?;
-    response.insert_header(http::header::CONTENT_LENGTH, body.len().to_string())?;
-    if let Some(challenge) = www_authenticate {
-        response.insert_header(http::header::WWW_AUTHENTICATE, challenge)?;
-    }
-    if let Some(seconds) = retry_after_seconds {
-        response.insert_header(http::header::RETRY_AFTER, seconds.to_string())?;
-    }
-    session
-        .write_response_header(Box::new(response), false)
-        .await?;
-    session
-        .write_response_body(Some(Bytes::from_static(body)), true)
-        .await
+    write_downstream_response(session, status, headers, body, extra_header).await
 }
 
 #[cfg(test)]
