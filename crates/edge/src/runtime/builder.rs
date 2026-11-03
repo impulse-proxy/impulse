@@ -56,13 +56,15 @@ impl RuntimeBuilder {
         generation: u64,
         listener_tls_store: Arc<ListenerTlsReloadStore>,
     ) -> Result<SharedRuntimeState, ProxyError> {
-        let _plugin_plans = compile_generation_plugin_plans(
-            compiled_plugin_catalog(),
-            plugin_construction_inputs(config),
-        )
-        .map_err(|error| {
-            ProxyError::Transport(format!("failed to compile runtime plugin plans: {error}"))
-        })?;
+        let plugin_plans = Arc::new(
+            compile_generation_plugin_plans(
+                compiled_plugin_catalog(),
+                plugin_construction_inputs(config),
+            )
+            .map_err(|error| {
+                ProxyError::Transport(format!("failed to compile runtime plugin plans: {error}"))
+            })?,
+        );
         let transport_policy = &config.policies.transport;
         let timeout_policy = &config.policies.timeouts;
         let worker_threads = transport_policy.worker_threads.max(1);
@@ -381,6 +383,7 @@ impl RuntimeBuilder {
                         .map(|(name, upstream)| (name.clone(), upstream.policy.clone()))
                         .collect(),
                 ),
+                plugin_plans,
                 pingora_load_balancing,
                 upstream_inflight,
                 global_inflight: Arc::new(Semaphore::new(global_inflight_limit)),

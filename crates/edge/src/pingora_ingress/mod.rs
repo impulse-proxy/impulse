@@ -704,6 +704,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
         let request_service = EdgeRequestService::new(
             &state.routing_index,
             &state.upstream_policies,
+            &state.plugin_plans,
             &state.resilience,
         );
         let execution = match request_service.execute(RequestExecutionInput {
@@ -725,7 +726,11 @@ impl PingoraRequestService for PingoraEdgeRequestService {
                 .await?;
                 return Ok(true);
             }
-            Err(RouteResolutionError::NoRoute | RouteResolutionError::MissingUpstreamPolicy) => {
+            Err(
+                RouteResolutionError::NoRoute
+                | RouteResolutionError::MissingUpstreamPolicy
+                | RouteResolutionError::MissingUpstreamPluginPlan,
+            ) => {
                 write_local_response(
                     session,
                     http::StatusCode::BAD_GATEWAY,

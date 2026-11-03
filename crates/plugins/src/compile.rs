@@ -1,4 +1,4 @@
-use std::{fmt, sync::Arc};
+use std::{collections::HashMap, fmt, sync::Arc};
 
 use impulse_contracts::PluginKind;
 
@@ -29,27 +29,9 @@ impl fmt::Display for PluginPlanCompileError {
 impl std::error::Error for PluginPlanCompileError {}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CompiledUpstreamPluginPlan {
-    upstream_name: String,
-    plan: CompiledPluginPlan,
-}
-
-impl CompiledUpstreamPluginPlan {
-    #[must_use]
-    pub fn upstream_name(&self) -> &str {
-        &self.upstream_name
-    }
-
-    #[must_use]
-    pub const fn plan(&self) -> &CompiledPluginPlan {
-        &self.plan
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CompiledGenerationPluginPlans {
     connection: CompiledConnectionPlan,
-    upstreams: Box<[CompiledUpstreamPluginPlan]>,
+    upstreams: HashMap<String, Arc<CompiledPluginPlan>>,
 }
 
 impl CompiledGenerationPluginPlans {
@@ -59,8 +41,13 @@ impl CompiledGenerationPluginPlans {
     }
 
     #[must_use]
-    pub fn upstreams(&self) -> &[CompiledUpstreamPluginPlan] {
+    pub fn upstreams(&self) -> &HashMap<String, Arc<CompiledPluginPlan>> {
         &self.upstreams
+    }
+
+    #[must_use]
+    pub fn upstream_plan(&self, upstream_name: &str) -> Option<Arc<CompiledPluginPlan>> {
+        self.upstreams.get(upstream_name).map(Arc::clone)
     }
 }
 
@@ -103,8 +90,7 @@ pub fn compile_generation_plugin_plans(
         .into_vec()
         .into_iter()
         .map(|upstream| compile_upstream_plan(catalog, upstream, &scoped_rate_limits, &quota))
-        .collect::<Result<Vec<_>, _>>()?
-        .into_boxed_slice();
+        .collect::<Result<HashMap<_, _>, _>>()?;
 
     Ok(CompiledGenerationPluginPlans {
         connection,
@@ -117,7 +103,7 @@ fn compile_upstream_plan(
     inputs: UpstreamPluginInputs,
     scoped_rate_limits: &Option<Arc<[crate::ScopedRateLimitInput]>>,
     quota: &Option<Arc<crate::QuotaInput>>,
-) -> Result<CompiledUpstreamPluginPlan, PluginPlanCompileError> {
+) -> Result<(String, Arc<CompiledPluginPlan>), PluginPlanCompileError> {
     let mut request_gate = Vec::with_capacity(3);
     if let Some(api_key) = inputs.api_key_auth {
         require_available(catalog, PluginKind::ApiKeyAuth)?;
@@ -154,13 +140,13 @@ fn compile_upstream_plan(
         response_policy.push(CompiledResponsePlugin::ResponseCompression(compression));
     }
 
-    Ok(CompiledUpstreamPluginPlan {
-        upstream_name: inputs.upstream_name,
-        plan: CompiledPluginPlan::new(
+    Ok((
+        inputs.upstream_name,
+        Arc::new(CompiledPluginPlan::new(
             request_gate,
             async_request_gate,
             cache_policy,
             response_policy,
-        ),
-    })
+        )),
+    ))
 }

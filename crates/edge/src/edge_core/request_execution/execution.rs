@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use impulse_config::runtime::RuntimeUpstreamPolicy;
+use impulse_plugins::CompiledGenerationPluginPlans;
 
 use super::{
     RequestExecutionInput, RequestExecutionResult, RequestExecutionState,
@@ -12,6 +13,7 @@ use crate::{resilience::runtime::RuntimeResilience, routing::index::RouteIndex};
 pub(crate) struct EdgeRequestService<'a> {
     routing_index: &'a RouteIndex,
     upstream_policies: &'a HashMap<String, RuntimeUpstreamPolicy>,
+    plugin_plans: &'a CompiledGenerationPluginPlans,
     resilience: &'a RuntimeResilience,
 }
 
@@ -19,11 +21,13 @@ impl<'a> EdgeRequestService<'a> {
     pub(crate) fn new(
         routing_index: &'a RouteIndex,
         upstream_policies: &'a HashMap<String, RuntimeUpstreamPolicy>,
+        plugin_plans: &'a CompiledGenerationPluginPlans,
         resilience: &'a RuntimeResilience,
     ) -> Self {
         Self {
             routing_index,
             upstream_policies,
+            plugin_plans,
             resilience,
         }
     }
@@ -40,7 +44,11 @@ impl<'a> EdgeRequestService<'a> {
             .upstream_policies
             .get(route.upstream_name.as_ref())
             .ok_or(super::RouteResolutionError::MissingUpstreamPolicy)?;
-        let policy = resolve_policy(upstream_policy);
+        let plugin_plan = self
+            .plugin_plans
+            .upstream_plan(route.upstream_name.as_ref())
+            .ok_or(super::RouteResolutionError::MissingUpstreamPluginPlan)?;
+        let policy = resolve_policy(upstream_policy, plugin_plan);
         let admission = evaluate_admission(
             self.resilience,
             &policy,

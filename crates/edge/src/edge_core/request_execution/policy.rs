@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use impulse_config::{
     config::{ForwardedHeaderPolicy, UpstreamHostPolicy},
     runtime::{
@@ -5,6 +7,7 @@ use impulse_config::{
         RuntimeResponseCompressionPolicy, RuntimeUpstreamPolicy,
     },
 };
+use impulse_plugins::CompiledPluginPlan;
 use impulse_policy::{
     ExternalAuthFailureMode, ExternalAuthPlan, ExternalAuthPolicy, ExternalAuthRequestHeader,
 };
@@ -71,8 +74,12 @@ fn external_auth_policy(policy: &RuntimeExternalAuth) -> ExternalAuthPolicy {
 
 /// Resolves the policies selected by route resolution independently of the
 /// ingress protocol.
-pub(crate) fn resolve_policy(upstream_policy: &RuntimeUpstreamPolicy) -> ResolvedRequestPolicy {
+pub(crate) fn resolve_policy(
+    upstream_policy: &RuntimeUpstreamPolicy,
+    plugin_plan: Arc<CompiledPluginPlan>,
+) -> ResolvedRequestPolicy {
     ResolvedRequestPolicy {
+        plugin_plan,
         local_auth_policy: upstream_policy.clone(),
         host_policy: upstream_policy.host.0.clone(),
         forwarded_header_policy: upstream_policy.forwarded_headers.0.clone(),
@@ -89,6 +96,8 @@ pub(crate) fn resolve_policy(upstream_policy: &RuntimeUpstreamPolicy) -> Resolve
 /// Protocol-neutral policies applied to a request after its route resolves.
 #[derive(Clone, Debug)]
 pub(crate) struct ResolvedRequestPolicy {
+    /// Generation-pinned plugin plan selected with this upstream policy.
+    pub(crate) plugin_plan: Arc<CompiledPluginPlan>,
     /// Local API-key and JWT/JWKS policy evaluated before external auth.
     pub(crate) local_auth_policy: RuntimeUpstreamPolicy,
     pub(crate) host_policy: UpstreamHostPolicy,
@@ -119,7 +128,7 @@ mod tests {
             ..RuntimeUpstreamPolicy::default()
         };
 
-        let resolved = resolve_policy(&upstream_policy);
+        let resolved = resolve_policy(&upstream_policy, Arc::new(CompiledPluginPlan::default()));
 
         assert_eq!(
             resolved.host_policy.host.as_deref(),

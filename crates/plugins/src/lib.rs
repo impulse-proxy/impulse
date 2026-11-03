@@ -14,8 +14,7 @@ pub use catalog::{
     ALL_COMPILED_PLUGIN_KINDS, PluginCatalog, PluginCatalogBuildError, compiled_plugin_catalog,
 };
 pub use compile::{
-    CompiledGenerationPluginPlans, CompiledUpstreamPluginPlan, PluginPlanCompileError,
-    compile_generation_plugin_plans,
+    CompiledGenerationPluginPlans, PluginPlanCompileError, compile_generation_plugin_plans,
 };
 pub use input::{
     ApiKeyAuthInput, ConnectionRateLimitInput, ExternalAuthFailureModeInput, ExternalAuthInput,

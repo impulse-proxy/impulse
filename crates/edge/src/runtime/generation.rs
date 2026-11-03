@@ -10,6 +10,7 @@ use impulse_config::{
 };
 use impulse_lb::pingora_backend::SharedPingoraLoadBalancingRuntimeState;
 use impulse_operations::watchdog::WatchdogCoordinator;
+use impulse_plugins::CompiledGenerationPluginPlans;
 use impulse_transport::{SharedDnsResolver, UpstreamTransportPool};
 use tokio::sync::Semaphore;
 
@@ -134,6 +135,8 @@ pub struct RuntimeGenerationState {
     pub backend_health_checks: Arc<HashMap<String, RuntimeBackendHealthCheck>>,
     /// Upstream policies, keyed by upstream name.
     pub upstream_policies: Arc<HashMap<String, RuntimeUpstreamPolicy>>,
+    /// Immutable connection and per-upstream plugin plans compiled for this generation.
+    pub plugin_plans: Arc<CompiledGenerationPluginPlans>,
     /// Backend membership, readiness, discovery, and selectors for this generation.
     pub pingora_load_balancing: SharedPingoraLoadBalancingRuntimeState<RuntimeBackendTlsPolicy>,
     /// Per-upstream inflight semaphores.

@@ -395,6 +395,11 @@ impl Http3Service {
                 .pingora_load_balancing
                 .upstream_pools(),
             upstream_policies: self.upstream_policies.as_ref(),
+            plugin_plans: &self
+                .runtime_state
+                .shared_state()
+                .generation_state()
+                .plugin_plans,
             pingora_load_balancing: self
                 .runtime_state
                 .shared_state()
@@ -512,6 +517,11 @@ impl Http3Service {
                 .pingora_load_balancing
                 .upstream_pools(),
             upstream_policies: self.upstream_policies.as_ref(),
+            plugin_plans: &self
+                .runtime_state
+                .shared_state()
+                .generation_state()
+                .plugin_plans,
             pingora_load_balancing: self
                 .runtime_state
                 .shared_state()

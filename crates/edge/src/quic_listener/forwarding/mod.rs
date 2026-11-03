@@ -36,6 +36,7 @@ pub(in crate::quic_listener) struct ForwardingSharedCtx<'a> {
     pub(in crate::quic_listener) routing_index: &'a RouteIndex,
     pub(in crate::quic_listener) upstream_pools: &'a HashMap<String, Arc<RwLock<UpstreamPool>>>,
     pub(in crate::quic_listener) upstream_policies: &'a HashMap<String, RuntimeUpstreamPolicy>,
+    pub(in crate::quic_listener) plugin_plans: &'a impulse_plugins::CompiledGenerationPluginPlans,
     pub(in crate::quic_listener) pingora_load_balancing:
         &'a PingoraLoadBalancingRuntimeState<RuntimeBackendTlsPolicy>,
     pub(in crate::quic_listener) generation: u64,
