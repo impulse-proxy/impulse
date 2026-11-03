@@ -31,13 +31,11 @@ hyper-util = { workspace = true, features = ["client-legacy", "http1", "http2", 
 hyper-rustls.workspace = true
 tokio.workspace = true
 rand.workspace = true
-hmac = "0.12"
 sha2 = "0.10"
 hex = "0.4"
 tracing.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tokio-rustls.workspace = true
 rustls.workspace = true
 rustls-pki-types.workspace = true
 x509-parser = "0.16"
@@ -57,7 +55,9 @@ harness = false
 
 [dev-dependencies]
 criterion = "0.5"
+hmac = "0.12"
 rcgen = "0.12"
 serial_test = "3"
 tempfile = "3"
 serde_yaml.workspace = true
+tokio-rustls.workspace = true
