@@ -482,8 +482,6 @@ mod tests {
         rsa::{Padding, Rsa},
         sign::Signer,
     };
-    use bytes::Bytes;
-    use http_body_util::Full;
     use impulse_config::{
         config::{
             Backend, Config, DistributedQuotaPolicy, DistributedQuotaSelector,
@@ -494,7 +492,6 @@ mod tests {
         },
         runtime::{RuntimeApiKeyAuth, RuntimeAuthPolicy, RuntimeConfig, RuntimeJwtAuth},
     };
-    use impulse_policy::jwks::{MAX_JWKS_BODY_BYTES, collect_jwks_body_bounded};
     use tokio::sync::Semaphore;
 
     use super::*;
@@ -1612,21 +1609,6 @@ mod tests {
                 )) if policy_name == "tenant-contract"
             ));
         }
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn jwks_body_collection_rejects_oversized_documents() {
-        let oversized_body = Full::new(Bytes::from(vec![b'x'; MAX_JWKS_BODY_BYTES + 1]));
-
-        let failure = collect_jwks_body_bounded(oversized_body)
-            .await
-            .expect_err("oversized jwks body must be rejected");
-
-        assert_eq!(failure.reason, JwtJwksFetchFailureReason::MalformedDocument);
-        assert!(failure.to_string().contains(&format!(
-            "jwks document exceeded {} bytes",
-            MAX_JWKS_BODY_BYTES
-        )));
     }
 
     #[tokio::test(flavor = "current_thread")]

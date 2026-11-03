@@ -107,8 +107,7 @@ static JWT_JWKS_METRICS_SINK: OnceLock<RwLock<Weak<Metrics>>> = OnceLock::new();
 type JwtJwksFetchScript = Mutex<HashMap<String, VecDeque<Result<Value, JwtJwksFetchFailure>>>>;
 pub(super) static JWT_JWKS_FETCH_SCRIPT: OnceLock<JwtJwksFetchScript> = OnceLock::new();
 
-#[allow(dead_code)]
-pub const MAX_JWKS_BODY_BYTES: usize = 256 * 1024;
+pub(super) const MAX_JWKS_BODY_BYTES: usize = 256 * 1024;
 
 impl JwtJwksSharedCache {
     pub fn shared() -> &'static Self {

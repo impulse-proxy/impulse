@@ -5,7 +5,7 @@ use std::{
     convert::Infallible,
     future::Future,
     net::{SocketAddr, TcpListener as StdTcpListener, UdpSocket as StdUdpSocket},
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -114,10 +114,6 @@ impl RuntimeSwapHarness {
             runtime_bundle: None,
             listen_addr: None,
         }
-    }
-
-    pub(crate) fn config_path(&self) -> &Path {
-        &self.config_path
     }
 
     pub(crate) fn make_config(&self, upstreams: HashMap<String, Upstream>) -> Config {

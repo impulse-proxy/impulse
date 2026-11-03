@@ -958,14 +958,7 @@ mod tests {
         .expect("runtime config");
 
         let mut runtime_upstream = runtime.upstreams.get("api").expect("upstream").clone();
-        runtime_upstream.backends[0].backend.health_check = Some(HealthCheck {
-            path: "/health".to_string(),
-            interval: 0,
-            timeout_ms: 1000,
-            failure_threshold: 1,
-            success_threshold: 1,
-            cooldown_ms: 0,
-        });
+        runtime_upstream.backends[0].health_check = None;
 
         Arc::new(RwLock::new(
             crate::quic_listener::upstream_pool_from_runtime(&runtime_upstream).expect("pool"),
@@ -1528,33 +1521,40 @@ mod tests {
                 assert!(state.ewma_latency_ms.is_some());
             }
 
-            let unhealthy = observe_backend_response_status(BackendHealthObservationInput {
-                backend_addr: "backend-a",
-                backend_index: 0,
-                upstream_pool: Some(&pool),
-                status: StatusCode::INTERNAL_SERVER_ERROR,
-            });
+            let mut unhealthy = None;
+            for _ in 0..3 {
+                unhealthy = observe_backend_response_status(BackendHealthObservationInput {
+                    backend_addr: "backend-a",
+                    backend_index: 0,
+                    upstream_pool: Some(&pool),
+                    status: StatusCode::INTERNAL_SERVER_ERROR,
+                });
+            }
             assert!(matches!(unhealthy, Some(HealthTransition::BecameUnhealthy)));
 
-            let healthy = observe_backend_response_status(BackendHealthObservationInput {
+            let cooling_down = observe_backend_response_status(BackendHealthObservationInput {
                 backend_addr: "backend-a",
                 backend_index: 0,
                 upstream_pool: Some(&pool),
                 status: StatusCode::OK,
             });
-            assert!(matches!(healthy, Some(HealthTransition::BecameHealthy)));
+            assert!(cooling_down.is_none());
 
             let classified = impulse_errors::classify_upstream_proxy_error(&ProxyError::Timeout)
                 .expect("classified timeout");
-            let transition = observe_classified_backend_failure(ClassifiedBackendFailureInput {
-                metrics_phase: "bootstrap",
-                upstream_name: "api",
-                backend_addr: "backend-a",
-                backend_index: 0,
-                upstream_pool: Some(&pool),
-                metrics: &metrics,
-                classified: &classified,
-            });
+            let timeout_pool = test_upstream_pool();
+            let mut transition = None;
+            for _ in 0..3 {
+                transition = observe_classified_backend_failure(ClassifiedBackendFailureInput {
+                    metrics_phase: "bootstrap",
+                    upstream_name: "api",
+                    backend_addr: "backend-a",
+                    backend_index: 0,
+                    upstream_pool: Some(&timeout_pool),
+                    metrics: &metrics,
+                    classified: &classified,
+                });
+            }
             assert!(matches!(
                 transition,
                 Some(HealthTransition::BecameUnhealthy)
@@ -1563,7 +1563,7 @@ mod tests {
                 metrics
                     .health_failure_timeout
                     .load(std::sync::atomic::Ordering::Relaxed),
-                1
+                3
             );
         }
 

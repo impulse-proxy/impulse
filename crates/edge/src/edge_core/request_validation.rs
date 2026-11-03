@@ -86,6 +86,20 @@ pub(crate) fn validate_http_request_parts(
             .iter()
             .map(http::HeaderValue::as_bytes),
     )?;
+    let websocket_tunnel = method == http::Method::GET
+        && headers
+            .get(http::header::UPGRADE)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.eq_ignore_ascii_case("websocket"))
+        && headers
+            .get_all(http::header::CONNECTION)
+            .iter()
+            .filter_map(|value| value.to_str().ok())
+            .any(|value| {
+                value
+                    .split(',')
+                    .any(|token| token.trim().eq_ignore_ascii_case("upgrade"))
+            });
 
     validate_request_parts(
         method.as_str().to_string(),
@@ -93,7 +107,7 @@ pub(crate) fn validate_http_request_parts(
         authority,
         host,
         content_length,
-        false,
+        websocket_tunnel,
         resilience,
         RequestPartErrors {
             invalid_method: b"invalid method header\n",

@@ -787,6 +787,7 @@ mod tests {
         bundle: &RuntimeBundle,
         completed: Arc<AtomicBool>,
     ) -> tokio::task::AbortHandle {
+        let completion = CompletionSignal(completed);
         bundle
             .shared_state
             .generation_state()
@@ -795,7 +796,7 @@ mod tests {
                 &tokio::runtime::Handle::current(),
                 "test-generation-task",
                 async move {
-                    let _completion = CompletionSignal(completed);
+                    let _completion = completion;
                     future::pending::<()>().await;
                 },
             )

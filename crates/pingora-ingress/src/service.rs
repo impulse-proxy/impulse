@@ -91,6 +91,13 @@ pub trait PingoraRequestService: Send + Sync + 'static {
         context: &mut Self::Context,
     ) -> Result<()>;
 
+    async fn response_filter(
+        &self,
+        session: &mut Session,
+        response: &mut ResponseHeader,
+        context: &mut Self::Context,
+    ) -> Result<()>;
+
     fn upstream_response_body_filter(
         &self,
         session: &mut Session,
@@ -228,6 +235,17 @@ impl<S: PingoraRequestService> ProxyHttp for PingoraIngressAdapter<S> {
     ) -> Result<()> {
         self.request_service
             .upstream_response_filter(session, upstream_response, ctx)
+            .await
+    }
+
+    async fn response_filter(
+        &self,
+        session: &mut Session,
+        response: &mut ResponseHeader,
+        ctx: &mut Self::CTX,
+    ) -> Result<()> {
+        self.request_service
+            .response_filter(session, response, ctx)
             .await
     }
 

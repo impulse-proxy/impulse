@@ -13,7 +13,6 @@ mod cid_radix;
 pub mod constants;
 mod edge_core;
 mod hash;
-mod observability;
 mod pingora_ingress;
 mod quic_listener;
 pub mod resilience;

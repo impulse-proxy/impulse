@@ -14,7 +14,7 @@ use impulse_bridge::response::{
 use impulse_config::{backend_endpoint::BackendScheme, runtime::ListenerRuntimeConfig};
 use impulse_contracts::{
     AlternateBackendFailureReason, HealthFailureReason, RequestDecision as AdmissionPolicyDecision,
-    RetryAttemptTelemetryReason,
+    RetryAttemptTelemetryReason, TunnelMode,
 };
 use impulse_errors::{
     BridgeError, PoolError, ProxyError, RetryPolicyDecision, classify_upstream_proxy_error,
@@ -1458,6 +1458,21 @@ impl PingoraRequestService for PingoraEdgeRequestService {
         ctx.response_body_suppressed = body_suppressed;
         ctx.response_body_limit_exempt = tunnel_response;
         ctx.response_content_length = content_length;
+        Ok(())
+    }
+
+    async fn response_filter(
+        &self,
+        _session: &mut Session,
+        response: &mut ResponseHeader,
+        ctx: &mut Self::Context,
+    ) -> Result<()> {
+        if response.status == http::StatusCode::SWITCHING_PROTOCOLS
+            && ctx.tunnel_mode == TunnelMode::Websocket
+        {
+            response.insert_header(http::header::CONNECTION, "upgrade")?;
+            response.insert_header(http::header::UPGRADE, "websocket")?;
+        }
         Ok(())
     }
 
