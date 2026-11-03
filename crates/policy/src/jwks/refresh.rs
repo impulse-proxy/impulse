@@ -367,7 +367,7 @@ fn take_scripted_jwks_fetch_for_test(jwks_url: &str) -> Option<Result<Value, Jwt
     JWT_JWKS_FETCH_SCRIPT
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
-        .expect("jwks fetch script lock")
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .get_mut(jwks_url)
         .and_then(VecDeque::pop_front)
 }
@@ -379,7 +379,7 @@ pub fn script_jwks_fetches_for_test(
     JWT_JWKS_FETCH_SCRIPT
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
-        .expect("jwks fetch script lock")
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .insert(jwks_url.to_string(), VecDeque::from(responses));
 }
 

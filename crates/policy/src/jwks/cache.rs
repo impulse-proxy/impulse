@@ -358,14 +358,14 @@ impl JwtJwksSharedCache {
     pub fn upsert(&self, source_identity: &str, entry: JwtJwksCacheEntry) {
         self.entries
             .write()
-            .expect("jwks shared cache write lock")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(source_identity.to_string(), entry);
     }
 
     pub(super) fn remove(&self, source_identity: &str) {
         self.entries
             .write()
-            .expect("jwks shared cache write lock")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(source_identity);
     }
 }

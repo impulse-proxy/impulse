@@ -92,7 +92,7 @@ impl PingoraDrainState {
 
     pub fn try_acquire_connection(self: &Arc<Self>, limit: usize) -> Option<ConnectionPermit> {
         self.active_connections
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |active| {
                 (active < limit).then_some(active + 1)
             })
             .ok()?;

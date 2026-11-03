@@ -24,6 +24,12 @@ pub struct ControlApiAuthThrottle {
     peers: Mutex<HashMap<IpAddr, AuthFailureState>>,
 }
 
+impl Default for ControlApiAuthThrottle {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ControlApiAuthThrottle {
     pub fn new() -> Self {
         Self {

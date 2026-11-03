@@ -187,11 +187,12 @@ async fn run(
     };
     let mut process_failed = !services.startup_succeeded();
 
-    if !shutdown.load(Ordering::Relaxed) && !process_failed {
-        if let Err(err) = apply_privilege_drop(privilege_state, &runtime_config) {
-            error!("{}", err);
-            process_failed = true;
-        }
+    if !shutdown.load(Ordering::Relaxed)
+        && !process_failed
+        && let Err(err) = apply_privilege_drop(privilege_state, &runtime_config)
+    {
+        error!("{}", err);
+        process_failed = true;
     }
 
     if !process_failed {
