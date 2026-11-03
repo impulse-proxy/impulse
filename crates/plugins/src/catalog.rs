@@ -1,6 +1,25 @@
-use std::{collections::HashSet, fmt};
+use std::{collections::HashSet, fmt, sync::OnceLock};
 
 use impulse_contracts::PluginKind;
+
+pub const ALL_COMPILED_PLUGIN_KINDS: [PluginKind; 8] = [
+    PluginKind::ConnectionRateLimit,
+    PluginKind::ApiKeyAuth,
+    PluginKind::JwtAuth,
+    PluginKind::ExternalAuth,
+    PluginKind::ScopedRateLimit,
+    PluginKind::Quota,
+    PluginKind::ResponseCache,
+    PluginKind::ResponseCompression,
+];
+
+#[must_use]
+pub fn compiled_plugin_catalog() -> &'static PluginCatalog {
+    static CATALOG: OnceLock<PluginCatalog> = OnceLock::new();
+    CATALOG.get_or_init(|| PluginCatalog {
+        available_kinds: Vec::from(ALL_COMPILED_PLUGIN_KINDS).into_boxed_slice(),
+    })
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PluginCatalogBuildError {

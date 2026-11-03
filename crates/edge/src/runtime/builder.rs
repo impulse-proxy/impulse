@@ -12,6 +12,7 @@ use impulse_lb::pingora_backend::{
     GenerationBackendView, HealthRegistry, PingoraLoadBalancingRuntimeState, map_validated_backend,
 };
 use impulse_operations::watchdog::WatchdogCoordinator;
+use impulse_plugins::{compile_generation_plugin_plans, compiled_plugin_catalog};
 use impulse_transport::PingoraBackendHealthIdentity;
 use log::{debug, info, warn};
 use tokio::sync::Semaphore;
@@ -55,7 +56,13 @@ impl RuntimeBuilder {
         generation: u64,
         listener_tls_store: Arc<ListenerTlsReloadStore>,
     ) -> Result<SharedRuntimeState, ProxyError> {
-        let _plugin_inputs = plugin_construction_inputs(config);
+        let _plugin_plans = compile_generation_plugin_plans(
+            compiled_plugin_catalog(),
+            plugin_construction_inputs(config),
+        )
+        .map_err(|error| {
+            ProxyError::Transport(format!("failed to compile runtime plugin plans: {error}"))
+        })?;
         let transport_policy = &config.policies.transport;
         let timeout_policy = &config.policies.timeouts;
         let worker_threads = transport_policy.worker_threads.max(1);

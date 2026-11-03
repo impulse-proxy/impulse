@@ -5,11 +5,18 @@
 #![warn(unreachable_pub)]
 
 mod catalog;
+mod compile;
 mod input;
 mod instance;
 mod plan;
 
-pub use catalog::{PluginCatalog, PluginCatalogBuildError};
+pub use catalog::{
+    ALL_COMPILED_PLUGIN_KINDS, PluginCatalog, PluginCatalogBuildError, compiled_plugin_catalog,
+};
+pub use compile::{
+    CompiledGenerationPluginPlans, CompiledUpstreamPluginPlan, PluginPlanCompileError,
+    compile_generation_plugin_plans,
+};
 pub use input::{
     ApiKeyAuthInput, ConnectionRateLimitInput, ExternalAuthFailureModeInput, ExternalAuthInput,
     ExternalAuthRequestHeaderInput, JwksStartupBehaviorInput, JwtAlgorithmInput, JwtAuthInput,
