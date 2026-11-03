@@ -10,6 +10,7 @@
 
 mod identity;
 mod outcome;
+mod plugin;
 mod request;
 mod tunnel;
 
@@ -21,6 +22,10 @@ pub use outcome::{
     HedgeTriggerTelemetryReason, RejectionReason, RetryAttemptTelemetryReason,
     RetryPolicyDenialReason, TerminalReason, TimeoutReason, UpstreamRetryReason,
     UpstreamTerminalErrorKind,
+};
+pub use plugin::{
+    PluginExecutionOutcome, PluginKind, PluginPhase, PluginRejectionReason, PluginScope,
+    PluginStateOwnership,
 };
 pub use request::{
     AuthChallengeKind, BoundedRejectionResponse, HeaderMutation, HeaderMutationRef,
