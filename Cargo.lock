@@ -1543,6 +1543,7 @@ dependencies = [
  "impulse-runtime",
  "impulse-transport",
  "impulse-utils",
+ "libc",
  "log",
  "pingora-cache",
  "pingora-core",

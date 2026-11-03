@@ -4,15 +4,17 @@ use impulse_config::config::{
     ControlApi, ControlApiAuditFormat, ControlApiAuditSink, ControlApiClientAuthMode,
     ControlApiRole,
 };
+#[cfg(test)]
+pub(in crate::quic_listener) use impulse_operations::administrative::ControlApiClientCaMaterial;
 use impulse_operations::administrative::{
     AdminAuditFormat, ControlApiAdminAuditEmitter, ControlApiAdminAuditTarget,
     ControlApiAuthorizationPolicy, ControlApiBearerTokenEntry, ControlApiIpAllowlistPolicy,
 };
 pub(in crate::quic_listener) use impulse_operations::administrative::{
     AdminClientAuthMode, AdminRole, ControlApiAuthThrottle, ControlApiBearerTokenSource,
-    ControlApiClientAuthPolicy, ControlApiClientCaMaterial, ControlApiClientVerifierState,
-    ControlApiIdentitySourcePolicy, ControlApiSecurityPolicy, ControlApiSourcePolicyDecision,
-    SourceIpExtractionError, source_ip_from_request,
+    ControlApiClientAuthPolicy, ControlApiClientVerifierState, ControlApiIdentitySourcePolicy,
+    ControlApiSecurityPolicy, ControlApiSourcePolicyDecision, SourceIpExtractionError,
+    source_ip_from_request,
 };
 
 use crate::Metrics;

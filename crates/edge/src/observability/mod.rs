@@ -4,8 +4,9 @@
 use impulse_contracts::{
     AdmissionOutcomeKind, BackendFailureReason, BackendHealthObservationOutcome,
     BackendHealthObservationSource, HedgePolicyDenialReason, RejectionReason,
-    RetryPolicyDenialReason, TimeoutReason, UpstreamRetryReason,
+    RetryPolicyDenialReason, UpstreamRetryReason,
 };
+#[cfg(test)]
 use impulse_observability::{
     AdmissionDecisionReason, AdmissionOverloadCause, BackendHealthReason, HedgeDecisionReason,
     MetricReasonLabels, OperationalEventContext, QuotaBackendHealthReason, QuotaPolicyDecision,

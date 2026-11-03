@@ -52,7 +52,7 @@ impl RuntimeServiceHandles {
 }
 
 impl OperationsServiceHandle {
-    pub fn shutdown(self, task_drain_timeout: Duration) {
+    pub(crate) fn shutdown(self, task_drain_timeout: Duration) {
         self.runtime.retire_background_tasks(task_drain_timeout);
         self.runtime.lifecycle().finish_shutdown();
     }

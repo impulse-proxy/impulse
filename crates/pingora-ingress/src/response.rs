@@ -1,5 +1,5 @@
 use bytes::Bytes;
-use pingora_core::Result;
+use pingora_core::{Error, ErrorType, Result};
 use pingora_http::ResponseHeader;
 use pingora_proxy::Session;
 
@@ -50,6 +50,20 @@ pub async fn write_downstream_response(
         response.append_header(name, value)?;
     }
     if let Some((name, value)) = extra_header {
+        let name = http::header::HeaderName::from_bytes(name.as_bytes()).map_err(|error| {
+            Error::because(
+                ErrorType::InvalidHTTPHeader,
+                "invalid downstream response header name",
+                error,
+            )
+        })?;
+        let value = http::header::HeaderValue::from_str(value).map_err(|error| {
+            Error::because(
+                ErrorType::InvalidHTTPHeader,
+                "invalid downstream response header value",
+                error,
+            )
+        })?;
         response.append_header(name, value)?;
     }
     if !has_content_type {

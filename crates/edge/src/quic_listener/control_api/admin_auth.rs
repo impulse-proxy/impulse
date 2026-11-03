@@ -378,9 +378,10 @@ impl Http3Service {
         };
         let mut response = Self::json_response(status, response);
         if status == StatusCode::TOO_MANY_REQUESTS {
-            response
-                .headers_mut()
-                .insert(header::RETRY_AFTER, ::http::HeaderValue::from_static("60"));
+            response.headers_mut().insert(
+                ::http::header::RETRY_AFTER,
+                ::http::HeaderValue::from_static("60"),
+            );
         }
         response
     }

@@ -1,5 +1,6 @@
+#[cfg(test)]
+use std::any::Any;
 use std::{
-    any::Any,
     panic::{self, PanicHookInfo},
     sync::{
         Once,
@@ -27,6 +28,7 @@ pub fn panic_count() -> u64 {
     PANIC_COUNT.load(Ordering::Relaxed)
 }
 
+#[cfg(test)]
 pub fn panic_payload_message(payload: &(dyn Any + Send + 'static)) -> String {
     if let Some(message) = payload.downcast_ref::<&str>() {
         return (*message).to_string();

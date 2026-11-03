@@ -21,11 +21,13 @@ use tokio::{
 };
 
 use crate::{
-    PingoraUpstreamConnectionIdentity, UpstreamBody, UpstreamBodyFrame, UpstreamCancellation,
-    UpstreamConnectionReuse, UpstreamExchangeCompletion, UpstreamExchangeLifecycle,
-    UpstreamExchangeOutcome, UpstreamExchangeResponse, UpstreamProtocol, UpstreamRequestHead,
-    UpstreamResponseHead, UpstreamTunnel, UpstreamUpgrade,
-    exchange::upstream_response_body_channel, pingora_failure::classify_pingora_h1_error,
+    PingoraUpstreamConnectionIdentity, UpstreamBody, UpstreamBodyFrame, UpstreamExchangeResponse,
+    UpstreamProtocol, UpstreamRequestHead, UpstreamResponseHead, UpstreamTunnel, UpstreamUpgrade,
+    exchange::{
+        UpstreamCancellation, UpstreamConnectionReuse, UpstreamExchangeCompletion,
+        UpstreamExchangeLifecycle, UpstreamExchangeOutcome, upstream_response_body_channel,
+    },
+    pingora_failure::classify_pingora_h1_error,
     pingora_pool::PingoraPoolLease,
 };
 

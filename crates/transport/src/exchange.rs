@@ -42,6 +42,7 @@ pub(crate) struct UpstreamCancellation {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub(crate) enum UpstreamExchangeOutcome {
     Completed,
     Cancelled,
@@ -55,6 +56,7 @@ pub(crate) enum UpstreamConnectionReuse {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub(crate) struct UpstreamExchangeCompletion {
     pub outcome: UpstreamExchangeOutcome,
     pub connection_reuse: UpstreamConnectionReuse,
@@ -67,7 +69,7 @@ pub(crate) struct UpstreamInflightPermit {
 pub(crate) struct UpstreamExchangeLifecycle {
     pub cancellation: UpstreamCancellation,
     pub completion: oneshot::Sender<UpstreamExchangeCompletion>,
-    pub inflight_permit: UpstreamInflightPermit,
+    pub _inflight_permit: UpstreamInflightPermit,
 }
 
 pub trait UpstreamTunnelIo: AsyncRead + AsyncWrite + Send + Unpin {}

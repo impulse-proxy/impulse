@@ -108,7 +108,7 @@ type JwtJwksFetchScript = Mutex<HashMap<String, VecDeque<Result<Value, JwtJwksFe
 pub(super) static JWT_JWKS_FETCH_SCRIPT: OnceLock<JwtJwksFetchScript> = OnceLock::new();
 
 #[allow(dead_code)]
-pub(super) const MAX_JWKS_BODY_BYTES: usize = 256 * 1024;
+pub const MAX_JWKS_BODY_BYTES: usize = 256 * 1024;
 
 impl JwtJwksSharedCache {
     pub fn shared() -> &'static Self {

@@ -9,7 +9,7 @@ use std::{
 use log::warn;
 use tokio::runtime::Handle;
 
-pub fn configure_async_runtime(worker_threads: usize) {
+pub(crate) fn configure_async_runtime(worker_threads: usize) {
     let threads = worker_threads.max(1);
     if FALLBACK_RT.get().is_some() {
         warn!(

@@ -938,6 +938,20 @@ mod tests {
         }
     }
 
+    fn upstream_pools(count: usize) -> HashMap<String, Arc<RwLock<UpstreamPool>>> {
+        let addresses = (0..count)
+            .map(|index| format!("http://127.0.0.1:{}", 8_000 + index))
+            .collect::<Vec<_>>();
+        let address_refs = addresses.iter().map(String::as_str).collect::<Vec<_>>();
+        let upstream = runtime_upstream_from_addresses("round-robin", None, &address_refs);
+        HashMap::from([(
+            "api".to_string(),
+            Arc::new(RwLock::new(
+                crate::test_support::upstream_pool(&upstream).expect("test upstream pool"),
+            )),
+        )])
+    }
+
     #[test]
     fn validated_backend_mapping_preserves_weight() {
         let backend = Backend {
@@ -1004,6 +1018,7 @@ mod tests {
     fn runtime_and_selection_preserve_selector_generation() {
         let runtime = PingoraLoadBalancingRuntimeState::<()>::new(
             GENERATION,
+            upstream_pools(2),
             [(
                 "api".to_string(),
                 LoadBalancingStrategy::ConsistentHash,
@@ -1029,6 +1044,7 @@ mod tests {
         assert!(
             PingoraLoadBalancingRuntimeState::<()>::new(
                 GENERATION + 1,
+                upstream_pools(1),
                 [(
                     "api".to_string(),
                     LoadBalancingStrategy::RoundRobin,

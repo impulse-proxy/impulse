@@ -1,7 +1,7 @@
 use std::time::SystemTime;
 
 use http::{HeaderMap, StatusCode};
-use impulse_bridge::{
+use impulse_bridge::response::{
     ResponseBodyMode, ResponseBodyPolicy, ResponseNormalizationInput, ResponseProtocolConstraints,
     UpstreamResponseView, normalize_upstream_response,
 };

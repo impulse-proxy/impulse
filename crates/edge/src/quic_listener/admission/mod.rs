@@ -1,12 +1,9 @@
-#[cfg(test)]
-use std::{collections::VecDeque, sync::Mutex};
 use std::{
-    collections::{HashMap, HashSet},
-    convert::Infallible,
+    collections::HashMap,
     future::Future,
     net::SocketAddr,
-    sync::{Arc, OnceLock, RwLock, Weak},
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    sync::{Arc, RwLock},
+    time::{Duration, Instant, SystemTime},
 };
 
 use base64::{Engine as _engine, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -17,17 +14,9 @@ use boring::{
     pkey::{Id as PKeyId, PKey, Public},
     rsa::Rsa,
 };
-use bytes::Bytes;
 #[cfg(test)]
 use hmac::{Hmac, Mac};
 use http::StatusCode;
-use http_body_util::{BodyExt, Full, combinators::BoxBody};
-use hyper::{
-    Request, Response,
-    body::{Body, Incoming},
-};
-use hyper_rustls::HttpsConnectorBuilder;
-use hyper_util::client::legacy::{Client, connect::HttpConnector};
 use impulse_config::{
     config::{JwksStartupBehavior, JwtAlgorithm},
     runtime::{RuntimeConfig, RuntimeJwtAuth, RuntimeJwtVerificationKey, RuntimeUpstreamPolicy},
@@ -42,7 +31,8 @@ use quiche::h3::NameValue;
 use serde_json::Value;
 #[cfg(test)]
 use serial_test::serial;
-use sha2::{Digest, Sha256};
+#[cfg(test)]
+use sha2::Sha256;
 use tokio::{
     runtime::RuntimeFlavor,
     sync::{OwnedSemaphorePermit, Semaphore, TryAcquireError},
@@ -70,20 +60,22 @@ mod jwt;
 mod key_resolution;
 mod startup;
 
+#[cfg(test)]
+pub(crate) use impulse_contracts::RateLimitedDecision;
 pub(crate) use impulse_contracts::{
-    AuthChallengeKind, OverloadDecision, OverloadDecisionReason, RateLimitedDecision,
-    RequestDecision, UnauthorizedDecision,
+    AuthChallengeKind, OverloadDecision, OverloadDecisionReason, RequestDecision,
+    UnauthorizedDecision,
 };
 type AdmissionPolicyDecision = RequestDecision;
 use impulse_policy::jwks::*;
-pub(super) use impulse_policy::jwks::{
-    JwtJwksFetchFailure, JwtJwksFetchFailureReason, JwtJwksRuntimeSnapshot,
-    runtime_jwks_source_identity,
-};
 #[cfg(test)]
 pub(super) use impulse_policy::jwks::{
-    clear_jwks_cache_for_test, jwks_source_identity_for_test, mark_jwks_source_invalid_for_test,
-    mark_jwks_source_unavailable_for_test, prime_jwks_cache_for_test,
+    JwtJwksFetchFailure, clear_jwks_cache_for_test, jwks_source_identity_for_test,
+    mark_jwks_source_invalid_for_test, mark_jwks_source_unavailable_for_test,
+    prime_jwks_cache_for_test,
+};
+pub(super) use impulse_policy::jwks::{
+    JwtJwksFetchFailureReason, JwtJwksRuntimeSnapshot, runtime_jwks_source_identity,
 };
 
 fn runtime_jwks_sources(config: &RuntimeConfig) -> Vec<JwtJwksSourceConfig> {
@@ -477,7 +469,11 @@ fn overload_from_route_queue_rejection(
 }
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashMap, sync::Arc, time::Duration};
+    use std::{
+        collections::HashMap,
+        sync::Arc,
+        time::{Duration, UNIX_EPOCH},
+    };
 
     use base64::{Engine as _engine, engine::general_purpose::URL_SAFE_NO_PAD};
     use boring::{
@@ -498,13 +494,12 @@ mod tests {
         },
         runtime::{RuntimeApiKeyAuth, RuntimeAuthPolicy, RuntimeConfig, RuntimeJwtAuth},
     };
+    use impulse_policy::jwks::{MAX_JWKS_BODY_BYTES, collect_jwks_body_bounded};
     use tokio::sync::Semaphore;
 
     use super::*;
     use crate::{
-        quic_listener::admission::{
-            jwks_refresh::collect_jwks_body_bounded, jwt::parse_jose_header,
-        },
+        quic_listener::admission::jwt::parse_jose_header,
         resilience::{
             brownout::BrownoutController, quota::QuotaDenyReason, runtime::RuntimeResilience,
         },

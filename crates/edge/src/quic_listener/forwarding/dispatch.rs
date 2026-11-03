@@ -4,7 +4,7 @@ use impulse_config::runtime::RuntimeBackendTlsPolicy;
 use impulse_contracts::{AlternateBackendFailureReason, HedgeOutcomeTelemetryReason};
 use impulse_errors::{HedgePolicyDecision, RetryPolicyDecision, is_idempotent_method};
 use impulse_lb::{BackendSelectionInput, pingora_backend::GenerationSelector};
-use impulse_observability::ResponseCacheOutcome;
+use impulse_observability::{HedgeDecisionReason, ResponseCacheOutcome, RetryDecisionReason};
 use impulse_transport::{
     UpstreamBodyFrame, UpstreamExchangeRequest, UpstreamExchangeResponse, UpstreamRequestExecutor,
     UpstreamRequestHead,
@@ -14,7 +14,6 @@ use pingora_cache::{HitStatus, HttpCache, NoCacheReason, lock::LockWaitOutcome};
 use super::{selection::ForwardingSelectionService, *};
 use crate::{
     edge_core::retry::RetryCoordinator,
-    observability::{HedgeDecisionReason, RetryDecisionReason},
     runtime::{
         cache::{
             ResponseCacheKeyInput, ResponseCacheRequestEligibilityInput,

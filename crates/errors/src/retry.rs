@@ -1,8 +1,9 @@
 use impulse_contracts::{
-    AlternateBackendFailureReason, HedgeOutcomeTelemetryReason, HedgePolicyDenialReason,
-    HedgeTriggerTelemetryReason, RetryAttemptTelemetryReason, RetryPolicyDenialReason,
-    UpstreamRetryReason, UpstreamTerminalErrorKind,
+    AlternateBackendFailureReason, HedgePolicyDenialReason, HedgeTriggerTelemetryReason,
+    RetryPolicyDenialReason, UpstreamRetryReason, UpstreamTerminalErrorKind,
 };
+#[cfg(test)]
+use impulse_contracts::{HedgeOutcomeTelemetryReason, RetryAttemptTelemetryReason};
 
 use crate::ProxyError;
 

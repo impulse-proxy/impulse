@@ -3,7 +3,6 @@ use std::{
     sync::{Arc, RwLock},
 };
 
-use impulse_contracts::HealthFailureReason;
 use impulse_lb::{health::HealthTransition, upstream_pool::UpstreamPool};
 
 use super::health::apply_backend_health_observation;
@@ -194,6 +193,7 @@ mod tests {
     mod snapshot_inventory {
         use std::{collections::HashMap, sync::Arc};
 
+        use impulse_contracts::HealthFailureReason;
         use impulse_lb::health::HealthTransition;
 
         use super::super::{

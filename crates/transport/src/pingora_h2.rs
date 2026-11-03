@@ -9,11 +9,14 @@ use pingora_http::RequestHeader;
 use tokio::sync::mpsc;
 
 use crate::{
-    PingoraUpstreamConnectionIdentity, UpstreamBody, UpstreamBodyFrame, UpstreamCancellation,
-    UpstreamConnectionReuse, UpstreamExchangeCompletion, UpstreamExchangeLifecycle,
-    UpstreamExchangeOutcome, UpstreamExchangeResponse, UpstreamProtocol, UpstreamRequestHead,
-    UpstreamResponseHead, exchange::upstream_response_body_channel,
-    pingora_failure::classify_pingora_h2_error, pingora_pool::PingoraPoolLease,
+    PingoraUpstreamConnectionIdentity, UpstreamBody, UpstreamBodyFrame, UpstreamExchangeResponse,
+    UpstreamProtocol, UpstreamRequestHead, UpstreamResponseHead,
+    exchange::{
+        UpstreamCancellation, UpstreamConnectionReuse, UpstreamExchangeCompletion,
+        UpstreamExchangeLifecycle, UpstreamExchangeOutcome, upstream_response_body_channel,
+    },
+    pingora_failure::classify_pingora_h2_error,
+    pingora_pool::PingoraPoolLease,
 };
 
 pub(crate) fn translate_pingora_h2_request_header(

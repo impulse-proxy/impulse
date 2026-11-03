@@ -2,13 +2,12 @@ use std::{collections::VecDeque, sync::Arc, time::Instant};
 
 use bytes::Bytes;
 use http::StatusCode;
-pub use impulse_contracts::CompletionReason;
 pub(crate) use impulse_contracts::{
-    BackendFailureReason, CancellationReason, RejectionReason, TerminalReason, TimeoutReason,
-    TunnelMode,
+    BackendFailureReason, CancellationReason, CompletionReason, RejectionReason, TerminalReason,
+    TimeoutReason, TunnelMode,
 };
 use impulse_errors::ProxyError;
-pub use impulse_http3_ingress::{
+pub(crate) use impulse_http3_ingress::{
     RequestBodyState, RequestMode, ResponseEmissionState, StreamAdmissionState, StreamPhase,
 };
 use tokio::{

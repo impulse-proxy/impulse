@@ -15,7 +15,7 @@ use boring::{
     bn::BigNum,
     ec::{EcGroup, EcKey},
     nid::Nid,
-    pkey::{PKey, Public},
+    pkey::PKey,
     rsa::Rsa,
 };
 use bytes::Bytes;
@@ -40,15 +40,16 @@ use crate::{JwtValidationFailure, JwtValidationFailureReason, JwtVerificationKey
 mod cache;
 mod refresh;
 
-use cache::{JWT_JWKS_FETCH_SCRIPT, JWT_JWKS_HTTP_CLIENT, MAX_JWKS_BODY_BYTES};
+use cache::{JWT_JWKS_FETCH_SCRIPT, JWT_JWKS_HTTP_CLIENT};
 pub use cache::{
     JwtJwksActiveKey, JwtJwksCacheEntry, JwtJwksCacheSnapshot, JwtJwksCacheState,
-    JwtJwksRuntimeSnapshot, JwtJwksSharedCache, JwtJwksSourceConfig, clear_jwks_cache_for_test,
-    current_jwt_jwks_metrics, jwks_source_identity_for_test, jwt_jwks_cache_stale_window_expired,
-    jwt_jwks_cache_state_name, jwt_jwks_cache_state_usable, jwt_jwks_metrics_sink,
-    jwt_jwks_public_endpoint, jwt_jwks_source_identity, mark_jwks_source_invalid_for_test,
-    mark_jwks_source_unavailable_for_test, merge_jwks_source_configs, prime_jwks_cache_for_test,
-    runtime_jwks_source_identity, snapshot_jwks_sources,
+    JwtJwksRuntimeSnapshot, JwtJwksSharedCache, JwtJwksSourceConfig, MAX_JWKS_BODY_BYTES,
+    clear_jwks_cache_for_test, current_jwt_jwks_metrics, jwks_source_identity_for_test,
+    jwt_jwks_cache_stale_window_expired, jwt_jwks_cache_state_name, jwt_jwks_cache_state_usable,
+    jwt_jwks_metrics_sink, jwt_jwks_public_endpoint, jwt_jwks_source_identity,
+    mark_jwks_source_invalid_for_test, mark_jwks_source_unavailable_for_test,
+    merge_jwks_source_configs, prime_jwks_cache_for_test, runtime_jwks_source_identity,
+    snapshot_jwks_sources,
 };
 pub use refresh::{
     JwtJwksFetchFailure, JwtJwksFetchFailureReason, collect_jwks_body_bounded,
@@ -84,11 +85,8 @@ fn static_key_metadata(
     key: &RuntimeJwtVerificationKey,
 ) -> Result<StaticKeyMetadata, JwtValidationFailure> {
     match key {
-        RuntimeJwtVerificationKey::Pem { kid, alg, .. } => Ok(StaticKeyMetadata {
-            kid: kid.clone(),
-            alg: *alg,
-        }),
-        RuntimeJwtVerificationKey::Jwk { kid, alg, jwk } => {
+        RuntimeJwtVerificationKey::Pem { kid, .. } => Ok(StaticKeyMetadata { kid: kid.clone() }),
+        RuntimeJwtVerificationKey::Jwk { kid, jwk, .. } => {
             let parsed: Value = serde_json::from_str(jwk).map_err(|_| {
                 JwtValidationFailure::new(JwtValidationFailureReason::JwkKeyParseFailed)
             })?;
@@ -96,12 +94,6 @@ fn static_key_metadata(
                 kid: kid
                     .clone()
                     .or_else(|| parsed.get("kid").and_then(Value::as_str).map(str::to_owned)),
-                alg: alg.or_else(|| {
-                    parsed
-                        .get("alg")
-                        .and_then(Value::as_str)
-                        .and_then(|value| parse_jwt_alg_str(value).ok())
-                }),
             })
         }
     }
@@ -110,7 +102,6 @@ fn static_key_metadata(
 #[derive(Default)]
 struct StaticKeyMetadata {
     kid: Option<String>,
-    alg: Option<JwtAlgorithm>,
 }
 
 fn parse_static_verification_key(

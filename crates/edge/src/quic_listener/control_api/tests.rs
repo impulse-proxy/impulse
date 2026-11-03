@@ -19,16 +19,20 @@ use log::LevelFilter;
 use tempfile::tempdir;
 
 use super::{state::ControlApiState, *};
-use crate::runtime::activation::{
-    ActivationRequest, GenerationEventKind, GenerationOperation, GenerationStatus, PlanningPhase,
-    PlanningPhaseStatus, RejectedChangeKind, ReloadCompatibilityClassification, ReloadConfigInput,
-    ReloadDiffDisposition, RollbackRequest, RuntimeActivationService, RuntimeRejectionReason,
-    compatibility::{
-        evaluate_runtime_reload_compatibility, validate_control_api_reload_compatibility,
-        validate_metrics_reload_compatibility, validate_runtime_reload_compatibility,
-        validate_startup_owned_reload_compatibility,
+use crate::runtime::{
+    activation::{
+        ActivationRequest, GenerationEventKind, GenerationOperation, GenerationStatus,
+        PlanningPhase, PlanningPhaseStatus, RejectedChangeKind, ReloadCompatibilityClassification,
+        ReloadConfigInput, ReloadDiffDisposition, RollbackRequest, RuntimeActivationService,
+        RuntimeRejectionReason,
+        compatibility::{
+            evaluate_runtime_reload_compatibility, validate_control_api_reload_compatibility,
+            validate_metrics_reload_compatibility, validate_runtime_reload_compatibility,
+            validate_startup_owned_reload_compatibility,
+        },
+        plan_runtime_reload,
     },
-    plan_runtime_reload,
+    bundle::RuntimeBundle,
 };
 
 /// Render the typed startup-owned compatibility result into the flat list of
@@ -2764,7 +2768,7 @@ fn control_api_state_prefers_reloaded_paths_and_auth_token() {
     );
     assert_eq!(
         state.current_security_policy().bearer_tokens[0].role,
-        ControlApiRole::Admin
+        super::admin_identity::AdminRole::Admin
     );
     assert_eq!(
         state.current_security_policy().bearer_tokens[0]

@@ -114,7 +114,7 @@ impl UpstreamTransportPool {
                 signal: cancellation,
             },
             completion,
-            inflight_permit: UpstreamInflightPermit { _permit: permit },
+            _inflight_permit: UpstreamInflightPermit { _permit: permit },
         };
 
         match self.backend_entry(backend) {

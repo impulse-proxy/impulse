@@ -63,9 +63,9 @@ impl ControlApiRequestService for EdgeControlApiRequestService {
         {
             return stale_control_api_connection_response();
         }
-        request.extensions_mut().insert(
-            AdministrativeSecurity::augment_control_api_request_context(context.request, &request),
-        );
+        let request_context =
+            AdministrativeSecurity::augment_control_api_request_context(context.request, &request);
+        request.extensions_mut().insert(request_context);
         Http3Service::handle_control_api_request(request, &self.state).await
     }
 }

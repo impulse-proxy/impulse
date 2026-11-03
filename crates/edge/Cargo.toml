@@ -9,6 +9,7 @@ async-trait.workspace = true
 boring.workspace = true
 base64.workspace = true
 log.workspace = true
+libc.workspace = true
 quiche.workspace = true
 impulse-config = { path = "../config" }
 impulse-contracts = { path = "../contracts" }

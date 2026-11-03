@@ -25,22 +25,20 @@ use hyper::body::Incoming;
 #[cfg(test)]
 use impulse_bridge::response::should_strip_response_header;
 use impulse_bridge::response::{
-    ResponseBodyMode, ResponseBodyPolicy, ResponseNormalizationInput,
-    ResponseNormalizationProtocol, ResponseProtocolConstraints, normalize_response_trailers,
-    normalize_upstream_response,
+    ResponseBodyMode, ResponseNormalizationProtocol, ResponseProtocolConstraints,
+    normalize_response_trailers,
 };
 use impulse_config::{
     backend_endpoint::{BackendEndpoint, BackendScheme},
     config::{ClientAuth, ControlApi as ControlApiConfig},
     runtime::{
-        ListenerRuntimeConfig, RuntimeConfig, RuntimeListenerTls, RuntimeTlsIdentity,
-        RuntimeUpstreamPolicy,
+        ListenerRuntimeConfig, RuntimeListenerTls, RuntimeTlsIdentity, RuntimeUpstreamPolicy,
     },
 };
 use impulse_errors::{PoolError, ProxyError};
 use impulse_lb::upstream_pool::UpstreamPool;
 use impulse_operations::watchdog::WatchdogCoordinator;
-use impulse_transport::{SharedDnsResolver, UpstreamRequestExecutor, UpstreamTransportPool};
+use impulse_transport::UpstreamRequestExecutor;
 use log::{debug, error, info, warn};
 use quiche::{Config, h3::NameValue};
 use rand::RngCore;
@@ -75,7 +73,6 @@ use crate::{
     resilience::runtime::RuntimeResilience,
     routing::{decision::RouteDecisionReason, index::RouteIndex},
     runtime::{
-        bundle::RuntimeBundle,
         connection::{
             quic::{QuicConnection, QuicConnectionErrorSnapshot},
             request::RequestEnvelope,
@@ -83,7 +80,6 @@ use crate::{
             stream::{CancellationReason, TerminalReason, TunnelMode},
         },
         listener::Http3Service,
-        tasks::RuntimeTaskRegistry,
         tls::{
             inventory::{
                 ListenerTlsInventory, RuntimeLoadedClientAuthCa, RuntimeLoadedTlsIdentity,
@@ -143,6 +139,7 @@ pub use workers::{
 };
 use x509_parser::{extensions::GeneralName, parse_x509_certificate};
 
+#[cfg(test)]
 pub(crate) use crate::runtime::subsystem_mapping::{
     load_balancing_backend_inputs, load_balancing_strategy_input, upstream_pool_from_runtime,
 };

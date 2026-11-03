@@ -211,39 +211,41 @@ impl PingoraEdgeRequestService {
         session: &Session,
         ctx: &mut PingoraRequestContext,
     ) -> Result<PingoraSelectedBackend> {
-        let route = ctx.route.as_ref().ok_or_else(|| {
-            Error::explain(
-                InternalError,
-                "Pingora ingress request filter did not resolve a route",
-            )
-        })?;
-        let method = ctx.method.as_deref().ok_or_else(|| {
+        let upstream_name = ctx
+            .route
+            .as_ref()
+            .map(|route| Arc::clone(&route.upstream_name))
+            .ok_or_else(|| {
+                Error::explain(
+                    InternalError,
+                    "Pingora ingress request filter did not resolve a route",
+                )
+            })?;
+        let method = ctx.method.clone().ok_or_else(|| {
             Error::explain(
                 InternalError,
                 "Pingora ingress request filter did not validate a method",
             )
         })?;
-        let path = ctx.path.as_deref().ok_or_else(|| {
+        let path = ctx.path.clone().ok_or_else(|| {
             Error::explain(
                 InternalError,
                 "Pingora ingress request filter did not validate a path",
             )
         })?;
+        let authority = ctx.authority.clone();
+        let retry_backend = ctx.retry_backend.take();
         let state = ctx.runtime.shared_state.generation_state();
         let pool = state
             .pingora_load_balancing
-            .upstream_pool(route.upstream_name.as_ref())
+            .upstream_pool(upstream_name.as_ref())
             .cloned()
             .ok_or_else(|| {
                 Error::explain(
                     InternalError,
-                    format!(
-                        "Pingora ingress upstream pool is missing: {}",
-                        route.upstream_name
-                    ),
+                    format!("Pingora ingress upstream pool is missing: {upstream_name}"),
                 )
             })?;
-        let retry_backend = ctx.retry_backend.take();
         let (backend_addr, backend_index) = if let Some((address, index)) = retry_backend {
             let pool = pool.read().map_err(|_| {
                 Error::explain(InternalError, "Pingora ingress upstream pool lock poisoned")
@@ -267,15 +269,15 @@ impl PingoraEdgeRequestService {
                     .map(str::to_owned)
             };
             let selection_request = TargetResolutionRequest::new(
-                method,
-                path,
-                ctx.authority.as_deref(),
+                &method,
+                &path,
+                authority.as_deref(),
                 None,
                 Some(&header_lookup),
             );
             let selector = state
                 .pingora_load_balancing
-                .selector(route.upstream_name.as_ref())
+                .selector(upstream_name.as_ref())
                 .ok_or_else(|| {
                     ctx.runtime
                         .shared_state
@@ -285,10 +287,7 @@ impl PingoraEdgeRequestService {
                         .inc_pingora_lb_selector_failure();
                     Error::explain(
                         InternalError,
-                        format!(
-                            "Pingora ingress selector is missing: {}",
-                            route.upstream_name
-                        ),
+                        format!("Pingora ingress selector is missing: {upstream_name}"),
                     )
                 })?;
             let selected = ForwardingSelectionService::select_backend(
@@ -306,7 +305,7 @@ impl PingoraEdgeRequestService {
                 .generation_state()
                 .resilience
                 .retry_budget
-                .mark_primary(route.upstream_name.as_ref());
+                .mark_primary(upstream_name.as_ref());
             (selected.backend_addr, selected.backend_index)
         };
         Ok(PingoraSelectedBackend {
@@ -1373,9 +1372,14 @@ impl PingoraRequestService for PingoraEdgeRequestService {
     ) -> Result<()> {
         let now = Instant::now();
         let timeouts = &ctx.runtime.runtime_config.policies.timeouts;
-        if ctx.selected_backend.as_ref().is_some_and(|selected| {
-            selected.selected_at.elapsed() >= timeouts.backend_total_request
-        }) {
+        let backend_total_request = timeouts.backend_total_request;
+        let backend_body_idle = timeouts.backend_body_idle;
+        let backend_body_total = timeouts.backend_body_total;
+        if ctx
+            .selected_backend
+            .as_ref()
+            .is_some_and(|selected| selected.selected_at.elapsed() >= backend_total_request)
+        {
             ctx.terminal_classification =
                 Some(PingoraTerminalClassification::Error(ProxyError::Timeout));
             return Error::e_explain(HTTPStatus(504), "upstream request total timeout");
@@ -1413,8 +1417,8 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             .max_response_body_bytes;
         if checked_response_body_guardrails(
             ResponseBodyGuardrailConfig {
-                idle_timeout: timeouts.backend_body_idle,
-                total_timeout: timeouts.backend_body_total,
+                idle_timeout: backend_body_idle,
+                total_timeout: backend_body_total,
                 max_body_bytes: max_response_body_bytes,
                 unknown_length_prebuffer_bytes: max_response_body_bytes,
                 chunk_bytes: usize::MAX,
@@ -1846,7 +1850,7 @@ fn handle_pingora_proxy_failure(
 }
 
 fn record_pingora_backend_failure(ctx: &mut PingoraRequestContext, error: &ProxyError) {
-    let Some(selected) = ctx.selected_backend.as_mut() else {
+    let Some(selected) = ctx.selected_backend.as_ref() else {
         return;
     };
     if selected.passive_health_recorded {
@@ -1858,14 +1862,20 @@ fn record_pingora_backend_failure(ctx: &mut PingoraRequestContext, error: &Proxy
     let Some(classified) = classify_upstream_proxy_error(error) else {
         return;
     };
-    selected.passive_health_recorded = true;
+    let upstream_name = Arc::clone(&route.upstream_name);
+    let backend_addr = selected.address.clone();
+    let backend_index = selected.index;
+    let upstream_pool = Arc::clone(&selected.pool);
+    if let Some(selected) = ctx.selected_backend.as_mut() {
+        selected.passive_health_recorded = true;
+    }
     let shared = ctx.runtime.shared_state.shared_services();
     let transition = observe_classified_backend_failure_and_log(ClassifiedBackendFailureInput {
         metrics_phase: "pingora_ingress",
-        upstream_name: route.upstream_name.as_ref(),
-        backend_addr: &selected.address,
-        backend_index: selected.index,
-        upstream_pool: Some(&selected.pool),
+        upstream_name: upstream_name.as_ref(),
+        backend_addr: &backend_addr,
+        backend_index,
+        upstream_pool: Some(&upstream_pool),
         metrics: shared.metrics.as_ref(),
         classified: &classified,
     });
@@ -1875,19 +1885,24 @@ fn record_pingora_backend_failure(ctx: &mut PingoraRequestContext, error: &Proxy
             .generation_state()
             .pingora_load_balancing
             .as_ref(),
-        &selected.address,
+        &backend_addr,
         transition,
     );
 }
 
 fn record_pingora_backend_response(ctx: &mut PingoraRequestContext, status: http::StatusCode) {
-    let Some(selected) = ctx.selected_backend.as_mut() else {
+    let Some(selected) = ctx.selected_backend.as_ref() else {
         return;
     };
     if selected.passive_health_recorded {
         return;
     }
-    selected.passive_health_recorded = true;
+    let backend_addr = selected.address.clone();
+    let backend_index = selected.index;
+    let upstream_pool = Arc::clone(&selected.pool);
+    if let Some(selected) = ctx.selected_backend.as_mut() {
+        selected.passive_health_recorded = true;
+    }
     if status.is_server_error() {
         ctx.runtime
             .shared_state
@@ -1897,9 +1912,9 @@ fn record_pingora_backend_response(ctx: &mut PingoraRequestContext, status: http
             .inc_health_failure(HealthFailureReason::HttpStatus5xx);
     }
     let transition = observe_backend_response_status_and_log(BackendHealthObservationInput {
-        backend_addr: &selected.address,
-        backend_index: selected.index,
-        upstream_pool: Some(&selected.pool),
+        backend_addr: &backend_addr,
+        backend_index,
+        upstream_pool: Some(&upstream_pool),
         status,
     });
     apply_passive_readiness_to_pingora(
@@ -1908,7 +1923,7 @@ fn record_pingora_backend_response(ctx: &mut PingoraRequestContext, status: http
             .generation_state()
             .pingora_load_balancing
             .as_ref(),
-        &selected.address,
+        &backend_addr,
         transition,
     );
 }

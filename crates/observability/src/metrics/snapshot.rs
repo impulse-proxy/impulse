@@ -412,19 +412,16 @@ impl Metrics {
         snapshot
     }
 
-    #[cfg(test)]
     pub fn snapshot_upstream_request_counts(&self) -> Vec<(UpstreamRequestCountKey, u64)> {
         self.snapshot_request_result_metrics()
             .upstream_request_counts
     }
 
-    #[cfg(test)]
     pub fn snapshot_backend_request_counts(&self) -> Vec<(BackendRequestCountKey, u64)> {
         self.snapshot_request_result_metrics()
             .backend_request_counts
     }
 
-    #[cfg(test)]
     pub fn snapshot_upstream_request_latency(
         &self,
     ) -> Vec<(UpstreamRequestLatencyKey, RequestLatencyStats)> {

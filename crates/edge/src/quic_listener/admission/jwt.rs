@@ -2,6 +2,7 @@ pub(crate) use impulse_policy::{JwtValidationFailure, JwtValidationFailureReason
 
 use super::*;
 
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ParsedJoseHeader {
     pub(crate) algorithm: JwtAlgorithm,
@@ -10,6 +11,7 @@ pub(crate) struct ParsedJoseHeader {
 
 #[derive(Debug, Clone)]
 pub(crate) struct ValidatedJwt {
+    #[cfg(test)]
     pub(crate) algorithm: JwtAlgorithm,
     pub(crate) claims: Value,
 }
@@ -34,7 +36,8 @@ pub(crate) fn validate_jwt_token(
         crate::runtime::subsystem_mapping::jwt_allowed_algorithms(jwt),
     )?;
     let algorithm = config_algorithm(parsed.algorithm());
-    let key = match JwtKeyResolver::new(jwt, algorithm, parsed.kid()).resolve() {
+    let kid = parsed.kid().map(str::to_owned);
+    let key = match JwtKeyResolver::new(jwt, algorithm, kid.as_deref()).resolve() {
         JwtKeyResolution::Found(resolved) | JwtKeyResolution::StaleButUsable(resolved) => {
             resolved.key
         }
@@ -59,11 +62,13 @@ pub(crate) fn validate_jwt_token(
         now,
     )?;
     Ok(ValidatedJwt {
+        #[cfg(test)]
         algorithm: config_algorithm(validated.algorithm),
         claims: validated.claims,
     })
 }
 
+#[cfg(test)]
 pub(crate) fn parse_jose_header(
     header_bytes: &[u8],
 ) -> Result<ParsedJoseHeader, JwtValidationFailure> {

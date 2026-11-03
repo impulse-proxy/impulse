@@ -197,7 +197,6 @@ mod tests {
         runtime::RuntimeConfig,
     };
 
-    use super::UpstreamPool;
     use crate::{
         LoadBalancingStrategy, RequestKeyInput, health::HealthFailureReason,
         test_support::runtime_upstream_from_addresses,

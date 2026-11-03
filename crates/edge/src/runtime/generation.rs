@@ -152,7 +152,7 @@ impl OwnedRuntimeState for RuntimeGenerationState {
     const OWNERSHIP: OperationalOwnership = OperationalOwnership::GenerationOwned;
 }
 
-pub type RuntimeGenerationView<'a> = impulse_runtime::RuntimeGenerationView<
+pub(crate) type RuntimeGenerationView<'a> = impulse_runtime::RuntimeGenerationView<
     'a,
     StartupOwnedRuntimeState,
     RuntimeConfig,

@@ -3,13 +3,17 @@ use impulse_errors::ProxyError;
 pub(crate) use impulse_policy::{
     ExternalAuthChallengeResponse, ExternalAuthCompletion, ExternalAuthDecision,
     ExternalAuthDenyResponse, ExternalAuthExecutionPolicy, ExternalAuthFailureDisposition,
-    ExternalAuthRedirectResponse, ExternalAuthResponseMetadata, ExternalAuthResult,
-    ExternalAuthStateTransition, ExternalAuthTaskConfig,
-    allowed_external_auth_headers as allowed_auth_headers,
+    ExternalAuthResponseMetadata, ExternalAuthResult, ExternalAuthStateTransition,
+    ExternalAuthTaskConfig,
     canonicalize_external_auth_mutations as canonicalize_auth_request_mutations,
-    evaluate_external_auth_completion, external_auth_allow_mutations as auth_allow_mutations,
-    map_http_external_auth_response, merge_external_auth_mutations as merge_auth_request_mutations,
+    evaluate_external_auth_completion, map_http_external_auth_response,
+    merge_external_auth_mutations as merge_auth_request_mutations,
     resolve_external_auth_state_transition,
+};
+#[cfg(test)]
+pub(crate) use impulse_policy::{
+    ExternalAuthRedirectResponse, allowed_external_auth_headers as allowed_auth_headers,
+    external_auth_allow_mutations as auth_allow_mutations,
 };
 use quiche::h3::NameValue;
 

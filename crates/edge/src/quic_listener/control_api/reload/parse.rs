@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use super::{request_body::ControlApiRuntimePlanRequest, *};
+use crate::runtime::bundle::ActiveRuntimeGeneration;
 
 impl Http3Service {
     pub(in crate::quic_listener::control_api) async fn handle_control_api_runtime_validate(
