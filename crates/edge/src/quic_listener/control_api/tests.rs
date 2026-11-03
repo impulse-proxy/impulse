@@ -23,13 +23,18 @@ use crate::runtime::activation::{
     ActivationRequest, GenerationEventKind, GenerationOperation, GenerationStatus, PlanningPhase,
     PlanningPhaseStatus, RejectedChangeKind, ReloadCompatibilityClassification, ReloadConfigInput,
     ReloadDiffDisposition, RollbackRequest, RuntimeActivationService, RuntimeRejectionReason,
+    compatibility::{
+        evaluate_runtime_reload_compatibility, validate_control_api_reload_compatibility,
+        validate_metrics_reload_compatibility, validate_runtime_reload_compatibility,
+        validate_startup_owned_reload_compatibility,
+    },
     plan_runtime_reload,
 };
 
 /// Render the typed startup-owned compatibility result into the flat list of
 /// operator strings the assertions below were written against.
 fn startup_owned_issue_strings(current: &RuntimeBundle, next: &RuntimeBundle) -> Vec<String> {
-    match Http3Service::validate_startup_owned_reload_compatibility(current, next) {
+    match validate_startup_owned_reload_compatibility(current, next) {
         Ok(()) => Vec::new(),
         Err(rejections) => rejections.iter().map(|r| r.to_string()).collect(),
     }
@@ -3695,7 +3700,7 @@ fn live_reloadable_upstream_change_is_accepted() {
     let next_bundle = runtime_bundle_from_config("next.yaml", &next);
     let current_active = RuntimeBundleHandle::new(current_bundle).current_view();
 
-    let result = Http3Service::evaluate_runtime_reload_compatibility(&current_active, &next_bundle);
+    let result = evaluate_runtime_reload_compatibility(&current_active, &next_bundle);
     assert!(
         result.is_ok(),
         "generation-owned upstream change must be live-reloadable, got: {result:?}"
@@ -3720,7 +3725,7 @@ fn reload_compatibility_classifies_generation_owned_changes_as_live_reloadable()
     let active = RuntimeBundleHandle::new(current_bundle).current_view();
 
     assert!(
-        Http3Service::evaluate_runtime_reload_compatibility(&active, &next_bundle).is_ok(),
+        evaluate_runtime_reload_compatibility(&active, &next_bundle).is_ok(),
         "generation-owned routing changes should stay reloadable"
     );
 }
@@ -3745,7 +3750,7 @@ fn restart_required_change_rejects_before_touching_active_generation() {
     let generation_before = handle.current_generation();
     let active = handle.current_view();
 
-    let result = Http3Service::evaluate_runtime_reload_compatibility(&active, &next_bundle);
+    let result = evaluate_runtime_reload_compatibility(&active, &next_bundle);
     let rejections = result.expect_err("restart-required change must be rejected");
     assert!(
         rejections.iter().any(
@@ -3774,7 +3779,7 @@ fn reload_compatibility_classifies_startup_owned_changes_as_restart_required() {
     let next_bundle = runtime_bundle_from_config("next.yaml", &next);
     let active = RuntimeBundleHandle::new(current_bundle).current_view();
 
-    let rejections = Http3Service::evaluate_runtime_reload_compatibility(&active, &next_bundle)
+    let rejections = evaluate_runtime_reload_compatibility(&active, &next_bundle)
         .expect_err("startup-owned change must reject the reload");
     assert_eq!(rejections.len(), 1);
     let rejection = &rejections[0];
@@ -3916,9 +3921,8 @@ fn validate_control_api_reload_compatibility_allows_bind_change_when_socket_is_f
 
     let current_bundle = runtime_bundle_from_config("current.yaml", &current);
     let next_bundle = runtime_bundle_from_config("next.yaml", &next);
-    let result =
-        Http3Service::validate_control_api_reload_compatibility(&current_bundle, &next_bundle)
-            .map(|rejection| rejection.to_string());
+    let result = validate_control_api_reload_compatibility(&current_bundle, &next_bundle)
+        .map(|rejection| rejection.to_string());
     if result
         .as_deref()
         .is_some_and(|err| err.contains("Operation not permitted"))
@@ -3945,7 +3949,7 @@ fn validate_metrics_reload_compatibility_allows_bind_change_when_socket_is_free(
 
     let current_bundle = runtime_bundle_from_config("current.yaml", &current);
     let next_bundle = runtime_bundle_from_config("next.yaml", &next);
-    let result = Http3Service::validate_metrics_reload_compatibility(&current_bundle, &next_bundle)
+    let result = validate_metrics_reload_compatibility(&current_bundle, &next_bundle)
         .map(|rejection| rejection.to_string());
     if result
         .as_deref()
@@ -4029,7 +4033,7 @@ fn validate_runtime_reload_compatibility_allows_listener_addition_when_binds_are
     let current_bundle = runtime_bundle_from_config("current.yaml", &current);
     let next_bundle = runtime_bundle_from_config("next.yaml", &next);
 
-    let result = Http3Service::validate_runtime_reload_compatibility(&current_bundle, &next_bundle)
+    let result = validate_runtime_reload_compatibility(&current_bundle, &next_bundle)
         .map(|rejection| rejection.to_string());
     if result
         .as_deref()
@@ -4062,9 +4066,8 @@ fn validate_runtime_reload_compatibility_classifies_listener_bind_conflict_as_pr
     let current_bundle = runtime_bundle_from_config("current.yaml", &current);
     let next_bundle = runtime_bundle_from_config("next.yaml", &next);
 
-    let rejection =
-        Http3Service::validate_runtime_reload_compatibility(&current_bundle, &next_bundle)
-            .expect("listener bind conflict must reject");
+    let rejection = validate_runtime_reload_compatibility(&current_bundle, &next_bundle)
+        .expect("listener bind conflict must reject");
     let expected_field = format!("QUIC listener '127.0.0.1:{occupied_port}'");
     assert_eq!(
         rejection.kind,
@@ -4094,7 +4097,7 @@ fn validate_runtime_reload_compatibility_allows_explicit_listener_replacement() 
     let current_bundle = runtime_bundle_from_config("current.yaml", &current);
     let next_bundle = runtime_bundle_from_config("next.yaml", &next);
 
-    let result = Http3Service::validate_runtime_reload_compatibility(&current_bundle, &next_bundle)
+    let result = validate_runtime_reload_compatibility(&current_bundle, &next_bundle)
         .map(|rejection| rejection.to_string());
     assert!(
         result.is_none(),
@@ -4114,7 +4117,7 @@ fn validate_runtime_reload_compatibility_allows_listener_bind_replacement() {
     let current_bundle = runtime_bundle_from_config("current.yaml", &current);
     let next_bundle = runtime_bundle_from_config("next.yaml", &next);
 
-    let result = Http3Service::validate_runtime_reload_compatibility(&current_bundle, &next_bundle)
+    let result = validate_runtime_reload_compatibility(&current_bundle, &next_bundle)
         .map(|rejection| rejection.to_string());
     assert!(
         result.is_none(),
@@ -4141,9 +4144,8 @@ fn validate_control_api_reload_compatibility_classifies_bind_conflict_as_preflig
     let current_bundle = runtime_bundle_from_config("current.yaml", &current);
     let next_bundle = runtime_bundle_from_config("next.yaml", &next);
 
-    let rejection =
-        Http3Service::validate_control_api_reload_compatibility(&current_bundle, &next_bundle)
-            .expect("control api bind conflict must reject");
+    let rejection = validate_control_api_reload_compatibility(&current_bundle, &next_bundle)
+        .expect("control api bind conflict must reject");
     let expected_field = format!("control API endpoint '127.0.0.1:{occupied_port}'");
     assert_eq!(
         rejection.kind,
@@ -4176,9 +4178,8 @@ fn validate_metrics_reload_compatibility_classifies_bind_conflict_as_preflight_f
     let current_bundle = runtime_bundle_from_config("current.yaml", &current);
     let next_bundle = runtime_bundle_from_config("next.yaml", &next);
 
-    let rejection =
-        Http3Service::validate_metrics_reload_compatibility(&current_bundle, &next_bundle)
-            .expect("metrics bind conflict must reject");
+    let rejection = validate_metrics_reload_compatibility(&current_bundle, &next_bundle)
+        .expect("metrics bind conflict must reject");
     let expected_field = format!("metrics endpoint '127.0.0.1:{occupied_port}'");
     assert_eq!(
         rejection.kind,
@@ -4213,9 +4214,8 @@ fn validate_control_api_reload_compatibility_rejects_invalid_admin_ca_file() {
     let current_bundle = runtime_bundle_from_config("current.yaml", &current);
     let next_bundle = runtime_bundle_from_config("next.yaml", &next);
 
-    let rejection =
-        Http3Service::validate_control_api_reload_compatibility(&current_bundle, &next_bundle)
-            .expect("invalid admin CA file must reject at preflight");
+    let rejection = validate_control_api_reload_compatibility(&current_bundle, &next_bundle)
+        .expect("invalid admin CA file must reject at preflight");
     assert_eq!(
         rejection.kind,
         TransitionRejectionKind::ResourcePreparationFailed
@@ -4250,9 +4250,8 @@ fn validate_metrics_reload_compatibility_rejects_invalid_admin_ca_file() {
     let current_bundle = runtime_bundle_from_config("current.yaml", &current);
     let next_bundle = runtime_bundle_from_config("next.yaml", &next);
 
-    let rejection =
-        Http3Service::validate_metrics_reload_compatibility(&current_bundle, &next_bundle)
-            .expect("invalid admin CA file must reject metrics preflight");
+    let rejection = validate_metrics_reload_compatibility(&current_bundle, &next_bundle)
+        .expect("invalid admin CA file must reject metrics preflight");
     assert_eq!(
         rejection.kind,
         TransitionRejectionKind::ResourcePreparationFailed

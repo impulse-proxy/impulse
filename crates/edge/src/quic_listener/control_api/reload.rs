@@ -300,56 +300,6 @@ impl Http3Service {
             }),
         )
     }
-
-    #[cfg(test)]
-    pub(crate) fn evaluate_runtime_reload_compatibility(
-        current: &crate::runtime::bundle::ActiveRuntimeGeneration,
-        next: &RuntimeBundle,
-    ) -> Result<(), Vec<crate::runtime::policy::TransitionRejection>> {
-        crate::runtime::activation::compatibility::evaluate_runtime_reload_compatibility(
-            current, next,
-        )
-    }
-
-    #[cfg(test)]
-    pub(super) fn validate_runtime_reload_compatibility(
-        current: &RuntimeBundle,
-        next: &RuntimeBundle,
-    ) -> Option<crate::runtime::policy::TransitionRejection> {
-        crate::runtime::activation::compatibility::validate_runtime_reload_compatibility(
-            current, next,
-        )
-    }
-
-    #[cfg(test)]
-    pub(super) fn validate_control_api_reload_compatibility(
-        current: &RuntimeBundle,
-        next: &RuntimeBundle,
-    ) -> Option<crate::runtime::policy::TransitionRejection> {
-        crate::runtime::activation::compatibility::validate_control_api_reload_compatibility(
-            current, next,
-        )
-    }
-
-    #[cfg(test)]
-    pub(super) fn validate_metrics_reload_compatibility(
-        current: &RuntimeBundle,
-        next: &RuntimeBundle,
-    ) -> Option<crate::runtime::policy::TransitionRejection> {
-        crate::runtime::activation::compatibility::validate_metrics_reload_compatibility(
-            current, next,
-        )
-    }
-
-    #[cfg(test)]
-    pub(super) fn validate_startup_owned_reload_compatibility(
-        current: &RuntimeBundle,
-        next: &RuntimeBundle,
-    ) -> Result<(), Vec<crate::runtime::policy::TransitionRejection>> {
-        crate::runtime::activation::compatibility::validate_startup_owned_reload_compatibility(
-            current, next,
-        )
-    }
 }
 
 #[cfg(test)]
