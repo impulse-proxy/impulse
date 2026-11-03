@@ -1661,6 +1661,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "impulse-plugins"
+version = "0.6.0"
+dependencies = [
+ "impulse-contracts",
+]
+
+[[package]]
 name = "impulse-policy"
 version = "0.6.0"
 dependencies = [
