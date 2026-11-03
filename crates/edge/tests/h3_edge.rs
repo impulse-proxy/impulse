@@ -27,8 +27,11 @@ use impulse_config::config::{
     HealthCheck, Listen, LoadBalancing, Log, LogFormat, Security, Tls, UpstreamTls,
 };
 use impulse_edge::{
-    MAX_DATAGRAM_SIZE_BYTES, MAX_UDP_PAYLOAD_BYTES, QUIC_IDLE_TIMEOUT_MS, QUIC_INITIAL_MAX_DATA,
-    QUIC_INITIAL_MAX_STREAMS_BIDI, QUIC_INITIAL_MAX_STREAMS_UNI, QUIC_INITIAL_STREAM_DATA,
+    constants::{
+        MAX_DATAGRAM_SIZE_BYTES, MAX_UDP_PAYLOAD_BYTES, QUIC_IDLE_TIMEOUT_MS,
+        QUIC_INITIAL_MAX_DATA, QUIC_INITIAL_MAX_STREAMS_BIDI, QUIC_INITIAL_MAX_STREAMS_UNI,
+        QUIC_INITIAL_STREAM_DATA,
+    },
     runtime::listener::Http3Service,
 };
 use support::{net::local_listener_bind_available, request_path as request_support};

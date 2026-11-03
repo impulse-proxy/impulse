@@ -6,14 +6,11 @@ use std::{
 
 use impulse_config::runtime::{RuntimeBackendAddressKind, RuntimeBackendTlsPolicy, RuntimeConfig};
 use impulse_lb::pingora_backend::SharedPingoraLoadBalancingRuntimeState;
+use impulse_observability::{DiscoveryRefreshUpdate, PingoraDiscoveryRefreshOutcome};
 use impulse_transport::{SharedDnsResolver, UpstreamTransportPool};
 use log::{debug, error, info, warn};
 
-use crate::{
-    Metrics,
-    metrics::{DiscoveryRefreshUpdate, PingoraDiscoveryRefreshOutcome},
-    runtime::tasks::RuntimeTaskRegistry,
-};
+use crate::{Metrics, runtime::tasks::RuntimeTaskRegistry};
 
 const DNS_REFRESH_CONCURRENCY: usize = 8;
 

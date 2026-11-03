@@ -21,8 +21,11 @@ use impulse_config::{
     validator::validate,
 };
 use impulse_edge::{
-    MAX_DATAGRAM_SIZE_BYTES, MAX_UDP_PAYLOAD_BYTES, QUIC_IDLE_TIMEOUT_MS, QUIC_INITIAL_MAX_DATA,
-    QUIC_INITIAL_MAX_STREAMS_BIDI, QUIC_INITIAL_MAX_STREAMS_UNI, QUIC_INITIAL_STREAM_DATA,
+    constants::{
+        MAX_DATAGRAM_SIZE_BYTES, MAX_UDP_PAYLOAD_BYTES, QUIC_IDLE_TIMEOUT_MS,
+        QUIC_INITIAL_MAX_DATA, QUIC_INITIAL_MAX_STREAMS_BIDI, QUIC_INITIAL_MAX_STREAMS_UNI,
+        QUIC_INITIAL_STREAM_DATA,
+    },
     runtime::{
         bundle::RuntimeBundleHandle,
         listener::Http3Service as RuntimeListener,

@@ -1,8 +1,7 @@
-use impulse_contracts::AlternateBackendFailureReason;
-pub use impulse_contracts::{
-    HedgeOutcomeTelemetryReason, HedgePolicyDenialReason, HedgeTriggerTelemetryReason,
-    RetryAttemptTelemetryReason, RetryPolicyDenialReason, UpstreamRetryReason,
-    UpstreamTerminalErrorKind,
+use impulse_contracts::{
+    AlternateBackendFailureReason, HedgeOutcomeTelemetryReason, HedgePolicyDenialReason,
+    HedgeTriggerTelemetryReason, RetryAttemptTelemetryReason, RetryPolicyDenialReason,
+    UpstreamRetryReason, UpstreamTerminalErrorKind,
 };
 
 use crate::ProxyError;

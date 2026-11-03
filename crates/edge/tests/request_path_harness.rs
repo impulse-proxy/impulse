@@ -1385,8 +1385,8 @@ fn quic_request_path_request_body_at_cap_is_accepted() {
         |_| {},
     );
 
-    let chunk1 = vec![0u8; impulse_edge::MAX_REQUEST_BODY_BYTES / 2];
-    let chunk2 = vec![0u8; impulse_edge::MAX_REQUEST_BODY_BYTES - chunk1.len()];
+    let chunk1 = vec![0u8; impulse_edge::constants::MAX_REQUEST_BODY_BYTES / 2];
+    let chunk2 = vec![0u8; impulse_edge::constants::MAX_REQUEST_BODY_BYTES - chunk1.len()];
     let expected_len = chunk1.len() + chunk2.len();
 
     let (response, got_reset) = run_two_chunk_post_to(
@@ -1432,7 +1432,7 @@ fn quic_request_path_slow_request_body_cap_breach_stays_on_413_path() {
         vec![0u8; 600],
         vec![0u8; 600],
         Duration::from_millis(120),
-        Duration::from_secs(impulse_edge::REQUEST_TIMEOUT_SECS + 12),
+        Duration::from_secs(impulse_edge::constants::REQUEST_TIMEOUT_SECS + 12),
     )
     .expect("slow over-cap request should complete");
 
@@ -1497,9 +1497,13 @@ fn quic_request_path_concurrent_large_body_pressure_is_bounded() {
         let barrier = Arc::clone(&barrier);
         handles.push(thread::spawn(move || {
             barrier.wait();
-            let chunk1 = vec![0u8; (impulse_edge::MAX_REQUEST_BODY_BYTES - 8 * 1024) / 2];
-            let chunk2 =
-                vec![0u8; (impulse_edge::MAX_REQUEST_BODY_BYTES - 8 * 1024) - chunk1.len()];
+            let chunk1 =
+                vec![0u8; (impulse_edge::constants::MAX_REQUEST_BODY_BYTES - 8 * 1024) / 2];
+            let chunk2 = vec![
+                0u8;
+                (impulse_edge::constants::MAX_REQUEST_BODY_BYTES - 8 * 1024)
+                    - chunk1.len()
+            ];
             run_two_chunk_post_to(
                 listen_addr,
                 "localhost",

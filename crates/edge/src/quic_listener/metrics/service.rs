@@ -165,7 +165,7 @@ impl MetricsEndpointService {
                     };
                     let runtime_state = service_ctx.current_state();
                     let active_connections = Arc::clone(&binding.active_connections);
-                    if !try_claim_connection_slot(
+                    if !try_claim_control_api_connection_slot(
                         &active_connections,
                         runtime_state.endpoint.max_connections.max(1),
                     ) {

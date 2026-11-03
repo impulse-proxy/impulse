@@ -8,6 +8,7 @@ use std::{
 
 use async_trait::async_trait;
 use impulse_config::runtime::{RuntimeConfig, RuntimeResponseCachePolicy};
+use impulse_observability::ResponseCacheOutcome;
 pub use impulse_policy::{
     ResponseCacheAuthInput, ResponseCacheBypassReason, ResponseCacheKeyInput,
     ResponseCachePolicyInput, ResponseCacheRepresentation, ResponseCacheRequestEligibilityInput,
@@ -24,7 +25,7 @@ use pingora_cache::{
 };
 use pingora_http::ResponseHeader;
 
-use crate::{Metrics, metrics::ResponseCacheOutcome};
+use crate::Metrics;
 
 const CACHE_LOCK_AGE_TIMEOUT: Duration = Duration::from_secs(60);
 

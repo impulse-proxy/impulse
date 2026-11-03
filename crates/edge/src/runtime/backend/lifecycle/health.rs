@@ -3,7 +3,8 @@ use std::{
     time::Duration,
 };
 
-use impulse_lb::{HealthTransition, upstream_pool::UpstreamPool};
+use impulse_contracts::HealthFailureReason;
+use impulse_lb::{health::HealthTransition, upstream_pool::UpstreamPool};
 
 use crate::runtime::backend::{
     event::{
@@ -54,7 +55,7 @@ pub(crate) fn apply_backend_request_feedback(
 pub(crate) fn evaluate_active_health_check(
     identity: BackendIdentity,
     outcome: BackendHealthObservationOutcome,
-    reason: Option<impulse_lb::health::HealthFailureReason>,
+    reason: Option<HealthFailureReason>,
     base_interval_ms: u64,
     consecutive_failures: u32,
 ) -> ActiveHealthCheckEvaluation {
@@ -104,7 +105,7 @@ mod tests {
     mod health_observation_application {
         use std::{collections::HashMap, sync::Arc, time::Duration};
 
-        use impulse_lb::HealthTransition;
+        use impulse_lb::health::HealthTransition;
 
         use super::super::{
             super::test_support::{test_active_health_upstream_pool, test_upstream_pool},
@@ -363,7 +364,7 @@ mod tests {
     mod request_feedback_application {
         use std::{collections::HashMap, sync::Arc, time::Duration};
 
-        use impulse_lb::HealthTransition;
+        use impulse_lb::health::HealthTransition;
 
         use super::super::{
             super::test_support::{test_active_health_upstream_pool, test_upstream_pool},

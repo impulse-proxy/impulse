@@ -1,10 +1,11 @@
 use bytes::Bytes;
 use http::StatusCode;
 use impulse_config::runtime::RuntimeResponseCachePolicy;
-use impulse_errors::{
-    HedgeOutcomeTelemetryReason, HedgeTriggerTelemetryReason, ProxyError,
-    RetryAttemptTelemetryReason, RetryPolicyDenialReason,
+use impulse_contracts::{
+    HedgeOutcomeTelemetryReason, HedgeTriggerTelemetryReason, RetryAttemptTelemetryReason,
+    RetryPolicyDenialReason,
 };
+use impulse_errors::ProxyError;
 use impulse_transport::UpstreamBody;
 use pingora_cache::HttpCache;
 use tokio::sync::mpsc;
@@ -165,7 +166,7 @@ impl HedgeTelemetry {
 #[cfg(test)]
 mod tests {
     mod retry_policy_telemetry {
-        use impulse_errors::{RetryAttemptTelemetryReason, RetryPolicyDenialReason};
+        use impulse_contracts::{RetryAttemptTelemetryReason, RetryPolicyDenialReason};
 
         use super::super::RetryTelemetry;
 
@@ -212,7 +213,7 @@ mod tests {
     }
 
     mod hedge_policy_telemetry {
-        use impulse_errors::{HedgeOutcomeTelemetryReason, HedgeTriggerTelemetryReason};
+        use impulse_contracts::{HedgeOutcomeTelemetryReason, HedgeTriggerTelemetryReason};
 
         use super::super::HedgeTelemetry;
 

@@ -1,8 +1,8 @@
 use std::time::Duration;
 
 use http::StatusCode;
+use impulse_contracts::HealthFailureReason;
 pub use impulse_contracts::{BackendHealthObservationOutcome, BackendHealthObservationSource};
-use impulse_lb::health::HealthFailureReason;
 
 use super::state::BackendIdentity;
 

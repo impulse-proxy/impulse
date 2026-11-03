@@ -2,14 +2,12 @@
 
 use std::{sync::atomic::Ordering, time::Duration};
 
-use impulse_edge::{
-    Metrics, OverloadShedReason, RouteOutcome,
-    runtime::activation::{RuntimeOperationOutcomeReason, RuntimeRejectionReason},
+use impulse_contracts::{
+    AlternateBackendFailureReason, HedgeOutcomeTelemetryReason, HedgeTriggerTelemetryReason,
+    RetryAttemptTelemetryReason, RetryPolicyDenialReason, UpstreamTerminalErrorKind,
 };
-use impulse_errors::{
-    HedgeOutcomeTelemetryReason, HedgeTriggerTelemetryReason, RetryAttemptTelemetryReason,
-    RetryPolicyDenialReason,
-};
+use impulse_edge::runtime::activation::{RuntimeOperationOutcomeReason, RuntimeRejectionReason};
+use impulse_observability::{Metrics, OverloadShedReason, RouteOutcome};
 
 #[test]
 fn metrics_render_includes_route_percentiles() {
@@ -224,11 +222,11 @@ fn retry_and_hedge_counters_increment_only_on_executed_branches() {
     metrics.inc_retry_denied(RetryPolicyDenialReason::MethodNotIdempotent);
     metrics.inc_retry_denied(RetryPolicyDenialReason::RequestBodyNotReplayable);
     metrics.inc_retry_denied(RetryPolicyDenialReason::AlternateBackendUnavailable(
-        impulse_lb::alternate_backend::AlternateBackendFailureReason::NoHealthyBackends,
+        AlternateBackendFailureReason::NoHealthyBackends,
     ));
     metrics.inc_retry_denied(RetryPolicyDenialReason::AttemptLimitReached);
     metrics.inc_retry_denied(RetryPolicyDenialReason::TerminalError(
-        impulse_errors::UpstreamTerminalErrorKind::Protocol,
+        UpstreamTerminalErrorKind::Protocol,
     ));
     metrics.inc_hedge_trigger(HedgeTriggerTelemetryReason::DelayElapsed);
     metrics.inc_hedge_outcome(HedgeOutcomeTelemetryReason::PrimaryWonAfterTrigger);
@@ -255,7 +253,7 @@ fn metrics_render_keeps_retry_and_outcome_label_vocabularies_stable() {
     metrics.inc_retry_denied(RetryPolicyDenialReason::BudgetDenied);
     metrics.inc_retry_denied(RetryPolicyDenialReason::MethodNotIdempotent);
     metrics.inc_retry_denied(RetryPolicyDenialReason::AlternateBackendUnavailable(
-        impulse_lb::alternate_backend::AlternateBackendFailureReason::NoHealthyBackends,
+        AlternateBackendFailureReason::NoHealthyBackends,
     ));
     metrics.inc_overload_shed_reason(OverloadShedReason::Brownout);
     metrics.inc_overload_shed_reason(OverloadShedReason::AdaptiveAdmission);

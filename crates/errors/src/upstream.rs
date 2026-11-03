@@ -180,7 +180,7 @@ impl UpstreamErrorClassification {
 
 #[cfg(test)]
 mod tests {
-    use impulse_lb::health::HealthFailureReason;
+    use impulse_contracts::HealthFailureReason;
 
     use super::{
         UpstreamErrorCategory, UpstreamErrorClassification, UpstreamHealthFailureMapping,

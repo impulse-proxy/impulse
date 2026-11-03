@@ -12,15 +12,16 @@ use impulse_bridge::response::{
     normalize_response_trailers,
 };
 use impulse_config::{backend_endpoint::BackendScheme, runtime::ListenerRuntimeConfig};
-use impulse_contracts::RequestDecision as AdmissionPolicyDecision;
+use impulse_contracts::{
+    AlternateBackendFailureReason, HealthFailureReason, RequestDecision as AdmissionPolicyDecision,
+    RetryAttemptTelemetryReason,
+};
 use impulse_errors::{
-    BridgeError, PoolError, ProxyError, RetryAttemptTelemetryReason, RetryPolicyDecision,
-    classify_upstream_proxy_error, is_idempotent_method,
+    BridgeError, PoolError, ProxyError, RetryPolicyDecision, classify_upstream_proxy_error,
+    is_idempotent_method,
 };
-use impulse_lb::{
-    BackendSelectionInput, alternate_backend::AlternateBackendFailureReason,
-    upstream_pool::UpstreamPool,
-};
+use impulse_lb::{BackendSelectionInput, upstream_pool::UpstreamPool};
+use impulse_observability::ResponseCacheOutcome;
 pub use impulse_pingora_ingress::PingoraListenerTask;
 use impulse_pingora_ingress::{
     ConnectionAdmission, PingoraDrainState, PingoraIngressAdapter, PingoraListenerConfig,
@@ -73,7 +74,6 @@ use crate::{
         },
         retry::RetryCoordinator,
     },
-    metrics::ResponseCacheOutcome,
     quic_listener::{
         BackendCandidate, ForwardingSelectionService, TargetResolutionRequest,
         execute_external_auth_request,
@@ -1894,7 +1894,7 @@ fn record_pingora_backend_response(ctx: &mut PingoraRequestContext, status: http
             .shared_services()
             .metrics
             .policy_observations()
-            .inc_health_failure(impulse_lb::health::HealthFailureReason::HttpStatus5xx);
+            .inc_health_failure(HealthFailureReason::HttpStatus5xx);
     }
     let transition = observe_backend_response_status_and_log(BackendHealthObservationInput {
         backend_addr: &selected.address,

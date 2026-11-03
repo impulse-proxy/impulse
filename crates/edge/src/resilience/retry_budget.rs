@@ -6,7 +6,7 @@ use std::{
     },
 };
 
-use impulse_errors::RetryPolicyDenialReason;
+use impulse_contracts::RetryPolicyDenialReason;
 
 pub struct RetryBudget {
     enabled: bool,
@@ -100,7 +100,7 @@ mod tests {
         thread,
     };
 
-    use impulse_errors::RetryPolicyDenialReason;
+    use impulse_contracts::RetryPolicyDenialReason;
 
     use super::RetryBudget;
 

@@ -1,7 +1,7 @@
 use std::{net::SocketAddr, time::SystemTime};
 
 pub use impulse_contracts::BackendIdentity;
-use impulse_lb::health::HealthFailureReason;
+use impulse_contracts::HealthFailureReason;
 
 use super::resolution::{RuntimeBackendAddressKind, RuntimeBackendResolution};
 

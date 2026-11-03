@@ -1,8 +1,8 @@
-use impulse_contracts::AlternateBackendFailureReason;
+use impulse_contracts::{AlternateBackendFailureReason, RetryPolicyDenialReason};
 use impulse_errors::{
     HedgePolicyDecision, HedgePolicyFacts, HedgePrimaryState, PoolError, ProxyError,
-    RetryPolicyDecision, RetryPolicyDenialReason, RetryPolicyFacts, classify_retryability,
-    evaluate_hedge_policy, evaluate_retry_policy,
+    RetryPolicyDecision, RetryPolicyFacts, classify_retryability, evaluate_hedge_policy,
+    evaluate_retry_policy,
 };
 
 use crate::resilience::retry_budget::RetryBudget;

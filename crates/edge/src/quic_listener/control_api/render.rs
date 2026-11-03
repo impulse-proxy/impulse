@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use impulse_lb::health::HealthFailureReason;
+use impulse_contracts::HealthFailureReason;
 use serde::Serialize;
 
 #[cfg(test)]

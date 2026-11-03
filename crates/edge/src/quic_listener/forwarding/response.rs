@@ -1,7 +1,9 @@
 use std::sync::Arc;
 
 use bytes::Bytes;
+use impulse_contracts::HealthFailureReason;
 use impulse_errors::{UpstreamProxyErrorKind, classify_upstream_proxy_error};
+use impulse_observability::ResponseCacheOutcome;
 use impulse_transport::{UpstreamBody, UpstreamBodyFrame};
 use pingora_cache::{CacheMeta, HttpCache, NoCacheReason};
 use pingora_core::protocols::http::compression::Algorithm;
@@ -26,7 +28,6 @@ use crate::{
             process_response,
         },
     },
-    metrics::ResponseCacheOutcome,
     runtime::connection::{
         auth::ExternalAuthDecision,
         response::{
@@ -1288,9 +1289,9 @@ impl Http3Service {
                     && let (Some(addr), Some(idx)) = (&req.backend_addr, req.backend_index)
                 {
                     if status.is_server_error() {
-                        metrics.policy_observations().inc_health_failure(
-                            impulse_lb::health::HealthFailureReason::HttpStatus5xx,
-                        );
+                        metrics
+                            .policy_observations()
+                            .inc_health_failure(HealthFailureReason::HttpStatus5xx);
                     }
                     let transition = crate::runtime::connection::outcome::observe_backend_response_status_and_log(
                         crate::runtime::connection::outcome::BackendHealthObservationInput {

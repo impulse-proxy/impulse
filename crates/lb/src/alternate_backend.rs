@@ -4,7 +4,7 @@
 //! [`UpstreamPool`]. It consumes pool-level read APIs and does not mutate pool
 //! internals directly.
 
-pub use impulse_contracts::AlternateBackendFailureReason;
+use impulse_contracts::AlternateBackendFailureReason;
 
 use crate::upstream_pool::UpstreamPool;
 

@@ -16,10 +16,8 @@ pub use proxy::{
     ClassifiedUpstreamProxyError, ProxyError, UpstreamProxyErrorKind, classify_upstream_proxy_error,
 };
 pub use retry::{
-    HedgeOutcomeTelemetryReason, HedgePolicyDecision, HedgePolicyDenialReason, HedgePolicyFacts,
-    HedgePrimaryState, HedgeTriggerTelemetryReason, RetryAttemptTelemetryReason,
-    RetryPolicyDecision, RetryPolicyDenialReason, RetryPolicyFacts, UpstreamRetryReason,
-    UpstreamRetryability, UpstreamTerminalErrorKind, classify_retryability, evaluate_hedge_policy,
+    HedgePolicyDecision, HedgePolicyFacts, HedgePrimaryState, RetryPolicyDecision,
+    RetryPolicyFacts, UpstreamRetryability, classify_retryability, evaluate_hedge_policy,
     evaluate_retry_policy, is_idempotent_method,
 };
 pub use upstream::{

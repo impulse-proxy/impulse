@@ -6,7 +6,7 @@ use impulse_contracts::{
     BackendHealthObservationSource, HedgePolicyDenialReason, RejectionReason,
     RetryPolicyDenialReason, TimeoutReason, UpstreamRetryReason,
 };
-pub use impulse_observability::{
+use impulse_observability::{
     AdmissionDecisionReason, AdmissionOverloadCause, BackendHealthReason, HedgeDecisionReason,
     MetricReasonLabels, OperationalEventContext, QuotaBackendHealthReason, QuotaPolicyDecision,
     QuotaPolicyReason, RequestOutcomeReason, RetryDecisionReason, backend_health_reason,
@@ -380,7 +380,7 @@ mod tests {
             // obs Phase 2 (step 5): the metrics `reason=` label must come from the
             // canonical vocabulary. Every OverloadShedReason maps to a canonical cause
             // whose slug is the emitted label.
-            use crate::metrics::OverloadShedReason;
+            use impulse_observability::OverloadShedReason;
             let cases = [
                 (
                     OverloadShedReason::Brownout,
@@ -631,7 +631,7 @@ mod tests {
 
         #[test]
         fn representative_reason_tokens_stay_aligned_across_metrics_logs_and_control_plane() {
-            use crate::metrics::OverloadShedReason;
+            use impulse_observability::OverloadShedReason;
 
             assert_reason_surface_alignment(RequestOutcomeReason::TimedOut.slug());
             assert_reason_surface_alignment(
@@ -711,7 +711,7 @@ mod tests {
             );
             assert_eq!(
                 RetryDecisionReason::from(RetryPolicyDenialReason::AlternateBackendUnavailable(
-                    impulse_lb::alternate_backend::AlternateBackendFailureReason::NoHealthyBackends
+                    impulse_contracts::AlternateBackendFailureReason::NoHealthyBackends
                 )),
                 RetryDecisionReason::RetryPolicyDisabled
             );
@@ -725,7 +725,7 @@ mod tests {
             );
             assert_eq!(
                 HedgeDecisionReason::from(HedgePolicyDenialReason::AlternateBackendUnavailable(
-                    impulse_lb::alternate_backend::AlternateBackendFailureReason::NoHealthyBackends
+                    impulse_contracts::AlternateBackendFailureReason::NoHealthyBackends
                 )),
                 HedgeDecisionReason::AlternateBackendUnavailable
             );

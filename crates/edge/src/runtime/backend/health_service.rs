@@ -9,8 +9,8 @@ use impulse_config::{
     backend_endpoint::BackendEndpoint,
     runtime::{RuntimeBackendHealthCheck, RuntimeBackendTlsPolicy},
 };
+use impulse_contracts::HealthFailureReason;
 use impulse_lb::{
-    health::HealthFailureReason,
     pingora_backend::{
         HealthCheckService, PingoraBackend, PingoraBackendIdentity, PingoraHealthCheck,
         PingoraHttpHealthCheck, SharedPingoraLoadBalancingRuntimeState,

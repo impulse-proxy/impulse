@@ -17,8 +17,10 @@ pub enum PoolError {
 
 #[cfg(test)]
 mod tests {
+    use impulse_contracts::UpstreamRetryReason;
+
     use super::PoolError;
-    use crate::{ProxyError, UpstreamRetryReason, UpstreamRetryability, classify_retryability};
+    use crate::{ProxyError, UpstreamRetryability, classify_retryability};
 
     #[test]
     fn display_covers_named_pool_variants() {

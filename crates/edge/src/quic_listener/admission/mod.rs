@@ -51,9 +51,8 @@ use tokio::{
 
 use super::{Http3Service, LbHeaderLookup, runtime_handle};
 use crate::{
-    RouteOutcome,
+    OverloadShedReason, RouteOutcome,
     edge_core::request_execution::{QuotaRejectedDecision, evaluate_post_auth_quota_policy},
-    metrics::OverloadShedReason,
     resilience::{
         adaptive_admission::AdaptivePermit,
         quota::{QuotaDecision, QuotaIdentityContext, evaluate_admission_quota},

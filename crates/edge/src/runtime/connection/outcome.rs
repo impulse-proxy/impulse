@@ -5,12 +5,13 @@ use std::{
 
 use http::StatusCode;
 use impulse_config::runtime::RuntimeBackendTlsPolicy;
+use impulse_contracts::HealthFailureReason;
 use impulse_errors::{
     ClassifiedUpstreamProxyError, PoolError, ProxyError, UpstreamErrorCategory, UpstreamTlsReason,
 };
 use impulse_lb::{
-    HealthTransition, health::HealthFailureReason,
-    pingora_backend::PingoraLoadBalancingRuntimeState, upstream_pool::UpstreamPool,
+    health::HealthTransition, pingora_backend::PingoraLoadBalancingRuntimeState,
+    upstream_pool::UpstreamPool,
 };
 use log::{error, info};
 
@@ -1013,7 +1014,7 @@ mod tests {
         metrics: &Metrics,
         upstream: &str,
         outcome: &str,
-    ) -> crate::metrics::RequestLatencyStats {
+    ) -> impulse_observability::RequestLatencyStats {
         metrics
             .snapshot_upstream_request_latency()
             .into_iter()

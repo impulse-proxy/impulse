@@ -16,13 +16,13 @@ use http::{StatusCode, Uri};
 use http_body_util::Full;
 use hyper::{Request, Response, body::Incoming};
 use impulse_config::config::{Config, Upstream};
+use impulse_contracts::HealthFailureReason;
 use impulse_edge::runtime::{
     backend::state::{BackendLifecycleInventorySnapshot, BackendLifecycleSnapshot},
     bundle::RuntimeBundleHandle,
 };
 use impulse_lb::{
-    HealthTransition,
-    health::HealthFailureReason,
+    health::HealthTransition,
     upstream_pool::{UpstreamBackendRuntimeState, UpstreamPoolMembershipSummary},
 };
 

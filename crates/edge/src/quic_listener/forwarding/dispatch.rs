@@ -1,13 +1,10 @@
 use std::convert::Infallible;
 
 use impulse_config::runtime::RuntimeBackendTlsPolicy;
-use impulse_errors::{
-    HedgeOutcomeTelemetryReason, HedgePolicyDecision, RetryPolicyDecision, is_idempotent_method,
-};
-use impulse_lb::{
-    BackendSelectionInput, alternate_backend::AlternateBackendFailureReason,
-    pingora_backend::GenerationSelector,
-};
+use impulse_contracts::{AlternateBackendFailureReason, HedgeOutcomeTelemetryReason};
+use impulse_errors::{HedgePolicyDecision, RetryPolicyDecision, is_idempotent_method};
+use impulse_lb::{BackendSelectionInput, pingora_backend::GenerationSelector};
+use impulse_observability::ResponseCacheOutcome;
 use impulse_transport::{
     UpstreamBodyFrame, UpstreamExchangeRequest, UpstreamExchangeResponse, UpstreamRequestExecutor,
     UpstreamRequestHead,
@@ -17,7 +14,6 @@ use pingora_cache::{HitStatus, HttpCache, NoCacheReason, lock::LockWaitOutcome};
 use super::{selection::ForwardingSelectionService, *};
 use crate::{
     edge_core::retry::RetryCoordinator,
-    metrics::ResponseCacheOutcome,
     observability::{HedgeDecisionReason, RetryDecisionReason},
     runtime::{
         cache::{
