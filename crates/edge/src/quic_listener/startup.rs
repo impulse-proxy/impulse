@@ -20,7 +20,7 @@ use crate::{
         bundle::{RuntimeBundle, RuntimeBundleHandle},
         connection::{PerSourceTokenBucket, TokenBucket},
         generation::StartupOwnedRuntimeState,
-        listener::{Http3Service, ShutdownSignal},
+        listener::{Http3Service, ListenerRuntimeState, ShutdownSignal},
         shared_state::SharedRuntimeState,
         tls::lifecycle::{
             create_listener_tls_store, record_listener_tls_inventory,
@@ -246,15 +246,11 @@ impl Http3Service {
             local_addr,
             config,
             listener_label,
-            listener_tls_store,
             tls_reload_generation,
             quic_config,
             h3_config,
-            transport_pool: Arc::clone(&shared_services.transport_pool),
-            backend_endpoints: Arc::clone(&generation_state.backend_endpoints),
-            backend_dns_resolver: shared_services.backend_dns_resolver.clone(),
+            runtime_state: ListenerRuntimeState::Standalone(Arc::clone(&shared_state)),
             upstream_policies: Arc::clone(&generation_state.upstream_policies),
-            pingora_load_balancing: Arc::clone(&generation_state.pingora_load_balancing),
             upstream_inflight: generation_state.upstream_inflight.clone(),
             global_inflight: Arc::clone(&generation_state.global_inflight),
             routing_index: Arc::clone(&generation_state.routing_index),
@@ -281,8 +277,6 @@ impl Http3Service {
                 .unknown_length_response_prebuffer_bytes,
             require_client_cert,
             runtime_bundle: None,
-            runtime_generation: 0,
-            response_cache_namespace: 0,
             recv_buf: Box::new([0; crate::constants::MAX_DATAGRAM_SIZE_BYTES]),
             send_buf: Box::new([0; crate::constants::MAX_DATAGRAM_SIZE_BYTES]),
             connections: HashMap::new(),
@@ -300,8 +294,7 @@ impl Http3Service {
         runtime_bundle: Arc<RuntimeBundleHandle>,
         shutdown: ShutdownSignal,
     ) -> Result<Self, ProxyError> {
-        let (runtime, response_cache_namespace) =
-            runtime_bundle.current_view_with_response_cache_namespace();
+        let runtime = runtime_bundle.current_view();
         let listener_config = runtime
             .listener_runtime_config(listener_label)
             .ok_or_else(|| {
@@ -316,17 +309,14 @@ impl Http3Service {
             Arc::clone(&runtime.bundle().shared_state),
             shutdown,
         )?;
-        listener.runtime_generation = runtime.generation();
-        listener.response_cache_namespace = response_cache_namespace;
+        listener.runtime_state = ListenerRuntimeState::Managed(runtime);
         listener.runtime_bundle = Some(runtime_bundle);
         Ok(listener)
     }
 
     pub fn with_runtime_bundle(mut self, runtime_bundle: Arc<RuntimeBundleHandle>) -> Self {
-        let (runtime, response_cache_namespace) =
-            runtime_bundle.current_view_with_response_cache_namespace();
-        self.runtime_generation = runtime.generation();
-        self.response_cache_namespace = response_cache_namespace;
+        let runtime = runtime_bundle.current_view();
+        self.runtime_state = ListenerRuntimeState::Managed(runtime);
         self.runtime_bundle = Some(runtime_bundle);
         self
     }

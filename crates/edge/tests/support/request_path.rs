@@ -174,8 +174,21 @@ impl QuicRequestPathHarness {
         let listener = Http3Service::new(config)
             .map_err(|err| format!("listener: {err}"))?
             .with_runtime_bundle(runtime_bundle);
-        self.backend_dns_resolver = Some(listener.backend_dns_resolver.clone());
-        self.pingora_load_balancing = Some(Arc::clone(&listener.pingora_load_balancing));
+        self.backend_dns_resolver = Some(
+            listener
+                .runtime_state
+                .shared_state()
+                .shared_services()
+                .backend_dns_resolver
+                .clone(),
+        );
+        self.pingora_load_balancing = Some(Arc::clone(
+            &listener
+                .runtime_state
+                .shared_state()
+                .generation_state()
+                .pingora_load_balancing,
+        ));
         self.metrics = Some(Arc::clone(&listener.metrics));
         let listen_addr = listener
             .socket

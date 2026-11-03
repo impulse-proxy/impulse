@@ -448,7 +448,11 @@ impl Http3Service {
         let Some(current_generation) = Self::tls_reload_generation_if_needed(
             &self.listener_label,
             self.tls_reload_generation,
-            &self.listener_tls_store,
+            &self
+                .runtime_state
+                .shared_state()
+                .shared_services()
+                .listener_tls_store,
         )?
         else {
             return Ok(());
@@ -468,8 +472,7 @@ impl Http3Service {
             return self.sync_tls_reload_state_if_needed();
         };
 
-        let (runtime, response_cache_namespace) =
-            runtime_bundle.current_view_with_response_cache_namespace();
+        let runtime = runtime_bundle.current_view();
         let current_tls_generation = runtime
             .shared_services()
             .listener_tls_store
@@ -480,7 +483,7 @@ impl Http3Service {
                     self.listener_label
                 ))
             })?;
-        if runtime.generation() == self.runtime_generation
+        if runtime.generation() == self.runtime_state.generation()
             && current_tls_generation == self.tls_reload_generation
         {
             return Ok(());
@@ -493,15 +496,11 @@ impl Http3Service {
             )));
         };
 
-        let shared = runtime.shared_services();
-        let generation = runtime.state();
         self.config = listener_config;
-        self.listener_tls_store = Arc::clone(&shared.listener_tls_store);
-        self.transport_pool = Arc::clone(&shared.transport_pool);
-        self.backend_endpoints = Arc::clone(&generation.backend_endpoints);
-        self.backend_dns_resolver = shared.backend_dns_resolver.clone();
+        self.runtime_state = crate::runtime::listener::ListenerRuntimeState::Managed(runtime);
+        let shared = self.runtime_state.shared_state().shared_services();
+        let generation = self.runtime_state.shared_state().generation_state();
         self.upstream_policies = Arc::clone(&generation.upstream_policies);
-        self.pingora_load_balancing = Arc::clone(&generation.pingora_load_balancing);
         self.upstream_inflight = generation.upstream_inflight.clone();
         self.global_inflight = Arc::clone(&generation.global_inflight);
         self.routing_index = Arc::clone(&generation.routing_index);
@@ -535,12 +534,11 @@ impl Http3Service {
             settings.new_connections_burst,
         );
         self.quic_config = Self::build_quic_config(&self.config)?;
-        self.runtime_generation = runtime.generation();
-        self.response_cache_namespace = response_cache_namespace;
         self.tls_reload_generation = current_tls_generation;
         info!(
             "Reloaded runtime configuration for listener {} at generation {}",
-            self.listener_label, self.runtime_generation
+            self.listener_label,
+            self.runtime_state.generation()
         );
         Ok(())
     }

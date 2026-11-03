@@ -391,14 +391,36 @@ impl Http3Service {
             metrics: Arc::clone(&self.metrics),
             resilience: &self.resilience,
             routing_index: &self.routing_index,
-            upstream_pools: self.pingora_load_balancing.upstream_pools(),
+            upstream_pools: self
+                .runtime_state
+                .shared_state()
+                .generation_state()
+                .pingora_load_balancing
+                .upstream_pools(),
             upstream_policies: self.upstream_policies.as_ref(),
-            pingora_load_balancing: self.pingora_load_balancing.as_ref(),
-            generation: self.runtime_generation,
+            pingora_load_balancing: self
+                .runtime_state
+                .shared_state()
+                .generation_state()
+                .pingora_load_balancing
+                .as_ref(),
+            generation: self.runtime_state.generation(),
         };
         let exec_ctx = ForwardingExecutionCtx {
-            upstream_executor: UpstreamRequestExecutor::new(Arc::clone(&self.transport_pool)),
-            backend_endpoints: Arc::clone(&self.backend_endpoints),
+            upstream_executor: UpstreamRequestExecutor::new(Arc::clone(
+                &self
+                    .runtime_state
+                    .shared_state()
+                    .shared_services()
+                    .transport_pool,
+            )),
+            backend_endpoints: Arc::clone(
+                &self
+                    .runtime_state
+                    .shared_state()
+                    .generation_state()
+                    .backend_endpoints,
+            ),
             upstream_inflight: &self.upstream_inflight,
             global_inflight: Arc::clone(&self.global_inflight),
             inflight_acquire_wait: self.inflight_acquire_wait,
@@ -406,7 +428,12 @@ impl Http3Service {
                 .runtime_bundle
                 .as_ref()
                 .and_then(|runtime| runtime.response_cache()),
-            response_cache_namespace: self.response_cache_namespace,
+            response_cache_namespace: self
+                .runtime_bundle
+                .as_ref()
+                .map_or(self.runtime_state.generation(), |runtime| {
+                    runtime.response_cache_namespace()
+                }),
         };
         let progress_config = StreamProgressConfig {
             backend_body_idle_timeout: self.backend_body_idle_timeout,
@@ -481,14 +508,36 @@ impl Http3Service {
             metrics: Arc::clone(&self.metrics),
             resilience: &self.resilience,
             routing_index: &self.routing_index,
-            upstream_pools: self.pingora_load_balancing.upstream_pools(),
+            upstream_pools: self
+                .runtime_state
+                .shared_state()
+                .generation_state()
+                .pingora_load_balancing
+                .upstream_pools(),
             upstream_policies: self.upstream_policies.as_ref(),
-            pingora_load_balancing: self.pingora_load_balancing.as_ref(),
-            generation: self.runtime_generation,
+            pingora_load_balancing: self
+                .runtime_state
+                .shared_state()
+                .generation_state()
+                .pingora_load_balancing
+                .as_ref(),
+            generation: self.runtime_state.generation(),
         };
         let exec_ctx = ForwardingExecutionCtx {
-            upstream_executor: UpstreamRequestExecutor::new(Arc::clone(&self.transport_pool)),
-            backend_endpoints: Arc::clone(&self.backend_endpoints),
+            upstream_executor: UpstreamRequestExecutor::new(Arc::clone(
+                &self
+                    .runtime_state
+                    .shared_state()
+                    .shared_services()
+                    .transport_pool,
+            )),
+            backend_endpoints: Arc::clone(
+                &self
+                    .runtime_state
+                    .shared_state()
+                    .generation_state()
+                    .backend_endpoints,
+            ),
             upstream_inflight: &self.upstream_inflight,
             global_inflight: Arc::clone(&self.global_inflight),
             inflight_acquire_wait: self.inflight_acquire_wait,
@@ -496,7 +545,12 @@ impl Http3Service {
                 .runtime_bundle
                 .as_ref()
                 .and_then(|runtime| runtime.response_cache()),
-            response_cache_namespace: self.response_cache_namespace,
+            response_cache_namespace: self
+                .runtime_bundle
+                .as_ref()
+                .map_or(self.runtime_state.generation(), |runtime| {
+                    runtime.response_cache_namespace()
+                }),
         };
         let progress_config = StreamProgressConfig {
             backend_body_idle_timeout: self.backend_body_idle_timeout,

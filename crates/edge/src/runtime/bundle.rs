@@ -169,19 +169,16 @@ impl RuntimeBundleHandle {
         self.response_cache.cache()
     }
 
+    pub(crate) fn response_cache_namespace(&self) -> u64 {
+        self.response_cache.namespace()
+    }
+
     pub(crate) fn current_with_response_cache_namespace(&self) -> (Arc<RuntimeBundle>, u64) {
         let guard = self
             .inner
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         (Arc::clone(&guard), self.response_cache.namespace())
-    }
-
-    pub(crate) fn current_view_with_response_cache_namespace(
-        &self,
-    ) -> (ActiveRuntimeGeneration, u64) {
-        let (bundle, namespace) = self.current_with_response_cache_namespace();
-        (ActiveRuntimeGeneration::new(bundle), namespace)
     }
 
     /// The shared process lifecycle state machine (Phase 6). All clones of this

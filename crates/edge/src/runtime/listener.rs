@@ -5,14 +5,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-use impulse_config::{
-    backend_endpoint::BackendEndpoint,
-    runtime::{ListenerRuntimeConfig, RuntimeBackendTlsPolicy, RuntimeUpstreamPolicy},
-};
+use impulse_config::runtime::{ListenerRuntimeConfig, RuntimeUpstreamPolicy};
 pub use impulse_http3_ingress::ShutdownSignal;
-use impulse_lb::pingora_backend::SharedPingoraLoadBalancingRuntimeState;
 use impulse_operations::watchdog::WatchdogCoordinator;
-use impulse_transport::{SharedDnsResolver, UpstreamTransportPool};
 use tokio::sync::Semaphore;
 
 use crate::{
@@ -22,10 +17,32 @@ use crate::{
     resilience::runtime::RuntimeResilience,
     routing::index::RouteIndex,
     runtime::{
-        bundle::RuntimeBundleHandle, connection::quic::QuicConnection,
-        tls::store::ListenerTlsReloadStore,
+        bundle::{ActiveRuntimeGeneration, RuntimeBundleHandle},
+        connection::quic::QuicConnection,
+        shared_state::SharedRuntimeState,
     },
 };
+
+pub enum ListenerRuntimeState {
+    Standalone(Arc<SharedRuntimeState>),
+    Managed(ActiveRuntimeGeneration),
+}
+
+impl ListenerRuntimeState {
+    pub fn shared_state(&self) -> &SharedRuntimeState {
+        match self {
+            Self::Standalone(state) => state,
+            Self::Managed(runtime) => runtime.bundle().shared_state.as_ref(),
+        }
+    }
+
+    pub fn generation(&self) -> u64 {
+        match self {
+            Self::Standalone(_) => 0,
+            Self::Managed(runtime) => runtime.generation(),
+        }
+    }
+}
 
 /// Live listener worker state for the edge data plane.
 ///
@@ -38,18 +55,12 @@ pub struct Http3Service {
     pub local_addr: SocketAddr,
     pub config: ListenerRuntimeConfig,
     pub listener_label: String,
-    pub listener_tls_store: Arc<ListenerTlsReloadStore>,
     pub tls_reload_generation: u64,
     pub runtime_bundle: Option<Arc<RuntimeBundleHandle>>,
-    pub runtime_generation: u64,
-    pub response_cache_namespace: u64,
+    pub runtime_state: ListenerRuntimeState,
     pub quic_config: quiche::Config,
     pub h3_config: Arc<quiche::h3::Config>,
-    pub transport_pool: Arc<UpstreamTransportPool>,
-    pub backend_endpoints: Arc<HashMap<String, BackendEndpoint>>,
-    pub backend_dns_resolver: SharedDnsResolver,
     pub upstream_policies: Arc<HashMap<String, RuntimeUpstreamPolicy>>,
-    pub pingora_load_balancing: SharedPingoraLoadBalancingRuntimeState<RuntimeBackendTlsPolicy>,
     pub upstream_inflight: HashMap<String, Arc<Semaphore>>,
     pub global_inflight: Arc<Semaphore>,
     pub(crate) routing_index: Arc<RouteIndex>,

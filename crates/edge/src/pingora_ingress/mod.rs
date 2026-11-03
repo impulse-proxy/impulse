@@ -82,7 +82,7 @@ use crate::{
     runtime::{
         bundle::{RuntimeBundle, RuntimeBundleHandle},
         cache::{
-            BoundedPingoraMemoryCache, ResponseCacheKeyInput, ResponseCacheRepresentation,
+            ResponseCacheKeyInput, ResponseCacheRepresentation,
             ResponseCacheRequestEligibilityInput, canonical_response_cache_key,
             evaluate_cache_request_eligibility, route_auth_requires_cache_bypass,
         },
@@ -158,7 +158,6 @@ impl Drop for PingoraSelectedBackend {
 
 pub(crate) struct PingoraEdgeRequestService {
     runtime: RuntimeBundleHandle,
-    response_cache: Option<&'static BoundedPingoraMemoryCache>,
     drain: Arc<PingoraDrainState>,
 }
 
@@ -533,7 +532,6 @@ fn pingora_ingress_service_for_listener(
         listener.listen.listen.address, listener.listen.listen.port
     );
     let current = runtime.current();
-    let response_cache = runtime.response_cache();
     let tls_store = Arc::clone(&current.shared_state.shared_services().listener_tls_store);
     let transport_policy = &listener.policies.transport;
     let connection_admission = Arc::new(PingoraRuntimeConnectionAdmission {
@@ -599,7 +597,6 @@ fn pingora_ingress_service_for_listener(
         configuration,
         PingoraIngressAdapter::new(PingoraEdgeRequestService {
             runtime: runtime.clone(),
-            response_cache,
             drain: Arc::clone(&drain),
         }),
     );
@@ -958,7 +955,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
 
     fn request_cache_filter(&self, session: &mut Session, ctx: &mut Self::Context) -> Result<()> {
         let (Some(cache), Some(policy), Some(method)) = (
-            self.response_cache,
+            self.runtime.response_cache(),
             ctx.policy.as_ref(),
             ctx.method.as_deref(),
         ) else {
