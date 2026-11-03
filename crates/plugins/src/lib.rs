@@ -4,9 +4,11 @@
 #![deny(unused_crate_dependencies)]
 #![warn(unreachable_pub)]
 
+mod catalog;
 mod instance;
 mod plan;
 
+pub use catalog::{PluginCatalog, PluginCatalogBuildError};
 pub use instance::{
     CompiledAsyncRequestPlugin, CompiledCachePlugin, CompiledConnectionPlugin,
     CompiledRequestPlugin, CompiledResponsePlugin,
