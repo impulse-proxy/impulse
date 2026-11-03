@@ -28,7 +28,8 @@ use crate::{
         shared_state::SharedRuntimeState,
         subsystem_mapping::{
             load_balancing_backend_inputs, load_balancing_strategy_input,
-            upstream_pool_from_runtime, upstream_transport_inputs, watchdog_runtime_config,
+            plugin_construction_inputs, upstream_pool_from_runtime, upstream_transport_inputs,
+            watchdog_runtime_config,
         },
         tasks::RuntimeTaskRegistry,
         tls::store::ListenerTlsReloadStore,
@@ -54,6 +55,7 @@ impl RuntimeBuilder {
         generation: u64,
         listener_tls_store: Arc<ListenerTlsReloadStore>,
     ) -> Result<SharedRuntimeState, ProxyError> {
+        let _plugin_inputs = plugin_construction_inputs(config);
         let transport_policy = &config.policies.transport;
         let timeout_policy = &config.policies.timeouts;
         let worker_threads = transport_policy.worker_threads.max(1);

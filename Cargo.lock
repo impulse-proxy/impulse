@@ -1539,6 +1539,7 @@ dependencies = [
  "impulse-observability",
  "impulse-operations",
  "impulse-pingora-ingress",
+ "impulse-plugins",
  "impulse-policy",
  "impulse-runtime",
  "impulse-transport",

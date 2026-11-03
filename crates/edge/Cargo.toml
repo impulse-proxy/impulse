@@ -15,6 +15,7 @@ impulse-config = { path = "../config" }
 impulse-contracts = { path = "../contracts" }
 impulse-runtime = { path = "../runtime" }
 impulse-policy = { path = "../policy" }
+impulse-plugins = { path = "../plugins" }
 impulse-observability = { path = "../observability" }
 impulse-operations = { path = "../operations" }
 impulse-http3-ingress = { path = "../http3-ingress" }
