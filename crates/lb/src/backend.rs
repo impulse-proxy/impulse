@@ -22,11 +22,6 @@ pub struct BackendState {
 }
 
 impl BackendState {
-    #[cfg(test)]
-    pub(crate) fn from_config(backend: &impulse_config::config::Backend) -> Self {
-        Self::new(&crate::test_support::backend_input(0, backend))
-    }
-
     pub fn new(backend: &crate::BackendInput) -> Self {
         Self {
             address: backend.configured_address().to_string(),

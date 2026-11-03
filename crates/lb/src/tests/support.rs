@@ -9,7 +9,24 @@ use impulse_config::{
 
 use crate::{
     BackendHealthInput, BackendInput, BackendWeight, LoadBalancingStrategy, RequestKeyInput,
+    backend::BackendState, upstream_pool::UpstreamPool,
 };
+
+pub(crate) fn backend_state(backend: &Backend) -> BackendState {
+    BackendState::new(&backend_input(0, backend))
+}
+
+pub(crate) fn upstream_pool(upstream: &RuntimeUpstream) -> Result<UpstreamPool, String> {
+    Ok(UpstreamPool::new(
+        backend_inputs(upstream),
+        strategy_input(upstream.load_balancing.strategy),
+        upstream
+            .load_balancing
+            .key_spec
+            .as_ref()
+            .map(request_key_input),
+    ))
+}
 
 pub(crate) fn backend_input(index: usize, backend: &Backend) -> BackendInput {
     BackendInput::new(

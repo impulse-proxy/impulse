@@ -82,7 +82,7 @@ mod tests {
     };
 
     fn pool_for(lb_type: &str, backends: &[&str]) -> UpstreamPool {
-        UpstreamPool::from_runtime_upstream(&runtime_upstream_from_addresses(
+        crate::test_support::upstream_pool(&runtime_upstream_from_addresses(
             lb_type, None, backends,
         ))
         .expect("alternate-backend fixture pool should build")

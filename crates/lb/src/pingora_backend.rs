@@ -872,8 +872,7 @@ mod tests {
         let upstream_pools = HashMap::from([(
             "api".to_string(),
             Arc::new(RwLock::new(
-                crate::upstream_pool::UpstreamPool::from_runtime_upstream(&upstream)
-                    .expect("hostname upstream pool"),
+                crate::test_support::upstream_pool(&upstream).expect("hostname upstream pool"),
             )),
         )]);
         PingoraLoadBalancingRuntimeState::new(

@@ -14,7 +14,8 @@ mod load_balancing;
 pub mod pingora_backend;
 mod pingora_discovery;
 #[cfg(test)]
-pub(crate) mod test_support;
+#[path = "tests/support.rs"]
+mod test_support;
 pub mod upstream_pool;
 
 pub use input::{

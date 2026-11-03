@@ -43,21 +43,6 @@ pub struct UpstreamPool {
 }
 
 impl UpstreamPool {
-    #[cfg(test)]
-    pub(crate) fn from_runtime_upstream(
-        upstream: &impulse_config::runtime::RuntimeUpstream,
-    ) -> Result<Self, String> {
-        Ok(Self::new(
-            crate::test_support::backend_inputs(upstream),
-            crate::test_support::strategy_input(upstream.load_balancing.strategy),
-            upstream
-                .load_balancing
-                .key_spec
-                .as_ref()
-                .map(crate::test_support::request_key_input),
-        ))
-    }
-
     pub fn new(
         backends: impl IntoIterator<Item = BackendInput>,
         strategy: LoadBalancingStrategy,
@@ -280,7 +265,7 @@ mod tests {
             None,
             &["http://127.0.0.1:7001", "http://127.0.0.1:7002"],
         );
-        let mut pool = UpstreamPool::from_runtime_upstream(&runtime_upstream)
+        let mut pool = crate::test_support::upstream_pool(&runtime_upstream)
             .expect("runtime pool should build");
 
         let idx = pool.pick_without_begin("key").expect("readonly pick");
@@ -302,7 +287,7 @@ mod tests {
 
     #[test]
     fn runtime_pool_contract_preserves_lb_key_spec_and_alternate_policy() {
-        let consistent = UpstreamPool::from_runtime_upstream(&runtime_upstream_from_addresses(
+        let consistent = crate::test_support::upstream_pool(&runtime_upstream_from_addresses(
             "consistent-hash",
             Some("header:x-user-id"),
             &["http://127.0.0.1:7001", "http://127.0.0.1:7002"],
@@ -319,7 +304,7 @@ mod tests {
         assert!(!consistent.alternate_backend_policy().readonly_lb_pick);
         assert!(consistent.alternate_backend_policy().healthy_fallback);
 
-        let round_robin = UpstreamPool::from_runtime_upstream(&runtime_upstream_from_addresses(
+        let round_robin = crate::test_support::upstream_pool(&runtime_upstream_from_addresses(
             "round-robin",
             Some("authority"),
             &["http://127.0.0.1:7001", "http://127.0.0.1:7002"],
@@ -341,7 +326,7 @@ mod tests {
             None,
             &["http://127.0.0.1:7001", "http://127.0.0.1:7002"],
         );
-        let mut pool = UpstreamPool::from_runtime_upstream(&runtime_upstream)
+        let mut pool = crate::test_support::upstream_pool(&runtime_upstream)
             .expect("runtime pool should build");
 
         let before = pool.membership_summary();
@@ -358,7 +343,7 @@ mod tests {
             .expect("health transition");
         assert!(matches!(
             unhealthy,
-            crate::HealthTransition::BecameUnhealthy
+            crate::health::HealthTransition::BecameUnhealthy
         ));
         let after_failure = pool.membership_summary();
         assert_eq!(after_failure.total_backends, 2);
@@ -379,7 +364,7 @@ mod tests {
     fn observed_request_failure_records_penalty_without_forcing_health_transition() {
         let runtime_upstream =
             runtime_upstream_from_addresses("least-connections", None, &["http://127.0.0.1:7001"]);
-        let mut pool = UpstreamPool::from_runtime_upstream(&runtime_upstream)
+        let mut pool = crate::test_support::upstream_pool(&runtime_upstream)
             .expect("runtime pool should build");
 
         let transition =
@@ -402,7 +387,7 @@ mod tests {
             None,
             &["http://127.0.0.1:7001", "http://127.0.0.1:7002"],
         );
-        let mut pool = UpstreamPool::from_runtime_upstream(&runtime_upstream)
+        let mut pool = crate::test_support::upstream_pool(&runtime_upstream)
             .expect("runtime pool should build");
         pool.pool.backends[0].health_check =
             Some(crate::test_support::health_input(&HealthCheck {
@@ -416,7 +401,7 @@ mod tests {
 
         assert!(matches!(
             pool.mark_backend_request_failure(0, HealthFailureReason::Transport),
-            Some(crate::HealthTransition::BecameUnhealthy)
+            Some(crate::health::HealthTransition::BecameUnhealthy)
         ));
         pool.pool.reconcile_readmit_at(
             std::time::Instant::now() + std::time::Duration::from_millis(10_001),
@@ -435,7 +420,7 @@ mod tests {
         pool.finish_request(0, std::time::Duration::from_millis(10), Some(200));
         assert!(matches!(
             pool.mark_backend_request_success(0),
-            Some(crate::HealthTransition::BecameHealthy)
+            Some(crate::health::HealthTransition::BecameHealthy)
         ));
     }
 
@@ -457,12 +442,12 @@ mod tests {
                 }),
             }],
         );
-        let mut pool = UpstreamPool::from_runtime_upstream(&runtime_upstream)
+        let mut pool = crate::test_support::upstream_pool(&runtime_upstream)
             .expect("runtime pool should build");
 
         assert!(matches!(
             pool.mark_backend_failure_from_active_check(0),
-            Some(crate::HealthTransition::BecameUnhealthy)
+            Some(crate::health::HealthTransition::BecameUnhealthy)
         ));
         assert!(!pool.is_backend_healthy(0));
 
@@ -471,7 +456,7 @@ mod tests {
 
         assert!(matches!(
             pool.mark_backend_healthy(0),
-            Some(crate::HealthTransition::BecameHealthy)
+            Some(crate::health::HealthTransition::BecameHealthy)
         ));
     }
 
@@ -479,7 +464,7 @@ mod tests {
     fn passive_request_success_requires_verified_probe_threshold() {
         let runtime_upstream =
             runtime_upstream_from_addresses("least-connections", None, &["http://127.0.0.1:7001"]);
-        let mut pool = UpstreamPool::from_runtime_upstream(&runtime_upstream)
+        let mut pool = crate::test_support::upstream_pool(&runtime_upstream)
             .expect("runtime pool should build");
         pool.pool.backends[0].health_check =
             Some(crate::test_support::health_input(&HealthCheck {
@@ -493,7 +478,7 @@ mod tests {
 
         assert!(matches!(
             pool.mark_backend_request_failure(0, HealthFailureReason::Transport),
-            Some(crate::HealthTransition::BecameUnhealthy)
+            Some(crate::health::HealthTransition::BecameUnhealthy)
         ));
         pool.pool.reconcile_readmit_at(
             std::time::Instant::now() + std::time::Duration::from_millis(10_001),
@@ -508,7 +493,7 @@ mod tests {
 
         assert!(matches!(
             pool.mark_backend_request_success(0),
-            Some(crate::HealthTransition::BecameHealthy)
+            Some(crate::health::HealthTransition::BecameHealthy)
         ));
         let runtime = pool.backend_runtime_state(0).expect("runtime state");
         assert!(runtime.healthy);
