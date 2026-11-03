@@ -24,8 +24,10 @@ pub use outcome::{
     UpstreamTerminalErrorKind,
 };
 pub use plugin::{
-    PluginExecutionOutcome, PluginKind, PluginPhase, PluginRejectionReason, PluginScope,
-    PluginStateOwnership,
+    PluginCacheView, PluginConnectionView, PluginExecutionOutcome, PluginHeaderLookup,
+    PluginHeaderMutation, PluginHeaderMutationError, PluginKind, PluginPhase, PluginRejection,
+    PluginRejectionError, PluginRejectionReason, PluginResponseHeader, PluginResponseMetadataView,
+    PluginResponseView, PluginScope, PluginStateOwnership,
 };
 pub use request::{
     AuthChallengeKind, BoundedRejectionResponse, HeaderMutation, HeaderMutationRef,
