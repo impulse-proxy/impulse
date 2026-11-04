@@ -20,7 +20,7 @@ mod response_compression;
 mod scoped_rate_limit;
 
 pub use adaptive_admission::{AdaptiveAdmission, AdaptivePermit, evaluate_adaptive_admission};
-pub use api_key::{ApiKeyPolicyInput, api_key_is_authorized};
+pub use api_key::{ApiKeyAuthorization, ApiKeyPolicyInput, evaluate_api_key};
 pub use brownout::{BrownoutController, evaluate_brownout_admission};
 pub use external_auth::{
     ExternalAuthChallengeResponse, ExternalAuthCompletion, ExternalAuthDecision,

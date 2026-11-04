@@ -1,6 +1,12 @@
+use impulse_contracts::PluginHeaderLookup;
 use subtle::ConstantTimeEq;
 
-use crate::RequestHeaderLookup;
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ApiKeyAuthorization {
+    Authorized,
+    Missing,
+    Invalid,
+}
 
 /// Validated API-key policy required to authenticate one request.
 #[derive(Clone, Copy)]
@@ -19,30 +25,30 @@ impl<'a> ApiKeyPolicyInput<'a> {
     }
 }
 
-/// Returns whether the request satisfies its optional API-key policy.
+/// Resolves and verifies the request credential for one API-key policy.
 #[must_use]
-pub fn api_key_is_authorized(
-    policy: Option<ApiKeyPolicyInput<'_>>,
-    header_lookup: Option<&RequestHeaderLookup<'_>>,
-) -> bool {
-    let Some(policy) = policy else {
-        return true;
+pub fn evaluate_api_key(
+    policy: ApiKeyPolicyInput<'_>,
+    header_lookup: Option<&PluginHeaderLookup<'_>>,
+) -> ApiKeyAuthorization {
+    let Some(raw) = header_lookup.and_then(|lookup| lookup(policy.header_name)) else {
+        return ApiKeyAuthorization::Missing;
     };
-    let Some(provided) = resolve_credential(policy.header_name, header_lookup) else {
-        return false;
+    let Ok(provided) = std::str::from_utf8(raw) else {
+        return ApiKeyAuthorization::Invalid;
     };
     let provided = provided.trim();
+    if provided.is_empty() {
+        return ApiKeyAuthorization::Invalid;
+    }
 
-    policy
+    if policy
         .accepted_keys
         .iter()
         .any(|expected| bool::from(provided.as_bytes().ct_eq(expected.as_bytes())))
-}
-
-fn resolve_credential(
-    header_name: &str,
-    header_lookup: Option<&RequestHeaderLookup<'_>>,
-) -> Option<String> {
-    let credential = header_lookup.and_then(|lookup| lookup(header_name))?;
-    (!credential.trim().is_empty()).then_some(credential)
+    {
+        ApiKeyAuthorization::Authorized
+    } else {
+        ApiKeyAuthorization::Invalid
+    }
 }

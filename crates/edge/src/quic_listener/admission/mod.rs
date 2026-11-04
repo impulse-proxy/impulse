@@ -153,14 +153,6 @@ pub(crate) fn evaluate_local_auth_policy(
     policy: &RuntimeUpstreamPolicy,
     header_lookup: Option<&LbHeaderLookup<'_>>,
 ) -> AdmissionPolicyDecision {
-    if !api_key_is_authorized(policy, header_lookup) {
-        return AdmissionPolicyDecision::Unauthorized(UnauthorizedDecision {
-            challenge: AuthChallengeKind::ApiKey,
-            status: StatusCode::UNAUTHORIZED,
-            body: b"unauthorized\n",
-        });
-    }
-
     if !jwt_is_authorized(policy, header_lookup) {
         return AdmissionPolicyDecision::Unauthorized(UnauthorizedDecision {
             challenge: AuthChallengeKind::Bearer,
@@ -417,16 +409,6 @@ where
     Some(handle.block_on(future))
 }
 
-pub(super) fn api_key_is_authorized(
-    policy: &RuntimeUpstreamPolicy,
-    header_lookup: Option<&LbHeaderLookup<'_>>,
-) -> bool {
-    impulse_policy::api_key_is_authorized(
-        crate::runtime::subsystem_mapping::api_key_policy_input(&policy.upstream_auth),
-        header_lookup,
-    )
-}
-
 pub(super) fn jwt_is_authorized(
     policy: &RuntimeUpstreamPolicy,
     header_lookup: Option<&LbHeaderLookup<'_>>,
@@ -490,7 +472,7 @@ mod tests {
             QuotaCounterBackend, Resilience, RouteAuth, RouteMatch, ScopedRateLimit,
             ScopedRateLimitScope, Tls, Upstream, UpstreamHostPolicy,
         },
-        runtime::{RuntimeApiKeyAuth, RuntimeAuthPolicy, RuntimeConfig, RuntimeJwtAuth},
+        runtime::{RuntimeAuthPolicy, RuntimeConfig, RuntimeJwtAuth},
     };
     use tokio::sync::Semaphore;
 
@@ -501,26 +483,6 @@ mod tests {
             brownout::BrownoutController, quota::QuotaDenyReason, runtime::RuntimeResilience,
         },
     };
-
-    fn test_policy_with_api_key() -> RuntimeUpstreamPolicy {
-        RuntimeUpstreamPolicy {
-            upstream_auth: RuntimeAuthPolicy {
-                api_key: Some(RuntimeApiKeyAuth {
-                    header_name: "x-api-key".to_string(),
-                    keys: vec!["secret".to_string()],
-                }),
-                jwt: None,
-                external_auth: None,
-                required_scopes: Vec::new(),
-                required_roles: Vec::new(),
-            },
-            host: Default::default(),
-            forwarded_headers: Default::default(),
-            response_cache: Default::default(),
-            response_compression: Default::default(),
-            protocol: Default::default(),
-        }
-    }
 
     fn test_policy_with_jwt(
         secret: &str,
@@ -798,13 +760,13 @@ mod tests {
 
         #[test]
         fn unauthorized_and_overload_rejections_have_distinct_outward_mapping() {
-            let policy = test_policy_with_api_key();
+            let policy = test_policy_with_jwt("jwt-secret", Vec::new(), Vec::new());
             let unauthorized = evaluate_local_auth_policy(&policy, None)
                 .rejection_response()
                 .expect("unauthorized response");
             assert_eq!(unauthorized.status, StatusCode::UNAUTHORIZED);
             assert_eq!(unauthorized.body, b"unauthorized\n");
-            assert_eq!(unauthorized.www_authenticate, Some("ApiKey"));
+            assert_eq!(unauthorized.www_authenticate, Some("Bearer"));
             assert_eq!(unauthorized.retry_after_seconds, None);
 
             let overload = evaluate_brownout_admission(
@@ -824,30 +786,6 @@ mod tests {
 
     mod local_auth_policy_contracts {
         use super::*;
-
-        #[test]
-        fn local_auth_policy_returns_api_key_challenge_when_key_is_missing() {
-            let decision = evaluate_local_auth_policy(&test_policy_with_api_key(), None);
-
-            assert_eq!(
-                decision,
-                AdmissionPolicyDecision::Unauthorized(UnauthorizedDecision {
-                    challenge: AuthChallengeKind::ApiKey,
-                    status: StatusCode::UNAUTHORIZED,
-                    body: b"unauthorized\n",
-                })
-            );
-        }
-
-        #[test]
-        fn local_auth_policy_admits_when_api_key_matches() {
-            let headers = HashMap::from([("x-api-key".to_string(), "secret".to_string())]);
-            let lookup = |name: &str| headers.get(&name.to_ascii_lowercase()).cloned();
-
-            let decision = evaluate_local_auth_policy(&test_policy_with_api_key(), Some(&lookup));
-
-            assert_eq!(decision, AdmissionPolicyDecision::AdmitReady);
-        }
 
         #[test]
         fn local_auth_policy_returns_bearer_challenge_for_missing_or_invalid_jwt() {

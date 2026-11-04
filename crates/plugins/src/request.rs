@@ -1,6 +1,10 @@
 use std::future::Future;
 
-use impulse_contracts::{PluginHeaderMutation, PluginRejection, PluginRequestView};
+use impulse_contracts::{
+    AuthChallengeKind, PluginHeaderMutation, PluginRejection, PluginRejectionReason,
+    PluginRequestView,
+};
+use impulse_policy::{ApiKeyAuthorization, ApiKeyPolicyInput, evaluate_api_key};
 
 use crate::{CompiledAsyncRequestPlugin, CompiledPluginPlan, CompiledRequestPlugin};
 
@@ -69,7 +73,28 @@ pub fn execute_synchronous_request_plugins<'a>(
 
     let mut mutations = Vec::new();
     for plugin in plugins {
-        match evaluate(plugin, request) {
+        let decision = match plugin {
+            CompiledRequestPlugin::ApiKeyAuth(policy) => match evaluate_api_key(
+                ApiKeyPolicyInput::new(&policy.header_name, &policy.accepted_keys),
+                request.headers,
+            ) {
+                ApiKeyAuthorization::Authorized => SynchronousRequestPluginDecision::Continue,
+                ApiKeyAuthorization::Missing => {
+                    SynchronousRequestPluginDecision::Reject(PluginRejection::unauthorized(
+                        PluginRejectionReason::ApiKeyMissing,
+                        AuthChallengeKind::ApiKey,
+                    ))
+                }
+                ApiKeyAuthorization::Invalid => {
+                    SynchronousRequestPluginDecision::Reject(PluginRejection::unauthorized(
+                        PluginRejectionReason::ApiKeyInvalid,
+                        AuthChallengeKind::ApiKey,
+                    ))
+                }
+            },
+            _ => evaluate(plugin, request),
+        };
+        match decision {
             SynchronousRequestPluginDecision::Continue => {}
             SynchronousRequestPluginDecision::Mutate(plugin_mutations) => {
                 mutations.extend(plugin_mutations);

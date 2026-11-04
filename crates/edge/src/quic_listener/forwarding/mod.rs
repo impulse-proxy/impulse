@@ -112,8 +112,7 @@ mod tests {
     use impulse_config::{
         config::{JwtAlgorithm, ScopedRateLimit, ScopedRateLimitScope},
         runtime::{
-            RuntimeApiKeyAuth, RuntimeAuthPolicy, RuntimeJwtAuth, RuntimeJwtVerificationKey,
-            RuntimeUpstreamPolicy,
+            RuntimeAuthPolicy, RuntimeJwtAuth, RuntimeJwtVerificationKey, RuntimeUpstreamPolicy,
         },
     };
     use serde_json::Value;
@@ -330,44 +329,6 @@ mod tests {
             )),
             BackendFailureReason::UpstreamBridge
         );
-    }
-
-    #[test]
-    fn api_key_authorization_requires_exact_configured_match() {
-        let policy = RuntimeUpstreamPolicy {
-            upstream_auth: RuntimeAuthPolicy {
-                api_key: Some(RuntimeApiKeyAuth {
-                    header_name: "x-api-key".to_string(),
-                    keys: vec!["secret-key".to_string()],
-                }),
-                jwt: None,
-                external_auth: None,
-                required_scopes: Vec::new(),
-                required_roles: Vec::new(),
-            },
-            host: Default::default(),
-            forwarded_headers: Default::default(),
-            response_cache: Default::default(),
-            response_compression: Default::default(),
-            protocol: Default::default(),
-        };
-        let headers = [("x-api-key".to_string(), "secret-key".to_string())]
-            .into_iter()
-            .collect::<std::collections::HashMap<_, _>>();
-        let lookup = |name: &str| headers.get(&name.to_ascii_lowercase()).cloned();
-        let wrong_lookup = |_: &str| Some("wrong-key".to_string());
-
-        assert!(super::super::admission::api_key_is_authorized(
-            &policy,
-            Some(&lookup)
-        ));
-        assert!(!super::super::admission::api_key_is_authorized(
-            &policy,
-            Some(&wrong_lookup)
-        ));
-        assert!(!super::super::admission::api_key_is_authorized(
-            &policy, None
-        ));
     }
 
     #[test]

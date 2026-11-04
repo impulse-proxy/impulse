@@ -61,7 +61,7 @@ use std::net::SocketAddr;
 
 use http::{HeaderName, HeaderValue, StatusCode};
 
-use crate::{IngressProtocol, RequestId};
+use crate::{AuthChallengeKind, IngressProtocol, RequestId};
 
 pub type PluginHeaderLookup<'a> = dyn Fn(&str) -> Option<&'a [u8]> + Sync + 'a;
 
@@ -226,6 +226,19 @@ impl PluginRejection {
             headers,
             body,
         })
+    }
+
+    #[must_use]
+    pub fn unauthorized(reason: PluginRejectionReason, challenge: AuthChallengeKind) -> Self {
+        Self {
+            reason,
+            status: StatusCode::UNAUTHORIZED,
+            headers: vec![PluginResponseHeader {
+                name: http::header::WWW_AUTHENTICATE,
+                value: HeaderValue::from_static(challenge.as_www_authenticate()),
+            }],
+            body: b"unauthorized\n".to_vec(),
+        }
     }
 
     #[must_use]

@@ -32,18 +32,11 @@ use impulse_plugins::{
     ResponseCacheInput, ResponseCompressionInput, ScopedRateLimitInput, ScopedRateLimitScopeInput,
     UpstreamPluginInputs,
 };
-use impulse_policy::{ApiKeyPolicyInput, JwtAllowedAlgorithms, JwtPolicyInput};
+use impulse_policy::{JwtAllowedAlgorithms, JwtPolicyInput};
 use impulse_transport::{
     UpstreamConnectionLimitsInput, UpstreamEndpointInput, UpstreamProtocol, UpstreamTimeoutInput,
     UpstreamTlsInput, UpstreamTransportInput,
 };
-
-pub(crate) fn api_key_policy_input(policy: &RuntimeAuthPolicy) -> Option<ApiKeyPolicyInput<'_>> {
-    policy
-        .api_key
-        .as_ref()
-        .map(|api_key| ApiKeyPolicyInput::new(&api_key.header_name, &api_key.keys))
-}
 
 pub(crate) fn jwt_allowed_algorithms(jwt: &RuntimeJwtAuth) -> JwtAllowedAlgorithms {
     JwtAllowedAlgorithms {
