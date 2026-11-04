@@ -12,9 +12,7 @@ use impulse_plugins::{
 use super::{
     PluginRequestExecutionInput, PluginRequestExecutionOutcome, PluginRequestExecutionState,
     RequestExecutionInput, RequestExecutionResult, RequestExecutionState,
-    admission::{evaluate_admission, evaluate_core_overload_admission},
-    policy::resolve_policy,
-    routing::resolve_route,
+    admission::evaluate_admission, policy::resolve_policy, routing::resolve_route,
 };
 use crate::{resilience::runtime::RuntimeResilience, routing::index::RouteIndex};
 
@@ -72,9 +70,26 @@ impl<'a> EdgeRequestService<'a> {
         })
     }
 
+    /// Protocol adapters provide only the borrowed request view and translate
+    /// the returned host-owned decision.
+    pub(crate) async fn execute_ingress_plugins(
+        &self,
+        input: PluginRequestExecutionInput<'_>,
+        async_guard: &mut AsyncRequestPluginExecutionGuard,
+    ) -> Result<PluginRequestExecutionState<super::ResolvedRouteTarget>, super::RouteResolutionError>
+    {
+        self.execute_plugins(
+            input,
+            async_guard,
+            |_, _| SynchronousRequestPluginDecision::Continue,
+            |_, _| std::future::ready(AsyncRequestPluginDecision::Continue),
+        )
+        .await
+    }
+
     /// Resolves a route, executes its compiled request plugins once, then runs
-    /// mandatory core overload admission.
-    pub(crate) async fn execute_plugins<SyncEvaluate, AsyncEvaluate, AsyncEvaluation>(
+    /// shared request admission for policies not yet migrated into plugins.
+    async fn execute_plugins<SyncEvaluate, AsyncEvaluate, AsyncEvaluation>(
         &self,
         input: PluginRequestExecutionInput<'_>,
         async_guard: &mut AsyncRequestPluginExecutionGuard,
@@ -165,8 +180,12 @@ impl<'a> EdgeRequestService<'a> {
             }
         }
 
-        let admission =
-            evaluate_core_overload_admission(self.resilience, route.upstream_name.as_ref());
+        let admission = evaluate_admission(
+            self.resilience,
+            &policy,
+            route.upstream_name.as_ref(),
+            &request,
+        );
         Ok(PluginRequestExecutionState {
             route,
             policy,

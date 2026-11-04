@@ -14,8 +14,8 @@ use impulse_bridge::response::{
 use impulse_config::{backend_endpoint::BackendScheme, runtime::ListenerRuntimeConfig};
 use impulse_contracts::{
     AlternateBackendFailureReason, HealthFailureReason, IngressProtocol, PluginConnectionView,
-    PluginRequestView, RequestDecision as AdmissionPolicyDecision, RetryAttemptTelemetryReason,
-    TunnelMode,
+    PluginHeaderMutation, PluginRejection, PluginRejectionReason, PluginRequestView,
+    RequestDecision as AdmissionPolicyDecision, RetryAttemptTelemetryReason, TunnelMode,
 };
 use impulse_errors::{
     BridgeError, PoolError, ProxyError, RetryPolicyDecision, classify_upstream_proxy_error,
@@ -33,6 +33,7 @@ use impulse_pingora_ingress::{
     tunnel_response_established, write_downstream_response, write_error_response,
     write_local_response,
 };
+use impulse_plugins::AsyncRequestPluginExecutionGuard;
 use pingora_cache::{CacheKey, CacheMeta, CachePhase, NoCacheReason, RespCacheable};
 use pingora_core::{
     Error, HTTPStatus, InternalError, Result,
@@ -54,7 +55,7 @@ use rustls::{
 };
 
 use crate::{
-    REQUEST_ID_COUNTER,
+    Metrics, REQUEST_ID_COUNTER,
     edge_core::{
         body_guardrails::{
             BodyTimeoutKind, REQUEST_BODY_TOO_LARGE_BODY, RESPONSE_BODY_TOO_LARGE_BODY,
@@ -65,7 +66,8 @@ use crate::{
         },
         request_completion::RequestCompletion,
         request_execution::{
-            EdgeRequestService, RequestExecutionInput, ResolvedRequestPolicy, ResolvedRouteTarget,
+            EdgeRequestService, PluginRequestExecutionInput, PluginRequestExecutionOutcome,
+            RequestExecutionInput, ResolvedRequestPolicy, ResolvedRouteTarget,
             ResponseCompressionAction, RouteResolutionError, evaluate_post_auth_quota_policy,
         },
         request_validation::validate_http_request_parts,
@@ -87,7 +89,7 @@ use crate::{
             PerSourceTokenBucket, TokenBucket,
             auth::{
                 ExternalAuthDecision, ExternalAuthRequest, ExternalAuthStateTransition,
-                PendingHeaderMutation, apply_auth_request_mutations,
+                PendingHeaderMutation, apply_auth_request_mutations, merge_auth_request_mutations,
                 resolve_external_auth_state_transition,
             },
             outcome::{
@@ -119,6 +121,7 @@ pub(crate) struct PingoraEdgeRequestState {
     response_cache_representation: Option<ResponseCacheRepresentation>,
     response_cache_bypass_recorded: bool,
     selected_backend: Option<PingoraSelectedBackend>,
+    plugin_execution: AsyncRequestPluginExecutionGuard,
     drain: Arc<PingoraDrainState>,
 }
 
@@ -690,6 +693,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
                 response_cache_representation: None,
                 response_cache_bypass_recorded: false,
                 selected_backend: None,
+                plugin_execution: AsyncRequestPluginExecutionGuard::default(),
                 drain: Arc::clone(&self.drain),
             },
             REQUEST_ID_COUNTER.fetch_add(1, Ordering::Relaxed),
@@ -707,6 +711,12 @@ impl PingoraRequestService for PingoraEdgeRequestService {
         session
             .downstream_session
             .set_total_drain_timeout(Some(client_body_idle));
+        let request_body_replayable = session.is_body_empty();
+        let ingress_protocol = if session.downstream_session.is_http2() {
+            IngressProtocol::Http2
+        } else {
+            IngressProtocol::Http1
+        };
         let request = session.req_header();
         let validated = match validate_http_request_parts(
             &request.method,
@@ -746,26 +756,42 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             .await?;
             return Ok(true);
         };
+        let request_headers = &request.headers;
         let header_lookup = |name: &str| {
-            request
-                .headers
+            request_headers
                 .get(name)
                 .and_then(|value| value.to_str().ok())
                 .map(str::to_owned)
         };
+        let plugin_header_lookup =
+            |name: &str| request_headers.get(name).map(http::HeaderValue::as_bytes);
         let request_service = EdgeRequestService::new(
             &state.routing_index,
             &state.upstream_policies,
             &state.plugin_plans,
             &state.resilience,
         );
-        let execution = match request_service.execute(RequestExecutionInput {
-            method: &validated.method,
-            path: &validated.path,
-            authority: validated.authority.as_deref(),
-            peer_address,
-            headers: Some(&header_lookup),
-        }) {
+        let execution = match request_service
+            .execute_ingress_plugins(
+                PluginRequestExecutionInput {
+                    request: RequestExecutionInput {
+                        method: &validated.method,
+                        path: &validated.path,
+                        authority: validated.authority.as_deref(),
+                        peer_address,
+                        headers: Some(&header_lookup),
+                    },
+                    request_id: ctx.request_id,
+                    generation: runtime.generation,
+                    ingress_protocol,
+                    headers: Some(&plugin_header_lookup),
+                    has_body: !request_body_replayable,
+                    body_replayable: request_body_replayable,
+                },
+                &mut ctx.plugin_execution,
+            )
+            .await
+        {
             Ok(execution) => execution,
             Err(RouteResolutionError::EmptyMethodOrPath) => {
                 write_local_response(
@@ -794,25 +820,21 @@ impl PingoraRequestService for PingoraEdgeRequestService {
                 return Ok(true);
             }
         };
-        let route = &execution.route;
+        let route = execution.route;
+        let policy = execution.policy;
         shared
             .metrics
             .policy_observations()
             .set_brownout_active(state.resilience.brownout.is_active());
         let tunnel_mode = classify_tunnel(&validated.method, validated.websocket_tunnel);
-        let external_auth_request =
-            execution
-                .policy
-                .external_auth
-                .as_ref()
-                .map(|_| ExternalAuthRequest {
-                    method: validated.method.clone(),
-                    path: validated.path.clone(),
-                    authority: validated.authority.clone(),
-                    headers: request.headers.clone(),
-                    upstream_name: route.upstream_name.to_string(),
-                    backend_addr: None,
-                });
+        let external_auth_request = policy.external_auth.as_ref().map(|_| ExternalAuthRequest {
+            method: validated.method.clone(),
+            path: validated.path.clone(),
+            authority: validated.authority.clone(),
+            headers: (*request_headers).clone(),
+            upstream_name: route.upstream_name.to_string(),
+            backend_addr: None,
+        });
         ctx.route = Some(route.clone());
         ctx.method = Some(validated.method);
         ctx.path = Some(validated.path);
@@ -820,8 +842,38 @@ impl PingoraRequestService for PingoraEdgeRequestService {
         ctx.content_length = validated.content_length;
         ctx.tunnel_mode = tunnel_mode;
 
-        if let Some(response) = execution.admission.rejection_response() {
-            match execution.admission {
+        let (admission, plugin_mutations) = match execution.outcome {
+            PluginRequestExecutionOutcome::Admitted {
+                admission,
+                mutations,
+            } => (admission, mutations),
+            PluginRequestExecutionOutcome::Rejected(rejection) => {
+                observe_plugin_rejection(ctx, &shared.metrics, rejection.reason());
+                write_plugin_rejection_response(session, &rejection).await?;
+                return Ok(true);
+            }
+            PluginRequestExecutionOutcome::AlreadyExecuted => {
+                ctx.terminal_classification = Some(PingoraTerminalClassification::Error(
+                    ProxyError::Transport("request plugins executed more than once".into()),
+                ));
+                write_local_response(
+                    session,
+                    http::StatusCode::INTERNAL_SERVER_ERROR,
+                    b"internal proxy error\n",
+                    None,
+                    None,
+                )
+                .await?;
+                return Ok(true);
+            }
+        };
+        ctx.auth_header_mutations = plugin_mutations
+            .iter()
+            .map(pending_header_mutation)
+            .collect();
+
+        if let Some(response) = admission.rejection_response() {
+            match admission {
                 AdmissionPolicyDecision::Unauthorized(_) => {
                     ctx.terminal_classification = Some(PingoraTerminalClassification::Admission(
                         AdmissionOutcomeClass::AuthDenied,
@@ -894,10 +946,9 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             return Ok(true);
         }
 
-        if let (Some(external_auth), Some(mut auth_request)) = (
-            execution.policy.external_auth.as_ref(),
-            external_auth_request,
-        ) {
+        if let (Some(external_auth), Some(mut auth_request)) =
+            (policy.external_auth.as_ref(), external_auth_request)
+        {
             let selected = self.select_backend(session, ctx)?;
             auth_request.backend_addr = Some(selected.address.clone());
             ctx.selected_backend = Some(selected);
@@ -911,7 +962,10 @@ impl PingoraRequestService for PingoraEdgeRequestService {
                         .metrics
                         .policy_observations()
                         .inc_external_auth_allowed();
-                    ctx.auth_header_mutations = request_header_mutations;
+                    merge_auth_request_mutations(
+                        &mut ctx.auth_header_mutations,
+                        request_header_mutations,
+                    );
                 }
                 ExternalAuthStateTransition::RejectedAuthDenied { decision } => {
                     shared.metrics.policy_observations().inc_policy_denied();
@@ -998,14 +1052,14 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             return Ok(true);
         }
 
-        if !execution.policy.plugin_plan.response_policy().is_empty() {
+        if !policy.plugin_plan.response_policy().is_empty() {
             session.upstream_compression.adjust_level(0);
             session
                 .upstream_compression
                 .adjust_algorithm_level(Algorithm::Gzip, RESPONSE_GZIP_LEVEL);
         }
-        ctx.policy = Some(execution.policy);
-        ctx.request_body_replayable = session.is_body_empty();
+        ctx.policy = Some(policy);
+        ctx.request_body_replayable = request_body_replayable;
         Ok(false)
     }
 
@@ -2036,6 +2090,75 @@ fn bridge_headers(headers: &http::HeaderMap) -> Vec<quiche::h3::Header> {
         .iter()
         .map(|(name, value)| quiche::h3::Header::new(name.as_str().as_bytes(), value.as_bytes()))
         .collect()
+}
+
+fn pending_header_mutation(mutation: &PluginHeaderMutation) -> PendingHeaderMutation {
+    match mutation.value() {
+        Some(value) => PendingHeaderMutation::Upsert {
+            name: mutation.name().as_str().as_bytes().to_vec(),
+            value: value.as_bytes().to_vec(),
+        },
+        None => PendingHeaderMutation::Remove {
+            name: mutation.name().as_str().as_bytes().to_vec(),
+        },
+    }
+}
+
+fn observe_plugin_rejection(
+    ctx: &mut PingoraRequestContext,
+    metrics: &Metrics,
+    reason: PluginRejectionReason,
+) {
+    let outcome = match reason {
+        PluginRejectionReason::ApiKeyMissing
+        | PluginRejectionReason::ApiKeyInvalid
+        | PluginRejectionReason::JwtMissing
+        | PluginRejectionReason::JwtInvalid
+        | PluginRejectionReason::JwtClaimsRejected
+        | PluginRejectionReason::ExternalAuthDenied => {
+            metrics.policy_observations().inc_policy_denied();
+            AdmissionOutcomeClass::AuthDenied
+        }
+        PluginRejectionReason::RateLimited => {
+            metrics.policy_observations().inc_request_rate_limited();
+            AdmissionOutcomeClass::RateLimited
+        }
+        PluginRejectionReason::QuotaDenied => {
+            metrics.policy_observations().inc_request_rate_limited();
+            AdmissionOutcomeClass::QuotaDenied
+        }
+        PluginRejectionReason::JwksUnavailable
+        | PluginRejectionReason::ExternalAuthUnavailable
+        | PluginRejectionReason::QuotaUnavailable => {
+            AdmissionOutcomeClass::Failed { timed_out: false }
+        }
+    };
+    ctx.terminal_classification = Some(PingoraTerminalClassification::Admission(outcome));
+}
+
+async fn write_plugin_rejection_response(
+    session: &mut Session,
+    rejection: &PluginRejection,
+) -> Result<()> {
+    let headers = rejection
+        .headers()
+        .iter()
+        .filter_map(|header| {
+            header
+                .value()
+                .to_str()
+                .ok()
+                .map(|value| (header.name().as_str().to_string(), value.to_string()))
+        })
+        .collect::<Vec<_>>();
+    write_downstream_response(
+        session,
+        rejection.status(),
+        &headers,
+        rejection.body(),
+        None,
+    )
+    .await
 }
 
 async fn write_external_auth_decision_response(
