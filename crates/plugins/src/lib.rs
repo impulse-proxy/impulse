@@ -9,6 +9,7 @@ mod compile;
 mod input;
 mod instance;
 mod plan;
+mod request;
 
 pub use catalog::{
     ALL_COMPILED_PLUGIN_KINDS, PluginCatalog, PluginCatalogBuildError, compiled_plugin_catalog,
@@ -30,3 +31,7 @@ pub use instance::{
     CompiledRequestPlugin, CompiledResponsePlugin,
 };
 pub use plan::{CompiledConnectionPlan, CompiledPluginPlan};
+pub use request::{
+    SynchronousRequestPluginDecision, SynchronousRequestPluginExecution,
+    execute_synchronous_request_plugins,
+};
