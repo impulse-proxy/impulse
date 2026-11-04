@@ -1,6 +1,5 @@
 use std::{
     collections::HashMap,
-    future::Future,
     sync::Arc,
     task::{Context, Poll, Waker},
 };
@@ -76,18 +75,15 @@ impl<'a> EdgeRequestService<'a> {
         })
     }
 
-    /// Protocol adapters provide only the borrowed request view and translate
-    /// the returned host-owned decision.
+    /// Protocol adapters provide only borrowed request data and translate the
+    /// returned host-owned decision.
     pub(crate) async fn execute_ingress_plugins(
         &self,
         input: PluginRequestExecutionInput<'_>,
         async_guard: &mut AsyncRequestPluginExecutionGuard,
     ) -> Result<PluginRequestExecutionState<super::ResolvedRouteTarget>, super::RouteResolutionError>
     {
-        self.execute_plugins(input, async_guard, |_, _| {
-            std::future::ready(AsyncRequestPluginDecision::Continue)
-        })
-        .await
+        self.execute_plugins(input, async_guard).await
     }
 
     /// Runs the currently immediate plugin phase without blocking a protocol
@@ -112,18 +108,11 @@ impl<'a> EdgeRequestService<'a> {
 
     /// Resolves a route, executes its compiled request plugins once, then runs
     /// shared request admission for policies not yet migrated into plugins.
-    async fn execute_plugins<AsyncEvaluate, AsyncEvaluation>(
+    async fn execute_plugins(
         &self,
         input: PluginRequestExecutionInput<'_>,
         async_guard: &mut AsyncRequestPluginExecutionGuard,
-        async_evaluate: AsyncEvaluate,
     ) -> Result<PluginRequestExecutionState<super::ResolvedRouteTarget>, super::RouteResolutionError>
-    where
-        AsyncEvaluate: for<'view> FnMut(
-            &'view CompiledAsyncRequestPlugin,
-            PluginRequestView<'view>,
-        ) -> AsyncEvaluation,
-        AsyncEvaluation: Future<Output = AsyncRequestPluginDecision>,
     {
         let request = input.request;
         let route = resolve_route(
@@ -155,6 +144,11 @@ impl<'a> EdgeRequestService<'a> {
             body_replayable: input.body_replayable,
             ingress_protocol: input.ingress_protocol,
         };
+        let external_auth_headers = input.external_auth_headers;
+        let external_auth_method = request.method;
+        let external_auth_path = request.path;
+        let external_auth_authority = request.authority;
+        let external_auth_upstream = route.upstream_name.as_ref();
 
         let mut mutations = match execute_synchronous_request_plugins(
             &plugin_plan,
@@ -189,7 +183,22 @@ impl<'a> EdgeRequestService<'a> {
             async_guard,
             &plugin_plan,
             plugin_request,
-            async_evaluate,
+            |plugin, _| async move {
+                match (plugin, external_auth_headers) {
+                    (CompiledAsyncRequestPlugin::ExternalAuth(input), Some(headers)) => {
+                        let request = crate::runtime::connection::auth::ExternalAuthRequest {
+                            method: external_auth_method.to_string(),
+                            path: external_auth_path.to_string(),
+                            authority: external_auth_authority.map(str::to_string),
+                            headers: headers.clone(),
+                            upstream_name: external_auth_upstream.to_string(),
+                            backend_addr: None,
+                        };
+                        crate::quic_listener::execute_compiled_external_auth(request, input).await
+                    }
+                    _ => AsyncRequestPluginDecision::Continue,
+                }
+            },
         )
         .await
         {

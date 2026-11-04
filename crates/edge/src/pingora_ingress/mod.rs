@@ -14,7 +14,7 @@ use impulse_bridge::response::{
 use impulse_config::{backend_endpoint::BackendScheme, runtime::ListenerRuntimeConfig};
 use impulse_contracts::{
     AlternateBackendFailureReason, HealthFailureReason, IngressProtocol, PluginConnectionView,
-    PluginHeaderMutation, PluginRejection, PluginRequestView,
+    PluginHeaderMutation, PluginRejection, PluginRejectionReason, PluginRequestView,
     RequestDecision as AdmissionPolicyDecision, RetryAttemptTelemetryReason, TunnelMode,
 };
 use impulse_errors::{
@@ -33,7 +33,7 @@ use impulse_pingora_ingress::{
     tunnel_response_established, write_downstream_response, write_error_response,
     write_local_response,
 };
-use impulse_plugins::AsyncRequestPluginExecutionGuard;
+use impulse_plugins::{AsyncRequestPluginExecutionGuard, CompiledAsyncRequestPlugin};
 use pingora_cache::{CacheKey, CacheMeta, CachePhase, NoCacheReason, RespCacheable};
 use pingora_core::{
     Error, HTTPStatus, InternalError, Result,
@@ -78,20 +78,13 @@ use crate::{
         },
         retry::RetryCoordinator,
     },
-    quic_listener::{
-        BackendCandidate, ForwardingSelectionService, TargetResolutionRequest,
-        execute_external_auth_request,
-    },
+    quic_listener::{BackendCandidate, ForwardingSelectionService, TargetResolutionRequest},
     resilience::quota::QuotaIdentityContext,
     runtime::{
         bundle::{RuntimeBundle, RuntimeBundleHandle},
         cache::{ResponseCacheKeyInput, ResponseCacheRepresentation, canonical_response_cache_key},
         connection::{
-            auth::{
-                ExternalAuthDecision, ExternalAuthRequest, ExternalAuthStateTransition,
-                PendingHeaderMutation, apply_auth_request_mutations, merge_auth_request_mutations,
-                resolve_external_auth_state_transition,
-            },
+            auth::{PendingHeaderMutation, apply_auth_request_mutations},
             outcome::{
                 AdmissionOutcomeClass, BackendHealthObservationInput, BackendOutcomeTarget,
                 ClassifiedBackendFailureInput, RouteOutcomeTarget,
@@ -740,6 +733,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
                     generation: runtime.generation,
                     ingress_protocol,
                     headers: Some(&plugin_header_lookup),
+                    external_auth_headers: Some(request_headers),
                     has_body: !request_body_replayable,
                     body_replayable: request_body_replayable,
                 },
@@ -782,14 +776,6 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             .policy_observations()
             .set_brownout_active(state.resilience.brownout.is_active());
         let tunnel_mode = classify_tunnel(&validated.method, validated.websocket_tunnel);
-        let external_auth_request = policy.external_auth.as_ref().map(|_| ExternalAuthRequest {
-            method: validated.method.clone(),
-            path: validated.path.clone(),
-            authority: validated.authority.clone(),
-            headers: (*request_headers).clone(),
-            upstream_name: route.upstream_name.to_string(),
-            backend_addr: None,
-        });
         ctx.route = Some(route.clone());
         ctx.method = Some(validated.method);
         ctx.path = Some(validated.path);
@@ -801,12 +787,50 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             PluginRequestExecutionOutcome::Admitted {
                 admission,
                 mutations,
-            } => (admission, mutations),
+            } => {
+                if policy
+                    .plugin_plan
+                    .async_request_gate()
+                    .iter()
+                    .any(|plugin| matches!(plugin, CompiledAsyncRequestPlugin::ExternalAuth(_)))
+                {
+                    shared
+                        .metrics
+                        .policy_observations()
+                        .inc_external_auth_allowed();
+                }
+                (admission, mutations)
+            }
             PluginRequestExecutionOutcome::Rejected {
                 rejection,
                 observation,
             } => {
-                apply_plugin_terminal_observation(ctx, &shared.metrics, observation);
+                let external_auth_timed_out = rejection.reason()
+                    == PluginRejectionReason::ExternalAuthUnavailable
+                    && rejection.status() == http::StatusCode::GATEWAY_TIMEOUT;
+                match rejection.reason() {
+                    PluginRejectionReason::ExternalAuthDenied => shared
+                        .metrics
+                        .policy_observations()
+                        .inc_external_auth_denied(),
+                    PluginRejectionReason::ExternalAuthUnavailable if external_auth_timed_out => {
+                        shared
+                            .metrics
+                            .policy_observations()
+                            .inc_external_auth_timeout();
+                    }
+                    PluginRejectionReason::ExternalAuthUnavailable => shared
+                        .metrics
+                        .policy_observations()
+                        .inc_external_auth_error(),
+                    _ => {}
+                }
+                apply_plugin_terminal_observation(
+                    ctx,
+                    &shared.metrics,
+                    observation,
+                    external_auth_timed_out,
+                );
                 write_plugin_rejection_response(session, &rejection).await?;
                 return Ok(true);
             }
@@ -902,64 +926,6 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             )
             .await?;
             return Ok(true);
-        }
-
-        if let (Some(external_auth), Some(mut auth_request)) =
-            (policy.external_auth.as_ref(), external_auth_request)
-        {
-            let selected = self.select_backend(session, ctx)?;
-            auth_request.backend_addr = Some(selected.address.clone());
-            ctx.selected_backend = Some(selected);
-            let result =
-                execute_external_auth_request(auth_request, external_auth.policy.clone()).await;
-            match resolve_external_auth_state_transition(result, external_auth.disposition) {
-                ExternalAuthStateTransition::Admitted {
-                    request_header_mutations,
-                } => {
-                    shared
-                        .metrics
-                        .policy_observations()
-                        .inc_external_auth_allowed();
-                    merge_auth_request_mutations(
-                        &mut ctx.auth_header_mutations,
-                        request_header_mutations,
-                    );
-                }
-                ExternalAuthStateTransition::RejectedAuthDenied { decision } => {
-                    shared.metrics.policy_observations().inc_policy_denied();
-                    shared
-                        .metrics
-                        .policy_observations()
-                        .inc_external_auth_denied();
-                    ctx.terminal_classification = Some(PingoraTerminalClassification::Admission(
-                        AdmissionOutcomeClass::AuthDenied,
-                    ));
-                    write_external_auth_decision_response(session, &decision).await?;
-                    return Ok(true);
-                }
-                ExternalAuthStateTransition::RejectedAuthUnavailable { status, body, .. } => {
-                    shared
-                        .metrics
-                        .policy_observations()
-                        .inc_external_auth_error();
-                    ctx.terminal_classification = Some(PingoraTerminalClassification::Admission(
-                        AdmissionOutcomeClass::Failed { timed_out: false },
-                    ));
-                    write_local_response(session, status, body, None, None).await?;
-                    return Ok(true);
-                }
-                ExternalAuthStateTransition::TimedOutAuth { status, body } => {
-                    shared
-                        .metrics
-                        .policy_observations()
-                        .inc_external_auth_timeout();
-                    ctx.terminal_classification = Some(PingoraTerminalClassification::Admission(
-                        AdmissionOutcomeClass::Failed { timed_out: true },
-                    ));
-                    write_local_response(session, status, body, None, None).await?;
-                    return Ok(true);
-                }
-            }
         }
 
         let (Some(method), Some(path)) = (ctx.method.as_deref(), ctx.path.as_deref()) else {
@@ -2066,6 +2032,7 @@ fn apply_plugin_terminal_observation(
     ctx: &mut PingoraRequestContext,
     metrics: &Metrics,
     observation: PluginTerminalObservation,
+    timed_out: bool,
 ) {
     let outcome = match observation {
         PluginTerminalObservation::AuthDenied => {
@@ -2080,7 +2047,7 @@ fn apply_plugin_terminal_observation(
             metrics.policy_observations().inc_request_rate_limited();
             AdmissionOutcomeClass::QuotaDenied
         }
-        PluginTerminalObservation::Failed => AdmissionOutcomeClass::Failed { timed_out: false },
+        PluginTerminalObservation::Failed => AdmissionOutcomeClass::Failed { timed_out },
     };
     ctx.terminal_classification = Some(PingoraTerminalClassification::Admission(outcome));
 }
@@ -2108,37 +2075,6 @@ async fn write_plugin_rejection_response(
         None,
     )
     .await
-}
-
-async fn write_external_auth_decision_response(
-    session: &mut Session,
-    decision: &ExternalAuthDecision,
-) -> Result<()> {
-    let (status, headers, body, extra_header) = match decision {
-        ExternalAuthDecision::Allow { .. } => return Ok(()),
-        ExternalAuthDecision::Deny(response) => (
-            response.status,
-            response.headers.as_slice(),
-            response.body.as_slice(),
-            None,
-        ),
-        ExternalAuthDecision::Redirect(response) => (
-            response.status,
-            response.headers.as_slice(),
-            &[][..],
-            Some((http::header::LOCATION.as_str(), response.location.as_str())),
-        ),
-        ExternalAuthDecision::Challenge(response) => (
-            response.status,
-            response.headers.as_slice(),
-            response.body.as_slice(),
-            Some((
-                http::header::WWW_AUTHENTICATE.as_str(),
-                response.www_authenticate.as_str(),
-            )),
-        ),
-    };
-    write_downstream_response(session, status, headers, body, extra_header).await
 }
 
 #[cfg(test)]

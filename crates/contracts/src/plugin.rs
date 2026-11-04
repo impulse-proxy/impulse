@@ -206,7 +206,7 @@ pub struct PluginRejection {
 
 impl PluginRejection {
     pub const MAX_HEADERS: usize = 16;
-    pub const MAX_BODY_BYTES: usize = 4096;
+    pub const MAX_BODY_BYTES: usize = 64 * 1024;
 
     pub fn new(
         reason: PluginRejectionReason,

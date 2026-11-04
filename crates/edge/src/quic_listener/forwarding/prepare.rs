@@ -5,12 +5,12 @@ use impulse_contracts::{
     BoundedRejectionResponse as AdmissionRejectionResponse, IngressProtocol, PluginHeaderMutation,
     PluginRejection, RequestDecision as AdmissionPolicyDecision,
 };
-use impulse_policy::ExternalAuthPolicy;
+use impulse_plugins::{CompiledAsyncRequestPlugin, ExternalAuthInput};
 use smallvec::SmallVec;
 use tokio::{sync::oneshot, task::AbortHandle};
 
 use super::{
-    auth::start_external_auth_task,
+    auth::{external_auth_policy_from_plugin, start_external_auth_task},
     resolve::{
         ForwardTargetResolution, ForwardTargetResolutionInput, ResolutionContext,
         ResolutionObservation, TargetResolutionRequest,
@@ -28,7 +28,8 @@ use crate::{
     runtime::connection::{
         auth::{
             ExternalAuthCompletion, ExternalAuthFailureDisposition, ExternalAuthResult,
-            PendingHeaderMutation, apply_auth_request_mutations, evaluate_external_auth_completion,
+            ExternalAuthTaskConfig, PendingHeaderMutation, apply_auth_request_mutations,
+            evaluate_external_auth_completion,
         },
         outcome::{
             AdmissionOutcomeClass, BackendOutcomeTarget, RouteOutcomeTarget,
@@ -132,8 +133,7 @@ impl DispatchReadyCandidate {
 
 pub(super) struct ExternalAuthCandidate {
     pub(super) request: DispatchReadyCandidate,
-    pub(super) external_auth: ExternalAuthPolicy,
-    pub(super) auth_disposition: ExternalAuthFailureDisposition,
+    pub(super) external_auth: ExternalAuthInput,
 }
 
 pub(super) struct LocalRejectionCandidate {
@@ -541,6 +541,7 @@ impl Http3Service {
                 generation: shared_ctx.generation,
                 ingress_protocol: IngressProtocol::Http3,
                 headers: Some(&plugin_header_lookup),
+                external_auth_headers: None,
                 has_body: !body_replayable,
                 body_replayable,
             })
@@ -855,12 +856,19 @@ impl Http3Service {
                     pending_forward,
                 );
 
-                Some(match resolved_policy.external_auth {
+                let external_auth = resolved_policy
+                    .plugin_plan
+                    .async_request_gate()
+                    .iter()
+                    .find_map(|plugin| match plugin {
+                        CompiledAsyncRequestPlugin::ExternalAuth(input) => Some(input.clone()),
+                        CompiledAsyncRequestPlugin::Quota(_) => None,
+                    });
+                Some(match external_auth {
                     Some(external_auth) => PreAdmissionNextState::RequiresExternalAuth(Box::new(
                         ExternalAuthCandidate {
                             request: dispatch_ready,
-                            external_auth: external_auth.policy,
-                            auth_disposition: external_auth.disposition,
+                            external_auth,
                         },
                     )),
                     None => {
@@ -933,12 +941,11 @@ impl Http3Service {
                 let mut request = *request;
                 request.request.state.context.total_request_deadline =
                     request.request.state.context.start + backend_total_request_timeout;
-                let auth_disposition = request.auth_disposition;
+                let external_auth = external_auth_policy_from_plugin(&request.external_auth);
+                let auth_disposition =
+                    ExternalAuthTaskConfig::from_external_auth(&external_auth).disposition;
                 let pending_forward = Arc::clone(&request.request.state.pending_forward);
-                let auth_start = match start_external_auth_task(
-                    pending_forward,
-                    request.external_auth,
-                ) {
+                let auth_start = match start_external_auth_task(pending_forward, external_auth) {
                     Ok(start) => Some(start),
                     Err(err) => {
                         match evaluate_external_auth_completion(Err(err), auth_disposition) {
