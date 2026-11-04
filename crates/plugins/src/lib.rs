@@ -11,6 +11,7 @@ mod input;
 mod instance;
 mod plan;
 mod request;
+mod response;
 
 pub use catalog::{
     ALL_COMPILED_PLUGIN_KINDS, PluginCatalog, PluginCatalogBuildError, compiled_plugin_catalog,
@@ -39,4 +40,8 @@ pub use request::{
     AsyncRequestPluginDecision, AsyncRequestPluginExecution, AsyncRequestPluginExecutionGuard,
     SynchronousRequestPluginDecision, SynchronousRequestPluginExecution,
     execute_async_request_plugins, execute_synchronous_request_plugins,
+};
+pub use response::{
+    CachePluginDecision, CachePluginExecution, ResponsePluginDecision, ResponsePluginExecution,
+    execute_cache_plugins, execute_response_plugins,
 };
