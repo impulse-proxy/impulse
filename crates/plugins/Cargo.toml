@@ -7,3 +7,4 @@ license.workspace = true
 [dependencies]
 impulse-contracts = { path = "../contracts" }
 impulse-policy = { path = "../policy" }
+sha2 = "0.10"

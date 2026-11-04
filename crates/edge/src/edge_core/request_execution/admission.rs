@@ -2,13 +2,9 @@ use http::StatusCode;
 use impulse_contracts::{BoundedRejectionResponse, RequestDecision};
 use impulse_policy::evaluate_brownout_admission;
 
-use crate::{
-    edge_core::request_execution::{RequestExecutionInput, ResolvedRequestPolicy},
-    quic_listener::evaluate_scoped_rate_limit_policy,
-    resilience::{
-        quota::{QuotaDecision, QuotaDenyReason, QuotaIdentityContext, evaluate_admission_quota},
-        runtime::RuntimeResilience,
-    },
+use crate::resilience::{
+    quota::{QuotaDecision, QuotaDenyReason, QuotaIdentityContext, evaluate_admission_quota},
+    runtime::RuntimeResilience,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -88,26 +84,13 @@ pub(crate) async fn evaluate_post_auth_quota_policy(
 }
 
 /// Evaluates admission for a resolved request using the active resilience state.
-pub(super) fn evaluate_admission(
-    resilience: &RuntimeResilience,
-    policy: &ResolvedRequestPolicy,
-    route: &str,
-    request: &RequestExecutionInput<'_>,
-) -> RequestDecision {
+pub(super) fn evaluate_admission(resilience: &RuntimeResilience, route: &str) -> RequestDecision {
     let brownout = evaluate_core_overload_admission(resilience, route);
     if brownout != RequestDecision::AdmitReady {
         return brownout;
     }
 
-    evaluate_scoped_rate_limit_policy(
-        &resilience.scoped_rate_limits,
-        route,
-        request.method,
-        request.path,
-        request.authority,
-        request.peer_address,
-        request.headers,
-    )
+    RequestDecision::AdmitReady
 }
 
 pub(super) fn evaluate_core_overload_admission(

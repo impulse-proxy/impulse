@@ -5,7 +5,7 @@ use impulse_contracts::PluginKind;
 use crate::{
     CompiledAsyncRequestPlugin, CompiledCachePlugin, CompiledConnectionPlan,
     CompiledConnectionPlugin, CompiledPluginPlan, CompiledRequestPlugin, CompiledResponsePlugin,
-    PluginCatalog, PluginConstructionInputs, UpstreamPluginInputs,
+    CompiledScopedRateLimit, PluginCatalog, PluginConstructionInputs, UpstreamPluginInputs,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -82,7 +82,9 @@ pub fn compile_generation_plugin_plans(
         None
     } else {
         require_available(catalog, PluginKind::ScopedRateLimit)?;
-        Some(Arc::from(inputs.scoped_rate_limits))
+        Some(Arc::new(CompiledScopedRateLimit::new(Arc::from(
+            inputs.scoped_rate_limits,
+        ))))
     };
     let quota = match inputs.quota {
         Some(quota) => {
@@ -112,7 +114,7 @@ fn compile_upstream_plan(
     catalog: &PluginCatalog,
     generation: u64,
     inputs: UpstreamPluginInputs,
-    scoped_rate_limits: &Option<Arc<[crate::ScopedRateLimitInput]>>,
+    scoped_rate_limits: &Option<Arc<CompiledScopedRateLimit>>,
     quota: &Option<Arc<crate::QuotaInput>>,
 ) -> Result<(String, Arc<CompiledPluginPlan>), PluginPlanCompileError> {
     let mut request_gate = Vec::with_capacity(3);

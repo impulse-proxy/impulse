@@ -6,7 +6,10 @@ use impulse_contracts::{
 };
 use impulse_policy::{ApiKeyAuthorization, ApiKeyPolicyInput, evaluate_api_key};
 
-use crate::{CompiledAsyncRequestPlugin, CompiledPluginPlan, CompiledRequestPlugin};
+use crate::{
+    CompiledAsyncRequestPlugin, CompiledPluginPlan, CompiledRequestPlugin,
+    rate_limit::ScopedRateLimitDecision,
+};
 
 /// Request-owned guard preventing asynchronous policy work from running again
 /// during retries.
@@ -91,6 +94,14 @@ pub fn execute_synchronous_request_plugins<'a>(
                         AuthChallengeKind::ApiKey,
                     ))
                 }
+            },
+            CompiledRequestPlugin::ScopedRateLimit(compiled) => match compiled.evaluate(request) {
+                ScopedRateLimitDecision::Deny {
+                    retry_after_seconds,
+                } => SynchronousRequestPluginDecision::Reject(PluginRejection::rate_limited(
+                    retry_after_seconds,
+                )),
+                ScopedRateLimitDecision::Admit => SynchronousRequestPluginDecision::Continue,
             },
             _ => evaluate(plugin, request),
         };

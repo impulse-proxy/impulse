@@ -61,12 +61,7 @@ impl<'a> EdgeRequestService<'a> {
             .upstream_plan(route.upstream_name.as_ref())
             .ok_or(super::RouteResolutionError::MissingUpstreamPluginPlan)?;
         let policy = resolve_policy(upstream_policy, plugin_plan);
-        let admission = evaluate_admission(
-            self.resilience,
-            &policy,
-            route.upstream_name.as_ref(),
-            &request,
-        );
+        let admission = evaluate_admission(self.resilience, route.upstream_name.as_ref());
 
         Ok(RequestExecutionState {
             route,
@@ -226,12 +221,7 @@ impl<'a> EdgeRequestService<'a> {
             }
         }
 
-        let admission = evaluate_admission(
-            self.resilience,
-            &policy,
-            route.upstream_name.as_ref(),
-            &request,
-        );
+        let admission = evaluate_admission(self.resilience, route.upstream_name.as_ref());
         Ok(PluginRequestExecutionState {
             route,
             policy,

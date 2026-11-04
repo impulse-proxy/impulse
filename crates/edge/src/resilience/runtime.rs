@@ -27,7 +27,6 @@ use crate::resilience::{
     },
     retry_budget::RetryBudget,
     route_queue::RouteQueueLimiter,
-    scoped_rate_limit::ScopedRateLimiters,
 };
 
 fn quota_selector_key(spec: &RuntimeRequestKeySpec) -> QuotaSelectorKeySpec {
@@ -189,7 +188,6 @@ fn quota_runtime_from_config(config: &QuotaPolicyConfig) -> QuotaRuntime {
 pub struct RuntimeResilience {
     pub adaptive_admission: Arc<AdaptiveAdmission>,
     pub route_queue: Arc<RouteQueueLimiter>,
-    pub scoped_rate_limits: Arc<ScopedRateLimiters>,
     pub quota: Arc<QuotaRuntime>,
     pub quota_backend: Option<SharedDistributedQuotaCounterBackend>,
     pub quota_backend_initialization_error: Option<QuotaCounterBackendError>,
@@ -232,7 +230,6 @@ impl RuntimeResilience {
             config.route_queue.global_cap,
             config.route_queue.caps.clone(),
         ));
-        let scoped_rate_limits = Arc::new(ScopedRateLimiters::new(&config.scoped_rate_limits));
         let quota = Arc::new(quota_runtime_from_config(&config.quota));
         let mut quota_backend_initialization_error = None;
         let quota_backend = if quota.enabled {
@@ -300,7 +297,6 @@ impl RuntimeResilience {
         Self {
             adaptive_admission: admission,
             route_queue,
-            scoped_rate_limits,
             quota,
             quota_backend,
             quota_backend_initialization_error,
@@ -346,21 +342,6 @@ impl RuntimeResilience {
             admission_policy.route_queue.default_cap,
             admission_policy.route_queue.global_cap,
             admission_policy.route_queue.caps.clone(),
-        ));
-        let scoped_rate_limits = Arc::new(ScopedRateLimiters::new(
-            &rate_limit_policy
-                .scoped_limits
-                .iter()
-                .map(|rule| impulse_config::config::ScopedRateLimit {
-                    name: rule.name.clone(),
-                    scope: rule.scope,
-                    requests_per_sec: rule.requests_per_sec,
-                    burst: rule.burst,
-                    key: rule.key.clone(),
-                    route_allowlist: rule.route_allowlist.clone(),
-                    idle_ttl_secs: rule.idle_ttl.as_secs(),
-                })
-                .collect::<Vec<_>>(),
         ));
         let quota = Arc::new(quota_runtime_from_policy_set(&rate_limit_policy.quota));
         let mut quota_backend_initialization_error = None;
@@ -435,7 +416,6 @@ impl RuntimeResilience {
         Self {
             adaptive_admission: admission,
             route_queue,
-            scoped_rate_limits,
             quota,
             quota_backend,
             quota_backend_initialization_error,

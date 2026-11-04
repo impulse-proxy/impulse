@@ -242,6 +242,20 @@ impl PluginRejection {
     }
 
     #[must_use]
+    pub fn rate_limited(retry_after_seconds: u32) -> Self {
+        Self {
+            reason: PluginRejectionReason::RateLimited,
+            status: StatusCode::TOO_MANY_REQUESTS,
+            headers: vec![PluginResponseHeader {
+                name: http::header::RETRY_AFTER,
+                value: HeaderValue::from_str(&retry_after_seconds.max(1).to_string())
+                    .unwrap_or(HeaderValue::from_static("1")),
+            }],
+            body: b"request rate limited\n".to_vec(),
+        }
+    }
+
+    #[must_use]
     pub const fn reason(&self) -> PluginRejectionReason {
         self.reason
     }

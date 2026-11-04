@@ -1667,6 +1667,7 @@ version = "0.6.0"
 dependencies = [
  "impulse-contracts",
  "impulse-policy",
+ "sha2",
 ]
 
 [[package]]

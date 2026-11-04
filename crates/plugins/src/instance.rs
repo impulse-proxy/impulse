@@ -5,7 +5,10 @@ use impulse_contracts::PluginKind;
 use crate::{
     ApiKeyAuthInput, ConnectionRateLimitInput, ExternalAuthInput, JwtAuthInput, QuotaInput,
     ResponseCacheInput, ResponseCompressionInput, ScopedRateLimitInput,
-    rate_limit::{ConnectionRateLimitRejection, ConnectionRateLimitRuntime},
+    rate_limit::{
+        ConnectionRateLimitRejection, ConnectionRateLimitRuntime, ScopedRateLimitDecision,
+        ScopedRateLimitRuntime,
+    },
 };
 
 #[derive(Clone)]
@@ -83,11 +86,30 @@ impl CompiledJwtAuth {
     }
 }
 
-#[derive(Clone, Eq, PartialEq)]
+pub struct CompiledScopedRateLimit {
+    runtime: ScopedRateLimitRuntime,
+}
+
+impl CompiledScopedRateLimit {
+    pub(crate) fn new(inputs: Arc<[ScopedRateLimitInput]>) -> Self {
+        Self {
+            runtime: ScopedRateLimitRuntime::new(inputs),
+        }
+    }
+
+    pub(crate) fn evaluate(
+        &self,
+        request: impulse_contracts::PluginRequestView<'_>,
+    ) -> ScopedRateLimitDecision {
+        self.runtime.evaluate(request)
+    }
+}
+
+#[derive(Clone)]
 pub enum CompiledRequestPlugin {
     ApiKeyAuth(ApiKeyAuthInput),
     JwtAuth(CompiledJwtAuth),
-    ScopedRateLimit(Arc<[ScopedRateLimitInput]>),
+    ScopedRateLimit(Arc<CompiledScopedRateLimit>),
 }
 
 impl CompiledRequestPlugin {
@@ -100,6 +122,21 @@ impl CompiledRequestPlugin {
         }
     }
 }
+
+impl PartialEq for CompiledRequestPlugin {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::ApiKeyAuth(left), Self::ApiKeyAuth(right)) => left == right,
+            (Self::JwtAuth(left), Self::JwtAuth(right)) => left == right,
+            (Self::ScopedRateLimit(left), Self::ScopedRateLimit(right)) => {
+                left.runtime.inputs() == right.runtime.inputs()
+            }
+            _ => false,
+        }
+    }
+}
+
+impl Eq for CompiledRequestPlugin {}
 
 #[derive(Clone, Eq, PartialEq)]
 pub enum CompiledAsyncRequestPlugin {

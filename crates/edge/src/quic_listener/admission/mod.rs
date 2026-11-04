@@ -1,7 +1,8 @@
+#[cfg(test)]
+use std::net::SocketAddr;
 use std::{
     collections::HashMap,
     future::Future,
-    net::SocketAddr,
     sync::{Arc, RwLock},
     time::{Duration, Instant, SystemTime},
 };
@@ -22,11 +23,11 @@ use impulse_config::{
     runtime::{RuntimeConfig, RuntimeJwtAuth, RuntimeJwtVerificationKey, RuntimeUpstreamPolicy},
 };
 use impulse_lb::upstream_pool::UpstreamPool;
+use impulse_policy::evaluate_adaptive_admission;
 #[cfg(test)]
 use impulse_policy::evaluate_brownout_admission;
-use impulse_policy::{
-    ScopedRateLimitEvaluation, evaluate_adaptive_admission, evaluate_scoped_rate_limit,
-};
+#[cfg(test)]
+use impulse_policy::{ScopedRateLimitEvaluation, evaluate_scoped_rate_limit};
 use quiche::h3::NameValue;
 use serde_json::Value;
 #[cfg(test)]
@@ -39,16 +40,21 @@ use tokio::{
     task::block_in_place,
 };
 
-use super::{Http3Service, LbHeaderLookup, runtime_handle};
+#[cfg(test)]
+use super::LbHeaderLookup;
+use super::{Http3Service, runtime_handle};
+#[cfg(test)]
+use crate::resilience::quota::{QuotaDecision, evaluate_admission_quota};
+#[cfg(test)]
+use crate::resilience::scoped_rate_limit::ScopedRateLimiters;
 use crate::{
     OverloadShedReason, RouteOutcome,
     edge_core::request_execution::{QuotaRejectedDecision, evaluate_post_auth_quota_policy},
     resilience::{
         adaptive_admission::AdaptivePermit,
-        quota::{QuotaDecision, QuotaIdentityContext, evaluate_admission_quota},
+        quota::QuotaIdentityContext,
         route_queue::{RouteQueuePermit, RouteQueueRejection},
         runtime::RuntimeResilience,
-        scoped_rate_limit::ScopedRateLimiters,
     },
     runtime::{
         connection::{auth::apply_auth_request_mutations, request::PendingForward},
@@ -196,6 +202,7 @@ pub(super) enum PostAuthAdmissionExecution {
     Rejected(PostAuthAdmissionRejection),
 }
 
+#[cfg(test)]
 pub(crate) fn evaluate_scoped_rate_limit_policy(
     scoped_rate_limits: &ScopedRateLimiters,
     route: &str,

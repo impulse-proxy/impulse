@@ -34,7 +34,7 @@ pub use input::{
 };
 pub use instance::{
     CompiledAsyncRequestPlugin, CompiledCachePlugin, CompiledConnectionPlugin, CompiledJwtAuth,
-    CompiledRequestPlugin, CompiledResponsePlugin,
+    CompiledRequestPlugin, CompiledResponsePlugin, CompiledScopedRateLimit,
 };
 pub use plan::{CompiledConnectionPlan, CompiledPluginPlan};
 pub use request::{

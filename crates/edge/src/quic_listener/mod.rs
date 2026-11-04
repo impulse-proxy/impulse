@@ -106,7 +106,7 @@ mod tls_runtime;
 mod validation;
 mod workers;
 
-pub(crate) use admission::{evaluate_compiled_jwt_policy, evaluate_scoped_rate_limit_policy};
+pub(crate) use admission::evaluate_compiled_jwt_policy;
 pub(crate) use async_runtime::configure_async_runtime;
 pub(in crate::quic_listener) use async_runtime::{runtime_handle, spawn_async_task};
 use connection::maybe_log_quic_connection_error;
