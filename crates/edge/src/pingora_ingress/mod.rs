@@ -14,7 +14,7 @@ use impulse_bridge::response::{
 use impulse_config::{backend_endpoint::BackendScheme, runtime::ListenerRuntimeConfig};
 use impulse_contracts::{
     AlternateBackendFailureReason, HealthFailureReason, IngressProtocol, PluginConnectionView,
-    PluginHeaderMutation, PluginRejection, PluginRejectionReason, PluginRequestView,
+    PluginHeaderMutation, PluginRejection, PluginRequestView,
     RequestDecision as AdmissionPolicyDecision, RetryAttemptTelemetryReason, TunnelMode,
 };
 use impulse_errors::{
@@ -67,8 +67,9 @@ use crate::{
         request_completion::RequestCompletion,
         request_execution::{
             EdgeRequestService, PluginRequestExecutionInput, PluginRequestExecutionOutcome,
-            RequestExecutionInput, ResolvedRequestPolicy, ResolvedRouteTarget,
-            ResponseCompressionAction, RouteResolutionError, evaluate_post_auth_quota_policy,
+            PluginTerminalObservation, RequestExecutionInput, ResolvedRequestPolicy,
+            ResolvedRouteTarget, ResponseCompressionAction, RouteResolutionError,
+            evaluate_post_auth_quota_policy,
         },
         request_validation::validate_http_request_parts,
         response_processing::{
@@ -847,8 +848,11 @@ impl PingoraRequestService for PingoraEdgeRequestService {
                 admission,
                 mutations,
             } => (admission, mutations),
-            PluginRequestExecutionOutcome::Rejected(rejection) => {
-                observe_plugin_rejection(ctx, &shared.metrics, rejection.reason());
+            PluginRequestExecutionOutcome::Rejected {
+                rejection,
+                observation,
+            } => {
+                apply_plugin_terminal_observation(ctx, &shared.metrics, observation);
                 write_plugin_rejection_response(session, &rejection).await?;
                 return Ok(true);
             }
@@ -2104,34 +2108,25 @@ fn pending_header_mutation(mutation: &PluginHeaderMutation) -> PendingHeaderMuta
     }
 }
 
-fn observe_plugin_rejection(
+fn apply_plugin_terminal_observation(
     ctx: &mut PingoraRequestContext,
     metrics: &Metrics,
-    reason: PluginRejectionReason,
+    observation: PluginTerminalObservation,
 ) {
-    let outcome = match reason {
-        PluginRejectionReason::ApiKeyMissing
-        | PluginRejectionReason::ApiKeyInvalid
-        | PluginRejectionReason::JwtMissing
-        | PluginRejectionReason::JwtInvalid
-        | PluginRejectionReason::JwtClaimsRejected
-        | PluginRejectionReason::ExternalAuthDenied => {
+    let outcome = match observation {
+        PluginTerminalObservation::AuthDenied => {
             metrics.policy_observations().inc_policy_denied();
             AdmissionOutcomeClass::AuthDenied
         }
-        PluginRejectionReason::RateLimited => {
+        PluginTerminalObservation::RateLimited => {
             metrics.policy_observations().inc_request_rate_limited();
             AdmissionOutcomeClass::RateLimited
         }
-        PluginRejectionReason::QuotaDenied => {
+        PluginTerminalObservation::QuotaDenied => {
             metrics.policy_observations().inc_request_rate_limited();
             AdmissionOutcomeClass::QuotaDenied
         }
-        PluginRejectionReason::JwksUnavailable
-        | PluginRejectionReason::ExternalAuthUnavailable
-        | PluginRejectionReason::QuotaUnavailable => {
-            AdmissionOutcomeClass::Failed { timed_out: false }
-        }
+        PluginTerminalObservation::Failed => AdmissionOutcomeClass::Failed { timed_out: false },
     };
     ctx.terminal_classification = Some(PingoraTerminalClassification::Admission(outcome));
 }

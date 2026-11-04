@@ -18,6 +18,6 @@ pub(crate) use routing::RouteResolutionError;
 pub(crate) use routing::resolve_route;
 pub(crate) use types::{
     PluginRequestExecutionInput, PluginRequestExecutionOutcome, PluginRequestExecutionState,
-    RequestExecutionInput, RequestExecutionResult, RequestExecutionState, RequestHeaderLookup,
-    ResolvedRouteTarget,
+    PluginTerminalObservation, RequestExecutionInput, RequestExecutionResult,
+    RequestExecutionState, RequestHeaderLookup, ResolvedRouteTarget,
 };

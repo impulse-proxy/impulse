@@ -16,8 +16,9 @@ use impulse_plugins::{
 
 use super::{
     PluginRequestExecutionInput, PluginRequestExecutionOutcome, PluginRequestExecutionState,
-    RequestExecutionInput, RequestExecutionResult, RequestExecutionState,
-    admission::evaluate_admission, policy::resolve_policy, routing::resolve_route,
+    PluginTerminalObservation, RequestExecutionInput, RequestExecutionResult,
+    RequestExecutionState, admission::evaluate_admission, policy::resolve_policy,
+    routing::resolve_route,
 };
 use crate::{resilience::runtime::RuntimeResilience, routing::index::RouteIndex};
 
@@ -170,10 +171,15 @@ impl<'a> EdgeRequestService<'a> {
         ) {
             SynchronousRequestPluginExecution::Continue { mutations } => mutations,
             SynchronousRequestPluginExecution::Reject(rejection) => {
+                let observation =
+                    PluginTerminalObservation::from_rejection_reason(rejection.reason());
                 return Ok(PluginRequestExecutionState {
                     route,
                     policy,
-                    outcome: PluginRequestExecutionOutcome::Rejected(rejection),
+                    outcome: PluginRequestExecutionOutcome::Rejected {
+                        rejection,
+                        observation,
+                    },
                 });
             }
         };
@@ -190,10 +196,15 @@ impl<'a> EdgeRequestService<'a> {
                 mutations: async_mutations,
             } => mutations.extend(async_mutations),
             AsyncRequestPluginExecution::Reject(rejection) => {
+                let observation =
+                    PluginTerminalObservation::from_rejection_reason(rejection.reason());
                 return Ok(PluginRequestExecutionState {
                     route,
                     policy,
-                    outcome: PluginRequestExecutionOutcome::Rejected(rejection),
+                    outcome: PluginRequestExecutionOutcome::Rejected {
+                        rejection,
+                        observation,
+                    },
                 });
             }
             AsyncRequestPluginExecution::AlreadyExecuted => {

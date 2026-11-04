@@ -1,8 +1,8 @@
 use std::{net::SocketAddr, sync::Arc};
 
 use impulse_contracts::{
-    IngressProtocol, PluginHeaderLookup, PluginHeaderMutation, PluginRejection, RequestDecision,
-    RequestId,
+    IngressProtocol, PluginHeaderLookup, PluginHeaderMutation, PluginRejection,
+    PluginRejectionReason, RequestDecision, RequestId,
 };
 
 use super::{policy::ResolvedRequestPolicy, routing::RouteResolutionError};
@@ -51,8 +51,39 @@ pub(crate) enum PluginRequestExecutionOutcome {
         admission: RequestDecision,
         mutations: Vec<PluginHeaderMutation>,
     },
-    Rejected(PluginRejection),
+    Rejected {
+        rejection: PluginRejection,
+        observation: PluginTerminalObservation,
+    },
     AlreadyExecuted,
+}
+
+/// Metadata returned by plugin execution; only the edge completion owner may
+/// record it as a terminal request outcome.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PluginTerminalObservation {
+    AuthDenied,
+    RateLimited,
+    QuotaDenied,
+    Failed,
+}
+
+impl PluginTerminalObservation {
+    pub(crate) const fn from_rejection_reason(reason: PluginRejectionReason) -> Self {
+        match reason {
+            PluginRejectionReason::ApiKeyMissing
+            | PluginRejectionReason::ApiKeyInvalid
+            | PluginRejectionReason::JwtMissing
+            | PluginRejectionReason::JwtInvalid
+            | PluginRejectionReason::JwtClaimsRejected
+            | PluginRejectionReason::ExternalAuthDenied => Self::AuthDenied,
+            PluginRejectionReason::RateLimited => Self::RateLimited,
+            PluginRejectionReason::QuotaDenied => Self::QuotaDenied,
+            PluginRejectionReason::JwksUnavailable
+            | PluginRejectionReason::ExternalAuthUnavailable
+            | PluginRejectionReason::QuotaUnavailable => Self::Failed,
+        }
+    }
 }
 
 /// The route selected by the shared routing service before backend selection.

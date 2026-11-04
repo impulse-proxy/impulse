@@ -3,7 +3,7 @@ use std::{borrow::Cow, collections::VecDeque, convert::Infallible};
 use http_body_util::Full;
 use impulse_contracts::{
     BoundedRejectionResponse as AdmissionRejectionResponse, IngressProtocol, PluginHeaderMutation,
-    PluginRejection, PluginRejectionReason, RequestDecision as AdmissionPolicyDecision,
+    PluginRejection, RequestDecision as AdmissionPolicyDecision,
 };
 use impulse_policy::ExternalAuthPolicy;
 use smallvec::SmallVec;
@@ -22,7 +22,7 @@ use crate::{
         request_completion::RequestCompletion,
         request_execution::{
             EdgeRequestService, PluginRequestExecutionInput, PluginRequestExecutionOutcome,
-            PluginRequestExecutionState, RequestExecutionInput,
+            PluginRequestExecutionState, PluginTerminalObservation, RequestExecutionInput,
         },
     },
     runtime::connection::{
@@ -445,33 +445,24 @@ impl Http3Service {
         }
     }
 
-    fn observe_plugin_rejection(
+    fn apply_plugin_terminal_observation(
         metrics: &Metrics,
-        reason: PluginRejectionReason,
+        observation: PluginTerminalObservation,
     ) -> AdmissionOutcomeClass {
-        match reason {
-            PluginRejectionReason::ApiKeyMissing
-            | PluginRejectionReason::ApiKeyInvalid
-            | PluginRejectionReason::JwtMissing
-            | PluginRejectionReason::JwtInvalid
-            | PluginRejectionReason::JwtClaimsRejected
-            | PluginRejectionReason::ExternalAuthDenied => {
+        match observation {
+            PluginTerminalObservation::AuthDenied => {
                 metrics.policy_observations().inc_policy_denied();
                 AdmissionOutcomeClass::AuthDenied
             }
-            PluginRejectionReason::RateLimited => {
+            PluginTerminalObservation::RateLimited => {
                 metrics.policy_observations().inc_request_rate_limited();
                 AdmissionOutcomeClass::RateLimited
             }
-            PluginRejectionReason::QuotaDenied => {
+            PluginTerminalObservation::QuotaDenied => {
                 metrics.policy_observations().inc_request_rate_limited();
                 AdmissionOutcomeClass::QuotaDenied
             }
-            PluginRejectionReason::JwksUnavailable
-            | PluginRejectionReason::ExternalAuthUnavailable
-            | PluginRejectionReason::QuotaUnavailable => {
-                AdmissionOutcomeClass::Failed { timed_out: false }
-            }
+            PluginTerminalObservation::Failed => AdmissionOutcomeClass::Failed { timed_out: false },
         }
     }
 
@@ -640,8 +631,11 @@ impl Http3Service {
                         admission,
                         mutations,
                     } => (admission, mutations),
-                    PluginRequestExecutionOutcome::Rejected(rejection) => {
-                        let outcome = Self::observe_plugin_rejection(metrics, rejection.reason());
+                    PluginRequestExecutionOutcome::Rejected {
+                        rejection,
+                        observation,
+                    } => {
+                        let outcome = Self::apply_plugin_terminal_observation(metrics, observation);
                         let _ = intake.state.context.completion.complete_with(|| {
                             observe_admission_outcome(
                                 metrics,
