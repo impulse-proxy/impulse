@@ -1,6 +1,9 @@
 use std::{net::SocketAddr, sync::Arc};
 
-use impulse_contracts::RequestDecision;
+use impulse_contracts::{
+    IngressProtocol, PluginHeaderLookup, PluginHeaderMutation, PluginRejection, RequestDecision,
+    RequestId,
+};
 
 use super::{policy::ResolvedRequestPolicy, routing::RouteResolutionError};
 use crate::routing::decision::RouteDecisionReason;
@@ -16,6 +19,17 @@ pub(crate) struct RequestExecutionInput<'a> {
     pub(crate) headers: Option<&'a RequestHeaderLookup<'a>>,
 }
 
+/// Request metadata required by the shared compiled-plugin path.
+pub(crate) struct PluginRequestExecutionInput<'a> {
+    pub(crate) request: RequestExecutionInput<'a>,
+    pub(crate) request_id: RequestId,
+    pub(crate) generation: u64,
+    pub(crate) ingress_protocol: IngressProtocol,
+    pub(crate) headers: Option<&'a PluginHeaderLookup<'a>>,
+    pub(crate) has_body: bool,
+    pub(crate) body_replayable: bool,
+}
+
 pub(crate) type RequestExecutionResult =
     Result<RequestExecutionState<ResolvedRouteTarget>, RouteResolutionError>;
 
@@ -24,6 +38,21 @@ pub(crate) struct RequestExecutionState<Route> {
     pub(crate) route: Route,
     pub(crate) policy: ResolvedRequestPolicy,
     pub(crate) admission: RequestDecision,
+}
+
+pub(crate) struct PluginRequestExecutionState<Route> {
+    pub(crate) route: Route,
+    pub(crate) policy: ResolvedRequestPolicy,
+    pub(crate) outcome: PluginRequestExecutionOutcome,
+}
+
+pub(crate) enum PluginRequestExecutionOutcome {
+    Admitted {
+        admission: RequestDecision,
+        mutations: Vec<PluginHeaderMutation>,
+    },
+    Rejected(PluginRejection),
+    AlreadyExecuted,
 }
 
 /// The route selected by the shared routing service before backend selection.

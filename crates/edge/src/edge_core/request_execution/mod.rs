@@ -17,6 +17,7 @@ pub(crate) use routing::RouteResolutionError;
 #[cfg(test)]
 pub(crate) use routing::resolve_route;
 pub(crate) use types::{
+    PluginRequestExecutionInput, PluginRequestExecutionOutcome, PluginRequestExecutionState,
     RequestExecutionInput, RequestExecutionResult, RequestExecutionState, RequestHeaderLookup,
     ResolvedRouteTarget,
 };

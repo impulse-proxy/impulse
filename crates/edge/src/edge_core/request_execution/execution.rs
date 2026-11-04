@@ -1,11 +1,20 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, future::Future, sync::Arc};
 
 use impulse_config::runtime::RuntimeUpstreamPolicy;
-use impulse_plugins::CompiledGenerationPluginPlans;
+use impulse_contracts::PluginRequestView;
+use impulse_plugins::{
+    AsyncRequestPluginDecision, AsyncRequestPluginExecution, AsyncRequestPluginExecutionGuard,
+    CompiledAsyncRequestPlugin, CompiledGenerationPluginPlans, CompiledRequestPlugin,
+    SynchronousRequestPluginDecision, SynchronousRequestPluginExecution,
+    execute_async_request_plugins, execute_synchronous_request_plugins,
+};
 
 use super::{
+    PluginRequestExecutionInput, PluginRequestExecutionOutcome, PluginRequestExecutionState,
     RequestExecutionInput, RequestExecutionResult, RequestExecutionState,
-    admission::evaluate_admission, policy::resolve_policy, routing::resolve_route,
+    admission::{evaluate_admission, evaluate_core_overload_admission},
+    policy::resolve_policy,
+    routing::resolve_route,
 };
 use crate::{resilience::runtime::RuntimeResilience, routing::index::RouteIndex};
 
@@ -60,6 +69,111 @@ impl<'a> EdgeRequestService<'a> {
             route,
             policy,
             admission,
+        })
+    }
+
+    /// Resolves a route, executes its compiled request plugins once, then runs
+    /// mandatory core overload admission.
+    pub(crate) async fn execute_plugins<SyncEvaluate, AsyncEvaluate, AsyncEvaluation>(
+        &self,
+        input: PluginRequestExecutionInput<'_>,
+        async_guard: &mut AsyncRequestPluginExecutionGuard,
+        sync_evaluate: SyncEvaluate,
+        async_evaluate: AsyncEvaluate,
+    ) -> Result<PluginRequestExecutionState<super::ResolvedRouteTarget>, super::RouteResolutionError>
+    where
+        SyncEvaluate: for<'view> FnMut(
+            &CompiledRequestPlugin,
+            PluginRequestView<'view>,
+        ) -> SynchronousRequestPluginDecision,
+        AsyncEvaluate: for<'view> FnMut(
+            &'view CompiledAsyncRequestPlugin,
+            PluginRequestView<'view>,
+        ) -> AsyncEvaluation,
+        AsyncEvaluation: Future<Output = AsyncRequestPluginDecision>,
+    {
+        let request = input.request;
+        let route = resolve_route(
+            self.routing_index,
+            request.method,
+            request.path,
+            request.authority,
+        )?;
+        let upstream_policy = self
+            .upstream_policies
+            .get(route.upstream_name.as_ref())
+            .ok_or(super::RouteResolutionError::MissingUpstreamPolicy)?;
+        let plugin_plan = self
+            .plugin_plans
+            .upstream_plan(route.upstream_name.as_ref())
+            .ok_or(super::RouteResolutionError::MissingUpstreamPluginPlan)?;
+        let policy = resolve_policy(upstream_policy, Arc::clone(&plugin_plan));
+        let plugin_request = PluginRequestView {
+            request_id: input.request_id,
+            generation: input.generation,
+            route_id: Some(route.upstream_name.as_ref()),
+            upstream_name: route.upstream_name.as_ref(),
+            method: request.method,
+            path: request.path,
+            authority: request.authority,
+            peer_address: request.peer_address,
+            headers: input.headers,
+            has_body: input.has_body,
+            body_replayable: input.body_replayable,
+            ingress_protocol: input.ingress_protocol,
+        };
+
+        let mut mutations = match execute_synchronous_request_plugins(
+            &plugin_plan,
+            plugin_request,
+            sync_evaluate,
+        ) {
+            SynchronousRequestPluginExecution::Continue { mutations } => mutations,
+            SynchronousRequestPluginExecution::Reject(rejection) => {
+                return Ok(PluginRequestExecutionState {
+                    route,
+                    policy,
+                    outcome: PluginRequestExecutionOutcome::Rejected(rejection),
+                });
+            }
+        };
+
+        match execute_async_request_plugins(
+            async_guard,
+            &plugin_plan,
+            plugin_request,
+            async_evaluate,
+        )
+        .await
+        {
+            AsyncRequestPluginExecution::Continue {
+                mutations: async_mutations,
+            } => mutations.extend(async_mutations),
+            AsyncRequestPluginExecution::Reject(rejection) => {
+                return Ok(PluginRequestExecutionState {
+                    route,
+                    policy,
+                    outcome: PluginRequestExecutionOutcome::Rejected(rejection),
+                });
+            }
+            AsyncRequestPluginExecution::AlreadyExecuted => {
+                return Ok(PluginRequestExecutionState {
+                    route,
+                    policy,
+                    outcome: PluginRequestExecutionOutcome::AlreadyExecuted,
+                });
+            }
+        }
+
+        let admission =
+            evaluate_core_overload_admission(self.resilience, route.upstream_name.as_ref());
+        Ok(PluginRequestExecutionState {
+            route,
+            policy,
+            outcome: PluginRequestExecutionOutcome::Admitted {
+                admission,
+                mutations,
+            },
         })
     }
 }

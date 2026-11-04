@@ -99,12 +99,7 @@ pub(super) fn evaluate_admission(
         return auth;
     }
 
-    let brownout = evaluate_brownout_admission(
-        &resilience.brownout,
-        resilience.adaptive_admission.inflight_percent(),
-        route,
-        resilience.shed_retry_after_seconds,
-    );
+    let brownout = evaluate_core_overload_admission(resilience, route);
     if brownout != RequestDecision::AdmitReady {
         return brownout;
     }
@@ -117,5 +112,17 @@ pub(super) fn evaluate_admission(
         request.authority,
         request.peer_address,
         request.headers,
+    )
+}
+
+pub(super) fn evaluate_core_overload_admission(
+    resilience: &RuntimeResilience,
+    route: &str,
+) -> RequestDecision {
+    evaluate_brownout_admission(
+        &resilience.brownout,
+        resilience.adaptive_admission.inflight_percent(),
+        route,
+        resilience.shed_retry_after_seconds,
     )
 }
