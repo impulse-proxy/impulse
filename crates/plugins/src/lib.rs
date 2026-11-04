@@ -6,6 +6,7 @@
 
 mod catalog;
 mod compile;
+mod connection;
 mod input;
 mod instance;
 mod plan;
@@ -16,6 +17,9 @@ pub use catalog::{
 };
 pub use compile::{
     CompiledGenerationPluginPlans, PluginPlanCompileError, compile_generation_plugin_plans,
+};
+pub use connection::{
+    ConnectionPluginDecision, ConnectionPluginExecution, execute_connection_plugins,
 };
 pub use input::{
     ApiKeyAuthInput, ConnectionRateLimitInput, ExternalAuthFailureModeInput, ExternalAuthInput,
