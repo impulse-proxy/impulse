@@ -63,6 +63,7 @@ fn require_available(
 
 pub fn compile_generation_plugin_plans(
     catalog: &PluginCatalog,
+    generation: u64,
     inputs: PluginConstructionInputs,
 ) -> Result<CompiledGenerationPluginPlans, PluginPlanCompileError> {
     require_available(catalog, PluginKind::ConnectionRateLimit)?;
@@ -89,7 +90,9 @@ pub fn compile_generation_plugin_plans(
         .upstreams
         .into_vec()
         .into_iter()
-        .map(|upstream| compile_upstream_plan(catalog, upstream, &scoped_rate_limits, &quota))
+        .map(|upstream| {
+            compile_upstream_plan(catalog, generation, upstream, &scoped_rate_limits, &quota)
+        })
         .collect::<Result<HashMap<_, _>, _>>()?;
 
     Ok(CompiledGenerationPluginPlans {
@@ -100,6 +103,7 @@ pub fn compile_generation_plugin_plans(
 
 fn compile_upstream_plan(
     catalog: &PluginCatalog,
+    generation: u64,
     inputs: UpstreamPluginInputs,
     scoped_rate_limits: &Option<Arc<[crate::ScopedRateLimitInput]>>,
     quota: &Option<Arc<crate::QuotaInput>>,
@@ -142,11 +146,14 @@ fn compile_upstream_plan(
 
     Ok((
         inputs.upstream_name,
-        Arc::new(CompiledPluginPlan::new(
-            request_gate,
-            async_request_gate,
-            cache_policy,
-            response_policy,
-        )),
+        Arc::new(
+            CompiledPluginPlan::new(
+                request_gate,
+                async_request_gate,
+                cache_policy,
+                response_policy,
+            )
+            .with_generation(generation),
+        ),
     ))
 }

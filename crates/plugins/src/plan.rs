@@ -5,6 +5,7 @@ use crate::{
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct CompiledPluginPlan {
+    generation: u64,
     request_gate: Box<[CompiledRequestPlugin]>,
     async_request_gate: Box<[CompiledAsyncRequestPlugin]>,
     cache_policy: Box<[CompiledCachePlugin]>,
@@ -20,11 +21,22 @@ impl CompiledPluginPlan {
         response_policy: Vec<CompiledResponsePlugin>,
     ) -> Self {
         Self {
+            generation: 0,
             request_gate: request_gate.into_boxed_slice(),
             async_request_gate: async_request_gate.into_boxed_slice(),
             cache_policy: cache_policy.into_boxed_slice(),
             response_policy: response_policy.into_boxed_slice(),
         }
+    }
+
+    pub(crate) fn with_generation(mut self, generation: u64) -> Self {
+        self.generation = generation;
+        self
+    }
+
+    #[must_use]
+    pub const fn generation(&self) -> u64 {
+        self.generation
     }
 
     #[must_use]

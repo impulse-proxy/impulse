@@ -59,6 +59,7 @@ impl RuntimeBuilder {
         let plugin_plans = Arc::new(
             compile_generation_plugin_plans(
                 compiled_plugin_catalog(),
+                generation,
                 plugin_construction_inputs(config),
             )
             .map_err(|error| {

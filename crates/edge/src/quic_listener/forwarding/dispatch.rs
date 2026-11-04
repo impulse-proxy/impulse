@@ -1,7 +1,9 @@
 use std::convert::Infallible;
 
 use impulse_config::runtime::RuntimeBackendTlsPolicy;
-use impulse_contracts::{AlternateBackendFailureReason, HedgeOutcomeTelemetryReason};
+use impulse_contracts::{
+    AlternateBackendFailureReason, HedgeOutcomeTelemetryReason, IngressProtocol, PluginRequestView,
+};
 use impulse_errors::{HedgePolicyDecision, RetryPolicyDecision, is_idempotent_method};
 use impulse_lb::{BackendSelectionInput, pingora_backend::GenerationSelector};
 use impulse_observability::{HedgeDecisionReason, ResponseCacheOutcome, RetryDecisionReason};
@@ -13,13 +15,12 @@ use pingora_cache::{HitStatus, HttpCache, NoCacheReason, lock::LockWaitOutcome};
 
 use super::{selection::ForwardingSelectionService, *};
 use crate::{
-    edge_core::retry::RetryCoordinator,
+    edge_core::{
+        response_processing::{CacheLookupProcessingInput, process_cache_lookup},
+        retry::RetryCoordinator,
+    },
     runtime::{
-        cache::{
-            ResponseCacheKeyInput, ResponseCacheRequestEligibilityInput,
-            canonical_response_cache_key, evaluate_cache_request_eligibility,
-            route_auth_requires_cache_bypass,
-        },
+        cache::{ResponseCacheKeyInput, canonical_response_cache_key},
         connection::{request::PendingForward, response::ForwardingPolicyTelemetry},
     },
 };
@@ -71,7 +72,6 @@ struct H3CacheLookupInput<'a> {
     cache_store: &'static crate::runtime::cache::BoundedPingoraMemoryCache,
     metrics: &'a Metrics,
     policy: impulse_config::runtime::RuntimeResponseCachePolicy,
-    route_auth_enabled: bool,
     pending_forward: &'a PendingForward,
     namespace: u64,
     has_body: bool,
@@ -137,7 +137,6 @@ impl Http3Service {
             cache_store,
             metrics,
             policy,
-            route_auth_enabled,
             pending_forward,
             namespace,
             has_body,
@@ -159,17 +158,27 @@ impl Http3Service {
             }
         }
         let (is_upgrade, is_tunnel) = impulse_http3_ingress::tunnel_cache_flags(tunnel_mode);
-        let Ok(representation) =
-            evaluate_cache_request_eligibility(ResponseCacheRequestEligibilityInput {
-                policy: crate::runtime::subsystem_mapping::response_cache_policy_input(&policy),
-                route_auth_enabled,
+        let request_header = |name: &str| headers.get(name).map(http::HeaderValue::as_bytes);
+        let Ok(representation) = process_cache_lookup(CacheLookupProcessingInput {
+            plugin_plan: &pending_forward.plugin_plan,
+            plugin_request: PluginRequestView {
+                request_id: pending_forward.request_id,
+                generation: pending_forward.plugin_plan.generation(),
+                route_id: Some(pending_forward.upstream_name.as_ref()),
+                upstream_name: pending_forward.upstream_name.as_ref(),
                 method: pending_forward.method.as_ref(),
-                headers: &headers,
+                path: pending_forward.path.as_ref(),
+                authority: pending_forward.authority.as_deref(),
+                peer_address: pending_forward.client_addr,
+                headers: Some(&request_header),
                 has_body,
-                is_upgrade,
-                is_tunnel,
-            })
-        else {
+                body_replayable: !has_body,
+                ingress_protocol: IngressProtocol::Http3,
+            },
+            headers: &headers,
+            is_upgrade,
+            is_tunnel,
+        }) else {
             return bypass();
         };
         let Some(authority) = pending_forward.authority.as_deref() else {
@@ -584,16 +593,7 @@ impl Http3Service {
         let response_cache_policy = shared_ctx
             .upstream_policies
             .get(pending_forward.upstream_name.as_ref())
-            .map(|policy| {
-                (
-                    policy.response_cache.clone(),
-                    route_auth_requires_cache_bypass(
-                        crate::runtime::subsystem_mapping::response_cache_auth_input(
-                            &policy.upstream_auth,
-                        ),
-                    ),
-                )
-            });
+            .map(|policy| policy.response_cache.clone());
         let trace_span_for_upstream = req.trace_span.clone();
         let (result_tx, result_rx) = oneshot::channel::<UpstreamResult>();
         let tunnel_mode = req.tunnel_mode;
@@ -646,14 +646,13 @@ impl Http3Service {
             let result: ForwardResult = async {
                 let cache_miss = if let (
                     Some(cache_store),
-                    Some((cache_policy, route_auth_enabled)),
+                    Some(cache_policy),
                 ) = (response_cache_store, response_cache_policy)
                 {
                     match Self::lookup_h3_response_cache(H3CacheLookupInput {
                         cache_store,
                         metrics: alternate_metrics.as_ref(),
                         policy: cache_policy,
-                        route_auth_enabled,
                         pending_forward: pending_forward.as_ref(),
                         namespace: response_cache_namespace,
                         has_body: !bodyless_mode,

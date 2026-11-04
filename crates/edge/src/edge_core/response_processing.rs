@@ -5,10 +5,19 @@ use impulse_bridge::response::{
     ResponseBodyMode, ResponseBodyPolicy, ResponseNormalizationInput, ResponseProtocolConstraints,
     UpstreamResponseView, normalize_upstream_response,
 };
+use impulse_contracts::{
+    PluginCacheView, PluginRequestView, PluginResponseMetadataView, PluginResponseView,
+};
+use impulse_plugins::{
+    CachePluginDecision, CompiledCachePlugin, CompiledPluginPlan, CompiledResponsePlugin,
+    ResponsePluginDecision, execute_cache_plugins, execute_response_plugins,
+};
 use impulse_policy::{
+    ResponseCacheBypassReason, ResponseCacheRepresentation, ResponseCacheRequestEligibilityInput,
     ResponseCacheResponseEligibilityInput, ResponseCompressionEvaluation, ResponseCompressionInput,
     ResponseCompressionPolicyInput, ensure_vary_accept_encoding,
-    evaluate_cache_response_eligibility, evaluate_response_compression, response_cache_ttl,
+    evaluate_cache_request_eligibility, evaluate_cache_response_eligibility,
+    evaluate_response_compression, response_cache_ttl,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -31,15 +40,59 @@ pub(crate) struct ResponseProcessingResult {
 }
 
 pub(crate) struct ResponseProcessingInput<'a> {
+    pub(crate) plugin_plan: &'a CompiledPluginPlan,
+    pub(crate) plugin_request: PluginRequestView<'a>,
     pub(crate) status: StatusCode,
     pub(crate) upstream_headers: &'a HeaderMap,
     pub(crate) body_mode: ResponseBodyMode,
     pub(crate) constraints: ResponseProtocolConstraints,
     pub(crate) request_method: &'a str,
     pub(crate) request_headers: &'a HeaderMap,
-    pub(crate) compression: ResponseCompressionPolicyInput,
-    pub(crate) cache_max_ttl_secs: Option<u64>,
+    pub(crate) cache_fill_enabled: bool,
+    pub(crate) cache_representation: Option<&'a str>,
     pub(crate) now: SystemTime,
+}
+
+pub(crate) struct CacheLookupProcessingInput<'a> {
+    pub(crate) plugin_plan: &'a CompiledPluginPlan,
+    pub(crate) plugin_request: PluginRequestView<'a>,
+    pub(crate) headers: &'a HeaderMap,
+    pub(crate) is_upgrade: bool,
+    pub(crate) is_tunnel: bool,
+}
+
+pub(crate) fn process_cache_lookup(
+    input: CacheLookupProcessingInput<'_>,
+) -> Result<ResponseCacheRepresentation, ResponseCacheBypassReason> {
+    let mut decision = Err(ResponseCacheBypassReason::Disabled);
+    let _ = execute_cache_plugins(
+        input.plugin_plan,
+        PluginCacheView {
+            request: input.plugin_request,
+            response: None,
+            representation: None,
+        },
+        |plugin, _| match plugin {
+            CompiledCachePlugin::ResponseCache(policy) => {
+                decision =
+                    evaluate_cache_request_eligibility(ResponseCacheRequestEligibilityInput {
+                        policy: impulse_policy::ResponseCachePolicyInput { enabled: true },
+                        route_auth_enabled: policy.authenticated_route,
+                        method: input.plugin_request.method,
+                        headers: input.headers,
+                        has_body: input.plugin_request.has_body,
+                        is_upgrade: input.is_upgrade,
+                        is_tunnel: input.is_tunnel,
+                    });
+                if decision.is_ok() {
+                    CachePluginDecision::Continue
+                } else {
+                    CachePluginDecision::Bypass
+                }
+            }
+        },
+    );
+    decision
 }
 
 /// Applies response-head policy in canonical normalization, cache, compression order.
@@ -57,28 +110,56 @@ pub(crate) fn process_response(input: ResponseProcessingInput<'_>) -> ResponsePr
         headers.append(header.name, header.value);
     }
 
-    let cache = input
-        .cache_max_ttl_secs
-        .map_or(ResponseCacheDecision::Disabled, |max_ttl| {
-            if input.status != StatusCode::OK
-                || evaluate_cache_response_eligibility(ResponseCacheResponseEligibilityInput {
-                    headers: &headers,
-                })
-                .is_err()
-            {
-                return ResponseCacheDecision::Reject;
+    let declared_content_length = headers
+        .get(http::header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse().ok());
+    let response_header = |name: &str| headers.get(name).map(http::HeaderValue::as_bytes);
+    let plugin_response = PluginResponseMetadataView {
+        status: input.status,
+        headers: Some(&response_header),
+        declared_content_length,
+        body_allowed: matches!(normalized.emission.body, ResponseBodyPolicy::Forward),
+    };
+
+    let mut cache = ResponseCacheDecision::Disabled;
+    let _ = execute_cache_plugins(
+        input.plugin_plan,
+        PluginCacheView {
+            request: input.plugin_request,
+            response: Some(plugin_response),
+            representation: input.cache_representation,
+        },
+        |plugin, _| match plugin {
+            CompiledCachePlugin::ResponseCache(policy) => {
+                cache = if !input.cache_fill_enabled {
+                    ResponseCacheDecision::Disabled
+                } else if input.status != StatusCode::OK
+                    || evaluate_cache_response_eligibility(ResponseCacheResponseEligibilityInput {
+                        headers: &headers,
+                    })
+                    .is_err()
+                {
+                    ResponseCacheDecision::Reject
+                } else if let Some(ttl) =
+                    response_cache_ttl(&headers, policy.max_ttl_seconds, input.now)
+                    && let Some(fresh_until) = input.now.checked_add(ttl)
+                {
+                    ResponseCacheDecision::Store {
+                        stored_at: input.now,
+                        fresh_until,
+                    }
+                } else {
+                    ResponseCacheDecision::Reject
+                };
+                if matches!(cache, ResponseCacheDecision::Store { .. }) {
+                    CachePluginDecision::Continue
+                } else {
+                    CachePluginDecision::Bypass
+                }
             }
-            let Some(ttl) = response_cache_ttl(&headers, max_ttl, input.now) else {
-                return ResponseCacheDecision::Reject;
-            };
-            let Some(fresh_until) = input.now.checked_add(ttl) else {
-                return ResponseCacheDecision::Reject;
-            };
-            ResponseCacheDecision::Store {
-                stored_at: input.now,
-                fresh_until,
-            }
-        });
+        },
+    );
 
     let mut compression_headers = headers.clone();
     if !compression_headers.contains_key(http::header::CONTENT_LENGTH)
@@ -86,13 +167,45 @@ pub(crate) fn process_response(input: ResponseProcessingInput<'_>) -> ResponsePr
     {
         compression_headers.insert(http::header::CONTENT_LENGTH, content_length.clone());
     }
-    let compression = evaluate_response_compression(ResponseCompressionInput {
-        policy: input.compression,
+    let mut compression = evaluate_response_compression(ResponseCompressionInput {
+        policy: ResponseCompressionPolicyInput {
+            enabled: false,
+            minimum_size_bytes: 0,
+        },
         request_method: input.request_method,
         request_headers: input.request_headers,
         response_status: input.status,
         response_headers: &compression_headers,
     });
+    let _ = execute_response_plugins(
+        input.plugin_plan,
+        PluginResponseView {
+            request: input.plugin_request,
+            response: plugin_response,
+        },
+        |plugin, _| match plugin {
+            CompiledResponsePlugin::ResponseCompression(policy) => {
+                compression = evaluate_response_compression(ResponseCompressionInput {
+                    policy: ResponseCompressionPolicyInput {
+                        enabled: true,
+                        minimum_size_bytes: policy.minimum_size_bytes,
+                    },
+                    request_method: input.request_method,
+                    request_headers: input.request_headers,
+                    response_status: input.status,
+                    response_headers: &compression_headers,
+                });
+                if matches!(
+                    compression.action,
+                    impulse_observability::ResponseCompressionAction::Gzip
+                ) {
+                    ResponsePluginDecision::Continue
+                } else {
+                    ResponsePluginDecision::Bypass
+                }
+            }
+        },
+    );
     if compression.vary_accept_encoding {
         ensure_vary_accept_encoding(&mut headers);
     }

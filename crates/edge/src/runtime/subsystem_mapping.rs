@@ -14,8 +14,7 @@ use impulse_config::{
         RuntimeExternalAuth, RuntimeExternalAuthFailureMode, RuntimeExternalAuthRequestHeader,
         RuntimeJwtAuth, RuntimeJwtVerificationKey, RuntimeLoadBalancingStrategy,
         RuntimeQuotaBackendFailurePolicy, RuntimeQuotaCounterBackend, RuntimeQuotaEnforcementMode,
-        RuntimeQuotaPolicySet, RuntimeRequestKeySpec, RuntimeResponseCachePolicy,
-        RuntimeResponseCompressionPolicy, RuntimeUpstream, RuntimeWatchdogPolicy,
+        RuntimeQuotaPolicySet, RuntimeRequestKeySpec, RuntimeUpstream, RuntimeWatchdogPolicy,
     },
 };
 use impulse_lb::{
@@ -33,10 +32,7 @@ use impulse_plugins::{
     ResponseCacheInput, ResponseCompressionInput, ScopedRateLimitInput, ScopedRateLimitScopeInput,
     UpstreamPluginInputs,
 };
-use impulse_policy::{
-    ApiKeyPolicyInput, JwtAllowedAlgorithms, JwtPolicyInput, ResponseCacheAuthInput,
-    ResponseCachePolicyInput, ResponseCompressionPolicyInput,
-};
+use impulse_policy::{ApiKeyPolicyInput, JwtAllowedAlgorithms, JwtPolicyInput};
 use impulse_transport::{
     UpstreamConnectionLimitsInput, UpstreamEndpointInput, UpstreamProtocol, UpstreamTimeoutInput,
     UpstreamTlsInput, UpstreamTransportInput,
@@ -65,33 +61,6 @@ pub(crate) fn jwt_policy_input(jwt: &RuntimeJwtAuth) -> JwtPolicyInput<'_> {
         audience: jwt.audience.as_deref(),
         audiences: &jwt.audiences,
         clock_skew_seconds: jwt.clock_skew.as_secs(),
-    }
-}
-
-pub(crate) const fn response_cache_policy_input(
-    policy: &RuntimeResponseCachePolicy,
-) -> ResponseCachePolicyInput {
-    ResponseCachePolicyInput {
-        enabled: policy.enabled,
-    }
-}
-
-pub(crate) fn response_cache_auth_input(policy: &RuntimeAuthPolicy) -> ResponseCacheAuthInput {
-    ResponseCacheAuthInput {
-        api_key: policy.api_key.is_some(),
-        jwt: policy.jwt.is_some(),
-        external_auth: policy.external_auth.is_some(),
-        required_scopes: !policy.required_scopes.is_empty(),
-        required_roles: !policy.required_roles.is_empty(),
-    }
-}
-
-pub(crate) const fn response_compression_policy_input(
-    policy: &RuntimeResponseCompressionPolicy,
-) -> ResponseCompressionPolicyInput {
-    ResponseCompressionPolicyInput {
-        enabled: policy.enabled,
-        minimum_size_bytes: policy.minimum_size_bytes,
     }
 }
 

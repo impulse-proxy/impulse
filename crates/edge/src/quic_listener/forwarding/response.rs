@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use bytes::Bytes;
-use impulse_contracts::HealthFailureReason;
+use impulse_contracts::{HealthFailureReason, IngressProtocol, PluginRequestView};
 use impulse_errors::{UpstreamProxyErrorKind, classify_upstream_proxy_error};
 use impulse_observability::ResponseCacheOutcome;
 use impulse_transport::{UpstreamBody, UpstreamBodyFrame};
@@ -20,9 +20,7 @@ use crate::{
             checked_response_body_guardrails, is_unknown_length_response_prebuffer_reason,
             response_body_limit_reason, response_chunk_ranges,
         },
-        request_execution::{
-            ResponseCompressionAction, ResponseCompressionPolicyInput, apply_gzip_response_headers,
-        },
+        request_execution::{ResponseCompressionAction, apply_gzip_response_headers},
         response_processing::{
             ResponseCacheDecision, ResponseProcessingInput, ResponseProcessingResult,
             process_response,
@@ -378,26 +376,38 @@ impl Http3Service {
             .get(http::header::CONTENT_LENGTH)
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.parse::<usize>().ok());
-        let mut request_headers = http::HeaderMap::new();
-        let compression_policy = if let Some(pending_forward) = req.pending_forward() {
-            for header in pending_forward.original_request_headers() {
-                if let (Ok(name), Ok(value)) = (
-                    http::header::HeaderName::from_bytes(header.name()),
-                    http::HeaderValue::from_bytes(header.value()),
-                ) {
-                    request_headers.append(name, value);
-                }
-            }
-            crate::runtime::subsystem_mapping::response_compression_policy_input(
-                &pending_forward.response_compression,
-            )
-        } else {
-            ResponseCompressionPolicyInput {
-                enabled: false,
-                minimum_size_bytes: 0,
-            }
+        let Some(pending_forward) = req.pending_forward() else {
+            return ResponseStartDecision::BackendFailure(ProxyError::Transport(
+                "upstream response is missing its generation-pinned request policy".into(),
+            ));
         };
+        let mut request_headers = http::HeaderMap::new();
+        for header in pending_forward.original_request_headers() {
+            if let (Ok(name), Ok(value)) = (
+                http::header::HeaderName::from_bytes(header.name()),
+                http::HeaderValue::from_bytes(header.value()),
+            ) {
+                request_headers.append(name, value);
+            }
+        }
+        let request_header =
+            |name: &str| request_headers.get(name).map(http::HeaderValue::as_bytes);
         let processed_response = process_response(ResponseProcessingInput {
+            plugin_plan: &req.plugin_plan,
+            plugin_request: PluginRequestView {
+                request_id: req.request_id,
+                generation: req.plugin_plan.generation(),
+                route_id: req.upstream_name.as_deref(),
+                upstream_name: pending_forward.upstream_name.as_ref(),
+                method: &req.method,
+                path: &req.path,
+                authority: req.authority.as_deref(),
+                peer_address: pending_forward.client_addr,
+                headers: Some(&request_header),
+                has_body: !req.bodyless_mode,
+                body_replayable: req.bodyless_mode,
+                ingress_protocol: IngressProtocol::Http3,
+            },
             status,
             upstream_headers: &resp_headers,
             body_mode: response_body_mode,
@@ -407,8 +417,8 @@ impl Http3Service {
             },
             request_method: &req.method,
             request_headers: &request_headers,
-            compression: compression_policy,
-            cache_max_ttl_secs: cache_miss.as_ref().map(|(_, policy)| policy.max_ttl_secs),
+            cache_fill_enabled: cache_miss.is_some(),
+            cache_representation: None,
             now: std::time::SystemTime::now(),
         });
         let ResponseProcessingResult {

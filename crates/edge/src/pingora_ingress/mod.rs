@@ -13,8 +13,9 @@ use impulse_bridge::response::{
 };
 use impulse_config::{backend_endpoint::BackendScheme, runtime::ListenerRuntimeConfig};
 use impulse_contracts::{
-    AlternateBackendFailureReason, HealthFailureReason, PluginConnectionView,
-    RequestDecision as AdmissionPolicyDecision, RetryAttemptTelemetryReason, TunnelMode,
+    AlternateBackendFailureReason, HealthFailureReason, IngressProtocol, PluginConnectionView,
+    PluginRequestView, RequestDecision as AdmissionPolicyDecision, RetryAttemptTelemetryReason,
+    TunnelMode,
 };
 use impulse_errors::{
     BridgeError, PoolError, ProxyError, RetryPolicyDecision, classify_upstream_proxy_error,
@@ -69,8 +70,8 @@ use crate::{
         },
         request_validation::validate_http_request_parts,
         response_processing::{
-            ResponseCacheDecision, ResponseProcessingInput, ResponseProcessingResult,
-            process_response,
+            CacheLookupProcessingInput, ResponseCacheDecision, ResponseProcessingInput,
+            ResponseProcessingResult, process_cache_lookup, process_response,
         },
         retry::RetryCoordinator,
     },
@@ -81,11 +82,7 @@ use crate::{
     resilience::quota::QuotaIdentityContext,
     runtime::{
         bundle::{RuntimeBundle, RuntimeBundleHandle},
-        cache::{
-            ResponseCacheKeyInput, ResponseCacheRepresentation,
-            ResponseCacheRequestEligibilityInput, canonical_response_cache_key,
-            evaluate_cache_request_eligibility, route_auth_requires_cache_bypass,
-        },
+        cache::{ResponseCacheKeyInput, ResponseCacheRepresentation, canonical_response_cache_key},
         connection::{
             PerSourceTokenBucket, TokenBucket,
             auth::{
@@ -180,6 +177,45 @@ impl PingoraEdgeRequestService {
                 "Pingora ingress request filter did not validate a method",
             )
         })?;
+        let path = ctx.path.as_deref().ok_or_else(|| {
+            Error::explain(
+                InternalError,
+                "Pingora ingress request filter did not validate a path",
+            )
+        })?;
+        let route = ctx.route.as_ref().ok_or_else(|| {
+            Error::explain(
+                InternalError,
+                "Pingora ingress request filter did not resolve a route",
+            )
+        })?;
+        let peer_address = session
+            .client_addr()
+            .and_then(|address| address.as_inet())
+            .copied()
+            .unwrap_or_else(|| ([0, 0, 0, 0], 0).into());
+        let request_headers = &session.req_header().headers;
+        let request_header =
+            |name: &str| request_headers.get(name).map(http::HeaderValue::as_bytes);
+        let plugin_request = PluginRequestView {
+            request_id: ctx.request_id,
+            generation: policy.plugin_plan.generation(),
+            route_id: Some(route.upstream_name.as_ref()),
+            upstream_name: route.upstream_name.as_ref(),
+            method,
+            path,
+            authority: ctx.authority.as_deref(),
+            peer_address,
+            headers: Some(&request_header),
+            has_body: ctx.content_length.is_some_and(|length| length > 0)
+                || ctx.body_bytes_received > 0,
+            body_replayable: ctx.request_body_replayable,
+            ingress_protocol: if session.downstream_session.is_http2() {
+                IngressProtocol::Http2
+            } else {
+                IngressProtocol::Http1
+            },
+        };
         let tunnel_response =
             tunnel_response_established(ctx.tunnel_mode, method, upstream_response.status);
         let body_mode = if tunnel_response {
@@ -190,19 +226,21 @@ impl PingoraEdgeRequestService {
             ResponseBodyMode::Normal
         };
         Ok(process_response(ResponseProcessingInput {
+            plugin_plan: &policy.plugin_plan,
+            plugin_request,
             status: upstream_response.status,
             upstream_headers: &upstream_response.headers,
             body_mode,
             constraints: pingora_response_constraints(tunnel_response),
             request_method: method,
-            request_headers: &session.req_header().headers,
-            compression: crate::runtime::subsystem_mapping::response_compression_policy_input(
-                &policy.response_compression,
-            ),
-            cache_max_ttl_secs: ctx
-                .response_cache_representation
-                .is_some()
-                .then_some(policy.local_auth_policy.response_cache.max_ttl_secs),
+            request_headers,
+            cache_fill_enabled: ctx.response_cache_representation.is_some(),
+            cache_representation: ctx.response_cache_representation.map(|representation| {
+                match representation {
+                    ResponseCacheRepresentation::Get => "get",
+                    ResponseCacheRepresentation::Head => "head",
+                }
+            }),
             now: std::time::SystemTime::now(),
         }))
     }
@@ -960,7 +998,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             return Ok(true);
         }
 
-        if execution.policy.response_compression.enabled {
+        if !execution.policy.plugin_plan.response_policy().is_empty() {
             session.upstream_compression.adjust_level(0);
             session
                 .upstream_compression
@@ -972,32 +1010,56 @@ impl PingoraRequestService for PingoraEdgeRequestService {
     }
 
     fn request_cache_filter(&self, session: &mut Session, ctx: &mut Self::Context) -> Result<()> {
-        let (Some(cache), Some(policy), Some(method)) = (
+        let (Some(cache), Some(policy), Some(method), Some(path)) = (
             self.runtime.response_cache(),
             ctx.policy.as_ref(),
             ctx.method.as_deref(),
+            ctx.path.as_deref(),
         ) else {
             return Ok(());
         };
         let cache_policy = &policy.local_auth_policy.response_cache;
         let (is_upgrade, is_tunnel) = tunnel_cache_flags(ctx.tunnel_mode);
         let has_body = !session.is_body_empty();
-        let representation =
-            evaluate_cache_request_eligibility(ResponseCacheRequestEligibilityInput {
-                policy: crate::runtime::subsystem_mapping::response_cache_policy_input(
-                    cache_policy,
-                ),
-                route_auth_enabled: route_auth_requires_cache_bypass(
-                    crate::runtime::subsystem_mapping::response_cache_auth_input(
-                        &policy.local_auth_policy.upstream_auth,
-                    ),
-                ),
+        let Some(route) = ctx.route.as_ref() else {
+            return Error::e_explain(
+                InternalError,
+                "Pingora ingress cache lookup is missing its resolved route",
+            );
+        };
+        let peer_address = session
+            .client_addr()
+            .and_then(|address| address.as_inet())
+            .copied()
+            .unwrap_or_else(|| ([0, 0, 0, 0], 0).into());
+        let ingress_protocol = if session.downstream_session.is_http2() {
+            IngressProtocol::Http2
+        } else {
+            IngressProtocol::Http1
+        };
+        let request_headers = &session.req_header().headers;
+        let request_header =
+            |name: &str| request_headers.get(name).map(http::HeaderValue::as_bytes);
+        let representation = process_cache_lookup(CacheLookupProcessingInput {
+            plugin_plan: &policy.plugin_plan,
+            plugin_request: PluginRequestView {
+                request_id: ctx.request_id,
+                generation: policy.plugin_plan.generation(),
+                route_id: Some(route.upstream_name.as_ref()),
+                upstream_name: route.upstream_name.as_ref(),
                 method,
-                headers: &session.req_header().headers,
+                path,
+                authority: ctx.authority.as_deref(),
+                peer_address,
+                headers: Some(&request_header),
                 has_body,
-                is_upgrade,
-                is_tunnel,
-            });
+                body_replayable: ctx.request_body_replayable,
+                ingress_protocol,
+            },
+            headers: request_headers,
+            is_upgrade,
+            is_tunnel,
+        });
         let Ok(representation) = representation else {
             ctx.runtime
                 .shared_state
