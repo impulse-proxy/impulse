@@ -1,6 +1,6 @@
 use std::{
     convert::Infallible,
-    sync::{Arc, Mutex, RwLock, atomic::Ordering},
+    sync::{Arc, RwLock, atomic::Ordering},
     time::{Duration, Instant},
 };
 
@@ -87,7 +87,6 @@ use crate::{
         bundle::{RuntimeBundle, RuntimeBundleHandle},
         cache::{ResponseCacheKeyInput, ResponseCacheRepresentation, canonical_response_cache_key},
         connection::{
-            PerSourceTokenBucket, TokenBucket,
             auth::{
                 ExternalAuthDecision, ExternalAuthRequest, ExternalAuthStateTransition,
                 PendingHeaderMutation, apply_auth_request_mutations, merge_auth_request_mutations,
@@ -379,15 +378,6 @@ struct PingoraRequestDeadlineApp {
 pub(crate) struct PingoraRuntimeConnectionAdmission {
     runtime: RuntimeBundleHandle,
     listener_label: String,
-    state: Mutex<PingoraConnectionAdmissionState>,
-    per_source: PerSourceTokenBucket,
-}
-
-struct PingoraConnectionAdmissionState {
-    generation: u64,
-    rate_per_sec: u32,
-    burst: u32,
-    global: TokenBucket,
 }
 
 impl std::fmt::Debug for PingoraRuntimeConnectionAdmission {
@@ -410,11 +400,6 @@ impl ConnectionAdmission for PingoraRuntimeConnectionAdmission {
             metrics.ingress_observations().inc_ingress_rate_limited();
             return false;
         }
-        let Ok(mut state) = self.state.lock() else {
-            metrics.ingress_observations().inc_ingress_rate_limited();
-            return false;
-        };
-        let peer_address = addr.copied().unwrap_or_else(|| ([0, 0, 0, 0], 0).into());
         let admitted = execute_listener_connection_plan(
             current
                 .shared_state
@@ -424,27 +409,10 @@ impl ConnectionAdmission for PingoraRuntimeConnectionAdmission {
             PluginConnectionView {
                 generation: current.generation,
                 listener: &self.listener_label,
-                peer_address,
+                peer_address: addr.copied(),
             },
-            |policy, source| {
-                if state.generation != current.generation {
-                    if state.rate_per_sec != policy.requests_per_second
-                        || state.burst != policy.burst
-                    {
-                        state
-                            .global
-                            .reconfigure(policy.requests_per_second, policy.burst);
-                        self.per_source
-                            .reconfigure(policy.requests_per_second, policy.burst);
-                        state.rate_per_sec = policy.requests_per_second;
-                        state.burst = policy.burst;
-                    }
-                    state.generation = current.generation;
-                }
-                state.global.try_consume()
-                    && addr.is_none_or(|_| self.per_source.try_consume(source))
-            },
-        );
+        )
+        .is_ok();
         if !admitted {
             metrics.ingress_observations().inc_ingress_rate_limited();
         }
@@ -588,23 +556,9 @@ fn pingora_ingress_service_for_listener(
     );
     let current = runtime.current();
     let tls_store = Arc::clone(&current.shared_state.shared_services().listener_tls_store);
-    let transport_policy = &listener.policies.transport;
     let connection_admission = Arc::new(PingoraRuntimeConnectionAdmission {
         runtime: runtime.clone(),
         listener_label: listener_label.clone(),
-        state: Mutex::new(PingoraConnectionAdmissionState {
-            generation: current.generation,
-            rate_per_sec: transport_policy.new_connections_per_sec,
-            burst: transport_policy.new_connections_burst,
-            global: TokenBucket::new(
-                transport_policy.new_connections_per_sec,
-                transport_policy.new_connections_burst,
-            ),
-        }),
-        per_source: PerSourceTokenBucket::new(
-            transport_policy.new_connections_per_sec,
-            transport_policy.new_connections_burst,
-        ),
     });
     let tls_state = Http3Service::build_listener_tls_reload_state(&listener).map_err(|error| {
         Error::because(

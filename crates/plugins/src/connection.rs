@@ -1,19 +1,21 @@
 use impulse_contracts::{PluginConnectionView, PluginKind};
 
-use crate::{CompiledConnectionPlan, CompiledConnectionPlugin};
+use crate::CompiledConnectionPlan;
 
-/// One listener-level plugin's connection-admission decision.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ConnectionPluginDecision {
-    Continue,
-    Reject,
+pub enum ConnectionPluginRejection {
+    GlobalRateLimit,
+    SourceRateLimit,
 }
 
 /// Host-owned result of executing the compiled connection plan.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ConnectionPluginExecution {
     Continue,
-    Reject { kind: PluginKind },
+    Reject {
+        kind: PluginKind,
+        reason: ConnectionPluginRejection,
+    },
 }
 
 /// Executes the listener generation's compiled connection plugins in plan order.
@@ -24,10 +26,6 @@ pub enum ConnectionPluginExecution {
 pub fn execute_connection_plugins<'a>(
     plan: &CompiledConnectionPlan,
     connection: PluginConnectionView<'a>,
-    mut evaluate: impl FnMut(
-        &CompiledConnectionPlugin,
-        PluginConnectionView<'a>,
-    ) -> ConnectionPluginDecision,
 ) -> ConnectionPluginExecution {
     let plugins = plan.connection_admission();
     if plugins.is_empty() {
@@ -35,9 +33,19 @@ pub fn execute_connection_plugins<'a>(
     }
 
     for plugin in plugins {
-        if evaluate(plugin, connection) == ConnectionPluginDecision::Reject {
+        if let Err(reason) =
+            plugin.admit_connection(connection.peer_address.map(|address| address.ip()))
+        {
             return ConnectionPluginExecution::Reject {
                 kind: plugin.kind(),
+                reason: match reason {
+                    crate::rate_limit::ConnectionRateLimitRejection::Global => {
+                        ConnectionPluginRejection::GlobalRateLimit
+                    }
+                    crate::rate_limit::ConnectionRateLimitRejection::Source => {
+                        ConnectionPluginRejection::SourceRateLimit
+                    }
+                },
             };
         }
     }

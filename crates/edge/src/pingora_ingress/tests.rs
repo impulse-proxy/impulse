@@ -3,7 +3,7 @@ use std::{
     io::Write,
     net::{SocketAddr, TcpStream},
     sync::{
-        Arc, Mutex,
+        Arc,
         atomic::{AtomicUsize, Ordering},
     },
     time::Duration,
@@ -19,14 +19,10 @@ use impulse_pingora_ingress::ConnectionAdmission;
 use pingora_core::{server::configuration::ServerConf, services::Service as PingoraService};
 
 use super::{
-    PingoraConnectionAdmissionState, PingoraListenerTask, PingoraRuntimeConnectionAdmission,
-    pingora_ingress_services, spawn_pingora_ingress_listener,
+    PingoraListenerTask, PingoraRuntimeConnectionAdmission, pingora_ingress_services,
+    spawn_pingora_ingress_listener,
 };
-use crate::runtime::{
-    bundle::RuntimeBundleHandle,
-    connection::{PerSourceTokenBucket, TokenBucket},
-    listener::Http3Service,
-};
+use crate::runtime::{bundle::RuntimeBundleHandle, listener::Http3Service};
 
 #[path = "../../tests/support/mod.rs"]
 mod support;
@@ -166,22 +162,11 @@ fn test_connection_filter(
     runtime: &Arc<RuntimeBundleHandle>,
     listener: &ListenerRuntimeConfig,
 ) -> PingoraRuntimeConnectionAdmission {
-    let policy = &listener.policies.transport;
     PingoraRuntimeConnectionAdmission {
         runtime: runtime.as_ref().clone(),
         listener_label: format!(
             "{}:{}",
             listener.listen.listen.address, listener.listen.listen.port
-        ),
-        state: Mutex::new(PingoraConnectionAdmissionState {
-            generation: runtime.current().generation,
-            rate_per_sec: policy.new_connections_per_sec,
-            burst: policy.new_connections_burst,
-            global: TokenBucket::new(policy.new_connections_per_sec, policy.new_connections_burst),
-        }),
-        per_source: PerSourceTokenBucket::new(
-            policy.new_connections_per_sec,
-            policy.new_connections_burst,
         ),
     }
 }
@@ -192,8 +177,6 @@ fn pingora_connection_filter_matches_http3_global_and_per_source_admission() {
     let config = connection_admission_config(&harness, 1, 20);
     let (runtime, listener) = pingora_listener_runtime(config);
     let filter = test_connection_filter(&runtime, &listener);
-    let mut quic_global = TokenBucket::new(1, 20);
-    let quic_per_source = PerSourceTokenBucket::new(1, 20);
     let sources = [
         "192.0.2.1:1000".parse::<SocketAddr>().unwrap(),
         "192.0.2.1:1001".parse::<SocketAddr>().unwrap(),
@@ -202,12 +185,12 @@ fn pingora_connection_filter_matches_http3_global_and_per_source_admission() {
         "192.0.2.2:1001".parse::<SocketAddr>().unwrap(),
         "192.0.2.2:1002".parse::<SocketAddr>().unwrap(),
     ];
+    let expected = [true, true, false, true, true, false];
     let test_runtime = tokio::runtime::Runtime::new().expect("test runtime");
 
-    for source in sources {
+    for (source, expected) in sources.into_iter().zip(expected) {
         let pingora_allowed = test_runtime.block_on(filter.should_accept(Some(&source)));
-        let http3_allowed = quic_global.try_consume() && quic_per_source.try_consume(source.ip());
-        assert_eq!(pingora_allowed, http3_allowed, "source {source}");
+        assert_eq!(pingora_allowed, expected, "source {source}");
     }
 
     let global_config = connection_admission_config(&harness, 1, 2);

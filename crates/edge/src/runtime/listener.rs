@@ -93,8 +93,6 @@ pub struct Http3Service {
     pub(crate) cid_routes: HashMap<Arc<[u8]>, Arc<[u8]>>, // KEY: alias SCID, VALUE: primary SCID
     pub(crate) peer_routes: HashMap<SocketAddr, Arc<[u8]>>, // KEY: peer address, VALUE: primary SCID
     pub(crate) cid_radix: CidRadix,
-    pub(crate) conn_rate_limiter: crate::runtime::connection::TokenBucket,
-    pub(crate) source_conn_rate_limiter: crate::runtime::connection::PerSourceTokenBucket,
 }
 
 impl Http3Service {

@@ -18,7 +18,6 @@ use crate::{
     runtime::{
         builder::RuntimeBuilder,
         bundle::{RuntimeBundle, RuntimeBundleHandle},
-        connection::{PerSourceTokenBucket, TokenBucket},
         generation::StartupOwnedRuntimeState,
         listener::{Http3Service, ListenerRuntimeState, ShutdownSignal},
         shared_state::SharedRuntimeState,
@@ -57,8 +56,6 @@ impl Http3Service {
             request_buffer_global_cap_bytes: transport_policy.request_buffer_global_cap_bytes,
             unknown_length_response_prebuffer_bytes: transport_policy
                 .unknown_length_response_prebuffer_bytes,
-            new_connections_per_sec: transport_policy.new_connections_per_sec,
-            new_connections_burst: transport_policy.new_connections_burst,
         }
     }
 
@@ -232,15 +229,6 @@ impl Http3Service {
         let require_client_cert = Self::runtime_listener_tls(&config)?
             .client_auth
             .require_client_cert;
-        let conn_rate_limiter = TokenBucket::new(
-            settings.new_connections_per_sec,
-            settings.new_connections_burst,
-        );
-        let source_conn_rate_limiter = PerSourceTokenBucket::new(
-            settings.new_connections_per_sec,
-            settings.new_connections_burst,
-        );
-
         Ok(Self {
             socket,
             local_addr,
@@ -283,8 +271,6 @@ impl Http3Service {
             cid_routes: HashMap::new(),
             peer_routes: HashMap::new(),
             cid_radix: crate::cid_radix::CidRadix::new(),
-            conn_rate_limiter,
-            source_conn_rate_limiter,
         })
     }
 

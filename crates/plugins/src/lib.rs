@@ -10,6 +10,7 @@ mod connection;
 mod input;
 mod instance;
 mod plan;
+mod rate_limit;
 mod request;
 mod response;
 
@@ -20,7 +21,7 @@ pub use compile::{
     CompiledGenerationPluginPlans, PluginPlanCompileError, compile_generation_plugin_plans,
 };
 pub use connection::{
-    ConnectionPluginDecision, ConnectionPluginExecution, execute_connection_plugins,
+    ConnectionPluginExecution, ConnectionPluginRejection, execute_connection_plugins,
 };
 pub use input::{
     ApiKeyAuthInput, ConnectionRateLimitInput, ExternalAuthFailureModeInput, ExternalAuthInput,

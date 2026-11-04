@@ -1,25 +1,64 @@
-use std::{fmt, sync::Arc};
+use std::{fmt, net::IpAddr, sync::Arc};
 
 use impulse_contracts::PluginKind;
 
 use crate::{
     ApiKeyAuthInput, ConnectionRateLimitInput, ExternalAuthInput, JwtAuthInput, QuotaInput,
     ResponseCacheInput, ResponseCompressionInput, ScopedRateLimitInput,
+    rate_limit::{ConnectionRateLimitRejection, ConnectionRateLimitRuntime},
 };
 
-#[derive(Clone, Eq, PartialEq)]
-pub enum CompiledConnectionPlugin {
-    ConnectionRateLimit(ConnectionRateLimitInput),
+#[derive(Clone)]
+pub struct CompiledConnectionPlugin {
+    instance: CompiledConnectionPluginInstance,
+}
+
+#[derive(Clone)]
+enum CompiledConnectionPluginInstance {
+    ConnectionRateLimit(Arc<ConnectionRateLimitRuntime>),
 }
 
 impl CompiledConnectionPlugin {
     #[must_use]
+    pub(crate) fn connection_rate_limit(input: ConnectionRateLimitInput) -> Self {
+        Self {
+            instance: CompiledConnectionPluginInstance::ConnectionRateLimit(Arc::new(
+                ConnectionRateLimitRuntime::new(input),
+            )),
+        }
+    }
+
+    #[must_use]
     pub const fn kind(&self) -> PluginKind {
-        match self {
-            Self::ConnectionRateLimit(_) => PluginKind::ConnectionRateLimit,
+        match &self.instance {
+            CompiledConnectionPluginInstance::ConnectionRateLimit(_) => {
+                PluginKind::ConnectionRateLimit
+            }
+        }
+    }
+
+    pub(crate) fn admit_connection(
+        &self,
+        source: Option<IpAddr>,
+    ) -> Result<(), ConnectionRateLimitRejection> {
+        match &self.instance {
+            CompiledConnectionPluginInstance::ConnectionRateLimit(runtime) => runtime.admit(source),
         }
     }
 }
+
+impl PartialEq for CompiledConnectionPlugin {
+    fn eq(&self, other: &Self) -> bool {
+        match (&self.instance, &other.instance) {
+            (
+                CompiledConnectionPluginInstance::ConnectionRateLimit(left),
+                CompiledConnectionPluginInstance::ConnectionRateLimit(right),
+            ) => left.input() == right.input(),
+        }
+    }
+}
+
+impl Eq for CompiledConnectionPlugin {}
 
 #[derive(Clone, Eq, PartialEq)]
 pub enum CompiledRequestPlugin {

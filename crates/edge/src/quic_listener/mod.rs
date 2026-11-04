@@ -158,8 +158,6 @@ struct ListenerRuntimeSettings {
     max_response_body_bytes: usize,
     request_buffer_global_cap_bytes: usize,
     unknown_length_response_prebuffer_bytes: usize,
-    new_connections_per_sec: u32,
-    new_connections_burst: u32,
 }
 
 type LbHeaderLookup<'a> = crate::edge_core::request_execution::RequestHeaderLookup<'a>;

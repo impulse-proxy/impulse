@@ -69,7 +69,7 @@ pub type PluginHeaderLookup<'a> = dyn Fn(&str) -> Option<&'a [u8]> + Sync + 'a;
 pub struct PluginConnectionView<'a> {
     pub generation: u64,
     pub listener: &'a str,
-    pub peer_address: SocketAddr,
+    pub peer_address: Option<SocketAddr>,
 }
 
 #[derive(Clone, Copy)]

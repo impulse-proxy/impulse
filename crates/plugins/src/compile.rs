@@ -68,7 +68,7 @@ pub fn compile_generation_plugin_plans(
 ) -> Result<CompiledGenerationPluginPlans, PluginPlanCompileError> {
     require_available(catalog, PluginKind::ConnectionRateLimit)?;
     let connection =
-        CompiledConnectionPlan::new(vec![CompiledConnectionPlugin::ConnectionRateLimit(
+        CompiledConnectionPlan::new(vec![CompiledConnectionPlugin::connection_rate_limit(
             inputs.connection_rate_limit,
         )]);
 

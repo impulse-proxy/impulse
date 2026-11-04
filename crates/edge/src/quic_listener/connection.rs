@@ -19,29 +19,22 @@ impl impulse_http3_ingress::ConnectionAdmissionAdapter for Http3Service {
             .generation_state()
             .plugin_plans
             .connection();
-        let global = &mut self.conn_rate_limiter;
-        let per_source = &self.source_conn_rate_limiter;
-        let mut rejection = ConnectionAdmissionRejection::GlobalRateLimit;
-        let admitted = crate::runtime::connection::plugin::execute_listener_connection_plan(
+        crate::runtime::connection::plugin::execute_listener_connection_plan(
             plan,
             impulse_contracts::PluginConnectionView {
                 generation,
                 listener,
-                peer_address: peer,
+                peer_address: Some(peer),
             },
-            |_, source| {
-                if !global.try_consume() {
-                    rejection = ConnectionAdmissionRejection::GlobalRateLimit;
-                    return false;
-                }
-                if !per_source.try_consume(source) {
-                    rejection = ConnectionAdmissionRejection::SourceRateLimit;
-                    return false;
-                }
-                true
-            },
-        );
-        if admitted { Ok(()) } else { Err(rejection) }
+        )
+        .map_err(|reason| match reason {
+            impulse_plugins::ConnectionPluginRejection::GlobalRateLimit => {
+                ConnectionAdmissionRejection::GlobalRateLimit
+            }
+            impulse_plugins::ConnectionPluginRejection::SourceRateLimit => {
+                ConnectionAdmissionRejection::SourceRateLimit
+            }
+        })
     }
 
     fn active_connections(&self) -> usize {
