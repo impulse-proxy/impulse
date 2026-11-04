@@ -13,8 +13,8 @@ use impulse_bridge::response::{
 };
 use impulse_config::{backend_endpoint::BackendScheme, runtime::ListenerRuntimeConfig};
 use impulse_contracts::{
-    AlternateBackendFailureReason, HealthFailureReason, RequestDecision as AdmissionPolicyDecision,
-    RetryAttemptTelemetryReason, TunnelMode,
+    AlternateBackendFailureReason, HealthFailureReason, PluginConnectionView,
+    RequestDecision as AdmissionPolicyDecision, RetryAttemptTelemetryReason, TunnelMode,
 };
 use impulse_errors::{
     BridgeError, PoolError, ProxyError, RetryPolicyDecision, classify_upstream_proxy_error,
@@ -101,6 +101,7 @@ use crate::{
                 observe_classified_backend_failure_and_log, observe_proxy_error_outcome,
                 observe_status_outcome,
             },
+            plugin::execute_listener_connection_plan,
         },
         listener::Http3Service,
         tls::store::ListenerTlsReloadStore,
@@ -360,39 +361,52 @@ impl ConnectionAdmission for PingoraRuntimeConnectionAdmission {
     async fn should_accept(&self, addr: Option<&std::net::SocketAddr>) -> bool {
         let current = self.runtime.current();
         let metrics = &current.shared_state.shared_services().metrics;
-        let Some(listener) = current.listener_runtime_config(&self.listener_label) else {
+        if current
+            .listener_runtime_config(&self.listener_label)
+            .is_none()
+        {
             metrics.ingress_observations().inc_ingress_rate_limited();
             return false;
-        };
-        let policy = &listener.policies.transport;
+        }
         let Ok(mut state) = self.state.lock() else {
             metrics.ingress_observations().inc_ingress_rate_limited();
             return false;
         };
-        if state.generation != current.generation {
-            if state.rate_per_sec != policy.new_connections_per_sec
-                || state.burst != policy.new_connections_burst
-            {
-                state
-                    .global
-                    .reconfigure(policy.new_connections_per_sec, policy.new_connections_burst);
-                self.per_source
-                    .reconfigure(policy.new_connections_per_sec, policy.new_connections_burst);
-                state.rate_per_sec = policy.new_connections_per_sec;
-                state.burst = policy.new_connections_burst;
-            }
-            state.generation = current.generation;
-        }
-        if !state.global.try_consume() {
+        let peer_address = addr.copied().unwrap_or_else(|| ([0, 0, 0, 0], 0).into());
+        let admitted = execute_listener_connection_plan(
+            current
+                .shared_state
+                .generation_state()
+                .plugin_plans
+                .connection(),
+            PluginConnectionView {
+                generation: current.generation,
+                listener: &self.listener_label,
+                peer_address,
+            },
+            |policy, source| {
+                if state.generation != current.generation {
+                    if state.rate_per_sec != policy.requests_per_second
+                        || state.burst != policy.burst
+                    {
+                        state
+                            .global
+                            .reconfigure(policy.requests_per_second, policy.burst);
+                        self.per_source
+                            .reconfigure(policy.requests_per_second, policy.burst);
+                        state.rate_per_sec = policy.requests_per_second;
+                        state.burst = policy.burst;
+                    }
+                    state.generation = current.generation;
+                }
+                state.global.try_consume()
+                    && addr.is_none_or(|_| self.per_source.try_consume(source))
+            },
+        );
+        if !admitted {
             metrics.ingress_observations().inc_ingress_rate_limited();
-            return false;
         }
-        drop(state);
-        let source_allowed = addr.is_none_or(|addr| self.per_source.try_consume(addr.ip()));
-        if !source_allowed {
-            metrics.ingress_observations().inc_ingress_rate_limited();
-        }
-        source_allowed
+        admitted
     }
 }
 

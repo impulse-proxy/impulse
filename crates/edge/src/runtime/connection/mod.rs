@@ -7,6 +7,7 @@
 
 pub(crate) mod auth;
 pub(crate) mod outcome;
+pub(crate) mod plugin;
 pub(crate) mod quic;
 pub(crate) mod rate_limit;
 pub(crate) mod request;
