@@ -1,4 +1,9 @@
-use std::{collections::HashMap, future::Future, sync::Arc};
+use std::{
+    collections::HashMap,
+    future::Future,
+    sync::Arc,
+    task::{Context, Poll, Waker},
+};
 
 use impulse_config::runtime::RuntimeUpstreamPolicy;
 use impulse_contracts::PluginRequestView;
@@ -85,6 +90,26 @@ impl<'a> EdgeRequestService<'a> {
             |_, _| std::future::ready(AsyncRequestPluginDecision::Continue),
         )
         .await
+    }
+
+    /// Runs the currently immediate plugin phase without blocking a protocol
+    /// worker. Pending async work remains owned by the ingress state machine.
+    pub(crate) fn execute_ingress_plugins_ready(
+        &self,
+        input: PluginRequestExecutionInput<'_>,
+    ) -> Option<
+        Result<
+            PluginRequestExecutionState<super::ResolvedRouteTarget>,
+            super::RouteResolutionError,
+        >,
+    > {
+        let mut guard = AsyncRequestPluginExecutionGuard::default();
+        let mut future = std::pin::pin!(self.execute_ingress_plugins(input, &mut guard));
+        let mut context = Context::from_waker(Waker::noop());
+        match future.as_mut().poll(&mut context) {
+            Poll::Ready(result) => Some(result),
+            Poll::Pending => None,
+        }
     }
 
     /// Resolves a route, executes its compiled request plugins once, then runs

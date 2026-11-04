@@ -933,6 +933,27 @@ impl Http3Service {
         )
     }
 
+    pub(super) fn send_plugin_rejection_response(
+        h3: &mut quiche::h3::Connection,
+        quic: &mut quiche::Connection,
+        stream_id: u64,
+        response: &impulse_contracts::PluginRejection,
+    ) -> Result<(), quiche::h3::Error> {
+        let headers = response
+            .headers()
+            .iter()
+            .map(|header| (header.name().as_str().as_bytes(), header.value().as_bytes()));
+        impulse_http3_ingress::write_complete_response(
+            h3,
+            quic,
+            stream_id,
+            response.status(),
+            response.body(),
+            headers,
+            None,
+        )
+    }
+
     fn send_response_with_headers_and_extra(
         h3: &mut quiche::h3::Connection,
         quic: &mut quiche::Connection,
