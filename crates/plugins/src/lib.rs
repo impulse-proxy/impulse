@@ -32,6 +32,7 @@ pub use instance::{
 };
 pub use plan::{CompiledConnectionPlan, CompiledPluginPlan};
 pub use request::{
+    AsyncRequestPluginDecision, AsyncRequestPluginExecution, AsyncRequestPluginExecutionGuard,
     SynchronousRequestPluginDecision, SynchronousRequestPluginExecution,
-    execute_synchronous_request_plugins,
+    execute_async_request_plugins, execute_synchronous_request_plugins,
 };
