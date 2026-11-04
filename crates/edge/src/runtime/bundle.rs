@@ -148,6 +148,16 @@ impl RuntimeBundleHandle {
             bundle.generation,
             Arc::clone(&bundle.shared_state.shared_services().metrics),
         );
+        bundle
+            .shared_state
+            .generation_state()
+            .generation_tasks
+            .activate();
+        bundle
+            .shared_state
+            .shared_services()
+            .process_tasks
+            .activate();
         let handle = Self {
             inner: Arc::new(RwLock::new(Arc::new(bundle))),
             response_cache,
@@ -447,6 +457,7 @@ impl RuntimeBundleHandle {
             // The previous bundle's generation-owned state is now unreachable to
             // new readers; existing readers keep their clone until it drains.
             let previous = std::mem::replace(&mut *guard, Arc::new(bundle));
+            next_tasks.activate();
             if rotate_response_cache_namespace {
                 self.response_cache.rotate_namespace(generation);
             }
