@@ -61,9 +61,32 @@ impl PartialEq for CompiledConnectionPlugin {
 impl Eq for CompiledConnectionPlugin {}
 
 #[derive(Clone, Eq, PartialEq)]
+pub struct CompiledJwtAuth {
+    generation: u64,
+    input: JwtAuthInput,
+}
+
+impl CompiledJwtAuth {
+    #[must_use]
+    pub(crate) fn new(generation: u64, input: JwtAuthInput) -> Self {
+        Self { generation, input }
+    }
+
+    #[must_use]
+    pub const fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    #[must_use]
+    pub const fn input(&self) -> &JwtAuthInput {
+        &self.input
+    }
+}
+
+#[derive(Clone, Eq, PartialEq)]
 pub enum CompiledRequestPlugin {
     ApiKeyAuth(ApiKeyAuthInput),
-    JwtAuth(JwtAuthInput),
+    JwtAuth(CompiledJwtAuth),
     ScopedRateLimit(Arc<[ScopedRateLimitInput]>),
 }
 

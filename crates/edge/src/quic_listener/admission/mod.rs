@@ -64,7 +64,6 @@ mod startup;
 pub(crate) use impulse_contracts::RateLimitedDecision;
 pub(crate) use impulse_contracts::{
     AuthChallengeKind, OverloadDecision, OverloadDecisionReason, RequestDecision,
-    UnauthorizedDecision,
 };
 type AdmissionPolicyDecision = RequestDecision;
 use impulse_policy::jwks::*;
@@ -87,6 +86,54 @@ fn runtime_jwks_sources(config: &RuntimeConfig) -> Vec<JwtJwksSourceConfig> {
             .as_ref()
             .and_then(JwtJwksSourceConfig::from_jwt)
     }))
+}
+
+fn compiled_jwks_sources(
+    plans: &impulse_plugins::CompiledGenerationPluginPlans,
+) -> Vec<JwtJwksSourceConfig> {
+    let sources = plans.upstreams().values().flat_map(|plan| {
+        plan.request_gate().iter().filter_map(|plugin| {
+            let impulse_plugins::CompiledRequestPlugin::JwtAuth(compiled) = plugin else {
+                return None;
+            };
+            let input = compiled.input();
+            let jwks_url = input.jwks_url.clone()?;
+            let mut allowed_algorithms = input
+                .allowed_algorithms
+                .iter()
+                .filter_map(|algorithm| match algorithm {
+                    impulse_plugins::JwtAlgorithmInput::Hs256 => None,
+                    impulse_plugins::JwtAlgorithmInput::Rs256 => Some(JwtAlgorithm::Rs256),
+                    impulse_plugins::JwtAlgorithmInput::Es256 => Some(JwtAlgorithm::Es256),
+                })
+                .collect::<Vec<_>>();
+            allowed_algorithms.sort_by_key(|algorithm| match algorithm {
+                JwtAlgorithm::Hs256 => 0,
+                JwtAlgorithm::Rs256 => 1,
+                JwtAlgorithm::Es256 => 2,
+            });
+            allowed_algorithms.dedup();
+            Some(JwtJwksSourceConfig {
+                generation: compiled.generation(),
+                source_identity: jwt_jwks_source_identity(&jwks_url, &allowed_algorithms),
+                jwks_url,
+                allowed_algorithms,
+                refresh_interval: input.jwks_refresh_interval,
+                request_timeout: input.jwks_request_timeout,
+                cache_ttl: input.jwks_cache_ttl,
+                stale_if_error: input.jwks_stale_if_error,
+                startup_behavior: match input.jwks_startup_behavior {
+                    impulse_plugins::JwksStartupBehaviorInput::RequireReady => {
+                        JwksStartupBehavior::RequireReady
+                    }
+                    impulse_plugins::JwksStartupBehaviorInput::AllowDegraded => {
+                        JwksStartupBehavior::AllowDegraded
+                    }
+                },
+            })
+        })
+    });
+    merge_jwks_source_configs(sources)
 }
 
 pub(super) fn snapshot_runtime_jwks_sources(config: &RuntimeConfig) -> Vec<JwtJwksRuntimeSnapshot> {
@@ -147,21 +194,6 @@ pub(super) enum PostAuthAdmissionRejection {
 pub(super) enum PostAuthAdmissionExecution {
     Ready(PostAuthAdmissionReady),
     Rejected(PostAuthAdmissionRejection),
-}
-
-pub(crate) fn evaluate_local_auth_policy(
-    policy: &RuntimeUpstreamPolicy,
-    header_lookup: Option<&LbHeaderLookup<'_>>,
-) -> AdmissionPolicyDecision {
-    if !jwt_is_authorized(policy, header_lookup) {
-        return AdmissionPolicyDecision::Unauthorized(UnauthorizedDecision {
-            challenge: AuthChallengeKind::Bearer,
-            status: StatusCode::UNAUTHORIZED,
-            body: b"unauthorized\n",
-        });
-    }
-
-    AdmissionPolicyDecision::AdmitReady
 }
 
 pub(crate) fn evaluate_scoped_rate_limit_policy(
@@ -409,29 +441,77 @@ where
     Some(handle.block_on(future))
 }
 
-pub(super) fn jwt_is_authorized(
+pub(crate) fn evaluate_compiled_jwt_policy(
+    compiled: &impulse_plugins::CompiledJwtAuth,
     policy: &RuntimeUpstreamPolicy,
-    header_lookup: Option<&LbHeaderLookup<'_>>,
-) -> bool {
+    request: impulse_contracts::PluginRequestView<'_>,
+) -> impulse_plugins::SynchronousRequestPluginDecision {
+    use impulse_contracts::{PluginRejection, PluginRejectionReason};
+    use impulse_plugins::SynchronousRequestPluginDecision;
+
+    let reject = |reason| {
+        SynchronousRequestPluginDecision::Reject(PluginRejection::unauthorized(
+            reason,
+            AuthChallengeKind::Bearer,
+        ))
+    };
+    let input = compiled.input();
+    if compiled.generation() != request.generation {
+        return reject(if input.jwks_url.is_some() {
+            PluginRejectionReason::JwksUnavailable
+        } else {
+            PluginRejectionReason::JwtInvalid
+        });
+    }
     let Some(jwt) = policy.upstream_auth.jwt.as_ref() else {
-        return true;
+        return reject(PluginRejectionReason::JwtInvalid);
     };
-    let Some(raw) = header_lookup.and_then(|lookup| lookup(http::header::AUTHORIZATION.as_str()))
-    else {
-        return false;
+    let Some(raw) = request.header(http::header::AUTHORIZATION.as_str()) else {
+        return reject(PluginRejectionReason::JwtMissing);
     };
-    let Some(token) = Http3Service::bearer_token_from_authorization_value(&raw) else {
-        return false;
+    let Ok(raw) = std::str::from_utf8(raw) else {
+        return reject(PluginRejectionReason::JwtInvalid);
     };
-    let claims = match validate_jwt_token(token.as_str(), jwt, SystemTime::now()) {
+    let Some(token) = Http3Service::bearer_token_from_authorization_value(raw) else {
+        return reject(PluginRejectionReason::JwtInvalid);
+    };
+    let claims = match validate_jwt_token_for_generation(
+        token.as_str(),
+        jwt,
+        compiled.generation(),
+        SystemTime::now(),
+    ) {
         Ok(validated) => validated.claims,
         Err(failure) => {
             observe_jwt_validation_failure(jwt, token.as_str(), &failure);
             log_jwt_validation_rejection(jwt, token.as_str(), &failure);
-            return false;
+            let reason = match failure.reason {
+                JwtValidationFailureReason::KeySourceUnavailable => {
+                    PluginRejectionReason::JwksUnavailable
+                }
+                JwtValidationFailureReason::MissingExpiration
+                | JwtValidationFailureReason::TokenExpired
+                | JwtValidationFailureReason::TokenNotYetValid
+                | JwtValidationFailureReason::TokenIssuedInFuture
+                | JwtValidationFailureReason::IssuerMismatch
+                | JwtValidationFailureReason::AudienceMismatch => {
+                    PluginRejectionReason::JwtClaimsRejected
+                }
+                _ => PluginRejectionReason::JwtInvalid,
+            };
+            return reject(reason);
         }
     };
-    jwt_claims_satisfy_rbac(policy, &claims)
+    if !impulse_policy::jwt_claims_satisfy_requirements(
+        &claims,
+        impulse_policy::JwtClaimsRequirements {
+            required_scopes: &input.required_scopes,
+            required_roles: &input.required_roles,
+        },
+    ) {
+        return reject(PluginRejectionReason::JwtClaimsRejected);
+    }
+    SynchronousRequestPluginDecision::Continue
 }
 fn overloaded(reason: OverloadDecisionReason, retry_after_seconds: u32) -> OverloadDecision {
     match overload_decision(reason, retry_after_seconds) {
@@ -472,7 +552,7 @@ mod tests {
             QuotaCounterBackend, Resilience, RouteAuth, RouteMatch, ScopedRateLimit,
             ScopedRateLimitScope, Tls, Upstream, UpstreamHostPolicy,
         },
-        runtime::{RuntimeAuthPolicy, RuntimeConfig, RuntimeJwtAuth},
+        runtime::{RuntimeConfig, RuntimeJwtAuth},
     };
     use tokio::sync::Semaphore;
 
@@ -483,33 +563,6 @@ mod tests {
             brownout::BrownoutController, quota::QuotaDenyReason, runtime::RuntimeResilience,
         },
     };
-
-    fn test_policy_with_jwt(
-        secret: &str,
-        required_scopes: Vec<&str>,
-        required_roles: Vec<&str>,
-    ) -> RuntimeUpstreamPolicy {
-        RuntimeUpstreamPolicy {
-            upstream_auth: RuntimeAuthPolicy {
-                api_key: None,
-                jwt: Some(RuntimeJwtAuth {
-                    secret: secret.to_string(),
-                    issuer: Some("issuer-1".to_string()),
-                    audience: Some("aud-1".to_string()),
-                    clock_skew: Duration::from_secs(30),
-                    ..RuntimeJwtAuth::default()
-                }),
-                external_auth: None,
-                required_scopes: required_scopes.into_iter().map(str::to_string).collect(),
-                required_roles: required_roles.into_iter().map(str::to_string).collect(),
-            },
-            host: Default::default(),
-            forwarded_headers: Default::default(),
-            response_cache: Default::default(),
-            response_compression: Default::default(),
-            protocol: Default::default(),
-        }
-    }
 
     fn test_hs256_jwt(secret: &str, claims: serde_json::Value, alg: &str) -> String {
         let header = URL_SAFE_NO_PAD.encode(
@@ -756,91 +809,6 @@ mod tests {
                 assert_eq!(overload_metrics_reason(reason).reason_label(), label);
                 assert_eq!(reason.response_body(), body);
             }
-        }
-
-        #[test]
-        fn unauthorized_and_overload_rejections_have_distinct_outward_mapping() {
-            let policy = test_policy_with_jwt("jwt-secret", Vec::new(), Vec::new());
-            let unauthorized = evaluate_local_auth_policy(&policy, None)
-                .rejection_response()
-                .expect("unauthorized response");
-            assert_eq!(unauthorized.status, StatusCode::UNAUTHORIZED);
-            assert_eq!(unauthorized.body, b"unauthorized\n");
-            assert_eq!(unauthorized.www_authenticate, Some("Bearer"));
-            assert_eq!(unauthorized.retry_after_seconds, None);
-
-            let overload = evaluate_brownout_admission(
-                &BrownoutController::new(true, 50, 25, vec![String::from("core")]),
-                90,
-                "api",
-                7,
-            )
-            .rejection_response()
-            .expect("overload response");
-            assert_eq!(overload.status, StatusCode::SERVICE_UNAVAILABLE);
-            assert_eq!(overload.body, b"brownout active, non-core route shed\n");
-            assert_eq!(overload.www_authenticate, None);
-            assert_eq!(overload.retry_after_seconds, Some(7));
-        }
-    }
-
-    mod local_auth_policy_contracts {
-        use super::*;
-
-        #[test]
-        fn local_auth_policy_returns_bearer_challenge_for_missing_or_invalid_jwt() {
-            let policy = test_policy_with_jwt("jwt-secret", vec!["payments:read"], vec!["admin"]);
-
-            let missing = evaluate_local_auth_policy(&policy, None);
-            assert_eq!(
-                missing,
-                AdmissionPolicyDecision::Unauthorized(UnauthorizedDecision {
-                    challenge: AuthChallengeKind::Bearer,
-                    status: StatusCode::UNAUTHORIZED,
-                    body: b"unauthorized\n",
-                })
-            );
-
-            let invalid_headers = HashMap::from([(
-                "authorization".to_string(),
-                "Bearer invalid.jwt.token".to_string(),
-            )]);
-            let invalid_lookup =
-                |name: &str| invalid_headers.get(&name.to_ascii_lowercase()).cloned();
-
-            let invalid = evaluate_local_auth_policy(&policy, Some(&invalid_lookup));
-            assert_eq!(
-                invalid,
-                AdmissionPolicyDecision::Unauthorized(UnauthorizedDecision {
-                    challenge: AuthChallengeKind::Bearer,
-                    status: StatusCode::UNAUTHORIZED,
-                    body: b"unauthorized\n",
-                })
-            );
-        }
-
-        #[test]
-        fn local_auth_policy_admits_valid_jwt_when_claims_satisfy_rbac() {
-            let token = test_hs256_jwt(
-                "jwt-secret",
-                serde_json::json!({
-                    "iss": "issuer-1",
-                    "aud": "aud-1",
-                    "exp": 4_000_000_000u64,
-                    "scope": "payments:read transfers:write",
-                    "roles": ["admin", "ops"],
-                }),
-                "HS256",
-            );
-            let headers = HashMap::from([("authorization".to_string(), format!("Bearer {token}"))]);
-            let lookup = |name: &str| headers.get(&name.to_ascii_lowercase()).cloned();
-
-            let decision = evaluate_local_auth_policy(
-                &test_policy_with_jwt("jwt-secret", vec!["payments:read"], vec!["admin"]),
-                Some(&lookup),
-            );
-
-            assert_eq!(decision, AdmissionPolicyDecision::AdmitReady);
         }
     }
 

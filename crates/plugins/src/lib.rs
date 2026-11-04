@@ -33,7 +33,7 @@ pub use input::{
     UpstreamPluginInputs,
 };
 pub use instance::{
-    CompiledAsyncRequestPlugin, CompiledCachePlugin, CompiledConnectionPlugin,
+    CompiledAsyncRequestPlugin, CompiledCachePlugin, CompiledConnectionPlugin, CompiledJwtAuth,
     CompiledRequestPlugin, CompiledResponsePlugin,
 };
 pub use plan::{CompiledConnectionPlan, CompiledPluginPlan};

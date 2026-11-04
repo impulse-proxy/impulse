@@ -86,11 +86,7 @@ impl Http3Service {
                 Arc::clone(&task_registry),
             );
             let pingora_load_balancing = runtime.pingora_load_balancing();
-            Self::spawn_jwks_refresh(
-                runtime.runtime_config(),
-                pingora_load_balancing.generation(),
-                Arc::clone(&task_registry),
-            );
+            Self::spawn_jwks_refresh(&runtime.plugin_plans(), Arc::clone(&task_registry));
             spawn_pingora_health_service(
                 runtime_handle(),
                 PingoraHealthServiceInput {

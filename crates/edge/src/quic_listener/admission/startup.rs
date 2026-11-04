@@ -75,32 +75,21 @@ impl Http3Service {
 }
 impl Http3Service {
     pub(crate) fn spawn_jwks_refresh(
-        config: &RuntimeConfig,
-        generation: u64,
+        plans: &impulse_plugins::CompiledGenerationPluginPlans,
         task_registry: Arc<RuntimeTaskRegistry>,
     ) {
-        let mut sources = runtime_jwks_sources(config);
-        for source in &mut sources {
-            source.generation = generation;
-        }
-        if sources.is_empty() {
-            JwtJwksSharedCache::shared().reconcile_sources(generation, [].iter().copied());
-            return;
-        }
-
-        JwtJwksSharedCache::shared().reconcile_sources(generation, sources.iter());
+        let sources = compiled_jwks_sources(plans);
+        let generation = plans.generation();
         let Some(handle) = runtime_handle() else {
             log::error!("JWKS refresh disabled: no Tokio runtime available");
             return;
         };
 
-        for source in sources {
-            let task_source = source.clone();
-            task_registry.spawn_supervised(
-                &handle,
-                "jwks-refresh",
-                None,
-                async move {
+        task_registry.spawn_supervised(&handle, "jwks-refresh", None, async move {
+            JwtJwksSharedCache::shared().reconcile_sources(generation, sources.iter());
+            let mut refresh_tasks = tokio::task::JoinSet::new();
+            for task_source in sources {
+                refresh_tasks.spawn(async move {
                     let _ = refresh_jwks_source_once(task_source.clone(), "startup").await;
                     if matches!(
                         task_source.startup_behavior,
@@ -132,8 +121,13 @@ impl Http3Service {
                         ticker.tick().await;
                         let _ = refresh_jwks_source_once(task_source.clone(), "periodic").await;
                     }
-                },
-            );
-        }
+                });
+            }
+            while let Some(result) = refresh_tasks.join_next().await {
+                if let Err(error) = result {
+                    log::error!("JWKS refresh task failed: {error}");
+                }
+            }
+        });
     }
 }

@@ -812,12 +812,6 @@ impl Http3Service {
 
 #[cfg(test)]
 mod tests {
-    use impulse_config::runtime::{
-        RuntimeApiKeyAuth, RuntimeAuthPolicy, RuntimeExternalAuth, RuntimeExternalAuthFailureMode,
-        RuntimeForwardedHeaderPolicy, RuntimeHostPolicy, RuntimeProtocolPolicy,
-        RuntimeUpstreamPolicy,
-    };
-
     use super::*;
 
     #[test]
@@ -934,10 +928,6 @@ mod tests {
         );
     }
 
-    use impulse_contracts::{RequestDecision as AdmissionPolicyDecision, UnauthorizedDecision};
-
-    use crate::quic_listener::admission::evaluate_local_auth_policy;
-
     #[test]
     fn append_auth_request_headers_strips_unsafe_headers_and_overrides_with_configured_values() {
         let pending_forward = PendingForward::sample_for_test(vec![
@@ -1010,42 +1000,5 @@ mod tests {
             "token%20value%2B%2F%3D%3F%26%25"
         );
         assert_eq!(percent_encode_component("\n"), "%0A");
-    }
-
-    #[test]
-    fn local_auth_precedence_is_explicit_before_external_auth_candidates_are_relevant() {
-        let policy = RuntimeUpstreamPolicy {
-            upstream_auth: RuntimeAuthPolicy {
-                api_key: Some(RuntimeApiKeyAuth {
-                    header_name: "x-api-key".to_string(),
-                    keys: vec!["secret".to_string()],
-                }),
-                jwt: None,
-                external_auth: Some(RuntimeExternalAuth::Http {
-                    endpoint: "http://127.0.0.1:9000/auth".to_string(),
-                    request_headers: Vec::new(),
-                    response_header_allowlist: Vec::new(),
-                    timeout: Duration::from_millis(250),
-                    failure_mode: RuntimeExternalAuthFailureMode::FailClosed,
-                }),
-                required_scopes: Vec::new(),
-                required_roles: Vec::new(),
-            },
-            host: RuntimeHostPolicy::default(),
-            forwarded_headers: RuntimeForwardedHeaderPolicy::default(),
-            response_cache: Default::default(),
-            response_compression: Default::default(),
-            protocol: RuntimeProtocolPolicy::default(),
-        };
-        let decision = evaluate_local_auth_policy(&policy, None);
-
-        assert!(matches!(
-            decision,
-            AdmissionPolicyDecision::Unauthorized(UnauthorizedDecision {
-                status: http::StatusCode::UNAUTHORIZED,
-                body: b"unauthorized\n",
-                ..
-            })
-        ));
     }
 }

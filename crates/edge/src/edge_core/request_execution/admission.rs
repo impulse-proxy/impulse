@@ -4,7 +4,7 @@ use impulse_policy::evaluate_brownout_admission;
 
 use crate::{
     edge_core::request_execution::{RequestExecutionInput, ResolvedRequestPolicy},
-    quic_listener::{evaluate_local_auth_policy, evaluate_scoped_rate_limit_policy},
+    quic_listener::evaluate_scoped_rate_limit_policy,
     resilience::{
         quota::{QuotaDecision, QuotaDenyReason, QuotaIdentityContext, evaluate_admission_quota},
         runtime::RuntimeResilience,
@@ -94,11 +94,6 @@ pub(super) fn evaluate_admission(
     route: &str,
     request: &RequestExecutionInput<'_>,
 ) -> RequestDecision {
-    let auth = evaluate_local_auth_policy(&policy.local_auth_policy, request.headers);
-    if auth != RequestDecision::AdmitReady {
-        return auth;
-    }
-
     let brownout = evaluate_core_overload_admission(resilience, route);
     if brownout != RequestDecision::AdmitReady {
         return brownout;

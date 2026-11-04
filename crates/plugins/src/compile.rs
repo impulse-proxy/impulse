@@ -30,11 +30,17 @@ impl std::error::Error for PluginPlanCompileError {}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CompiledGenerationPluginPlans {
+    generation: u64,
     connection: CompiledConnectionPlan,
     upstreams: HashMap<String, Arc<CompiledPluginPlan>>,
 }
 
 impl CompiledGenerationPluginPlans {
+    #[must_use]
+    pub const fn generation(&self) -> u64 {
+        self.generation
+    }
+
     #[must_use]
     pub const fn connection(&self) -> &CompiledConnectionPlan {
         &self.connection
@@ -96,6 +102,7 @@ pub fn compile_generation_plugin_plans(
         .collect::<Result<HashMap<_, _>, _>>()?;
 
     Ok(CompiledGenerationPluginPlans {
+        generation,
         connection,
         upstreams,
     })
@@ -115,7 +122,9 @@ fn compile_upstream_plan(
     }
     if let Some(jwt) = inputs.jwt_auth {
         require_available(catalog, PluginKind::JwtAuth)?;
-        request_gate.push(CompiledRequestPlugin::JwtAuth(jwt));
+        request_gate.push(CompiledRequestPlugin::JwtAuth(crate::CompiledJwtAuth::new(
+            generation, jwt,
+        )));
     }
     if let Some(scoped_rate_limits) = scoped_rate_limits {
         request_gate.push(CompiledRequestPlugin::ScopedRateLimit(Arc::clone(

@@ -84,12 +84,9 @@ impl<'a> EdgeRequestService<'a> {
         async_guard: &mut AsyncRequestPluginExecutionGuard,
     ) -> Result<PluginRequestExecutionState<super::ResolvedRouteTarget>, super::RouteResolutionError>
     {
-        self.execute_plugins(
-            input,
-            async_guard,
-            |_, _| SynchronousRequestPluginDecision::Continue,
-            |_, _| std::future::ready(AsyncRequestPluginDecision::Continue),
-        )
+        self.execute_plugins(input, async_guard, |_, _| {
+            std::future::ready(AsyncRequestPluginDecision::Continue)
+        })
         .await
     }
 
@@ -115,18 +112,13 @@ impl<'a> EdgeRequestService<'a> {
 
     /// Resolves a route, executes its compiled request plugins once, then runs
     /// shared request admission for policies not yet migrated into plugins.
-    async fn execute_plugins<SyncEvaluate, AsyncEvaluate, AsyncEvaluation>(
+    async fn execute_plugins<AsyncEvaluate, AsyncEvaluation>(
         &self,
         input: PluginRequestExecutionInput<'_>,
         async_guard: &mut AsyncRequestPluginExecutionGuard,
-        sync_evaluate: SyncEvaluate,
         async_evaluate: AsyncEvaluate,
     ) -> Result<PluginRequestExecutionState<super::ResolvedRouteTarget>, super::RouteResolutionError>
     where
-        SyncEvaluate: for<'view> FnMut(
-            &CompiledRequestPlugin,
-            PluginRequestView<'view>,
-        ) -> SynchronousRequestPluginDecision,
         AsyncEvaluate: for<'view> FnMut(
             &'view CompiledAsyncRequestPlugin,
             PluginRequestView<'view>,
@@ -167,7 +159,16 @@ impl<'a> EdgeRequestService<'a> {
         let mut mutations = match execute_synchronous_request_plugins(
             &plugin_plan,
             plugin_request,
-            sync_evaluate,
+            |plugin, request| match plugin {
+                CompiledRequestPlugin::JwtAuth(jwt) => {
+                    crate::quic_listener::evaluate_compiled_jwt_policy(
+                        jwt,
+                        upstream_policy,
+                        request,
+                    )
+                }
+                _ => SynchronousRequestPluginDecision::Continue,
+            },
         ) {
             SynchronousRequestPluginExecution::Continue { mutations } => mutations,
             SynchronousRequestPluginExecution::Reject(rejection) => {

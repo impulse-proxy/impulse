@@ -31,13 +31,22 @@ pub(crate) fn validate_jwt_token(
     jwt: &RuntimeJwtAuth,
     now: SystemTime,
 ) -> Result<ValidatedJwt, JwtValidationFailure> {
+    validate_jwt_token_for_generation(token, jwt, 0, now)
+}
+
+pub(crate) fn validate_jwt_token_for_generation(
+    token: &str,
+    jwt: &RuntimeJwtAuth,
+    generation: u64,
+    now: SystemTime,
+) -> Result<ValidatedJwt, JwtValidationFailure> {
     let parsed = impulse_policy::parse_jwt(
         token,
         crate::runtime::subsystem_mapping::jwt_allowed_algorithms(jwt),
     )?;
     let algorithm = config_algorithm(parsed.algorithm());
     let kid = parsed.kid().map(str::to_owned);
-    let key = match JwtKeyResolver::new(jwt, algorithm, kid.as_deref()).resolve() {
+    let key = match JwtKeyResolver::new(jwt, algorithm, kid.as_deref(), generation).resolve() {
         JwtKeyResolution::Found(resolved) | JwtKeyResolution::StaleButUsable(resolved) => {
             resolved.key
         }

@@ -365,15 +365,6 @@ mod tests {
             response_compression: Default::default(),
             protocol: Default::default(),
         };
-        let headers = [("authorization".to_string(), format!("Bearer {token}"))]
-            .into_iter()
-            .collect::<std::collections::HashMap<_, _>>();
-        let lookup = |name: &str| headers.get(&name.to_ascii_lowercase()).cloned();
-
-        assert!(super::super::admission::jwt_is_authorized(
-            &policy,
-            Some(&lookup)
-        ));
         assert!(
             super::super::admission::validated_hs256_jwt_claims(
                 token.as_str(),
