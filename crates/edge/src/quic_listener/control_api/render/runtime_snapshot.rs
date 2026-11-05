@@ -95,11 +95,16 @@ impl Http3Service {
         };
         let backend_inventory = runtime_state.snapshot_backend_inventory();
         let backend_summary = backend_inventory.summary();
-        let quota_backend_status = runtime_state.resilience().quota.backend_status_snapshot(
-            runtime_state
-                .resilience()
-                .quota_backend_initialization_error
-                .as_ref(),
+        let plugin_plans = runtime_state.plugin_plans();
+        let disabled_quota = impulse_policy::quota::QuotaRuntime::disabled();
+        let quota_runtime = plugin_plans
+            .quota()
+            .map(impulse_plugins::CompiledQuota::runtime)
+            .unwrap_or(&disabled_quota);
+        let quota_backend_status = quota_runtime.backend_status_snapshot(
+            plugin_plans
+                .quota()
+                .and_then(impulse_plugins::CompiledQuota::initialization_error),
         );
 
         Self::json_response(
@@ -110,6 +115,7 @@ impl Http3Service {
                     &runtime_state,
                     &backend_inventory,
                     &backend_summary,
+                    quota_runtime.enabled,
                     &quota_backend_status,
                 ),
                 retained_generations: runtime_bundle_handle
@@ -132,11 +138,16 @@ impl Http3Service {
         };
         let backend_inventory = runtime_state.snapshot_backend_inventory();
         let backend_summary = backend_inventory.summary();
-        let quota_backend_status = runtime_state.resilience().quota.backend_status_snapshot(
-            runtime_state
-                .resilience()
-                .quota_backend_initialization_error
-                .as_ref(),
+        let plugin_plans = runtime_state.plugin_plans();
+        let disabled_quota = impulse_policy::quota::QuotaRuntime::disabled();
+        let quota_runtime = plugin_plans
+            .quota()
+            .map(impulse_plugins::CompiledQuota::runtime)
+            .unwrap_or(&disabled_quota);
+        let quota_backend_status = quota_runtime.backend_status_snapshot(
+            plugin_plans
+                .quota()
+                .and_then(impulse_plugins::CompiledQuota::initialization_error),
         );
 
         let entries = runtime_bundle_handle
@@ -161,6 +172,7 @@ impl Http3Service {
                     &runtime_state,
                     &backend_inventory,
                     &backend_summary,
+                    quota_runtime.enabled,
                     &quota_backend_status,
                 ),
                 retained_generation: ControlApiRetainedGenerationPayload::from_record(record),
@@ -193,9 +205,17 @@ impl ControlApiRuntimePayload {
         let listener_tls_states = listener_tls_store.snapshot_states();
         let backend_inventory = state.snapshot_backend_inventory();
         let backend_summary = backend_inventory.summary();
-        let quota_backend_status = resilience
-            .quota
-            .backend_status_snapshot(resilience.quota_backend_initialization_error.as_ref());
+        let plugin_plans = state.plugin_plans();
+        let disabled_quota = impulse_policy::quota::QuotaRuntime::disabled();
+        let quota_runtime = plugin_plans
+            .quota()
+            .map(impulse_plugins::CompiledQuota::runtime)
+            .unwrap_or(&disabled_quota);
+        let quota_backend_status = quota_runtime.backend_status_snapshot(
+            plugin_plans
+                .quota()
+                .and_then(impulse_plugins::CompiledQuota::initialization_error),
+        );
         let (auth_providers, jwks) = build_auth_and_jwks_payloads(runtime.runtime_config());
 
         Self {
@@ -220,14 +240,19 @@ impl ControlApiRuntimePayload {
                 current_limit: resilience.adaptive_admission.current_limit(),
                 inflight_percent: resilience.adaptive_admission.inflight_percent(),
             },
+            plugins: ControlApiPluginRuntimePayload::from_runtime(
+                state.generation().map(|generation| generation.generation()),
+                plugin_plans.as_ref(),
+            ),
             quota: ControlApiQuotaPayload::from_snapshot(
-                resilience.quota.as_ref(),
+                quota_runtime,
                 quota_backend_status.clone(),
             ),
             observability: ControlApiObservabilityPayload::from_runtime_state(
                 &state,
                 &backend_inventory,
                 &backend_summary,
+                quota_runtime.enabled,
                 &quota_backend_status,
             ),
             auth: ControlApiAuthPayload {
@@ -310,8 +335,8 @@ impl ControlApiRuntimePayload {
             },
             secrets: build_secrets_payload(runtime.runtime_config()),
             extension_model: ControlApiExtensionModelPayload {
-                status: "non_goal",
-                details: "No plugin/middleware ABI is exposed in-process today; extension support remains a deliberate non-goal until a safe isolation model is designed.",
+                status: "compiled_only",
+                details: "Plugins are statically compiled and generation-owned; no dynamic in-process plugin ABI is exposed.",
             },
             runtime: state
                 .generation()
@@ -323,9 +348,64 @@ impl ControlApiRuntimePayload {
     }
 }
 
+impl ControlApiPluginRuntimePayload {
+    fn from_runtime(
+        runtime_generation: Option<u64>,
+        plans: &impulse_plugins::CompiledGenerationPluginPlans,
+    ) -> Self {
+        let catalog = impulse_plugins::compiled_plugin_catalog();
+        let compiled_availability = PluginKind::ALL
+            .into_iter()
+            .map(|kind| ControlApiCompiledPluginPayload {
+                kind: kind.label(),
+                available: catalog.contains(kind),
+            })
+            .collect();
+        let active_kinds = PluginKind::ALL
+            .into_iter()
+            .filter_map(|kind| {
+                let instances = plans.active_count(kind);
+                (instances > 0).then_some(ControlApiActivePluginPayload {
+                    kind: kind.label(),
+                    instances,
+                })
+            })
+            .collect::<Vec<_>>();
+        let generation_aligned = runtime_generation == Some(plans.generation());
+        let active_kinds_available = PluginKind::ALL
+            .into_iter()
+            .filter(|kind| plans.active_count(*kind) > 0)
+            .all(|kind| catalog.contains(kind));
+        let active_instance_count = active_kinds.iter().map(|active| active.instances).sum();
+        let reason = if !generation_aligned {
+            Some("generation_mismatch")
+        } else if !active_kinds_available {
+            Some("compiled_plugin_unavailable")
+        } else {
+            None
+        };
+
+        Self {
+            generation: plans.generation(),
+            compiled_availability,
+            active_kinds,
+            health: ControlApiPluginHealthPayload {
+                status: if reason.is_none() {
+                    "healthy"
+                } else {
+                    "degraded"
+                },
+                generation_aligned,
+                active_instance_count,
+                reason,
+            },
+        }
+    }
+}
+
 impl ControlApiQuotaPayload {
     fn from_snapshot(
-        runtime: &crate::resilience::quota::QuotaRuntime,
+        runtime: &impulse_policy::quota::QuotaRuntime,
         backend_status: QuotaBackendStatusSnapshot,
     ) -> Self {
         Self {
@@ -348,6 +428,7 @@ impl ControlApiObservabilityPayload {
         state: &super::context::ControlApiServiceState,
         backend_inventory: &BackendLifecycleInventorySnapshot,
         backend_summary: &crate::runtime::backend::state::BackendLifecycleInventorySummary,
+        quota_enabled: bool,
         quota_backend_status: &QuotaBackendStatusSnapshot,
     ) -> Self {
         Self {
@@ -403,7 +484,7 @@ impl ControlApiObservabilityPayload {
                 *backend_summary,
             ),
             quota_backend_health_summary: ControlApiQuotaBackendHealthSummaryPayload::from_snapshot(
-                state.resilience().quota.enabled,
+                quota_enabled,
                 quota_backend_status,
             ),
             recent_admin_actions: state

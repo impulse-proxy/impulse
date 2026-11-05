@@ -26,9 +26,19 @@ pub(crate) fn validated_hs256_jwt_claims(
     matches!(validated.algorithm, JwtAlgorithm::Hs256).then_some(validated.claims)
 }
 
+#[cfg(test)]
 pub(crate) fn validate_jwt_token(
     token: &str,
     jwt: &RuntimeJwtAuth,
+    now: SystemTime,
+) -> Result<ValidatedJwt, JwtValidationFailure> {
+    validate_jwt_token_for_generation(token, jwt, 0, now)
+}
+
+pub(crate) fn validate_jwt_token_for_generation(
+    token: &str,
+    jwt: &RuntimeJwtAuth,
+    generation: u64,
     now: SystemTime,
 ) -> Result<ValidatedJwt, JwtValidationFailure> {
     let parsed = impulse_policy::parse_jwt(
@@ -37,7 +47,7 @@ pub(crate) fn validate_jwt_token(
     )?;
     let algorithm = config_algorithm(parsed.algorithm());
     let kid = parsed.kid().map(str::to_owned);
-    let key = match JwtKeyResolver::new(jwt, algorithm, kid.as_deref()).resolve() {
+    let key = match JwtKeyResolver::new(jwt, algorithm, kid.as_deref(), generation).resolve() {
         JwtKeyResolution::Found(resolved) | JwtKeyResolution::StaleButUsable(resolved) => {
             resolved.key
         }
@@ -87,6 +97,7 @@ pub(super) fn jwt_algorithm_name(algorithm: JwtAlgorithm) -> &'static str {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn jwt_claims_satisfy_rbac(policy: &RuntimeUpstreamPolicy, claims: &Value) -> bool {
     impulse_policy::jwt_claims_satisfy_requirements(
         claims,
@@ -97,7 +108,7 @@ pub(crate) fn jwt_claims_satisfy_rbac(policy: &RuntimeUpstreamPolicy, claims: &V
     )
 }
 
-pub(super) fn log_jwt_validation_rejection(
+pub(crate) fn log_jwt_validation_rejection(
     jwt: &RuntimeJwtAuth,
     token: &str,
     failure: &JwtValidationFailure,
@@ -147,7 +158,7 @@ pub(super) fn log_jwt_validation_rejection(
     );
 }
 
-pub(super) fn observe_jwt_validation_failure(
+pub(crate) fn observe_jwt_validation_failure(
     jwt: &RuntimeJwtAuth,
     token: &str,
     failure: &JwtValidationFailure,

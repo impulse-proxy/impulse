@@ -33,6 +33,7 @@ pub(super) struct JwtKeyResolver<'a> {
     jwt: &'a RuntimeJwtAuth,
     algorithm: JwtAlgorithm,
     kid: Option<&'a str>,
+    generation: u64,
     jwks_cache: &'static JwtJwksSharedCache,
 }
 
@@ -41,11 +42,13 @@ impl<'a> JwtKeyResolver<'a> {
         jwt: &'a RuntimeJwtAuth,
         algorithm: JwtAlgorithm,
         kid: Option<&'a str>,
+        generation: u64,
     ) -> Self {
         Self {
             jwt,
             algorithm,
             kid,
+            generation,
             jwks_cache: JwtJwksSharedCache::shared(),
         }
     }
@@ -107,7 +110,8 @@ impl<'a> JwtKeyResolver<'a> {
             }
         }
 
-        if let Some(source) = JwtJwksSourceConfig::from_jwt(self.jwt) {
+        if let Some(mut source) = JwtJwksSourceConfig::from_jwt(self.jwt) {
+            source.generation = self.generation;
             match self.resolve_remote_jwks_source(&source) {
                 JwtKeyResolution::Found(resolved) => found.push(resolved),
                 JwtKeyResolution::StaleButUsable(resolved) => stale.push(resolved),
@@ -186,6 +190,9 @@ impl<'a> JwtKeyResolver<'a> {
         else {
             return JwtKeyResolution::SourceUnavailable { source };
         };
+        if self.generation != 0 && entry.source.generation != self.generation {
+            return JwtKeyResolution::SourceUnavailable { source };
+        }
 
         match entry.state {
             JwtJwksCacheState::NeverFetched => JwtKeyResolution::SourceUnavailable { source },

@@ -1539,6 +1539,7 @@ dependencies = [
  "impulse-observability",
  "impulse-operations",
  "impulse-pingora-ingress",
+ "impulse-plugins",
  "impulse-policy",
  "impulse-runtime",
  "impulse-transport",
@@ -1658,6 +1659,16 @@ dependencies = [
  "pingora-proxy",
  "rustls",
  "tokio",
+]
+
+[[package]]
+name = "impulse-plugins"
+version = "0.6.0"
+dependencies = [
+ "http",
+ "impulse-contracts",
+ "impulse-policy",
+ "sha2",
 ]
 
 [[package]]

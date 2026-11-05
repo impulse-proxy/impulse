@@ -12,6 +12,7 @@ use impulse_lb::pingora_backend::{
     GenerationBackendView, HealthRegistry, PingoraLoadBalancingRuntimeState, map_validated_backend,
 };
 use impulse_operations::watchdog::WatchdogCoordinator;
+use impulse_plugins::{compile_generation_plugin_plans, compiled_plugin_catalog};
 use impulse_transport::PingoraBackendHealthIdentity;
 use log::{debug, info, warn};
 use tokio::sync::Semaphore;
@@ -28,7 +29,8 @@ use crate::{
         shared_state::SharedRuntimeState,
         subsystem_mapping::{
             load_balancing_backend_inputs, load_balancing_strategy_input,
-            upstream_pool_from_runtime, upstream_transport_inputs, watchdog_runtime_config,
+            plugin_construction_inputs, upstream_pool_from_runtime, upstream_transport_inputs,
+            watchdog_runtime_config,
         },
         tasks::RuntimeTaskRegistry,
         tls::store::ListenerTlsReloadStore,
@@ -54,6 +56,16 @@ impl RuntimeBuilder {
         generation: u64,
         listener_tls_store: Arc<ListenerTlsReloadStore>,
     ) -> Result<SharedRuntimeState, ProxyError> {
+        let plugin_plans = Arc::new(
+            compile_generation_plugin_plans(
+                compiled_plugin_catalog(),
+                generation,
+                plugin_construction_inputs(config),
+            )
+            .map_err(|error| {
+                ProxyError::Transport(format!("failed to compile runtime plugin plans: {error}"))
+            })?,
+        );
         let transport_policy = &config.policies.transport;
         let timeout_policy = &config.policies.timeouts;
         let worker_threads = transport_policy.worker_threads.max(1);
@@ -334,10 +346,7 @@ impl RuntimeBuilder {
             global_route_cap_limit,
             Duration::from_millis(tuned_high_latency),
         );
-        let resilience = Arc::new(RuntimeResilience::from_policies(
-            &effective_admission,
-            &config.policies.rate_limits,
-        ));
+        let resilience = Arc::new(RuntimeResilience::from_policies(&effective_admission));
         // Process-scoped: reuse the active generation's watchdog on reload so an
         // in-flight restart/drain is not silently reset; only startup creates one.
         let watchdog = match &carried {
@@ -372,6 +381,7 @@ impl RuntimeBuilder {
                         .map(|(name, upstream)| (name.clone(), upstream.policy.clone()))
                         .collect(),
                 ),
+                plugin_plans,
                 pingora_load_balancing,
                 upstream_inflight,
                 global_inflight: Arc::new(Semaphore::new(global_inflight_limit)),

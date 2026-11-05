@@ -32,6 +32,7 @@ pub(crate) enum RouteResolutionError {
     EmptyMethodOrPath,
     NoRoute,
     MissingUpstreamPolicy,
+    MissingUpstreamPluginPlan,
 }
 
 #[cfg(test)]

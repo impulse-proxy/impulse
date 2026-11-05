@@ -106,7 +106,9 @@ mod tls_runtime;
 mod validation;
 mod workers;
 
-pub(crate) use admission::{evaluate_local_auth_policy, evaluate_scoped_rate_limit_policy};
+pub(crate) use admission::{
+    log_jwt_validation_rejection, observe_jwt_validation_failure, validate_jwt_token_for_generation,
+};
 pub(crate) use async_runtime::configure_async_runtime;
 pub(in crate::quic_listener) use async_runtime::{runtime_handle, spawn_async_task};
 use connection::maybe_log_quic_connection_error;
@@ -158,8 +160,6 @@ struct ListenerRuntimeSettings {
     max_response_body_bytes: usize,
     request_buffer_global_cap_bytes: usize,
     unknown_length_response_prebuffer_bytes: usize,
-    new_connections_per_sec: u32,
-    new_connections_burst: u32,
 }
 
 type LbHeaderLookup<'a> = crate::edge_core::request_execution::RequestHeaderLookup<'a>;
@@ -395,6 +395,11 @@ impl Http3Service {
                 .pingora_load_balancing
                 .upstream_pools(),
             upstream_policies: self.upstream_policies.as_ref(),
+            plugin_plans: &self
+                .runtime_state
+                .shared_state()
+                .generation_state()
+                .plugin_plans,
             pingora_load_balancing: self
                 .runtime_state
                 .shared_state()
@@ -425,12 +430,6 @@ impl Http3Service {
                 .runtime_bundle
                 .as_ref()
                 .and_then(|runtime| runtime.response_cache()),
-            response_cache_namespace: self
-                .runtime_bundle
-                .as_ref()
-                .map_or(self.runtime_state.generation(), |runtime| {
-                    runtime.response_cache_namespace()
-                }),
         };
         let progress_config = StreamProgressConfig {
             backend_body_idle_timeout: self.backend_body_idle_timeout,
@@ -512,6 +511,11 @@ impl Http3Service {
                 .pingora_load_balancing
                 .upstream_pools(),
             upstream_policies: self.upstream_policies.as_ref(),
+            plugin_plans: &self
+                .runtime_state
+                .shared_state()
+                .generation_state()
+                .plugin_plans,
             pingora_load_balancing: self
                 .runtime_state
                 .shared_state()
@@ -542,12 +546,6 @@ impl Http3Service {
                 .runtime_bundle
                 .as_ref()
                 .and_then(|runtime| runtime.response_cache()),
-            response_cache_namespace: self
-                .runtime_bundle
-                .as_ref()
-                .map_or(self.runtime_state.generation(), |runtime| {
-                    runtime.response_cache_namespace()
-                }),
         };
         let progress_config = StreamProgressConfig {
             backend_body_idle_timeout: self.backend_body_idle_timeout,

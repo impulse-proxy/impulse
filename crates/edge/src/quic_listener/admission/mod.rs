@@ -1,7 +1,6 @@
 use std::{
     collections::HashMap,
     future::Future,
-    net::SocketAddr,
     sync::{Arc, RwLock},
     time::{Duration, Instant, SystemTime},
 };
@@ -14,59 +13,42 @@ use boring::{
     pkey::{Id as PKeyId, PKey, Public},
     rsa::Rsa,
 };
-#[cfg(test)]
-use hmac::{Hmac, Mac};
 use http::StatusCode;
+#[cfg(test)]
+use impulse_config::runtime::RuntimeUpstreamPolicy;
 use impulse_config::{
-    config::{JwksStartupBehavior, JwtAlgorithm},
-    runtime::{RuntimeConfig, RuntimeJwtAuth, RuntimeJwtVerificationKey, RuntimeUpstreamPolicy},
+    config::JwtAlgorithm,
+    runtime::{RuntimeJwtAuth, RuntimeJwtVerificationKey},
 };
 use impulse_lb::upstream_pool::UpstreamPool;
 #[cfg(test)]
 use impulse_policy::evaluate_brownout_admission;
-use impulse_policy::{
-    ScopedRateLimitEvaluation, evaluate_adaptive_admission, evaluate_scoped_rate_limit,
-};
-use quiche::h3::NameValue;
+use impulse_policy::{AdaptivePermit, evaluate_adaptive_admission};
 use serde_json::Value;
 #[cfg(test)]
 use serial_test::serial;
-#[cfg(test)]
-use sha2::Sha256;
 use tokio::{
     runtime::RuntimeFlavor,
     sync::{OwnedSemaphorePermit, Semaphore, TryAcquireError},
     task::block_in_place,
 };
 
-use super::{Http3Service, LbHeaderLookup, runtime_handle};
+use super::runtime_handle;
 use crate::{
     OverloadShedReason, RouteOutcome,
-    edge_core::request_execution::{QuotaRejectedDecision, evaluate_post_auth_quota_policy},
     resilience::{
-        adaptive_admission::AdaptivePermit,
-        quota::{QuotaDecision, QuotaIdentityContext, evaluate_admission_quota},
         route_queue::{RouteQueuePermit, RouteQueueRejection},
         runtime::RuntimeResilience,
-        scoped_rate_limit::ScopedRateLimiters,
     },
-    runtime::{
-        connection::{auth::apply_auth_request_mutations, request::PendingForward},
-        tasks::RuntimeTaskRegistry,
-    },
+    runtime::connection::request::PendingForward,
 };
 
 mod jwt;
 mod key_resolution;
-mod startup;
 
-#[cfg(test)]
-pub(crate) use impulse_contracts::RateLimitedDecision;
-pub(crate) use impulse_contracts::{
-    AuthChallengeKind, OverloadDecision, OverloadDecisionReason, RequestDecision,
-    UnauthorizedDecision,
-};
+pub(crate) use impulse_contracts::{OverloadDecision, OverloadDecisionReason, RequestDecision};
 type AdmissionPolicyDecision = RequestDecision;
+pub(super) use impulse_policy::jwks::JwtJwksFetchFailureReason;
 use impulse_policy::jwks::*;
 #[cfg(test)]
 pub(super) use impulse_policy::jwks::{
@@ -74,23 +56,11 @@ pub(super) use impulse_policy::jwks::{
     mark_jwks_source_invalid_for_test, mark_jwks_source_unavailable_for_test,
     prime_jwks_cache_for_test,
 };
-pub(super) use impulse_policy::jwks::{
-    JwtJwksFetchFailureReason, JwtJwksRuntimeSnapshot, runtime_jwks_source_identity,
-};
-
-fn runtime_jwks_sources(config: &RuntimeConfig) -> Vec<JwtJwksSourceConfig> {
-    merge_jwks_source_configs(config.upstreams.values().filter_map(|upstream| {
-        upstream
-            .policy
-            .upstream_auth
-            .jwt
-            .as_ref()
-            .and_then(JwtJwksSourceConfig::from_jwt)
-    }))
-}
-
-pub(super) fn snapshot_runtime_jwks_sources(config: &RuntimeConfig) -> Vec<JwtJwksRuntimeSnapshot> {
-    snapshot_jwks_sources(runtime_jwks_sources(config))
+#[cfg(test)]
+fn runtime_jwks_sources(
+    config: &impulse_config::runtime::RuntimeConfig,
+) -> Vec<JwtJwksSourceConfig> {
+    crate::runtime::jwks::runtime_sources(config)
 }
 #[cfg(test)]
 pub(super) use impulse_policy::jwks::{
@@ -99,11 +69,12 @@ pub(super) use impulse_policy::jwks::{
 
 #[cfg(test)]
 pub(super) use self::jwt::validated_hs256_jwt_claims;
-#[allow(unused_imports)]
-pub(super) use self::jwt::{
-    JwtValidationFailure, JwtValidationFailureReason, ValidatedJwt, jwt_claims_satisfy_rbac,
-    validate_jwt_token,
+pub(crate) use self::jwt::{
+    JwtValidationFailure, JwtValidationFailureReason, log_jwt_validation_rejection,
+    observe_jwt_validation_failure, validate_jwt_token_for_generation,
 };
+#[cfg(test)]
+pub(super) use self::jwt::{jwt_claims_satisfy_rbac, validate_jwt_token};
 use self::{jwt::*, key_resolution::*};
 
 pub(crate) const fn overload_metrics_reason(reason: OverloadDecisionReason) -> OverloadShedReason {
@@ -139,7 +110,6 @@ pub(super) struct PostAuthAdmissionReady {
 
 #[derive(Debug, Clone)]
 pub(super) enum PostAuthAdmissionRejection {
-    Quota(QuotaRejectedDecision),
     Overloaded(OverloadDecision),
     Failed(PostAuthAdmissionFailure),
 }
@@ -147,74 +117,6 @@ pub(super) enum PostAuthAdmissionRejection {
 pub(super) enum PostAuthAdmissionExecution {
     Ready(PostAuthAdmissionReady),
     Rejected(PostAuthAdmissionRejection),
-}
-
-pub(crate) fn evaluate_local_auth_policy(
-    policy: &RuntimeUpstreamPolicy,
-    header_lookup: Option<&LbHeaderLookup<'_>>,
-) -> AdmissionPolicyDecision {
-    if !api_key_is_authorized(policy, header_lookup) {
-        return AdmissionPolicyDecision::Unauthorized(UnauthorizedDecision {
-            challenge: AuthChallengeKind::ApiKey,
-            status: StatusCode::UNAUTHORIZED,
-            body: b"unauthorized\n",
-        });
-    }
-
-    if !jwt_is_authorized(policy, header_lookup) {
-        return AdmissionPolicyDecision::Unauthorized(UnauthorizedDecision {
-            challenge: AuthChallengeKind::Bearer,
-            status: StatusCode::UNAUTHORIZED,
-            body: b"unauthorized\n",
-        });
-    }
-
-    AdmissionPolicyDecision::AdmitReady
-}
-
-pub(crate) fn evaluate_scoped_rate_limit_policy(
-    scoped_rate_limits: &ScopedRateLimiters,
-    route: &str,
-    method: &str,
-    path: &str,
-    authority: Option<&str>,
-    client_addr: SocketAddr,
-    header_lookup: Option<&LbHeaderLookup<'_>>,
-) -> AdmissionPolicyDecision {
-    if runtime_handle().is_none() {
-        return AdmissionPolicyDecision::AdmitReady;
-    }
-    let quota_context = QuotaIdentityContext::new(
-        Some(route),
-        method,
-        path,
-        authority,
-        None,
-        Some(client_addr),
-        header_lookup,
-    );
-
-    let evaluation = match block_on_admission_future(async {
-        evaluate_admission_quota(
-            scoped_rate_limits.quota_runtime(),
-            scoped_rate_limits,
-            &quota_context,
-        )
-        .await
-    })
-    .unwrap_or(QuotaDecision::NotApplied)
-    {
-        QuotaDecision::Denied(denial) => ScopedRateLimitEvaluation::Deny {
-            rule_name: denial.policy_name,
-            retry_after_seconds: denial.retry_after_seconds.unwrap_or(1).max(1),
-        },
-        QuotaDecision::NotApplied
-        | QuotaDecision::Allowed(_)
-        | QuotaDecision::ShadowDenied(_)
-        | QuotaDecision::FailedOpen(_)
-        | QuotaDecision::FailedClosed(_) => ScopedRateLimitEvaluation::Admit,
-    };
-    evaluate_scoped_rate_limit(route, evaluation)
 }
 
 fn overload_decision(
@@ -250,11 +152,6 @@ pub(super) fn execute_forwarding_post_auth_admission(
     global_inflight: Arc<Semaphore>,
     inflight_acquire_wait: Duration,
 ) -> PostAuthAdmissionExecution {
-    if let Some(rejection) = evaluate_forwarding_post_auth_quota_policy(resilience, pending_forward)
-    {
-        return PostAuthAdmissionExecution::Rejected(rejection);
-    }
-
     let upstream_name = pending_forward.upstream_name.as_ref();
     let adaptive_permit = match evaluate_adaptive_admission(
         &resilience.adaptive_admission,
@@ -359,39 +256,6 @@ pub(super) fn execute_forwarding_post_auth_admission(
     })
 }
 
-fn evaluate_forwarding_post_auth_quota_policy(
-    resilience: &RuntimeResilience,
-    pending_forward: &PendingForward,
-) -> Option<PostAuthAdmissionRejection> {
-    runtime_handle()?;
-
-    let mut effective_headers = pending_forward.headers.as_ref().clone();
-    apply_auth_request_mutations(
-        &mut effective_headers,
-        &pending_forward.auth_header_mutations,
-    );
-    let header_lookup = |name: &str| {
-        effective_headers
-            .iter()
-            .find(|header| header.name().eq_ignore_ascii_case(name.as_bytes()))
-            .and_then(|header| std::str::from_utf8(header.value()).ok())
-            .map(str::to_string)
-    };
-    let quota_context = QuotaIdentityContext::new(
-        Some(pending_forward.upstream_name.as_ref()),
-        pending_forward.method.as_ref(),
-        pending_forward.path.as_ref(),
-        pending_forward.authority.as_deref(),
-        None,
-        Some(pending_forward.client_addr),
-        Some(&header_lookup),
-    );
-
-    block_on_admission_future(evaluate_post_auth_quota_policy(resilience, &quota_context))
-        .flatten()
-        .map(PostAuthAdmissionRejection::Quota)
-}
-
 pub(super) fn try_acquire_owned_with_micro_wait(
     semaphore: Arc<Semaphore>,
     _wait_budget: Duration,
@@ -401,7 +265,7 @@ pub(super) fn try_acquire_owned_with_micro_wait(
     semaphore.try_acquire_owned().map(|permit| (permit, false))
 }
 
-fn block_on_admission_future<F>(future: F) -> Option<F::Output>
+pub(super) fn block_on_admission_future<F>(future: F) -> Option<F::Output>
 where
     F: Future,
 {
@@ -417,40 +281,6 @@ where
     Some(handle.block_on(future))
 }
 
-pub(super) fn api_key_is_authorized(
-    policy: &RuntimeUpstreamPolicy,
-    header_lookup: Option<&LbHeaderLookup<'_>>,
-) -> bool {
-    impulse_policy::api_key_is_authorized(
-        crate::runtime::subsystem_mapping::api_key_policy_input(&policy.upstream_auth),
-        header_lookup,
-    )
-}
-
-pub(super) fn jwt_is_authorized(
-    policy: &RuntimeUpstreamPolicy,
-    header_lookup: Option<&LbHeaderLookup<'_>>,
-) -> bool {
-    let Some(jwt) = policy.upstream_auth.jwt.as_ref() else {
-        return true;
-    };
-    let Some(raw) = header_lookup.and_then(|lookup| lookup(http::header::AUTHORIZATION.as_str()))
-    else {
-        return false;
-    };
-    let Some(token) = Http3Service::bearer_token_from_authorization_value(&raw) else {
-        return false;
-    };
-    let claims = match validate_jwt_token(token.as_str(), jwt, SystemTime::now()) {
-        Ok(validated) => validated.claims,
-        Err(failure) => {
-            observe_jwt_validation_failure(jwt, token.as_str(), &failure);
-            log_jwt_validation_rejection(jwt, token.as_str(), &failure);
-            return false;
-        }
-    };
-    jwt_claims_satisfy_rbac(policy, &claims)
-}
 fn overloaded(reason: OverloadDecisionReason, retry_after_seconds: u32) -> OverloadDecision {
     match overload_decision(reason, retry_after_seconds) {
         AdmissionPolicyDecision::Overloaded(decision) => decision,
@@ -484,84 +314,19 @@ mod tests {
     };
     use impulse_config::{
         config::{
-            Backend, Config, DistributedQuotaPolicy, DistributedQuotaSelector,
-            DistributedQuotaSelectorSource, DistributedQuotaWindow, ForwardedHeaderPolicy,
-            HealthCheck, JwksStartupBehavior, JwtAlgorithm, JwtAuth, Listen, LoadBalancing,
-            QuotaCounterBackend, Resilience, RouteAuth, RouteMatch, ScopedRateLimit,
-            ScopedRateLimitScope, Tls, Upstream, UpstreamHostPolicy,
+            Backend, Config, ForwardedHeaderPolicy, HealthCheck, JwksStartupBehavior, JwtAlgorithm,
+            JwtAuth, Listen, LoadBalancing, Resilience, RouteAuth, RouteMatch, Tls, Upstream,
+            UpstreamHostPolicy,
         },
-        runtime::{RuntimeApiKeyAuth, RuntimeAuthPolicy, RuntimeConfig, RuntimeJwtAuth},
+        runtime::{RuntimeConfig, RuntimeJwtAuth},
     };
+    use impulse_policy::BrownoutController;
     use tokio::sync::Semaphore;
 
     use super::*;
     use crate::{
-        quic_listener::admission::jwt::parse_jose_header,
-        resilience::{
-            brownout::BrownoutController, quota::QuotaDenyReason, runtime::RuntimeResilience,
-        },
+        quic_listener::admission::jwt::parse_jose_header, resilience::runtime::RuntimeResilience,
     };
-
-    fn test_policy_with_api_key() -> RuntimeUpstreamPolicy {
-        RuntimeUpstreamPolicy {
-            upstream_auth: RuntimeAuthPolicy {
-                api_key: Some(RuntimeApiKeyAuth {
-                    header_name: "x-api-key".to_string(),
-                    keys: vec!["secret".to_string()],
-                }),
-                jwt: None,
-                external_auth: None,
-                required_scopes: Vec::new(),
-                required_roles: Vec::new(),
-            },
-            host: Default::default(),
-            forwarded_headers: Default::default(),
-            response_cache: Default::default(),
-            response_compression: Default::default(),
-            protocol: Default::default(),
-        }
-    }
-
-    fn test_policy_with_jwt(
-        secret: &str,
-        required_scopes: Vec<&str>,
-        required_roles: Vec<&str>,
-    ) -> RuntimeUpstreamPolicy {
-        RuntimeUpstreamPolicy {
-            upstream_auth: RuntimeAuthPolicy {
-                api_key: None,
-                jwt: Some(RuntimeJwtAuth {
-                    secret: secret.to_string(),
-                    issuer: Some("issuer-1".to_string()),
-                    audience: Some("aud-1".to_string()),
-                    clock_skew: Duration::from_secs(30),
-                    ..RuntimeJwtAuth::default()
-                }),
-                external_auth: None,
-                required_scopes: required_scopes.into_iter().map(str::to_string).collect(),
-                required_roles: required_roles.into_iter().map(str::to_string).collect(),
-            },
-            host: Default::default(),
-            forwarded_headers: Default::default(),
-            response_cache: Default::default(),
-            response_compression: Default::default(),
-            protocol: Default::default(),
-        }
-    }
-
-    fn test_hs256_jwt(secret: &str, claims: serde_json::Value, alg: &str) -> String {
-        let header = URL_SAFE_NO_PAD.encode(
-            serde_json::to_vec(&serde_json::json!({ "alg": alg, "typ": "JWT" }))
-                .expect("serialize header"),
-        );
-        let payload =
-            URL_SAFE_NO_PAD.encode(serde_json::to_vec(&claims).expect("serialize claims"));
-        let signing_input = format!("{header}.{payload}");
-        let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).expect("mac");
-        mac.update(signing_input.as_bytes());
-        let signature = URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes());
-        format!("{signing_input}.{signature}")
-    }
 
     fn test_rs256_jwt(key: &PKey<Private>, kid: &str, claims: serde_json::Value) -> String {
         let header = URL_SAFE_NO_PAD.encode(
@@ -795,248 +560,6 @@ mod tests {
                 assert_eq!(reason.response_body(), body);
             }
         }
-
-        #[test]
-        fn unauthorized_and_overload_rejections_have_distinct_outward_mapping() {
-            let policy = test_policy_with_api_key();
-            let unauthorized = evaluate_local_auth_policy(&policy, None)
-                .rejection_response()
-                .expect("unauthorized response");
-            assert_eq!(unauthorized.status, StatusCode::UNAUTHORIZED);
-            assert_eq!(unauthorized.body, b"unauthorized\n");
-            assert_eq!(unauthorized.www_authenticate, Some("ApiKey"));
-            assert_eq!(unauthorized.retry_after_seconds, None);
-
-            let overload = evaluate_brownout_admission(
-                &BrownoutController::new(true, 50, 25, vec![String::from("core")]),
-                90,
-                "api",
-                7,
-            )
-            .rejection_response()
-            .expect("overload response");
-            assert_eq!(overload.status, StatusCode::SERVICE_UNAVAILABLE);
-            assert_eq!(overload.body, b"brownout active, non-core route shed\n");
-            assert_eq!(overload.www_authenticate, None);
-            assert_eq!(overload.retry_after_seconds, Some(7));
-        }
-    }
-
-    mod local_auth_policy_contracts {
-        use super::*;
-
-        #[test]
-        fn local_auth_policy_returns_api_key_challenge_when_key_is_missing() {
-            let decision = evaluate_local_auth_policy(&test_policy_with_api_key(), None);
-
-            assert_eq!(
-                decision,
-                AdmissionPolicyDecision::Unauthorized(UnauthorizedDecision {
-                    challenge: AuthChallengeKind::ApiKey,
-                    status: StatusCode::UNAUTHORIZED,
-                    body: b"unauthorized\n",
-                })
-            );
-        }
-
-        #[test]
-        fn local_auth_policy_admits_when_api_key_matches() {
-            let headers = HashMap::from([("x-api-key".to_string(), "secret".to_string())]);
-            let lookup = |name: &str| headers.get(&name.to_ascii_lowercase()).cloned();
-
-            let decision = evaluate_local_auth_policy(&test_policy_with_api_key(), Some(&lookup));
-
-            assert_eq!(decision, AdmissionPolicyDecision::AdmitReady);
-        }
-
-        #[test]
-        fn local_auth_policy_returns_bearer_challenge_for_missing_or_invalid_jwt() {
-            let policy = test_policy_with_jwt("jwt-secret", vec!["payments:read"], vec!["admin"]);
-
-            let missing = evaluate_local_auth_policy(&policy, None);
-            assert_eq!(
-                missing,
-                AdmissionPolicyDecision::Unauthorized(UnauthorizedDecision {
-                    challenge: AuthChallengeKind::Bearer,
-                    status: StatusCode::UNAUTHORIZED,
-                    body: b"unauthorized\n",
-                })
-            );
-
-            let invalid_headers = HashMap::from([(
-                "authorization".to_string(),
-                "Bearer invalid.jwt.token".to_string(),
-            )]);
-            let invalid_lookup =
-                |name: &str| invalid_headers.get(&name.to_ascii_lowercase()).cloned();
-
-            let invalid = evaluate_local_auth_policy(&policy, Some(&invalid_lookup));
-            assert_eq!(
-                invalid,
-                AdmissionPolicyDecision::Unauthorized(UnauthorizedDecision {
-                    challenge: AuthChallengeKind::Bearer,
-                    status: StatusCode::UNAUTHORIZED,
-                    body: b"unauthorized\n",
-                })
-            );
-        }
-
-        #[test]
-        fn local_auth_policy_admits_valid_jwt_when_claims_satisfy_rbac() {
-            let token = test_hs256_jwt(
-                "jwt-secret",
-                serde_json::json!({
-                    "iss": "issuer-1",
-                    "aud": "aud-1",
-                    "exp": 4_000_000_000u64,
-                    "scope": "payments:read transfers:write",
-                    "roles": ["admin", "ops"],
-                }),
-                "HS256",
-            );
-            let headers = HashMap::from([("authorization".to_string(), format!("Bearer {token}"))]);
-            let lookup = |name: &str| headers.get(&name.to_ascii_lowercase()).cloned();
-
-            let decision = evaluate_local_auth_policy(
-                &test_policy_with_jwt("jwt-secret", vec!["payments:read"], vec!["admin"]),
-                Some(&lookup),
-            );
-
-            assert_eq!(decision, AdmissionPolicyDecision::AdmitReady);
-        }
-    }
-
-    mod scoped_rate_limit_policy_contracts {
-        use super::*;
-
-        fn test_scoped_rate_limits() -> ScopedRateLimiters {
-            ScopedRateLimiters::new(&[ScopedRateLimit {
-                name: "tenant-cap".to_string(),
-                scope: ScopedRateLimitScope::Tenant,
-                requests_per_sec: 1,
-                burst: 1,
-                key: Some("header:x-tenant-id".to_string()),
-                route_allowlist: vec!["payments".to_string()],
-                idle_ttl_secs: 60,
-            }])
-        }
-
-        fn test_client_addr() -> SocketAddr {
-            "198.51.100.10:443".parse().expect("client addr")
-        }
-
-        #[test]
-        fn scoped_rate_limit_policy_admits_when_rule_does_not_reject() {
-            let rate_limits = test_scoped_rate_limits();
-            let headers = HashMap::from([("x-tenant-id".to_string(), "tenant-a".to_string())]);
-            let lookup = |name: &str| headers.get(&name.to_ascii_lowercase()).cloned();
-
-            let allowed = evaluate_scoped_rate_limit_policy(
-                &rate_limits,
-                "payments",
-                "GET",
-                "/resource",
-                Some("api.example.com"),
-                test_client_addr(),
-                Some(&lookup),
-            );
-            let no_key = evaluate_scoped_rate_limit_policy(
-                &rate_limits,
-                "payments",
-                "GET",
-                "/resource",
-                Some("api.example.com"),
-                test_client_addr(),
-                None,
-            );
-            let wrong_route = evaluate_scoped_rate_limit_policy(
-                &rate_limits,
-                "admin",
-                "GET",
-                "/resource",
-                Some("api.example.com"),
-                test_client_addr(),
-                Some(&lookup),
-            );
-
-            assert_eq!(allowed, AdmissionPolicyDecision::AdmitReady);
-            assert_eq!(no_key, AdmissionPolicyDecision::AdmitReady);
-            assert_eq!(wrong_route, AdmissionPolicyDecision::AdmitReady);
-        }
-
-        #[test]
-        fn scoped_rate_limit_policy_returns_typed_rejection_for_exhausted_bucket() {
-            let rate_limits = test_scoped_rate_limits();
-            let headers = HashMap::from([("x-tenant-id".to_string(), "tenant-a".to_string())]);
-            let lookup = |name: &str| headers.get(&name.to_ascii_lowercase()).cloned();
-
-            let first = evaluate_scoped_rate_limit_policy(
-                &rate_limits,
-                "payments",
-                "GET",
-                "/resource",
-                Some("api.example.com"),
-                test_client_addr(),
-                Some(&lookup),
-            );
-            let second = evaluate_scoped_rate_limit_policy(
-                &rate_limits,
-                "payments",
-                "GET",
-                "/resource",
-                Some("api.example.com"),
-                test_client_addr(),
-                Some(&lookup),
-            );
-
-            assert_eq!(first, AdmissionPolicyDecision::AdmitReady);
-            assert_eq!(
-                second,
-                AdmissionPolicyDecision::RateLimited(RateLimitedDecision {
-                    rule_name: "tenant-cap".to_string(),
-                    route: "payments".to_string(),
-                    status: StatusCode::TOO_MANY_REQUESTS,
-                    body: b"request rate limited\n",
-                    retry_after_seconds: 1,
-                })
-            );
-        }
-
-        #[test]
-        fn scoped_rate_limit_policy_preserves_legacy_default_key_fallback() {
-            let rate_limits = test_scoped_rate_limits();
-
-            let first = evaluate_scoped_rate_limit_policy(
-                &rate_limits,
-                "payments",
-                "GET",
-                "/resource",
-                Some("api.example.com"),
-                test_client_addr(),
-                None,
-            );
-            let second = evaluate_scoped_rate_limit_policy(
-                &rate_limits,
-                "payments",
-                "GET",
-                "/resource",
-                Some("api.example.com"),
-                test_client_addr(),
-                None,
-            );
-
-            assert_eq!(first, AdmissionPolicyDecision::AdmitReady);
-            assert_eq!(
-                second,
-                AdmissionPolicyDecision::RateLimited(RateLimitedDecision {
-                    rule_name: "tenant-cap".to_string(),
-                    route: "payments".to_string(),
-                    status: StatusCode::TOO_MANY_REQUESTS,
-                    body: b"request rate limited\n",
-                    retry_after_seconds: 1,
-                })
-            );
-        }
     }
 
     mod brownout_and_overload_policy_contracts {
@@ -1096,8 +619,6 @@ mod tests {
     }
 
     mod post_auth_admission_execution {
-        use impulse_config::config::QuotaBackendFailurePolicy;
-
         use super::*;
 
         fn test_pending_forward_for_api(headers: Vec<quiche::h3::Header>) -> PendingForward {
@@ -1150,12 +671,6 @@ mod tests {
             );
             match &result {
                 PostAuthAdmissionExecution::Ready(_) => eprintln!("fail_open result: ready"),
-                PostAuthAdmissionExecution::Rejected(PostAuthAdmissionRejection::Quota(
-                    decision,
-                )) => eprintln!(
-                    "fail_open result: quota policy={} reason={:?} status={}",
-                    decision.policy_name, decision.reason, decision.status
-                ),
                 PostAuthAdmissionExecution::Rejected(PostAuthAdmissionRejection::Overloaded(
                     decision,
                 )) => eprintln!(
@@ -1392,223 +907,6 @@ mod tests {
                 }
             }
         }
-
-        #[test]
-        fn post_auth_admission_enforces_quota_before_overload_with_composite_identity() {
-            let resilience = test_runtime_resilience(
-                |config| {
-                    config.adaptive_admission.enabled = true;
-                    config.adaptive_admission.min_limit = 1;
-                    config.adaptive_admission.max_limit = Some(1);
-                    config.quota.enabled = true;
-                    config.quota.backend = QuotaCounterBackend::InMemory {
-                        key_prefix: "impulse:test:quota".to_string(),
-                    };
-                    config.quota.policies = vec![DistributedQuotaPolicy {
-                        name: "tenant-token-client-burst".to_string(),
-                        route_allowlist: vec!["api".to_string()],
-                        selector: DistributedQuotaSelector {
-                            route: true,
-                            tenant: Some(DistributedQuotaSelectorSource {
-                                key: "header:x-tenant-id".to_string(),
-                            }),
-                            token: Some(DistributedQuotaSelectorSource {
-                                key: "bearer_token".to_string(),
-                            }),
-                            client: Some(DistributedQuotaSelectorSource {
-                                key: "client_ip".to_string(),
-                            }),
-                        },
-                        burst: Some(DistributedQuotaWindow {
-                            requests: 1,
-                            window_secs: 1,
-                        }),
-                        sustained: None,
-                    }];
-                },
-                8,
-            );
-            let pending_forward = test_pending_forward_for_api(vec![
-                quiche::h3::Header::new(b"authorization", b"Bearer token-123"),
-                quiche::h3::Header::new(b"x-tenant-id", b"tenant-a"),
-            ]);
-
-            let first = execute_post_auth_for_api(
-                &resilience,
-                &pending_forward,
-                Some(&test_upstream_pool()),
-                Some(0),
-                &HashMap::from([(String::from("api"), Arc::new(Semaphore::new(2)))]),
-                Arc::new(Semaphore::new(2)),
-            );
-            assert!(matches!(first, PostAuthAdmissionExecution::Ready(_)));
-            drop(first);
-
-            let _adaptive_held = resilience
-                .adaptive_admission
-                .clone()
-                .try_acquire()
-                .expect("held adaptive permit");
-
-            let second = execute_post_auth_for_api(
-                &resilience,
-                &pending_forward,
-                Some(&test_upstream_pool()),
-                Some(0),
-                &HashMap::from([(String::from("api"), Arc::new(Semaphore::new(2)))]),
-                Arc::new(Semaphore::new(2)),
-            );
-
-            assert!(matches!(
-                second,
-                PostAuthAdmissionExecution::Rejected(PostAuthAdmissionRejection::Quota(
-                    QuotaRejectedDecision {
-                        policy_name,
-                        reason: QuotaDenyReason::BurstQuotaExhausted,
-                        status: StatusCode::TOO_MANY_REQUESTS,
-                        body: b"burst quota exhausted\n",
-                        retry_after_seconds: Some(1),
-                    }
-                )) if policy_name == "tenant-token-client-burst"
-            ));
-        }
-
-        #[test]
-        fn post_auth_admission_fail_open_quota_backend_errors_preserve_overload_classification() {
-            let resilience = test_runtime_resilience(
-                |config| {
-                    config.adaptive_admission.enabled = true;
-                    config.adaptive_admission.min_limit = 1;
-                    config.adaptive_admission.max_limit = Some(1);
-                    config.quota.enabled = true;
-                    config.quota.backend_failure_policy = QuotaBackendFailurePolicy::FailOpen;
-                    config.quota.backend = QuotaCounterBackend::Redis {
-                        url: "://bad-redis-url".to_string(),
-                        key_prefix: "impulse:test:quota".to_string(),
-                        connect_timeout_ms: 250,
-                        command_timeout_ms: 100,
-                        max_inflight: 8,
-                    };
-                    config.quota.policies = vec![DistributedQuotaPolicy {
-                        name: "tenant-contract".to_string(),
-                        route_allowlist: vec!["api".to_string()],
-                        selector: DistributedQuotaSelector {
-                            route: true,
-                            tenant: Some(DistributedQuotaSelectorSource {
-                                key: "header:x-tenant-id".to_string(),
-                            }),
-                            token: None,
-                            client: None,
-                        },
-                        burst: Some(DistributedQuotaWindow {
-                            requests: 50,
-                            window_secs: 1,
-                        }),
-                        sustained: None,
-                    }];
-                },
-                8,
-            );
-            let _held = resilience
-                .adaptive_admission
-                .clone()
-                .try_acquire()
-                .expect("held adaptive permit");
-            let pending_forward = test_pending_forward_for_api(vec![quiche::h3::Header::new(
-                b"x-tenant-id",
-                b"tenant-a",
-            )]);
-
-            let result = execute_post_auth_for_api(
-                &resilience,
-                &pending_forward,
-                Some(&test_upstream_pool()),
-                Some(0),
-                &test_upstream_inflight(),
-                Arc::new(Semaphore::new(1)),
-            );
-
-            assert!(matches!(
-                result,
-                PostAuthAdmissionExecution::Rejected(PostAuthAdmissionRejection::Overloaded(
-                    OverloadDecision {
-                        reason: OverloadDecisionReason::AdaptiveAdmission,
-                        status: StatusCode::SERVICE_UNAVAILABLE,
-                        body: b"adaptive admission overload\n",
-                        ..
-                    }
-                ))
-            ));
-        }
-
-        #[test]
-        fn post_auth_admission_fail_closed_quota_backend_errors_reject_before_overload() {
-            let resilience = test_runtime_resilience(
-                |config| {
-                    config.adaptive_admission.enabled = true;
-                    config.adaptive_admission.min_limit = 1;
-                    config.adaptive_admission.max_limit = Some(1);
-                    config.quota.enabled = true;
-                    config.quota.backend_failure_policy = QuotaBackendFailurePolicy::FailClosed;
-                    config.quota.backend = QuotaCounterBackend::Redis {
-                        url: "://bad-redis-url".to_string(),
-                        key_prefix: "impulse:test:quota".to_string(),
-                        connect_timeout_ms: 250,
-                        command_timeout_ms: 100,
-                        max_inflight: 8,
-                    };
-                    config.quota.policies = vec![DistributedQuotaPolicy {
-                        name: "tenant-contract".to_string(),
-                        route_allowlist: vec!["api".to_string()],
-                        selector: DistributedQuotaSelector {
-                            route: true,
-                            tenant: Some(DistributedQuotaSelectorSource {
-                                key: "header:x-tenant-id".to_string(),
-                            }),
-                            token: None,
-                            client: None,
-                        },
-                        burst: Some(DistributedQuotaWindow {
-                            requests: 50,
-                            window_secs: 1,
-                        }),
-                        sustained: None,
-                    }];
-                },
-                8,
-            );
-            let _held = resilience
-                .adaptive_admission
-                .clone()
-                .try_acquire()
-                .expect("held adaptive permit");
-            let pending_forward = test_pending_forward_for_api(vec![quiche::h3::Header::new(
-                b"x-tenant-id",
-                b"tenant-a",
-            )]);
-
-            let result = execute_post_auth_for_api(
-                &resilience,
-                &pending_forward,
-                Some(&test_upstream_pool()),
-                Some(0),
-                &test_upstream_inflight(),
-                Arc::new(Semaphore::new(1)),
-            );
-
-            assert!(matches!(
-                result,
-                PostAuthAdmissionExecution::Rejected(PostAuthAdmissionRejection::Quota(
-                    QuotaRejectedDecision {
-                        policy_name,
-                        reason: QuotaDenyReason::BackendError,
-                        status: StatusCode::SERVICE_UNAVAILABLE,
-                        body: b"quota backend error\n",
-                        retry_after_seconds: None,
-                    }
-                )) if policy_name == "tenant-contract"
-            ));
-        }
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1673,7 +971,8 @@ mod tests {
         });
 
         let error =
-            Http3Service::initialize_jwks_startup(&runtime_config).expect_err("startup must fail");
+            crate::runtime::jwks::preflight_require_ready(&runtime_config, "startup_preflight")
+                .expect_err("startup must fail");
 
         assert!(error.to_string().contains("startup_behavior=require_ready"));
         clear_jwks_cache_for_test(jwks_url);
@@ -1774,7 +1073,8 @@ mod tests {
         })
         .expect("runtime config without jwks");
 
-        Http3Service::initialize_jwks_startup(&runtime_config).expect("preflight without jwks");
+        crate::runtime::jwks::preflight_require_ready(&runtime_config, "startup_preflight")
+            .expect("preflight without jwks");
 
         let snapshot = JwtJwksSharedCache::shared()
             .snapshot(&source_identity, Instant::now())

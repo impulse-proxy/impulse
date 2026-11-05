@@ -3,6 +3,7 @@ use std::sync::Arc;
 use impulse_config::runtime::RuntimeConfig;
 use impulse_errors::ProxyError;
 use impulse_operations::watchdog::WatchdogCoordinator;
+use impulse_policy::quota::QuotaRuntime;
 use log::error;
 
 use super::{
@@ -12,20 +13,17 @@ use super::{
     runtime_handle,
     runtime_state::{ControlPlaneStartup, WatchdogServiceCtx},
 };
-use crate::{
-    resilience::quota::QuotaRuntime,
-    runtime::{
-        backend::{
-            coordination::spawn_pingora_discovery_refresh,
-            health_service::{PingoraHealthServiceInput, spawn_pingora_health_service},
-        },
-        bundle::RuntimeBundleHandle,
-        shared_state::SharedRuntimeState,
-        subsystem_mapping::watchdog_runtime_config,
-        watchdog::{
-            service::run_watchdog_service,
-            state::{WatchdogServiceState, WatchdogSpawnState},
-        },
+use crate::runtime::{
+    backend::{
+        coordination::spawn_pingora_discovery_refresh,
+        health_service::{PingoraHealthServiceInput, spawn_pingora_health_service},
+    },
+    bundle::RuntimeBundleHandle,
+    shared_state::SharedRuntimeState,
+    subsystem_mapping::watchdog_runtime_config,
+    watchdog::{
+        service::run_watchdog_service,
+        state::{WatchdogServiceState, WatchdogSpawnState},
     },
 };
 
@@ -73,7 +71,7 @@ impl Http3Service {
                 runtime.watchdog().as_ref(),
                 runtime.expected_workers(),
             );
-            Self::register_jwt_jwks_metrics(&runtime.metrics());
+            crate::runtime::jwks::register_metrics(&runtime.metrics());
             QuotaRuntime::register_metrics(&runtime.metrics());
             let task_registry = runtime.generation_tasks();
             spawn_pingora_discovery_refresh(
@@ -86,10 +84,10 @@ impl Http3Service {
                 Arc::clone(&task_registry),
             );
             let pingora_load_balancing = runtime.pingora_load_balancing();
-            Self::spawn_jwks_refresh(
-                runtime.runtime_config(),
-                pingora_load_balancing.generation(),
+            crate::runtime::jwks::spawn_refresh(
+                &runtime.plugin_plans(),
                 Arc::clone(&task_registry),
+                runtime_handle(),
             );
             spawn_pingora_health_service(
                 runtime_handle(),

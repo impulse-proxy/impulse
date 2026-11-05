@@ -11,7 +11,8 @@ use std::{
 
 use impulse_contracts::{
     HealthFailureReason, HedgeOutcomeTelemetryReason, HedgeTriggerTelemetryReason,
-    RetryAttemptTelemetryReason, RetryPolicyDenialReason,
+    PluginActivationOutcome, PluginExecutionObservation, PluginExecutionOutcome, PluginKind,
+    PluginPhase, RetryAttemptTelemetryReason, RetryPolicyDenialReason,
 };
 
 use crate::{
@@ -191,6 +192,12 @@ pub struct Metrics {
     response_compression_input_bytes: AtomicU64,
     response_compression_output_bytes: AtomicU64,
     response_cache_outcomes: [AtomicU64; ResponseCacheOutcome::COUNT],
+    plugin_executions:
+        [[[AtomicU64; PluginExecutionOutcome::COUNT]; PluginPhase::COUNT]; PluginKind::COUNT],
+    plugin_async_duration_ns: [AtomicU64; PluginKind::COUNT],
+    plugin_async_duration_samples: [AtomicU64; PluginKind::COUNT],
+    plugin_activation_outcomes: [AtomicU64; PluginActivationOutcome::COUNT],
+    active_plugin_counts: [AtomicU64; PluginKind::COUNT],
     pub scid_rotations: AtomicU64,
     pub control_api_connection_limit_drops: AtomicU64,
     pub control_api_audit_event_drops: AtomicU64,

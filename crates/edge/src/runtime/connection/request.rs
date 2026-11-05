@@ -6,11 +6,9 @@ use std::{
 };
 
 use bytes::Bytes;
-use impulse_config::{
-    config::{ForwardedHeaderPolicy, UpstreamHostPolicy},
-    runtime::RuntimeResponseCompressionPolicy,
-};
+use impulse_config::config::{ForwardedHeaderPolicy, UpstreamHostPolicy};
 use impulse_lb::upstream_pool::UpstreamPool;
+use impulse_plugins::CompiledPluginPlan;
 use tokio::sync::{mpsc, oneshot};
 use tracing::Span;
 
@@ -62,6 +60,7 @@ pub struct RequestEnvelope {
     pub total_request_deadline: Instant,
     pub bodyless_mode: bool,
     pub tunnel_mode: TunnelMode,
+    pub plugin_plan: Arc<CompiledPluginPlan>,
 
     pub retry_count: u8,
     pub error_kind: Option<&'static str>,
@@ -110,7 +109,7 @@ impl RequestEnvelope {
             request_mode,
             request_body: _,
             request_body_runtime: _,
-            pending_forward: _,
+            pending_forward,
         } = &state;
 
         Self {
@@ -137,6 +136,7 @@ impl RequestEnvelope {
             total_request_deadline: context.total_request_deadline,
             bodyless_mode: request_mode.bodyless_mode(),
             tunnel_mode: request_mode.tunnel_mode(),
+            plugin_plan: Arc::clone(&pending_forward.plugin_plan),
             retry_count,
             error_kind,
             terminal_overload_reason: None,
@@ -160,9 +160,10 @@ impl RequestEnvelope {
             request_mode,
             request_body: _,
             request_body_runtime: _,
-            pending_forward: _,
+            pending_forward,
             auth_result_rx: _,
             auth_abort: _,
+            auth_started_at: _,
             auth_deadline: _,
             auth_disposition: _,
         } = &state;
@@ -191,6 +192,7 @@ impl RequestEnvelope {
             total_request_deadline: context.total_request_deadline,
             bodyless_mode: request_mode.bodyless_mode(),
             tunnel_mode: request_mode.tunnel_mode(),
+            plugin_plan: Arc::clone(&pending_forward.plugin_plan),
             retry_count,
             error_kind,
             terminal_overload_reason: None,
@@ -999,7 +1001,7 @@ pub struct PendingForward {
     pub traceparent: Option<Arc<str>>,
     pub host_policy: UpstreamHostPolicy,
     pub forwarded_header_policy: ForwardedHeaderPolicy,
-    pub response_compression: RuntimeResponseCompressionPolicy,
+    pub plugin_plan: Arc<CompiledPluginPlan>,
     pub(crate) auth_header_mutations: Vec<PendingHeaderMutation>,
 }
 
@@ -1029,7 +1031,7 @@ impl PendingForward {
             traceparent: None,
             host_policy: UpstreamHostPolicy::default(),
             forwarded_header_policy: ForwardedHeaderPolicy::default(),
-            response_compression: RuntimeResponseCompressionPolicy::default(),
+            plugin_plan: Arc::new(CompiledPluginPlan::default()),
             auth_header_mutations: Vec::new(),
         }
     }
@@ -1045,12 +1047,11 @@ mod tests {
 
     use bytes::Bytes;
     use http::StatusCode;
+    use impulse_policy::AdaptiveAdmission;
     use tokio::sync::{Semaphore, mpsc, oneshot};
 
     use super::*;
-    use crate::resilience::{
-        adaptive_admission::AdaptiveAdmission, route_queue::RouteQueueLimiter,
-    };
+    use crate::resilience::route_queue::RouteQueueLimiter;
 
     fn make_request_context(start: Instant) -> RequestContext {
         RequestContext {
@@ -1138,6 +1139,7 @@ mod tests {
             total_request_deadline: context.total_request_deadline,
             bodyless_mode: false,
             tunnel_mode: TunnelMode::None,
+            plugin_plan: Arc::new(CompiledPluginPlan::default()),
             retry_count: 0,
             error_kind: None,
             terminal_overload_reason: None,
@@ -1280,6 +1282,7 @@ mod tests {
             total_request_deadline: start,
             bodyless_mode: false,
             tunnel_mode: TunnelMode::None,
+            plugin_plan: Arc::new(CompiledPluginPlan::default()),
             retry_count: 0,
             error_kind: None,
             terminal_overload_reason: None,

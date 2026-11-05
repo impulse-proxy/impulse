@@ -1,6 +1,6 @@
 use std::{
     convert::Infallible,
-    sync::{Arc, Mutex, RwLock, atomic::Ordering},
+    sync::{Arc, RwLock, atomic::Ordering},
     time::{Duration, Instant},
 };
 
@@ -13,15 +13,17 @@ use impulse_bridge::response::{
 };
 use impulse_config::{backend_endpoint::BackendScheme, runtime::ListenerRuntimeConfig};
 use impulse_contracts::{
-    AlternateBackendFailureReason, HealthFailureReason, RequestDecision as AdmissionPolicyDecision,
-    RetryAttemptTelemetryReason, TunnelMode,
+    AlternateBackendFailureReason, HealthFailureReason, IngressProtocol, PluginConnectionView,
+    PluginExecutionObservation, PluginExecutionOutcome, PluginHeaderMutation, PluginKind,
+    PluginPhase, PluginRejection, PluginRejectionReason, PluginRequestView,
+    RequestDecision as AdmissionPolicyDecision, RetryAttemptTelemetryReason, TunnelMode,
 };
 use impulse_errors::{
     BridgeError, PoolError, ProxyError, RetryPolicyDecision, classify_upstream_proxy_error,
     is_idempotent_method,
 };
 use impulse_lb::{BackendSelectionInput, upstream_pool::UpstreamPool};
-use impulse_observability::ResponseCacheOutcome;
+use impulse_observability::{ResponseCacheOutcome, ResponseCompressionAction};
 pub use impulse_pingora_ingress::PingoraListenerTask;
 use impulse_pingora_ingress::{
     ConnectionAdmission, PingoraDrainState, PingoraIngressAdapter, PingoraListenerConfig,
@@ -32,6 +34,11 @@ use impulse_pingora_ingress::{
     tunnel_response_established, write_downstream_response, write_error_response,
     write_local_response,
 };
+use impulse_plugins::{
+    AsyncRequestPluginDecision, AsyncRequestPluginExecutionGuard, CachePluginFillDecision,
+    CompiledAsyncRequestPlugin, ResponseCacheKeyParts,
+};
+use impulse_policy::ResponseCacheRepresentation;
 use pingora_cache::{CacheKey, CacheMeta, CachePhase, NoCacheReason, RespCacheable};
 use pingora_core::{
     Error, HTTPStatus, InternalError, Result,
@@ -46,14 +53,13 @@ use pingora_core::{
 };
 use pingora_http::{RequestHeader, ResponseHeader};
 use pingora_proxy::{HttpProxy, Session, http_proxy};
-use quiche::h3::NameValue;
 use rustls::{
     server::{ClientHello, ResolvesServerCert},
     sign::CertifiedKey,
 };
 
 use crate::{
-    REQUEST_ID_COUNTER,
+    Metrics, REQUEST_ID_COUNTER,
     edge_core::{
         body_guardrails::{
             BodyTimeoutKind, REQUEST_BODY_TOO_LARGE_BODY, RESPONSE_BODY_TOO_LARGE_BODY,
@@ -64,35 +70,22 @@ use crate::{
         },
         request_completion::RequestCompletion,
         request_execution::{
-            EdgeRequestService, RequestExecutionInput, ResolvedRequestPolicy, ResolvedRouteTarget,
-            ResponseCompressionAction, RouteResolutionError, evaluate_post_auth_quota_policy,
+            EdgeRequestService, PluginRequestExecutionInput, PluginRequestExecutionOutcome,
+            PluginTerminalObservation, RequestExecutionInput, ResolvedRequestPolicy,
+            ResolvedRouteTarget, RouteResolutionError, execute_compiled_external_auth,
         },
         request_validation::validate_http_request_parts,
         response_processing::{
-            ResponseCacheDecision, ResponseProcessingInput, ResponseProcessingResult,
-            process_response,
+            CacheLookupProcessingInput, ResponseProcessingInput, ResponseProcessingResult,
+            process_cache_lookup, process_response,
         },
         retry::RetryCoordinator,
     },
-    quic_listener::{
-        BackendCandidate, ForwardingSelectionService, TargetResolutionRequest,
-        execute_external_auth_request,
-    },
-    resilience::quota::QuotaIdentityContext,
+    quic_listener::{BackendCandidate, ForwardingSelectionService, TargetResolutionRequest},
     runtime::{
         bundle::{RuntimeBundle, RuntimeBundleHandle},
-        cache::{
-            ResponseCacheKeyInput, ResponseCacheRepresentation,
-            ResponseCacheRequestEligibilityInput, canonical_response_cache_key,
-            evaluate_cache_request_eligibility, route_auth_requires_cache_bypass,
-        },
         connection::{
-            PerSourceTokenBucket, TokenBucket,
-            auth::{
-                ExternalAuthDecision, ExternalAuthRequest, ExternalAuthStateTransition,
-                PendingHeaderMutation, apply_auth_request_mutations,
-                resolve_external_auth_state_transition,
-            },
+            auth::PendingHeaderMutation,
             outcome::{
                 AdmissionOutcomeClass, BackendHealthObservationInput, BackendOutcomeTarget,
                 ClassifiedBackendFailureInput, RouteOutcomeTarget,
@@ -101,6 +94,7 @@ use crate::{
                 observe_classified_backend_failure_and_log, observe_proxy_error_outcome,
                 observe_status_outcome,
             },
+            plugin::execute_listener_connection_plan,
         },
         listener::Http3Service,
         tls::store::ListenerTlsReloadStore,
@@ -111,7 +105,6 @@ const RESPONSE_GZIP_LEVEL: u32 = 6;
 
 pub(crate) struct PingoraEdgeRequestState {
     pub(crate) runtime: Arc<RuntimeBundle>,
-    response_cache_namespace: u64,
     pub(crate) route: Option<ResolvedRouteTarget>,
     pub(crate) policy: Option<ResolvedRequestPolicy>,
     auth_header_mutations: Vec<PendingHeaderMutation>,
@@ -121,6 +114,7 @@ pub(crate) struct PingoraEdgeRequestState {
     response_cache_representation: Option<ResponseCacheRepresentation>,
     response_cache_bypass_recorded: bool,
     selected_backend: Option<PingoraSelectedBackend>,
+    plugin_execution: AsyncRequestPluginExecutionGuard,
     drain: Arc<PingoraDrainState>,
 }
 
@@ -179,6 +173,45 @@ impl PingoraEdgeRequestService {
                 "Pingora ingress request filter did not validate a method",
             )
         })?;
+        let path = ctx.path.as_deref().ok_or_else(|| {
+            Error::explain(
+                InternalError,
+                "Pingora ingress request filter did not validate a path",
+            )
+        })?;
+        let route = ctx.route.as_ref().ok_or_else(|| {
+            Error::explain(
+                InternalError,
+                "Pingora ingress request filter did not resolve a route",
+            )
+        })?;
+        let peer_address = session
+            .client_addr()
+            .and_then(|address| address.as_inet())
+            .copied()
+            .unwrap_or_else(|| ([0, 0, 0, 0], 0).into());
+        let request_headers = &session.req_header().headers;
+        let request_header =
+            |name: &str| request_headers.get(name).map(http::HeaderValue::as_bytes);
+        let plugin_request = PluginRequestView {
+            request_id: ctx.request_id,
+            generation: policy.plugin_plan.generation(),
+            route_id: Some(route.upstream_name.as_ref()),
+            upstream_name: route.upstream_name.as_ref(),
+            method,
+            path,
+            authority: ctx.authority.as_deref(),
+            peer_address,
+            headers: Some(&request_header),
+            has_body: ctx.content_length.is_some_and(|length| length > 0)
+                || ctx.body_bytes_received > 0,
+            body_replayable: ctx.request_body_replayable,
+            ingress_protocol: if session.downstream_session.is_http2() {
+                IngressProtocol::Http2
+            } else {
+                IngressProtocol::Http1
+            },
+        };
         let tunnel_response =
             tunnel_response_established(ctx.tunnel_mode, method, upstream_response.status);
         let body_mode = if tunnel_response {
@@ -189,19 +222,22 @@ impl PingoraEdgeRequestService {
             ResponseBodyMode::Normal
         };
         Ok(process_response(ResponseProcessingInput {
+            metrics: &ctx.runtime.shared_state.shared_services().metrics,
+            plugin_plan: &policy.plugin_plan,
+            plugin_request,
             status: upstream_response.status,
             upstream_headers: &upstream_response.headers,
             body_mode,
             constraints: pingora_response_constraints(tunnel_response),
             request_method: method,
-            request_headers: &session.req_header().headers,
-            compression: crate::runtime::subsystem_mapping::response_compression_policy_input(
-                &policy.response_compression,
-            ),
-            cache_max_ttl_secs: ctx
-                .response_cache_representation
-                .is_some()
-                .then_some(policy.local_auth_policy.response_cache.max_ttl_secs),
+            request_headers,
+            cache_fill_enabled: ctx.response_cache_representation.is_some(),
+            cache_representation: ctx.response_cache_representation.map(|representation| {
+                match representation {
+                    ResponseCacheRepresentation::Get => "get",
+                    ResponseCacheRepresentation::Head => "head",
+                }
+            }),
             now: std::time::SystemTime::now(),
         }))
     }
@@ -336,15 +372,6 @@ struct PingoraRequestDeadlineApp {
 pub(crate) struct PingoraRuntimeConnectionAdmission {
     runtime: RuntimeBundleHandle,
     listener_label: String,
-    state: Mutex<PingoraConnectionAdmissionState>,
-    per_source: PerSourceTokenBucket,
-}
-
-struct PingoraConnectionAdmissionState {
-    generation: u64,
-    rate_per_sec: u32,
-    burst: u32,
-    global: TokenBucket,
 }
 
 impl std::fmt::Debug for PingoraRuntimeConnectionAdmission {
@@ -360,39 +387,31 @@ impl ConnectionAdmission for PingoraRuntimeConnectionAdmission {
     async fn should_accept(&self, addr: Option<&std::net::SocketAddr>) -> bool {
         let current = self.runtime.current();
         let metrics = &current.shared_state.shared_services().metrics;
-        let Some(listener) = current.listener_runtime_config(&self.listener_label) else {
-            metrics.ingress_observations().inc_ingress_rate_limited();
-            return false;
-        };
-        let policy = &listener.policies.transport;
-        let Ok(mut state) = self.state.lock() else {
-            metrics.ingress_observations().inc_ingress_rate_limited();
-            return false;
-        };
-        if state.generation != current.generation {
-            if state.rate_per_sec != policy.new_connections_per_sec
-                || state.burst != policy.new_connections_burst
-            {
-                state
-                    .global
-                    .reconfigure(policy.new_connections_per_sec, policy.new_connections_burst);
-                self.per_source
-                    .reconfigure(policy.new_connections_per_sec, policy.new_connections_burst);
-                state.rate_per_sec = policy.new_connections_per_sec;
-                state.burst = policy.new_connections_burst;
-            }
-            state.generation = current.generation;
-        }
-        if !state.global.try_consume() {
+        if current
+            .listener_runtime_config(&self.listener_label)
+            .is_none()
+        {
             metrics.ingress_observations().inc_ingress_rate_limited();
             return false;
         }
-        drop(state);
-        let source_allowed = addr.is_none_or(|addr| self.per_source.try_consume(addr.ip()));
-        if !source_allowed {
+        let admitted = execute_listener_connection_plan(
+            current
+                .shared_state
+                .generation_state()
+                .plugin_plans
+                .connection(),
+            PluginConnectionView {
+                generation: current.generation,
+                listener: &self.listener_label,
+                peer_address: addr.copied(),
+            },
+            metrics,
+        )
+        .is_ok();
+        if !admitted {
             metrics.ingress_observations().inc_ingress_rate_limited();
         }
-        source_allowed
+        admitted
     }
 }
 
@@ -532,23 +551,9 @@ fn pingora_ingress_service_for_listener(
     );
     let current = runtime.current();
     let tls_store = Arc::clone(&current.shared_state.shared_services().listener_tls_store);
-    let transport_policy = &listener.policies.transport;
     let connection_admission = Arc::new(PingoraRuntimeConnectionAdmission {
         runtime: runtime.clone(),
         listener_label: listener_label.clone(),
-        state: Mutex::new(PingoraConnectionAdmissionState {
-            generation: current.generation,
-            rate_per_sec: transport_policy.new_connections_per_sec,
-            burst: transport_policy.new_connections_burst,
-            global: TokenBucket::new(
-                transport_policy.new_connections_per_sec,
-                transport_policy.new_connections_burst,
-            ),
-        }),
-        per_source: PerSourceTokenBucket::new(
-            transport_policy.new_connections_per_sec,
-            transport_policy.new_connections_burst,
-        ),
     });
     let tls_state = Http3Service::build_listener_tls_reload_state(&listener).map_err(|error| {
         Error::because(
@@ -623,12 +628,10 @@ impl PingoraRequestService for PingoraEdgeRequestService {
 
     fn new_context(&self) -> Self::Context {
         self.drain.request_started();
-        let (runtime, response_cache_namespace) =
-            self.runtime.current_with_response_cache_namespace();
+        let runtime = self.runtime.current();
         IngressRequestContext::new(
             PingoraEdgeRequestState {
                 runtime,
-                response_cache_namespace,
                 route: None,
                 policy: None,
                 auth_header_mutations: Vec::new(),
@@ -638,6 +641,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
                 response_cache_representation: None,
                 response_cache_bypass_recorded: false,
                 selected_backend: None,
+                plugin_execution: AsyncRequestPluginExecutionGuard::default(),
                 drain: Arc::clone(&self.drain),
             },
             REQUEST_ID_COUNTER.fetch_add(1, Ordering::Relaxed),
@@ -655,6 +659,12 @@ impl PingoraRequestService for PingoraEdgeRequestService {
         session
             .downstream_session
             .set_total_drain_timeout(Some(client_body_idle));
+        let request_body_replayable = session.is_body_empty();
+        let ingress_protocol = if session.downstream_session.is_http2() {
+            IngressProtocol::Http2
+        } else {
+            IngressProtocol::Http1
+        };
         let request = session.req_header();
         let validated = match validate_http_request_parts(
             &request.method,
@@ -694,25 +704,37 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             .await?;
             return Ok(true);
         };
-        let header_lookup = |name: &str| {
-            request
-                .headers
-                .get(name)
-                .and_then(|value| value.to_str().ok())
-                .map(str::to_owned)
-        };
+        let request_headers = &request.headers;
+        let plugin_header_lookup =
+            |name: &str| request_headers.get(name).map(http::HeaderValue::as_bytes);
         let request_service = EdgeRequestService::new(
             &state.routing_index,
             &state.upstream_policies,
+            &state.plugin_plans,
             &state.resilience,
+            &shared.metrics,
         );
-        let execution = match request_service.execute(RequestExecutionInput {
-            method: &validated.method,
-            path: &validated.path,
-            authority: validated.authority.as_deref(),
-            peer_address,
-            headers: Some(&header_lookup),
-        }) {
+        let execution = match request_service
+            .execute_ingress_plugins(
+                PluginRequestExecutionInput {
+                    request: RequestExecutionInput {
+                        method: &validated.method,
+                        path: &validated.path,
+                        authority: validated.authority.as_deref(),
+                        peer_address,
+                    },
+                    request_id: ctx.request_id,
+                    generation: runtime.generation,
+                    ingress_protocol,
+                    headers: Some(&plugin_header_lookup),
+                    external_auth_headers: None,
+                    has_body: !request_body_replayable,
+                    body_replayable: request_body_replayable,
+                },
+                &mut ctx.plugin_execution,
+            )
+            .await
+        {
             Ok(execution) => execution,
             Err(RouteResolutionError::EmptyMethodOrPath) => {
                 write_local_response(
@@ -725,7 +747,11 @@ impl PingoraRequestService for PingoraEdgeRequestService {
                 .await?;
                 return Ok(true);
             }
-            Err(RouteResolutionError::NoRoute | RouteResolutionError::MissingUpstreamPolicy) => {
+            Err(
+                RouteResolutionError::NoRoute
+                | RouteResolutionError::MissingUpstreamPolicy
+                | RouteResolutionError::MissingUpstreamPluginPlan,
+            ) => {
                 write_local_response(
                     session,
                     http::StatusCode::BAD_GATEWAY,
@@ -737,25 +763,13 @@ impl PingoraRequestService for PingoraEdgeRequestService {
                 return Ok(true);
             }
         };
-        let route = &execution.route;
+        let route = execution.route;
+        let policy = execution.policy;
         shared
             .metrics
             .policy_observations()
             .set_brownout_active(state.resilience.brownout.is_active());
         let tunnel_mode = classify_tunnel(&validated.method, validated.websocket_tunnel);
-        let external_auth_request =
-            execution
-                .policy
-                .external_auth
-                .as_ref()
-                .map(|_| ExternalAuthRequest {
-                    method: validated.method.clone(),
-                    path: validated.path.clone(),
-                    authority: validated.authority.clone(),
-                    headers: request.headers.clone(),
-                    upstream_name: route.upstream_name.to_string(),
-                    backend_addr: None,
-                });
         ctx.route = Some(route.clone());
         ctx.method = Some(validated.method);
         ctx.path = Some(validated.path);
@@ -763,8 +777,166 @@ impl PingoraRequestService for PingoraEdgeRequestService {
         ctx.content_length = validated.content_length;
         ctx.tunnel_mode = tunnel_mode;
 
-        if let Some(response) = execution.admission.rejection_response() {
-            match execution.admission {
+        let (admission, mut plugin_mutations) = match execution.outcome {
+            PluginRequestExecutionOutcome::Admitted {
+                admission,
+                mutations,
+            } => (admission, mutations),
+            PluginRequestExecutionOutcome::Rejected {
+                rejection,
+                observation,
+            } => {
+                let external_auth_timed_out = rejection.reason()
+                    == PluginRejectionReason::ExternalAuthUnavailable
+                    && rejection.status() == http::StatusCode::GATEWAY_TIMEOUT;
+                match rejection.reason() {
+                    PluginRejectionReason::ExternalAuthDenied => shared
+                        .metrics
+                        .policy_observations()
+                        .inc_external_auth_denied(),
+                    PluginRejectionReason::ExternalAuthUnavailable if external_auth_timed_out => {
+                        shared
+                            .metrics
+                            .policy_observations()
+                            .inc_external_auth_timeout();
+                    }
+                    PluginRejectionReason::ExternalAuthUnavailable => shared
+                        .metrics
+                        .policy_observations()
+                        .inc_external_auth_error(),
+                    _ => {}
+                }
+                apply_plugin_terminal_observation(
+                    ctx,
+                    &shared.metrics,
+                    observation,
+                    external_auth_timed_out,
+                );
+                write_plugin_rejection_response(session, &rejection).await?;
+                return Ok(true);
+            }
+            PluginRequestExecutionOutcome::AlreadyExecuted => {
+                ctx.terminal_classification = Some(PingoraTerminalClassification::Error(
+                    ProxyError::Transport("request plugins executed more than once".into()),
+                ));
+                write_local_response(
+                    session,
+                    http::StatusCode::INTERNAL_SERVER_ERROR,
+                    b"internal proxy error\n",
+                    None,
+                    None,
+                )
+                .await?;
+                return Ok(true);
+            }
+        };
+
+        if let Some(external_auth) =
+            policy
+                .plugin_plan
+                .async_request_gate()
+                .iter()
+                .find_map(|plugin| match plugin {
+                    CompiledAsyncRequestPlugin::ExternalAuth(input) => Some(input.clone()),
+                    CompiledAsyncRequestPlugin::Quota(_) => None,
+                })
+        {
+            let selected = self.select_backend(session, ctx)?;
+            let backend_addr = selected.address.clone();
+            ctx.selected_backend = Some(selected);
+            let method = ctx.method.clone().ok_or_else(|| {
+                Error::explain(
+                    InternalError,
+                    "Pingora ingress request filter did not validate a method",
+                )
+            })?;
+            let path = ctx.path.clone().ok_or_else(|| {
+                Error::explain(
+                    InternalError,
+                    "Pingora ingress request filter did not validate a path",
+                )
+            })?;
+            let started_at = Instant::now();
+            let decision = execute_compiled_external_auth(
+                crate::runtime::connection::auth::ExternalAuthRequest {
+                    method,
+                    path,
+                    authority: ctx.authority.clone(),
+                    headers: request_headers.clone(),
+                    upstream_name: route.upstream_name.to_string(),
+                    backend_addr: Some(backend_addr),
+                },
+                &external_auth,
+            )
+            .await;
+            shared
+                .metrics
+                .plugin_observations()
+                .record_execution(PluginExecutionObservation {
+                    kind: PluginKind::ExternalAuth,
+                    phase: PluginPhase::AsyncRequestGate,
+                    outcome: match &decision {
+                        AsyncRequestPluginDecision::Continue
+                        | AsyncRequestPluginDecision::Mutate(_) => PluginExecutionOutcome::Continue,
+                        AsyncRequestPluginDecision::Reject(rejection)
+                            if rejection.reason() == PluginRejectionReason::ExternalAuthDenied =>
+                        {
+                            PluginExecutionOutcome::Reject
+                        }
+                        AsyncRequestPluginDecision::Reject(_) => PluginExecutionOutcome::Fail,
+                    },
+                    async_duration: Some(started_at.elapsed()),
+                });
+            match decision {
+                AsyncRequestPluginDecision::Continue => {}
+                AsyncRequestPluginDecision::Mutate(mutations) => {
+                    plugin_mutations.extend(mutations);
+                }
+                AsyncRequestPluginDecision::Reject(rejection) => {
+                    let external_auth_timed_out = rejection.reason()
+                        == PluginRejectionReason::ExternalAuthUnavailable
+                        && rejection.status() == http::StatusCode::GATEWAY_TIMEOUT;
+                    match rejection.reason() {
+                        PluginRejectionReason::ExternalAuthDenied => shared
+                            .metrics
+                            .policy_observations()
+                            .inc_external_auth_denied(),
+                        PluginRejectionReason::ExternalAuthUnavailable
+                            if external_auth_timed_out =>
+                        {
+                            shared
+                                .metrics
+                                .policy_observations()
+                                .inc_external_auth_timeout();
+                        }
+                        PluginRejectionReason::ExternalAuthUnavailable => shared
+                            .metrics
+                            .policy_observations()
+                            .inc_external_auth_error(),
+                        _ => {}
+                    }
+                    apply_plugin_terminal_observation(
+                        ctx,
+                        &shared.metrics,
+                        PluginTerminalObservation::from_rejection_reason(rejection.reason()),
+                        external_auth_timed_out,
+                    );
+                    write_plugin_rejection_response(session, &rejection).await?;
+                    return Ok(true);
+                }
+            }
+            shared
+                .metrics
+                .policy_observations()
+                .inc_external_auth_allowed();
+        }
+        ctx.auth_header_mutations = plugin_mutations
+            .iter()
+            .map(pending_header_mutation)
+            .collect();
+
+        if let Some(response) = admission.rejection_response() {
+            match admission {
                 AdmissionPolicyDecision::Unauthorized(_) => {
                     ctx.terminal_classification = Some(PingoraTerminalClassification::Admission(
                         AdmissionOutcomeClass::AuthDenied,
@@ -837,148 +1009,71 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             return Ok(true);
         }
 
-        if let (Some(external_auth), Some(mut auth_request)) = (
-            execution.policy.external_auth.as_ref(),
-            external_auth_request,
-        ) {
-            let selected = self.select_backend(session, ctx)?;
-            auth_request.backend_addr = Some(selected.address.clone());
-            ctx.selected_backend = Some(selected);
-            let result =
-                execute_external_auth_request(auth_request, external_auth.policy.clone()).await;
-            match resolve_external_auth_state_transition(result, external_auth.disposition) {
-                ExternalAuthStateTransition::Admitted {
-                    request_header_mutations,
-                } => {
-                    shared
-                        .metrics
-                        .policy_observations()
-                        .inc_external_auth_allowed();
-                    ctx.auth_header_mutations = request_header_mutations;
-                }
-                ExternalAuthStateTransition::RejectedAuthDenied { decision } => {
-                    shared.metrics.policy_observations().inc_policy_denied();
-                    shared
-                        .metrics
-                        .policy_observations()
-                        .inc_external_auth_denied();
-                    ctx.terminal_classification = Some(PingoraTerminalClassification::Admission(
-                        AdmissionOutcomeClass::AuthDenied,
-                    ));
-                    write_external_auth_decision_response(session, &decision).await?;
-                    return Ok(true);
-                }
-                ExternalAuthStateTransition::RejectedAuthUnavailable { status, body, .. } => {
-                    shared
-                        .metrics
-                        .policy_observations()
-                        .inc_external_auth_error();
-                    ctx.terminal_classification = Some(PingoraTerminalClassification::Admission(
-                        AdmissionOutcomeClass::Failed { timed_out: false },
-                    ));
-                    write_local_response(session, status, body, None, None).await?;
-                    return Ok(true);
-                }
-                ExternalAuthStateTransition::TimedOutAuth { status, body } => {
-                    shared
-                        .metrics
-                        .policy_observations()
-                        .inc_external_auth_timeout();
-                    ctx.terminal_classification = Some(PingoraTerminalClassification::Admission(
-                        AdmissionOutcomeClass::Failed { timed_out: true },
-                    ));
-                    write_local_response(session, status, body, None, None).await?;
-                    return Ok(true);
-                }
-            }
-        }
-
-        let (Some(method), Some(path)) = (ctx.method.as_deref(), ctx.path.as_deref()) else {
-            return Error::e_explain(
-                InternalError,
-                "Pingora ingress quota evaluation is missing validated request metadata",
-            );
-        };
-        let mut effective_headers = bridge_headers(&session.req_header().headers);
-        apply_auth_request_mutations(&mut effective_headers, &ctx.auth_header_mutations);
-        let quota_header_lookup = |name: &str| {
-            effective_headers
-                .iter()
-                .find(|header| header.name().eq_ignore_ascii_case(name.as_bytes()))
-                .and_then(|header| std::str::from_utf8(header.value()).ok())
-                .map(str::to_string)
-        };
-        let quota_context = QuotaIdentityContext::new(
-            Some(route.upstream_name.as_ref()),
-            method,
-            path,
-            ctx.authority.as_deref(),
-            None,
-            Some(peer_address),
-            Some(&quota_header_lookup),
-        );
-        if let Some(rejection) =
-            evaluate_post_auth_quota_policy(&state.resilience, &quota_context).await
-        {
-            let response = rejection.as_response();
-            if response.status == http::StatusCode::TOO_MANY_REQUESTS {
-                shared
-                    .metrics
-                    .policy_observations()
-                    .inc_request_rate_limited();
-            }
-            ctx.terminal_classification = Some(PingoraTerminalClassification::Admission(
-                AdmissionOutcomeClass::QuotaDenied,
-            ));
-            write_local_response(
-                session,
-                response.status,
-                response.body,
-                response.www_authenticate,
-                response.retry_after_seconds,
-            )
-            .await?;
-            return Ok(true);
-        }
-
-        if execution.policy.response_compression.enabled {
+        if !policy.plugin_plan.response_policy().is_empty() {
             session.upstream_compression.adjust_level(0);
             session
                 .upstream_compression
                 .adjust_algorithm_level(Algorithm::Gzip, RESPONSE_GZIP_LEVEL);
         }
-        ctx.policy = Some(execution.policy);
-        ctx.request_body_replayable = session.is_body_empty();
+        ctx.policy = Some(policy);
+        ctx.request_body_replayable = request_body_replayable;
         Ok(false)
     }
 
     fn request_cache_filter(&self, session: &mut Session, ctx: &mut Self::Context) -> Result<()> {
-        let (Some(cache), Some(policy), Some(method)) = (
+        let (Some(cache), Some(policy), Some(method), Some(path)) = (
             self.runtime.response_cache(),
             ctx.policy.as_ref(),
             ctx.method.as_deref(),
+            ctx.path.as_deref(),
         ) else {
             return Ok(());
         };
-        let cache_policy = &policy.local_auth_policy.response_cache;
+        let Some(compiled_cache) = policy.plugin_plan.response_cache() else {
+            return Ok(());
+        };
         let (is_upgrade, is_tunnel) = tunnel_cache_flags(ctx.tunnel_mode);
         let has_body = !session.is_body_empty();
-        let representation =
-            evaluate_cache_request_eligibility(ResponseCacheRequestEligibilityInput {
-                policy: crate::runtime::subsystem_mapping::response_cache_policy_input(
-                    cache_policy,
-                ),
-                route_auth_enabled: route_auth_requires_cache_bypass(
-                    crate::runtime::subsystem_mapping::response_cache_auth_input(
-                        &policy.local_auth_policy.upstream_auth,
-                    ),
-                ),
+        let Some(route) = ctx.route.as_ref() else {
+            return Error::e_explain(
+                InternalError,
+                "Pingora ingress cache lookup is missing its resolved route",
+            );
+        };
+        let peer_address = session
+            .client_addr()
+            .and_then(|address| address.as_inet())
+            .copied()
+            .unwrap_or_else(|| ([0, 0, 0, 0], 0).into());
+        let ingress_protocol = if session.downstream_session.is_http2() {
+            IngressProtocol::Http2
+        } else {
+            IngressProtocol::Http1
+        };
+        let request_headers = &session.req_header().headers;
+        let request_header =
+            |name: &str| request_headers.get(name).map(http::HeaderValue::as_bytes);
+        let representation = process_cache_lookup(CacheLookupProcessingInput {
+            metrics: &ctx.runtime.shared_state.shared_services().metrics,
+            plugin_plan: &policy.plugin_plan,
+            plugin_request: PluginRequestView {
+                request_id: ctx.request_id,
+                generation: policy.plugin_plan.generation(),
+                route_id: Some(route.upstream_name.as_ref()),
+                upstream_name: route.upstream_name.as_ref(),
                 method,
-                headers: &session.req_header().headers,
+                path,
+                authority: ctx.authority.as_deref(),
+                peer_address,
+                headers: Some(&request_header),
                 has_body,
-                is_upgrade,
-                is_tunnel,
-            });
+                body_replayable: ctx.request_body_replayable,
+                ingress_protocol,
+            },
+            headers: request_headers,
+            is_upgrade,
+            is_tunnel,
+        });
         let Ok(representation) = representation else {
             ctx.runtime
                 .shared_state
@@ -989,7 +1084,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             ctx.response_cache_bypass_recorded = true;
             return Ok(());
         };
-        cache.enable(&mut session.cache, cache_policy.max_object_bytes);
+        cache.enable(&mut session.cache, compiled_cache.max_object_bytes());
         ctx.response_cache_representation = Some(representation);
         Ok(())
     }
@@ -1005,6 +1100,11 @@ impl PingoraRequestService for PingoraEdgeRequestService {
         let path = ctx.path.as_deref().ok_or_else(|| {
             Error::explain(InternalError, "response cache request target is missing")
         })?;
+        let compiled_cache = ctx
+            .policy
+            .as_ref()
+            .and_then(|policy| policy.plugin_plan.response_cache())
+            .ok_or_else(|| Error::explain(InternalError, "response cache plugin is missing"))?;
         let accept_encoding = session
             .req_header()
             .headers
@@ -1020,15 +1120,16 @@ impl PingoraRequestService for PingoraEdgeRequestService {
                 )
             })?
             .join(",");
-        canonical_response_cache_key(ResponseCacheKeyInput {
-            scheme: "https",
-            authority,
-            path_and_query: path,
-            representation,
-            accept_encoding: (!accept_encoding.is_empty()).then_some(accept_encoding.as_str()),
-            namespace: ctx.response_cache_namespace,
-        })
-        .ok_or_else(|| Error::explain(InternalError, "response cache key is invalid"))
+        compiled_cache
+            .key(ResponseCacheKeyParts {
+                scheme: "https",
+                authority,
+                path_and_query: path,
+                representation,
+                accept_encoding: (!accept_encoding.is_empty()).then_some(accept_encoding.as_str()),
+            })
+            .map(|primary| CacheKey::new(primary, ""))
+            .ok_or_else(|| Error::explain(InternalError, "response cache key is invalid"))
     }
 
     fn response_cache_filter(
@@ -1041,7 +1142,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             Some(processed) => processed,
             None => Self::process_response_head(session, response, ctx)?,
         };
-        let ResponseCacheDecision::Store {
+        let CachePluginFillDecision::Store {
             stored_at,
             fresh_until,
         } = processed.cache
@@ -1957,35 +2058,65 @@ fn bridge_headers(headers: &http::HeaderMap) -> Vec<quiche::h3::Header> {
         .collect()
 }
 
-async fn write_external_auth_decision_response(
-    session: &mut Session,
-    decision: &ExternalAuthDecision,
-) -> Result<()> {
-    let (status, headers, body, extra_header) = match decision {
-        ExternalAuthDecision::Allow { .. } => return Ok(()),
-        ExternalAuthDecision::Deny(response) => (
-            response.status,
-            response.headers.as_slice(),
-            response.body.as_slice(),
-            None,
-        ),
-        ExternalAuthDecision::Redirect(response) => (
-            response.status,
-            response.headers.as_slice(),
-            &[][..],
-            Some((http::header::LOCATION.as_str(), response.location.as_str())),
-        ),
-        ExternalAuthDecision::Challenge(response) => (
-            response.status,
-            response.headers.as_slice(),
-            response.body.as_slice(),
-            Some((
-                http::header::WWW_AUTHENTICATE.as_str(),
-                response.www_authenticate.as_str(),
-            )),
-        ),
+fn pending_header_mutation(mutation: &PluginHeaderMutation) -> PendingHeaderMutation {
+    match mutation.value() {
+        Some(value) => PendingHeaderMutation::Upsert {
+            name: mutation.name().as_str().as_bytes().to_vec(),
+            value: value.as_bytes().to_vec(),
+        },
+        None => PendingHeaderMutation::Remove {
+            name: mutation.name().as_str().as_bytes().to_vec(),
+        },
+    }
+}
+
+fn apply_plugin_terminal_observation(
+    ctx: &mut PingoraRequestContext,
+    metrics: &Metrics,
+    observation: PluginTerminalObservation,
+    timed_out: bool,
+) {
+    let outcome = match observation {
+        PluginTerminalObservation::AuthDenied => {
+            metrics.policy_observations().inc_policy_denied();
+            AdmissionOutcomeClass::AuthDenied
+        }
+        PluginTerminalObservation::RateLimited => {
+            metrics.policy_observations().inc_request_rate_limited();
+            AdmissionOutcomeClass::RateLimited
+        }
+        PluginTerminalObservation::QuotaDenied => {
+            metrics.policy_observations().inc_request_rate_limited();
+            AdmissionOutcomeClass::QuotaDenied
+        }
+        PluginTerminalObservation::Failed => AdmissionOutcomeClass::Failed { timed_out },
     };
-    write_downstream_response(session, status, headers, body, extra_header).await
+    ctx.terminal_classification = Some(PingoraTerminalClassification::Admission(outcome));
+}
+
+async fn write_plugin_rejection_response(
+    session: &mut Session,
+    rejection: &PluginRejection,
+) -> Result<()> {
+    let headers = rejection
+        .headers()
+        .iter()
+        .filter_map(|header| {
+            header
+                .value()
+                .to_str()
+                .ok()
+                .map(|value| (header.name().as_str().to_string(), value.to_string()))
+        })
+        .collect::<Vec<_>>();
+    write_downstream_response(
+        session,
+        rejection.status(),
+        &headers,
+        rejection.body(),
+        None,
+    )
+    .await
 }
 
 #[cfg(test)]

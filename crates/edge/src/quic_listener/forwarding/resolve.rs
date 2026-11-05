@@ -262,6 +262,9 @@ impl Http3Service {
             RouteResolutionError::MissingUpstreamPolicy => {
                 ProxyError::Transport(format!("upstream policy not found for {path}"))
             }
+            RouteResolutionError::MissingUpstreamPluginPlan => {
+                ProxyError::Transport(format!("upstream plugin plan not found for {path}"))
+            }
         }
     }
 

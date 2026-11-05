@@ -36,7 +36,6 @@ use crate::{
     },
     quic_listener::forwarding::terminalize_stream,
     runtime::connection::{
-        TokenBucket,
         request::{PendingForward, RequestEnvelope},
         stream::{
             AdmissionPermits, AwaitingAuthState, BackendFailureReason, CancellationReason,
@@ -619,11 +618,21 @@ fn quic_listener_syncs_drain_timeout_and_connection_rate_limiter_after_reload() 
         .expect("sync runtime bundle");
 
     assert_eq!(listener.drain_timeout, Duration::from_millis(1_234));
-    assert!(listener.conn_rate_limiter.try_consume());
-    assert!(listener.conn_rate_limiter.try_consume());
+    use impulse_http3_ingress::ConnectionAdmissionAdapter;
     assert!(
-        !listener.conn_rate_limiter.try_consume(),
-        "reconfigured burst should clamp immediate capacity to the new limit"
+        listener
+            .admit_connection_plugins("192.0.2.1:1000".parse().expect("peer"))
+            .is_ok()
+    );
+    assert!(
+        listener
+            .admit_connection_plugins("192.0.2.2:1000".parse().expect("peer"))
+            .is_ok()
+    );
+    assert_eq!(
+        listener.admit_connection_plugins("192.0.2.3:1000".parse().expect("peer")),
+        Err(impulse_http3_ingress::ConnectionAdmissionRejection::GlobalRateLimit),
+        "replacement plan must enforce the new generation's burst"
     );
 }
 
@@ -1462,6 +1471,7 @@ fn non_connect_requires_request_completion_before_upstream_poll() {
             .expect("runtime")
             .spawn(async {})
             .abort_handle(),
+        auth_started_at: start,
         auth_deadline: start + Duration::from_secs(1),
         auth_disposition:
             crate::runtime::connection::auth::ExternalAuthFailureDisposition::FailClosed,
@@ -1568,78 +1578,6 @@ fn stale_alias_prefix_match_is_cleaned_up() {
     assert!(
         cid_radix.longest_prefix_match(alias.as_ref()).is_none(),
         "stale alias should be removed from radix"
-    );
-}
-
-// -----------------------------------------------------------------------
-// TokenBucket unit tests
-// -----------------------------------------------------------------------
-
-#[test]
-fn token_bucket_allows_up_to_burst_immediately() {
-    let mut tb = TokenBucket::new(100, 5);
-    // Bucket starts full; first 5 tokens should all succeed.
-    for i in 0..5 {
-        assert!(
-            tb.try_consume(),
-            "token {} should be available (burst=5)",
-            i
-        );
-    }
-    // 6th token must fail — bucket is empty.
-    assert!(
-        !tb.try_consume(),
-        "6th token must be denied when burst exhausted"
-    );
-}
-
-#[test]
-fn token_bucket_refills_over_time() {
-    let mut tb = TokenBucket::new(10, 2); // 10 tokens/sec = 1 token per 100ms
-    // Drain the bucket.
-    assert!(tb.try_consume());
-    assert!(tb.try_consume());
-    assert!(!tb.try_consume());
-
-    // Sleep slightly longer than one refill interval (100ms).
-    std::thread::sleep(std::time::Duration::from_millis(120));
-
-    // At least one token must have been refilled.
-    assert!(
-        tb.try_consume(),
-        "bucket should have refilled at least one token after sleep"
-    );
-}
-
-#[test]
-fn token_bucket_rate_zero_clamps_to_one() {
-    // rate=0 is clamped to 1; burst=0 is clamped to 1.
-    let mut tb = TokenBucket::new(0, 0);
-    // Starts with 1 token (burst=1).
-    assert!(
-        tb.try_consume(),
-        "first token should succeed with clamped burst=1"
-    );
-    assert!(!tb.try_consume(), "second token must fail when burst=1");
-}
-
-#[test]
-fn token_bucket_never_exceeds_burst() {
-    // With rate=1/s a burst of 3 should yield exactly 3 tokens on a fresh
-    // bucket, then nothing more (refill is 1ns per second — negligible in a
-    // tight loop running for microseconds).
-    let burst = 3u32;
-    let mut tb = TokenBucket::new(1, burst); // 1 token/sec → ~1ns per token
-    let mut consumed = 0;
-    for _ in 0..(burst + 10) {
-        if tb.try_consume() {
-            consumed += 1;
-        }
-    }
-    assert_eq!(
-        consumed, burst as usize,
-        "fresh bucket must yield exactly burst={} tokens in a tight loop, got {}",
-        burst, consumed
     );
 }
 
@@ -2071,9 +2009,10 @@ fn sweep_partial_batch_clears_only_removed_entries() {
 
 use std::time::Instant;
 
+use impulse_policy::AdaptiveAdmission;
 use tokio::sync::{Semaphore, mpsc, oneshot};
 
-use crate::resilience::{adaptive_admission::AdaptiveAdmission, route_queue::RouteQueueLimiter};
+use crate::resilience::route_queue::RouteQueueLimiter;
 
 fn make_envelope(phase: StreamPhase) -> RequestEnvelope {
     let start = Instant::now();
@@ -2194,6 +2133,7 @@ fn make_dispatch_ready_envelope(
         total_request_deadline: context.total_request_deadline,
         bodyless_mode: false,
         tunnel_mode: TunnelMode::None,
+        plugin_plan: Arc::new(impulse_plugins::CompiledPluginPlan::default()),
         retry_count: 0,
         error_kind: None,
         terminal_overload_reason: None,
@@ -2367,6 +2307,7 @@ fn abort_stream_waiting_for_auth_clears_async_auth_state() {
         }),
         auth_result_rx: auth_rx,
         auth_abort: auth_task.abort_handle(),
+        auth_started_at: req.start,
         auth_deadline: Instant::now() + std::time::Duration::from_secs(1),
         auth_disposition:
             crate::runtime::connection::auth::ExternalAuthFailureDisposition::FailClosed,

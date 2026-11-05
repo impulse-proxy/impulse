@@ -15,7 +15,6 @@ use crate::runtime::{
     builder::RuntimeBuilder,
     bundle::{ActiveRuntimeGeneration, RuntimeBundle},
     generation::CarriedProcessSharedServices,
-    listener::Http3Service,
     policy::{TransitionRejection, render_rejections},
 };
 
@@ -105,7 +104,7 @@ pub(crate) fn plan_runtime_reload(
     };
 
     if let Err(err) =
-        Http3Service::preflight_require_ready_jwks(&runtime_config, "reload_preflight")
+        crate::runtime::jwks::preflight_require_ready(&runtime_config, "reload_preflight")
     {
         let rejected =
             RejectedChange::resource_preparation_failed("runtime jwks preflight", err.to_string());

@@ -8,17 +8,16 @@ use std::{
 use impulse_config::runtime::{ListenerRuntimeConfig, RuntimeConfig};
 use impulse_errors::ProxyError;
 use impulse_http3_ingress::{UdpSocketConfig, bind_udp_socket};
+use impulse_policy::quota::QuotaRuntime;
 use log::debug;
 
 use crate::{
     Metrics,
     constants::UDP_READ_TIMEOUT_MS,
     quic_listener::{ListenerRuntimeSettings, runtime_state::PreparedListenerStartup},
-    resilience::quota::QuotaRuntime,
     runtime::{
         builder::RuntimeBuilder,
         bundle::{RuntimeBundle, RuntimeBundleHandle},
-        connection::{PerSourceTokenBucket, TokenBucket},
         generation::StartupOwnedRuntimeState,
         listener::{Http3Service, ListenerRuntimeState, ShutdownSignal},
         shared_state::SharedRuntimeState,
@@ -57,8 +56,6 @@ impl Http3Service {
             request_buffer_global_cap_bytes: transport_policy.request_buffer_global_cap_bytes,
             unknown_length_response_prebuffer_bytes: transport_policy
                 .unknown_length_response_prebuffer_bytes,
-            new_connections_per_sec: transport_policy.new_connections_per_sec,
-            new_connections_burst: transport_policy.new_connections_burst,
         }
     }
 
@@ -77,9 +74,11 @@ impl Http3Service {
         let runtime_config = RuntimeConfig::from_config(&config)
             .map_err(|err| ProxyError::Transport(err.to_string()))?;
         let shared_state = Arc::new(Self::build_shared_state(&runtime_config)?);
-        Self::register_jwt_jwks_metrics(&Arc::clone(&shared_state.shared_services().metrics));
+        shared_state.generation_state().generation_tasks.activate();
+        shared_state.shared_services().process_tasks.activate();
+        crate::runtime::jwks::register_metrics(&shared_state.shared_services().metrics);
         QuotaRuntime::register_metrics(&Arc::clone(&shared_state.shared_services().metrics));
-        Self::initialize_jwks_startup(&runtime_config)?;
+        crate::runtime::jwks::preflight_require_ready(&runtime_config, "startup_preflight")?;
         let listener_config = runtime_config
             .listener_runtime_configs()
             .into_iter()
@@ -232,15 +231,6 @@ impl Http3Service {
         let require_client_cert = Self::runtime_listener_tls(&config)?
             .client_auth
             .require_client_cert;
-        let conn_rate_limiter = TokenBucket::new(
-            settings.new_connections_per_sec,
-            settings.new_connections_burst,
-        );
-        let source_conn_rate_limiter = PerSourceTokenBucket::new(
-            settings.new_connections_per_sec,
-            settings.new_connections_burst,
-        );
-
         Ok(Self {
             socket,
             local_addr,
@@ -283,8 +273,6 @@ impl Http3Service {
             cid_routes: HashMap::new(),
             peer_routes: HashMap::new(),
             cid_radix: crate::cid_radix::CidRadix::new(),
-            conn_rate_limiter,
-            source_conn_rate_limiter,
         })
     }
 

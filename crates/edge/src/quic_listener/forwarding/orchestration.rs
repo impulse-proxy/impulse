@@ -1,4 +1,10 @@
+use std::time::{Duration, Instant};
+
 use http_body_util::Full;
+use impulse_contracts::{
+    PluginExecutionObservation, PluginExecutionOutcome, PluginKind, PluginPhase,
+};
+use impulse_plugins::CompiledAsyncRequestPlugin;
 
 use super::{
     prepare::{RequestFinalizationConfig, RequestRoutingInput, StartedRequestEnvelope},
@@ -14,12 +20,64 @@ use crate::{
             BackendOutcomeTarget, RouteOutcomeTarget, observe_admission_outcome,
             observe_proxy_error_outcome,
         },
+        request::PendingForward,
         stream::{
             AdmissionPermits, BackendFailureReason, CancellationReason, RejectionReason,
             TerminalReason,
         },
     },
 };
+
+fn execute_deferred_quota_plugin(
+    pending_forward: &PendingForward,
+) -> Option<(
+    Option<crate::edge_core::request_execution::QuotaRejectedDecision>,
+    Duration,
+)> {
+    if !pending_forward
+        .plugin_plan
+        .async_request_gate()
+        .iter()
+        .any(|plugin| matches!(plugin, CompiledAsyncRequestPlugin::Quota(_)))
+    {
+        return None;
+    }
+    let mut effective_headers = pending_forward.headers.as_ref().clone();
+    crate::runtime::connection::auth::apply_auth_request_mutations(
+        &mut effective_headers,
+        &pending_forward.auth_header_mutations,
+    );
+    let header_lookup = |name: &str| {
+        effective_headers
+            .iter()
+            .find(|header| header.name().eq_ignore_ascii_case(name.as_bytes()))
+            .map(|header| header.value())
+    };
+    let request = impulse_contracts::PluginRequestView {
+        request_id: pending_forward.request_id,
+        generation: pending_forward.plugin_plan.generation(),
+        route_id: Some(pending_forward.upstream_name.as_ref()),
+        upstream_name: pending_forward.upstream_name.as_ref(),
+        method: pending_forward.method.as_ref(),
+        path: pending_forward.path.as_ref(),
+        authority: pending_forward.authority.as_deref(),
+        peer_address: pending_forward.client_addr,
+        headers: Some(&header_lookup),
+        has_body: false,
+        body_replayable: true,
+        ingress_protocol: impulse_contracts::IngressProtocol::Http3,
+    };
+
+    let started_at = Instant::now();
+    let decision = crate::quic_listener::admission::block_on_admission_future(
+        crate::edge_core::request_execution::execute_compiled_quota_plugin(
+            &pending_forward.plugin_plan,
+            request,
+            &[],
+        ),
+    )?;
+    Some((decision, started_at.elapsed()))
+}
 
 impl Http3Service {
     pub(super) fn materialize_forward_after_auth(
@@ -81,25 +139,27 @@ impl Http3Service {
             return Ok(false);
         };
 
-        let (
-            backend_index,
-            upstream_pool,
-            global_permit,
-            upstream_permit,
-            adaptive_permit,
-            route_queue_permit,
-        ) = match crate::quic_listener::admission::execute_forwarding_post_auth_admission(
-            resilience,
-            pending_forward.as_ref(),
-            req.upstream_pool.as_ref(),
-            req.backend_index,
-            exec_ctx.upstream_inflight,
-            Arc::clone(&exec_ctx.global_inflight),
-            exec_ctx.inflight_acquire_wait,
-        ) {
-            crate::quic_listener::admission::PostAuthAdmissionExecution::Rejected(
-                crate::quic_listener::admission::PostAuthAdmissionRejection::Quota(decision),
-            ) => {
+        if let Some((decision, duration)) = execute_deferred_quota_plugin(pending_forward.as_ref())
+        {
+            metrics
+                .plugin_observations()
+                .record_execution(PluginExecutionObservation {
+                    kind: PluginKind::Quota,
+                    phase: PluginPhase::AsyncRequestGate,
+                    outcome: decision.as_ref().map_or(
+                        PluginExecutionOutcome::Continue,
+                        |rejection| {
+                            if rejection.status == http::StatusCode::TOO_MANY_REQUESTS {
+                                PluginExecutionOutcome::Reject
+                            } else {
+                                PluginExecutionOutcome::Fail
+                            }
+                        },
+                    ),
+                    async_duration: Some(duration),
+                });
+
+            if let Some(decision) = decision {
                 if decision.status == http::StatusCode::TOO_MANY_REQUESTS {
                     metrics.policy_observations().inc_request_rate_limited();
                 }
@@ -132,6 +192,24 @@ impl Http3Service {
                 );
                 return Ok(false);
             }
+        }
+
+        let (
+            backend_index,
+            upstream_pool,
+            global_permit,
+            upstream_permit,
+            adaptive_permit,
+            route_queue_permit,
+        ) = match crate::quic_listener::admission::execute_forwarding_post_auth_admission(
+            resilience,
+            pending_forward.as_ref(),
+            req.upstream_pool.as_ref(),
+            req.backend_index,
+            exec_ctx.upstream_inflight,
+            Arc::clone(&exec_ctx.global_inflight),
+            exec_ctx.inflight_acquire_wait,
+        ) {
             crate::quic_listener::admission::PostAuthAdmissionExecution::Ready(ready) => {
                 if ready.waited_for_global_permit {
                     metrics

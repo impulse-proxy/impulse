@@ -7,10 +7,8 @@
 
 pub(crate) mod auth;
 pub(crate) mod outcome;
+pub(crate) mod plugin;
 pub(crate) mod quic;
-pub(crate) mod rate_limit;
 pub(crate) mod request;
 pub(crate) mod response;
 pub(crate) mod stream;
-
-pub(crate) use rate_limit::{PerSourceTokenBucket, TokenBucket};

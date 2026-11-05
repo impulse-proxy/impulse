@@ -5,12 +5,37 @@ impl impulse_http3_ingress::ConnectionAdmissionAdapter for Http3Service {
         self.draining
     }
 
-    fn try_consume_global_token(&mut self) -> bool {
-        self.conn_rate_limiter.try_consume()
-    }
+    fn admit_connection_plugins(
+        &mut self,
+        peer: std::net::SocketAddr,
+    ) -> Result<(), impulse_http3_ingress::ConnectionAdmissionRejection> {
+        use impulse_http3_ingress::ConnectionAdmissionRejection;
 
-    fn try_consume_source_token(&self, source: std::net::IpAddr) -> bool {
-        self.source_conn_rate_limiter.try_consume(source)
+        let generation = self.runtime_state.generation();
+        let listener = self.listener_label.as_str();
+        let plan = self
+            .runtime_state
+            .shared_state()
+            .generation_state()
+            .plugin_plans
+            .connection();
+        crate::runtime::connection::plugin::execute_listener_connection_plan(
+            plan,
+            impulse_contracts::PluginConnectionView {
+                generation,
+                listener,
+                peer_address: Some(peer),
+            },
+            &self.metrics,
+        )
+        .map_err(|reason| match reason {
+            impulse_plugins::ConnectionPluginRejection::GlobalRateLimit => {
+                ConnectionAdmissionRejection::GlobalRateLimit
+            }
+            impulse_plugins::ConnectionPluginRejection::SourceRateLimit => {
+                ConnectionAdmissionRejection::SourceRateLimit
+            }
+        })
     }
 
     fn active_connections(&self) -> usize {
@@ -197,17 +222,6 @@ impl Http3Service {
             self.connections.len()
         );
 
-        if let Err(reason) =
-            impulse_http3_ingress::admit_initial_connection(self, peer.ip(), packet_type)
-        {
-            debug!("Rejecting new QUIC connection from {}: {:?}", peer, reason);
-            return None;
-        }
-
-        if has_token {
-            debug!("Received 0-RTT attempt, will negotiate fresh connection");
-        }
-
         if let Err(err) = self.sync_runtime_bundle_if_needed() {
             error!(
                 "Failed to reload QUIC TLS configuration for listener {}: {}",
@@ -217,6 +231,17 @@ impl Http3Service {
                 .ingress_observations()
                 .inc_ingress_connection_create_failed();
             return None;
+        }
+
+        if let Err(reason) =
+            impulse_http3_ingress::admit_initial_connection(self, peer, packet_type)
+        {
+            debug!("Rejecting new QUIC connection from {}: {:?}", peer, reason);
+            return None;
+        }
+
+        if has_token {
+            debug!("Received 0-RTT attempt, will negotiate fresh connection");
         }
 
         let mut scid_bytes = [0u8; DEFAULT_SCID_LEN_BYTES];

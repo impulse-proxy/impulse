@@ -8,6 +8,9 @@ use std::{
 use http_body_util::Full;
 use hyper_rustls::HttpsConnectorBuilder;
 use hyper_util::client::legacy::{Client, connect::HttpConnector};
+use impulse_contracts::{
+    PluginExecutionObservation, PluginExecutionOutcome, PluginKind, PluginPhase,
+};
 use impulse_policy::{ExternalAuthPolicy, ExternalAuthRequestHeader};
 use serde_json::Value;
 use tokio::{sync::Mutex, task::AbortHandle};
@@ -33,6 +36,21 @@ const MAX_AUTH_BODY_BYTES: usize = 64 * 1024;
 const OIDC_METADATA_REFRESH_AFTER: Duration = Duration::from_secs(60);
 const OIDC_METADATA_CACHE_TTL: Duration = Duration::from_secs(300);
 const OIDC_METADATA_CACHE_MAX_ENTRIES: usize = 256;
+
+pub(super) fn observe_external_auth_plugin_completion(
+    metrics: &Metrics,
+    outcome: PluginExecutionOutcome,
+    started_at: Instant,
+) {
+    metrics
+        .plugin_observations()
+        .record_execution(PluginExecutionObservation {
+            kind: PluginKind::ExternalAuth,
+            phase: PluginPhase::AsyncRequestGate,
+            outcome,
+            async_duration: Some(started_at.elapsed()),
+        });
+}
 
 struct OidcMetadataCacheEntry {
     metadata: RwLock<
@@ -178,6 +196,7 @@ async fn oidc_provider_metadata(
 pub(super) struct AuthStart {
     pub(super) rx: oneshot::Receiver<ExternalAuthResult>,
     pub(super) abort: AbortHandle,
+    pub(super) started_at: Instant,
     pub(super) deadline: Instant,
 }
 
@@ -634,11 +653,13 @@ pub(super) fn start_external_auth_task(
             "dropping external auth task: no runtime available".into(),
         ));
     };
+    let started_at = Instant::now();
     let join = handle.spawn(fut);
     Ok(AuthStart {
         rx,
         abort: join.abort_handle(),
-        deadline: Instant::now() + task_config.timeout,
+        started_at,
+        deadline: started_at + task_config.timeout,
     })
 }
 
@@ -663,12 +684,23 @@ impl Http3Service {
             )?;
             return Ok(false);
         };
+        let auth_started_at = awaiting_auth.auth_started_at;
+        let auth_failed = result.is_err();
         let transition =
             resolve_external_auth_state_transition(result, awaiting_auth.auth_disposition);
         match transition {
             ExternalAuthStateTransition::Admitted {
                 request_header_mutations,
             } => {
+                observe_external_auth_plugin_completion(
+                    metrics,
+                    if auth_failed {
+                        PluginExecutionOutcome::Fail
+                    } else {
+                        PluginExecutionOutcome::Continue
+                    },
+                    auth_started_at,
+                );
                 metrics.policy_observations().inc_external_auth_allowed();
                 if let Err(state_err) =
                     req.transition_awaiting_auth_to_dispatch_ready(request_header_mutations)
@@ -710,6 +742,11 @@ impl Http3Service {
                 Self::materialize_forward_after_auth(stream_id, req, h3, quic, exec_ctx, shared_ctx)
             }
             ExternalAuthStateTransition::RejectedAuthDenied { decision } => {
+                observe_external_auth_plugin_completion(
+                    metrics,
+                    PluginExecutionOutcome::Reject,
+                    auth_started_at,
+                );
                 req.response_status = Some(decision.status().as_u16());
                 metrics.policy_observations().inc_policy_denied();
                 metrics.policy_observations().inc_external_auth_denied();
@@ -747,6 +784,11 @@ impl Http3Service {
                 body,
                 error,
             } => {
+                observe_external_auth_plugin_completion(
+                    metrics,
+                    PluginExecutionOutcome::Fail,
+                    auth_started_at,
+                );
                 metrics.policy_observations().inc_external_auth_error();
                 if let Some(error) = &error {
                     debug!(
@@ -781,6 +823,11 @@ impl Http3Service {
                 Ok(false)
             }
             ExternalAuthStateTransition::TimedOutAuth { status, body } => {
+                observe_external_auth_plugin_completion(
+                    metrics,
+                    PluginExecutionOutcome::Fail,
+                    auth_started_at,
+                );
                 metrics.policy_observations().inc_external_auth_timeout();
                 req.response_status = Some(status.as_u16());
                 let _ = req.complete_with(|| {
@@ -812,12 +859,6 @@ impl Http3Service {
 
 #[cfg(test)]
 mod tests {
-    use impulse_config::runtime::{
-        RuntimeApiKeyAuth, RuntimeAuthPolicy, RuntimeExternalAuth, RuntimeExternalAuthFailureMode,
-        RuntimeForwardedHeaderPolicy, RuntimeHostPolicy, RuntimeProtocolPolicy,
-        RuntimeUpstreamPolicy,
-    };
-
     use super::*;
 
     #[test]
@@ -934,10 +975,6 @@ mod tests {
         );
     }
 
-    use impulse_contracts::{RequestDecision as AdmissionPolicyDecision, UnauthorizedDecision};
-
-    use crate::quic_listener::admission::evaluate_local_auth_policy;
-
     #[test]
     fn append_auth_request_headers_strips_unsafe_headers_and_overrides_with_configured_values() {
         let pending_forward = PendingForward::sample_for_test(vec![
@@ -1010,42 +1047,5 @@ mod tests {
             "token%20value%2B%2F%3D%3F%26%25"
         );
         assert_eq!(percent_encode_component("\n"), "%0A");
-    }
-
-    #[test]
-    fn local_auth_precedence_is_explicit_before_external_auth_candidates_are_relevant() {
-        let policy = RuntimeUpstreamPolicy {
-            upstream_auth: RuntimeAuthPolicy {
-                api_key: Some(RuntimeApiKeyAuth {
-                    header_name: "x-api-key".to_string(),
-                    keys: vec!["secret".to_string()],
-                }),
-                jwt: None,
-                external_auth: Some(RuntimeExternalAuth::Http {
-                    endpoint: "http://127.0.0.1:9000/auth".to_string(),
-                    request_headers: Vec::new(),
-                    response_header_allowlist: Vec::new(),
-                    timeout: Duration::from_millis(250),
-                    failure_mode: RuntimeExternalAuthFailureMode::FailClosed,
-                }),
-                required_scopes: Vec::new(),
-                required_roles: Vec::new(),
-            },
-            host: RuntimeHostPolicy::default(),
-            forwarded_headers: RuntimeForwardedHeaderPolicy::default(),
-            response_cache: Default::default(),
-            response_compression: Default::default(),
-            protocol: RuntimeProtocolPolicy::default(),
-        };
-        let decision = evaluate_local_auth_policy(&policy, None);
-
-        assert!(matches!(
-            decision,
-            AdmissionPolicyDecision::Unauthorized(UnauthorizedDecision {
-                status: http::StatusCode::UNAUTHORIZED,
-                body: b"unauthorized\n",
-                ..
-            })
-        ));
     }
 }

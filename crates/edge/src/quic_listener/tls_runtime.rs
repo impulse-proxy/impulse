@@ -525,14 +525,6 @@ impl Http3Service {
         self.require_client_cert = Self::runtime_listener_tls(&self.config)?
             .client_auth
             .require_client_cert;
-        self.conn_rate_limiter.reconfigure(
-            settings.new_connections_per_sec,
-            settings.new_connections_burst,
-        );
-        self.source_conn_rate_limiter.reconfigure(
-            settings.new_connections_per_sec,
-            settings.new_connections_burst,
-        );
         self.quic_config = Self::build_quic_config(&self.config)?;
         self.tls_reload_generation = current_tls_generation;
         info!(

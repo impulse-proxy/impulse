@@ -23,6 +23,6 @@ pub use metrics::{
     UpstreamRequestCountKey, UpstreamRequestLatencyKey,
 };
 pub use recorders::{
-    IngressObservationRecorder, PolicyObservationRecorder, RequestObservationRecorder,
-    RuntimeObservationRecorder,
+    IngressObservationRecorder, PluginObservationRecorder, PolicyObservationRecorder,
+    RequestObservationRecorder, RuntimeObservationRecorder,
 };

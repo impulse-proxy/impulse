@@ -10,6 +10,7 @@ use impulse_errors::ProxyError;
 pub(crate) use impulse_http3_ingress::{
     RequestBodyState, RequestMode, ResponseEmissionState, StreamAdmissionState, StreamPhase,
 };
+use impulse_policy::AdaptivePermit;
 use tokio::{
     sync::{OwnedSemaphorePermit, mpsc, oneshot},
     task::AbortHandle,
@@ -19,7 +20,7 @@ use tracing::Span;
 use crate::{
     OverloadShedReason,
     edge_core::request_completion::RequestCompletion,
-    resilience::{adaptive_admission::AdaptivePermit, route_queue::RouteQueuePermit},
+    resilience::route_queue::RouteQueuePermit,
     runtime::connection::{
         auth::{ExternalAuthFailureDisposition, ExternalAuthResult},
         request::PendingForward,
@@ -74,6 +75,7 @@ pub struct AwaitingAuthState {
     pub pending_forward: Arc<PendingForward>,
     pub(crate) auth_result_rx: oneshot::Receiver<ExternalAuthResult>,
     pub auth_abort: AbortHandle,
+    pub auth_started_at: Instant,
     pub auth_deadline: Instant,
     pub(crate) auth_disposition: ExternalAuthFailureDisposition,
 }

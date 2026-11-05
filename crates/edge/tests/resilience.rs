@@ -1,17 +1,13 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
-use impulse_config::config::{
-    Resilience as ResilienceConfig, ScopedRateLimit as ScopedRateLimitConfig, ScopedRateLimitScope,
-};
+use impulse_config::config::Resilience as ResilienceConfig;
 use impulse_edge::resilience::{
-    adaptive_admission::AdaptiveAdmission,
-    brownout::BrownoutController,
     circuit_breaker::CircuitBreakers,
     retry_budget::RetryBudget,
     route_queue::{RouteQueueLimiter, RouteQueueRejection},
     runtime::RuntimeResilience,
-    scoped_rate_limit::ScopedRateLimiters,
 };
+use impulse_policy::{AdaptiveAdmission, BrownoutController};
 
 #[test]
 fn adaptive_admission_adjusts_limit() {
@@ -77,47 +73,6 @@ fn retry_budget_disabled_allows_retries() {
     let rb = RetryBudget::new(false, 0, HashMap::new());
     assert!(rb.allow_retry("api").is_ok());
     assert!(rb.allow_retry("api").is_ok());
-}
-
-#[test]
-fn scoped_rate_limit_enforces_per_route_tokens() {
-    let rule = ScopedRateLimitConfig {
-        name: "route-cap".to_string(),
-        scope: ScopedRateLimitScope::Route,
-        requests_per_sec: 1,
-        burst: 1,
-        key: None,
-        route_allowlist: Vec::new(),
-        idle_ttl_secs: 300,
-    };
-    let limiters = ScopedRateLimiters::new(&[rule]);
-
-    assert!(limiters.check("api", |_| Some("api".to_string())).is_none());
-    let rejection = limiters
-        .check("api", |_| Some("api".to_string()))
-        .expect("second request should be limited");
-    assert_eq!(rejection.rule_name, "route-cap");
-    assert_eq!(rejection.route, "api");
-}
-
-#[test]
-fn scoped_rate_limit_skips_rules_outside_route_allowlist() {
-    let rule = ScopedRateLimitConfig {
-        name: "tenant-cap".to_string(),
-        scope: ScopedRateLimitScope::Tenant,
-        requests_per_sec: 1,
-        burst: 1,
-        key: Some("header:x-tenant-id".to_string()),
-        route_allowlist: vec!["api".to_string()],
-        idle_ttl_secs: 300,
-    };
-    let limiters = ScopedRateLimiters::new(&[rule]);
-
-    assert!(
-        limiters
-            .check("admin", |_| Some("tenant-a".to_string()))
-            .is_none()
-    );
 }
 
 #[test]

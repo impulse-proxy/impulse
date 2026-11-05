@@ -145,9 +145,18 @@ impl RuntimeBundleHandle {
         let _ = lifecycle.mark_running();
         let response_cache = RuntimeCacheStorage::new(
             &bundle.runtime_config,
-            bundle.generation,
             Arc::clone(&bundle.shared_state.shared_services().metrics),
         );
+        bundle
+            .shared_state
+            .generation_state()
+            .generation_tasks
+            .activate();
+        bundle
+            .shared_state
+            .shared_services()
+            .process_tasks
+            .activate();
         let handle = Self {
             inner: Arc::new(RwLock::new(Arc::new(bundle))),
             response_cache,
@@ -169,16 +178,18 @@ impl RuntimeBundleHandle {
         self.response_cache.cache()
     }
 
-    pub(crate) fn response_cache_namespace(&self) -> u64 {
-        self.response_cache.namespace()
-    }
-
+    #[cfg(test)]
     pub(crate) fn current_with_response_cache_namespace(&self) -> (Arc<RuntimeBundle>, u64) {
         let guard = self
             .inner
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        (Arc::clone(&guard), self.response_cache.namespace())
+        let namespace = guard
+            .shared_state
+            .generation_state()
+            .plugin_plans
+            .response_cache_namespace();
+        (Arc::clone(&guard), namespace)
     }
 
     /// The shared process lifecycle state machine (Phase 6). All clones of this
@@ -432,9 +443,22 @@ impl RuntimeBundleHandle {
                     expected_generation, previous_generation
                 )));
             }
-            let rotate_response_cache_namespace = !self
-                .response_cache
-                .namespaces_compatible(&guard.runtime_config, &bundle.runtime_config);
+            if crate::runtime::cache::response_cache_namespaces_compatible(
+                &guard.runtime_config,
+                &bundle.runtime_config,
+            ) {
+                bundle
+                    .shared_state
+                    .generation_state()
+                    .plugin_plans
+                    .inherit_response_cache_namespace(
+                        guard
+                            .shared_state
+                            .generation_state()
+                            .plugin_plans
+                            .response_cache_namespace(),
+                    );
+            }
             activate_transport_pool_generation(
                 bundle
                     .shared_state
@@ -447,9 +471,7 @@ impl RuntimeBundleHandle {
             // The previous bundle's generation-owned state is now unreachable to
             // new readers; existing readers keep their clone until it drains.
             let previous = std::mem::replace(&mut *guard, Arc::new(bundle));
-            if rotate_response_cache_namespace {
-                self.response_cache.rotate_namespace(generation);
-            }
+            next_tasks.activate();
             previous
         };
         // Retire only the previous generation's generation-owned background tasks.
@@ -508,10 +530,10 @@ impl RuntimeBundleHandle {
                     .keys()
                     .map(String::as_str),
                 generation_state
-                    .resilience
-                    .quota
-                    .policies
-                    .iter()
+                    .plugin_plans
+                    .quota()
+                    .into_iter()
+                    .flat_map(|quota| quota.runtime().policies.iter())
                     .map(|policy| policy.name.as_str()),
             );
         metrics
@@ -520,6 +542,11 @@ impl RuntimeBundleHandle {
         metrics
             .runtime_observations()
             .set_runtime_history_depth(history_depth);
+        for kind in impulse_contracts::PluginKind::ALL {
+            metrics
+                .plugin_observations()
+                .set_active_count(kind, generation_state.plugin_plans.active_count(kind));
+        }
     }
 
     fn archive_previous_generation(
@@ -691,14 +718,19 @@ mod tests {
         config: &ImpulseConfigConfig,
     ) -> RuntimeBundle {
         let runtime_config = RuntimeConfig::from_config(config).expect("runtime config");
-        let mut bundle = Http3Service::build_runtime_bundle(
-            config_path.to_string(),
-            config.log.clone(),
-            &runtime_config,
-        )
-        .expect("runtime bundle");
-        bundle.generation = generation;
-        bundle
+        let shared_state = Arc::new(
+            Http3Service::build_shared_state_for_generation(&runtime_config, None, generation)
+                .expect("runtime state"),
+        );
+        RuntimeBundle {
+            generation,
+            startup: StartupOwnedRuntimeState {
+                config_path: config_path.to_string(),
+                log_config: config.log.clone(),
+            },
+            runtime_config,
+            shared_state,
+        }
     }
 
     fn runtime_bundle_pair(

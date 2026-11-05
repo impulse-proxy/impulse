@@ -5,21 +5,39 @@ use std::{
 };
 
 use log::{error, warn};
-use tokio::{runtime::Handle, sync::oneshot, task::AbortHandle};
+use tokio::{
+    runtime::Handle,
+    sync::{oneshot, watch},
+    task::AbortHandle,
+};
 
 use crate::Metrics;
 
 pub struct RuntimeTaskRegistry {
     state: Mutex<RuntimeTaskRegistryState>,
+    lifecycle: watch::Sender<RuntimeTaskLifecycle>,
 }
 
 impl RuntimeTaskRegistry {
     pub(crate) fn new() -> Self {
+        let (lifecycle, _) = watch::channel(RuntimeTaskLifecycle::Prepared);
         Self {
             state: Mutex::new(RuntimeTaskRegistryState {
-                retired: false,
+                lifecycle: RuntimeTaskLifecycle::Prepared,
                 tasks: Vec::new(),
             }),
+            lifecycle,
+        }
+    }
+
+    pub(crate) fn activate(&self) {
+        let mut state = match self.state.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if state.lifecycle == RuntimeTaskLifecycle::Prepared {
+            state.lifecycle = RuntimeTaskLifecycle::Active;
+            self.lifecycle.send_replace(RuntimeTaskLifecycle::Active);
         }
     }
 
@@ -28,7 +46,7 @@ impl RuntimeTaskRegistry {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
         };
-        if state.retired {
+        if state.lifecycle == RuntimeTaskLifecycle::Retired {
             task.abort.abort();
         } else {
             state.tasks.push(task);
@@ -59,7 +77,23 @@ impl RuntimeTaskRegistry {
     {
         let task_name = task_name.to_string();
         let (completion_tx, completion_rx) = oneshot::channel();
-        let join = handle.spawn(future);
+        let mut lifecycle = self.lifecycle.subscribe();
+        let join = handle.spawn(async move {
+            loop {
+                let current = *lifecycle.borrow_and_update();
+                match current {
+                    RuntimeTaskLifecycle::Active => {
+                        future.await;
+                        return;
+                    }
+                    RuntimeTaskLifecycle::Retired => return,
+                    RuntimeTaskLifecycle::Prepared => {}
+                }
+                if lifecycle.changed().await.is_err() {
+                    return;
+                }
+            }
+        });
         let abort = join.abort_handle();
         handle.spawn(async move {
             match join.await {
@@ -99,10 +133,11 @@ impl RuntimeTaskRegistry {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
         };
-        if state.retired {
+        if state.lifecycle == RuntimeTaskLifecycle::Retired {
             return Vec::new();
         }
-        state.retired = true;
+        state.lifecycle = RuntimeTaskLifecycle::Retired;
+        self.lifecycle.send_replace(RuntimeTaskLifecycle::Retired);
         state
             .tasks
             .drain(..)
@@ -167,8 +202,15 @@ impl Drop for RuntimeTaskRegistry {
 }
 
 struct RuntimeTaskRegistryState {
-    retired: bool,
+    lifecycle: RuntimeTaskLifecycle,
     tasks: Vec<RuntimeTaskRegistration>,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum RuntimeTaskLifecycle {
+    Prepared,
+    Active,
+    Retired,
 }
 
 struct RuntimeTaskRegistration {

@@ -2,6 +2,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use impulse_config::runtime::{ListenerRuntimeConfig, RuntimeConfig};
 use impulse_operations::watchdog::WatchdogCoordinator;
+use impulse_plugins::CompiledGenerationPluginPlans;
 
 use crate::{
     Metrics,
@@ -17,6 +18,7 @@ pub(crate) struct OperationalRuntimeView {
     runtime_config: RuntimeConfig,
     generation: Option<ActiveRuntimeGeneration>,
     resilience: Arc<RuntimeResilience>,
+    plugin_plans: Arc<CompiledGenerationPluginPlans>,
     listener_runtime_configs: Arc<HashMap<String, ListenerRuntimeConfig>>,
     listener_tls_store: Arc<ListenerTlsReloadStore>,
     primary_listener_label: Option<String>,
@@ -28,6 +30,7 @@ impl OperationalRuntimeView {
         runtime_config: RuntimeConfig,
         generation: Option<ActiveRuntimeGeneration>,
         resilience: Arc<RuntimeResilience>,
+        plugin_plans: Arc<CompiledGenerationPluginPlans>,
         listener_runtime_configs: Arc<HashMap<String, ListenerRuntimeConfig>>,
         listener_tls_store: Arc<ListenerTlsReloadStore>,
         primary_listener_label: Option<String>,
@@ -37,6 +40,7 @@ impl OperationalRuntimeView {
             runtime_config,
             generation,
             resilience,
+            plugin_plans,
             listener_runtime_configs,
             listener_tls_store,
             primary_listener_label,
@@ -54,6 +58,10 @@ impl OperationalRuntimeView {
 
     pub(crate) fn resilience(&self) -> Arc<RuntimeResilience> {
         Arc::clone(&self.resilience)
+    }
+
+    pub(crate) fn plugin_plans(&self) -> Arc<CompiledGenerationPluginPlans> {
+        Arc::clone(&self.plugin_plans)
     }
 
     pub(crate) fn listener_runtime_configs(&self) -> Arc<HashMap<String, ListenerRuntimeConfig>> {

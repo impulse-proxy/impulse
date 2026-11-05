@@ -6,6 +6,7 @@ use impulse_lb::{
     pingora_backend::SharedPingoraLoadBalancingRuntimeState, upstream_pool::UpstreamPool,
 };
 use impulse_operations::watchdog::WatchdogCoordinator;
+use impulse_plugins::CompiledGenerationPluginPlans;
 use impulse_transport::{SharedDnsResolver, UpstreamTransportPool};
 
 use crate::{
@@ -36,6 +37,7 @@ pub(super) struct ControlPlaneRuntimeView {
     pingora_load_balancing: SharedPingoraLoadBalancingRuntimeState<RuntimeBackendTlsPolicy>,
     listener_runtime_configs: Arc<HashMap<String, ListenerRuntimeConfig>>,
     backend_health_checks: Arc<HashMap<String, impulse_config::runtime::RuntimeBackendHealthCheck>>,
+    plugin_plans: Arc<CompiledGenerationPluginPlans>,
     generation_tasks: Arc<RuntimeTaskRegistry>,
     process_tasks: Arc<RuntimeTaskRegistry>,
     listener_tls_store: Arc<ListenerTlsReloadStore>,
@@ -62,6 +64,7 @@ impl ControlPlaneRuntimeView {
             pingora_load_balancing: Arc::clone(&generation.pingora_load_balancing),
             listener_runtime_configs: Arc::clone(&generation.listener_runtime_configs),
             backend_health_checks: Arc::clone(&generation.backend_health_checks),
+            plugin_plans: Arc::clone(&generation.plugin_plans),
             generation_tasks: Arc::clone(&generation.generation_tasks),
             process_tasks: Arc::clone(&shared.process_tasks),
             listener_tls_store: Arc::clone(&shared.listener_tls_store),
@@ -87,6 +90,7 @@ impl ControlPlaneRuntimeView {
             pingora_load_balancing: Arc::clone(&view.state.pingora_load_balancing),
             listener_runtime_configs: Arc::clone(&view.state.listener_runtime_configs),
             backend_health_checks: Arc::clone(&view.state.backend_health_checks),
+            plugin_plans: Arc::clone(&view.state.plugin_plans),
             generation_tasks: Arc::clone(&view.state.generation_tasks),
             process_tasks: Arc::clone(&view.shared.process_tasks),
             listener_tls_store: Arc::clone(&view.shared.listener_tls_store),
@@ -151,6 +155,10 @@ impl ControlPlaneRuntimeView {
 
     pub(super) fn generation_tasks(&self) -> Arc<RuntimeTaskRegistry> {
         Arc::clone(&self.generation_tasks)
+    }
+
+    pub(super) fn plugin_plans(&self) -> Arc<CompiledGenerationPluginPlans> {
+        Arc::clone(&self.plugin_plans)
     }
 
     pub(super) fn process_tasks(&self) -> Arc<RuntimeTaskRegistry> {

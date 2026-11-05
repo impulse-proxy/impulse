@@ -2,15 +2,15 @@ use std::{borrow::Cow, collections::VecDeque, convert::Infallible};
 
 use http_body_util::Full;
 use impulse_contracts::{
-    BoundedRejectionResponse as AdmissionRejectionResponse,
-    RequestDecision as AdmissionPolicyDecision,
+    BoundedRejectionResponse as AdmissionRejectionResponse, IngressProtocol, PluginHeaderMutation,
+    PluginRejection, RequestDecision as AdmissionPolicyDecision,
 };
-use impulse_policy::ExternalAuthPolicy;
+use impulse_plugins::{CompiledAsyncRequestPlugin, ExternalAuthInput};
 use smallvec::SmallVec;
 use tokio::{sync::oneshot, task::AbortHandle};
 
 use super::{
-    auth::start_external_auth_task,
+    auth::{observe_external_auth_plugin_completion, start_external_auth_task},
     resolve::{
         ForwardTargetResolution, ForwardTargetResolutionInput, ResolutionContext,
         ResolutionObservation, TargetResolutionRequest,
@@ -20,12 +20,16 @@ use super::{
 use crate::{
     edge_core::{
         request_completion::RequestCompletion,
-        request_execution::{EdgeRequestService, RequestExecutionState},
+        request_execution::{
+            EdgeRequestService, PluginRequestExecutionInput, PluginRequestExecutionOutcome,
+            PluginRequestExecutionState, PluginTerminalObservation, RequestExecutionInput,
+        },
     },
     runtime::connection::{
         auth::{
             ExternalAuthCompletion, ExternalAuthFailureDisposition, ExternalAuthResult,
-            PendingHeaderMutation, apply_auth_request_mutations, evaluate_external_auth_completion,
+            ExternalAuthTaskConfig, PendingHeaderMutation, apply_auth_request_mutations,
+            evaluate_external_auth_completion,
         },
         outcome::{
             AdmissionOutcomeClass, BackendOutcomeTarget, RouteOutcomeTarget,
@@ -94,6 +98,7 @@ impl DispatchReadyCandidate {
         auth_result_rx: oneshot::Receiver<ExternalAuthResult>,
         auth_abort: AbortHandle,
         auth_disposition: ExternalAuthFailureDisposition,
+        auth_started_at: Instant,
         auth_deadline: Instant,
     ) -> RequestEnvelope {
         let DispatchReadyState {
@@ -115,6 +120,7 @@ impl DispatchReadyCandidate {
                 pending_forward,
                 auth_result_rx,
                 auth_abort,
+                auth_started_at,
                 auth_deadline,
                 auth_disposition,
             },
@@ -129,12 +135,16 @@ impl DispatchReadyCandidate {
 
 pub(super) struct ExternalAuthCandidate {
     pub(super) request: DispatchReadyCandidate,
-    pub(super) external_auth: ExternalAuthPolicy,
-    pub(super) auth_disposition: ExternalAuthFailureDisposition,
+    pub(super) external_auth: ExternalAuthInput,
 }
 
 pub(super) struct LocalRejectionCandidate {
-    pub(super) response: AdmissionRejectionResponse,
+    pub(super) response: LocalRejectionResponse,
+}
+
+pub(super) enum LocalRejectionResponse {
+    Admission(AdmissionRejectionResponse),
+    Plugin(PluginRejection),
 }
 
 pub(super) enum PreAdmissionNextState {
@@ -425,6 +435,39 @@ impl Http3Service {
         }
     }
 
+    fn pending_plugin_header_mutation(mutation: &PluginHeaderMutation) -> PendingHeaderMutation {
+        match mutation.value() {
+            Some(value) => PendingHeaderMutation::Upsert {
+                name: mutation.name().as_str().as_bytes().to_vec(),
+                value: value.as_bytes().to_vec(),
+            },
+            None => PendingHeaderMutation::Remove {
+                name: mutation.name().as_str().as_bytes().to_vec(),
+            },
+        }
+    }
+
+    fn apply_plugin_terminal_observation(
+        metrics: &Metrics,
+        observation: PluginTerminalObservation,
+    ) -> AdmissionOutcomeClass {
+        match observation {
+            PluginTerminalObservation::AuthDenied => {
+                metrics.policy_observations().inc_policy_denied();
+                AdmissionOutcomeClass::AuthDenied
+            }
+            PluginTerminalObservation::RateLimited => {
+                metrics.policy_observations().inc_request_rate_limited();
+                AdmissionOutcomeClass::RateLimited
+            }
+            PluginTerminalObservation::QuotaDenied => {
+                metrics.policy_observations().inc_request_rate_limited();
+                AdmissionOutcomeClass::QuotaDenied
+            }
+            PluginTerminalObservation::Failed => AdmissionOutcomeClass::Failed { timed_out: false },
+        }
+    }
+
     pub(super) fn prepare_request_for_auth(
         stream_id: u64,
         h3: &mut quiche::h3::Connection,
@@ -474,21 +517,48 @@ impl Http3Service {
                 .and_then(|header| std::str::from_utf8(header.value()).ok())
                 .map(str::to_string)
         };
-        let request_input = impulse_http3_ingress::Http3RequestExecutionInput {
-            method,
-            path,
-            authority,
-            peer_address,
-            headers: Some(&lb_header_lookup),
+        let plugin_header_lookup = |name: &str| {
+            headers
+                .iter()
+                .find(|header| header.name().eq_ignore_ascii_case(name.as_bytes()))
+                .map(|header| header.value())
         };
         let request_service = EdgeRequestService::new(
             shared_ctx.routing_index,
             shared_ctx.upstream_policies,
+            shared_ctx.plugin_plans,
             resilience,
+            metrics,
         );
-        let request_adapter = impulse_http3_ingress::Http3IngressAdapter::new(request_service);
-        let resolved = request_adapter
-            .execute(request_input)
+        let body_replayable = intake.state.request_mode.bodyless_mode();
+        let Some(execution) =
+            request_service.execute_ingress_plugins_ready(PluginRequestExecutionInput {
+                request: RequestExecutionInput {
+                    method,
+                    path,
+                    authority,
+                    peer_address,
+                },
+                request_id: intake.request_id(),
+                generation: shared_ctx.generation,
+                ingress_protocol: IngressProtocol::Http3,
+                headers: Some(&plugin_header_lookup),
+                external_auth_headers: None,
+                has_body: !body_replayable,
+                body_replayable,
+            })
+        else {
+            intake.state.context.completion.complete();
+            Self::send_simple_response(
+                h3,
+                quic,
+                stream_id,
+                http::StatusCode::INTERNAL_SERVER_ERROR,
+                b"plugin execution unavailable\n",
+            )?;
+            return Ok(None);
+        };
+        let resolved = execution
             .map_err(|error| {
                 let error = Self::request_resolution_error(path, error);
                 Self::observe_route_resolution_failure(
@@ -506,10 +576,10 @@ impl Http3Service {
                 error
             })
             .and_then(|execution| {
-                let RequestExecutionState {
+                let PluginRequestExecutionState {
                     route,
                     policy,
-                    admission,
+                    outcome,
                 } = execution;
                 Self::resolve_forwarding_target(ForwardTargetResolutionInput {
                     request: TargetResolutionRequest::new(
@@ -523,15 +593,15 @@ impl Http3Service {
                     context: resolution_context,
                     observation: ResolutionObservation::new(metrics, request_start.elapsed()),
                 })
-                .map(|target| RequestExecutionState {
+                .map(|target| PluginRequestExecutionState {
                     route: target,
                     policy,
-                    admission,
+                    outcome,
                 })
             });
 
         let prepared = match resolved {
-            Ok(RequestExecutionState {
+            Ok(PluginRequestExecutionState {
                 route:
                     ForwardTargetResolution {
                         upstream_name,
@@ -545,7 +615,7 @@ impl Http3Service {
                         lb_key,
                     },
                 policy: resolved_policy,
-                admission,
+                outcome,
             }) => {
                 let routing = RoutingSnapshot {
                     backend_addr: backend_addr.clone(),
@@ -559,6 +629,50 @@ impl Http3Service {
                 metrics
                     .policy_observations()
                     .set_brownout_active(resilience.brownout.is_active());
+                let (admission, plugin_mutations) = match outcome {
+                    PluginRequestExecutionOutcome::Admitted {
+                        admission,
+                        mutations,
+                    } => (admission, mutations),
+                    PluginRequestExecutionOutcome::Rejected {
+                        rejection,
+                        observation,
+                    } => {
+                        let outcome = Self::apply_plugin_terminal_observation(metrics, observation);
+                        let _ = intake.state.context.completion.complete_with(|| {
+                            observe_admission_outcome(
+                                metrics,
+                                RouteOutcomeTarget {
+                                    route: &upstream_name,
+                                },
+                                Some(BackendOutcomeTarget {
+                                    upstream: &upstream_name,
+                                    backend_addr: Some(backend_addr.as_str()),
+                                    backend_index: Some(backend_index),
+                                }),
+                                request_start.elapsed(),
+                                rejection.status(),
+                                outcome,
+                            )
+                        });
+                        return Ok(Some(PreAdmissionNextState::LocallyRejected(
+                            LocalRejectionCandidate {
+                                response: LocalRejectionResponse::Plugin(rejection),
+                            },
+                        )));
+                    }
+                    PluginRequestExecutionOutcome::AlreadyExecuted => {
+                        intake.state.context.completion.complete();
+                        Self::send_simple_response(
+                            h3,
+                            quic,
+                            stream_id,
+                            http::StatusCode::INTERNAL_SERVER_ERROR,
+                            b"internal proxy error\n",
+                        )?;
+                        return Ok(None);
+                    }
+                };
                 let rejection_response = admission.rejection_response();
                 match admission {
                     AdmissionPolicyDecision::AdmitReady => {}
@@ -600,7 +714,7 @@ impl Http3Service {
                         };
                         return Ok(Some(PreAdmissionNextState::LocallyRejected(
                             LocalRejectionCandidate {
-                                response: response.clone(),
+                                response: LocalRejectionResponse::Admission(response.clone()),
                             },
                         )));
                     }
@@ -642,7 +756,7 @@ impl Http3Service {
                         };
                         return Ok(Some(PreAdmissionNextState::LocallyRejected(
                             LocalRejectionCandidate {
-                                response: response.clone(),
+                                response: LocalRejectionResponse::Admission(response.clone()),
                             },
                         )));
                     }
@@ -688,7 +802,7 @@ impl Http3Service {
                             .observe(request_start.elapsed(), true);
                         return Ok(Some(PreAdmissionNextState::LocallyRejected(
                             LocalRejectionCandidate {
-                                response: response.clone(),
+                                response: LocalRejectionResponse::Admission(response.clone()),
                             },
                         )));
                     }
@@ -730,8 +844,11 @@ impl Http3Service {
                         .map(Arc::<str>::from),
                     host_policy: resolved_policy.host_policy,
                     forwarded_header_policy: resolved_policy.forwarded_header_policy,
-                    response_compression: resolved_policy.response_compression,
-                    auth_header_mutations: Vec::new(),
+                    plugin_plan: Arc::clone(&resolved_policy.plugin_plan),
+                    auth_header_mutations: plugin_mutations
+                        .iter()
+                        .map(Self::pending_plugin_header_mutation)
+                        .collect(),
                 });
                 let dispatch_ready = Self::build_dispatch_ready_candidate(
                     intake,
@@ -740,12 +857,19 @@ impl Http3Service {
                     pending_forward,
                 );
 
-                Some(match resolved_policy.external_auth {
+                let external_auth = resolved_policy
+                    .plugin_plan
+                    .async_request_gate()
+                    .iter()
+                    .find_map(|plugin| match plugin {
+                        CompiledAsyncRequestPlugin::ExternalAuth(input) => Some(input.clone()),
+                        CompiledAsyncRequestPlugin::Quota(_) => None,
+                    });
+                Some(match external_auth {
                     Some(external_auth) => PreAdmissionNextState::RequiresExternalAuth(Box::new(
                         ExternalAuthCandidate {
                             request: dispatch_ready,
-                            external_auth: external_auth.policy,
-                            auth_disposition: external_auth.disposition,
+                            external_auth,
                         },
                     )),
                     None => {
@@ -792,7 +916,14 @@ impl Http3Service {
         } = finalization;
         match pre_auth {
             PreAdmissionNextState::LocallyRejected(rejection) => {
-                Self::send_admission_rejection_response(h3, quic, stream_id, &rejection.response)?;
+                match rejection.response {
+                    LocalRejectionResponse::Admission(response) => {
+                        Self::send_admission_rejection_response(h3, quic, stream_id, &response)?;
+                    }
+                    LocalRejectionResponse::Plugin(response) => {
+                        Self::send_plugin_rejection_response(h3, quic, stream_id, &response)?;
+                    }
+                }
                 Ok(None)
             }
             PreAdmissionNextState::ReadyForPostAuthAdmission(request) => {
@@ -811,14 +942,22 @@ impl Http3Service {
                 let mut request = *request;
                 request.request.state.context.total_request_deadline =
                     request.request.state.context.start + backend_total_request_timeout;
-                let auth_disposition = request.auth_disposition;
+                let external_auth =
+                    crate::runtime::connection::auth::external_auth_policy_from_plugin(
+                        &request.external_auth,
+                    );
+                let auth_disposition =
+                    ExternalAuthTaskConfig::from_external_auth(&external_auth).disposition;
                 let pending_forward = Arc::clone(&request.request.state.pending_forward);
-                let auth_start = match start_external_auth_task(
-                    pending_forward,
-                    request.external_auth,
-                ) {
+                let auth_started_at = Instant::now();
+                let auth_start = match start_external_auth_task(pending_forward, external_auth) {
                     Ok(start) => Some(start),
                     Err(err) => {
+                        observe_external_auth_plugin_completion(
+                            metrics,
+                            impulse_contracts::PluginExecutionOutcome::Fail,
+                            auth_started_at,
+                        );
                         match evaluate_external_auth_completion(Err(err), auth_disposition) {
                             ExternalAuthCompletion::FailOpen { timed_out, error } => {
                                 metrics.policy_observations().inc_external_auth_error();
@@ -893,6 +1032,7 @@ impl Http3Service {
                         start.rx,
                         start.abort,
                         auth_disposition,
+                        start.started_at,
                         start.deadline,
                     )
                 } else {
