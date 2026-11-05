@@ -8,7 +8,9 @@ use crate::{
     runtime::{
         backend::state::{BackendLifecycleInventorySnapshot, BackendLifecycleInventorySummary},
         bundle::{ActiveRuntimeGeneration, RuntimeBundleHandle},
-        operations::{OperationalObservabilityView, OperationalRuntimeView},
+        operations::{
+            OperationalObservabilityView, OperationalRuntimeView, OperationalRuntimeViewInput,
+        },
     },
 };
 
@@ -92,16 +94,16 @@ impl ControlApiServiceCtx {
         let backend_inventory = runtime
             .backend_lifecycle()
             .snapshot_inventory(runtime.upstream_pools());
-        let runtime_view = OperationalRuntimeView::new(
-            runtime.runtime_config().clone(),
+        let runtime_view = OperationalRuntimeView::new(OperationalRuntimeViewInput {
+            runtime_config: runtime.runtime_config().clone(),
             generation,
-            runtime.resilience(),
-            runtime.plugin_plans(),
-            runtime.listener_runtime_configs(),
-            runtime.listener_tls_store(),
-            runtime.primary_listener_label().map(ToOwned::to_owned),
-            runtime.expected_workers(),
-        );
+            resilience: runtime.resilience(),
+            plugin_plans: runtime.plugin_plans(),
+            listener_runtime_configs: runtime.listener_runtime_configs(),
+            listener_tls_store: runtime.listener_tls_store(),
+            primary_listener_label: runtime.primary_listener_label().map(ToOwned::to_owned),
+            expected_workers: runtime.expected_workers(),
+        });
         let observability = OperationalObservabilityView::new(
             runtime.metrics(),
             runtime.watchdog(),

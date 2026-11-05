@@ -25,17 +25,29 @@ pub(crate) struct OperationalRuntimeView {
     expected_workers: usize,
 }
 
+pub(crate) struct OperationalRuntimeViewInput {
+    pub(crate) runtime_config: RuntimeConfig,
+    pub(crate) generation: Option<ActiveRuntimeGeneration>,
+    pub(crate) resilience: Arc<RuntimeResilience>,
+    pub(crate) plugin_plans: Arc<CompiledGenerationPluginPlans>,
+    pub(crate) listener_runtime_configs: Arc<HashMap<String, ListenerRuntimeConfig>>,
+    pub(crate) listener_tls_store: Arc<ListenerTlsReloadStore>,
+    pub(crate) primary_listener_label: Option<String>,
+    pub(crate) expected_workers: usize,
+}
+
 impl OperationalRuntimeView {
-    pub(crate) fn new(
-        runtime_config: RuntimeConfig,
-        generation: Option<ActiveRuntimeGeneration>,
-        resilience: Arc<RuntimeResilience>,
-        plugin_plans: Arc<CompiledGenerationPluginPlans>,
-        listener_runtime_configs: Arc<HashMap<String, ListenerRuntimeConfig>>,
-        listener_tls_store: Arc<ListenerTlsReloadStore>,
-        primary_listener_label: Option<String>,
-        expected_workers: usize,
-    ) -> Self {
+    pub(crate) fn new(input: OperationalRuntimeViewInput) -> Self {
+        let OperationalRuntimeViewInput {
+            runtime_config,
+            generation,
+            resilience,
+            plugin_plans,
+            listener_runtime_configs,
+            listener_tls_store,
+            primary_listener_label,
+            expected_workers,
+        } = input;
         Self {
             runtime_config,
             generation,

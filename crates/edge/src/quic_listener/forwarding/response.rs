@@ -425,10 +425,10 @@ impl Http3Service {
             compression,
             cache,
         } = processed_response;
-        if matches!(compression.action, ResponseCompressionAction::Gzip) {
-            if let Some(policy) = req.plugin_plan.response_compression() {
-                policy.apply_selected_representation_headers(&mut response_headers, compression);
-            }
+        if matches!(compression.action, ResponseCompressionAction::Gzip)
+            && let Some(policy) = req.plugin_plan.response_compression()
+        {
+            policy.apply_selected_representation_headers(&mut response_headers, compression);
         }
         let progressive_body_emission_allowed = !emit_end_stream_on_headers;
         let response_guardrails = ResponseBodyGuardrailConfig {

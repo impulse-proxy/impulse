@@ -7,10 +7,9 @@ use impulse_contracts::{
 };
 use impulse_plugins::{CompiledAsyncRequestPlugin, ExternalAuthInput};
 use smallvec::SmallVec;
-use tokio::{sync::oneshot, task::AbortHandle};
 
 use super::{
-    auth::{observe_external_auth_plugin_completion, start_external_auth_task},
+    auth::{AuthStart, observe_external_auth_plugin_completion, start_external_auth_task},
     resolve::{
         ForwardTargetResolution, ForwardTargetResolutionInput, ResolutionContext,
         ResolutionObservation, TargetResolutionRequest,
@@ -27,9 +26,8 @@ use crate::{
     },
     runtime::connection::{
         auth::{
-            ExternalAuthCompletion, ExternalAuthFailureDisposition, ExternalAuthResult,
-            ExternalAuthTaskConfig, PendingHeaderMutation, apply_auth_request_mutations,
-            evaluate_external_auth_completion,
+            ExternalAuthCompletion, ExternalAuthFailureDisposition, ExternalAuthTaskConfig,
+            PendingHeaderMutation, apply_auth_request_mutations, evaluate_external_auth_completion,
         },
         outcome::{
             AdmissionOutcomeClass, BackendOutcomeTarget, RouteOutcomeTarget,
@@ -95,12 +93,15 @@ impl DispatchReadyCandidate {
         self,
         routing_transparency_enabled: bool,
         routing_transparency_include_reason: bool,
-        auth_result_rx: oneshot::Receiver<ExternalAuthResult>,
-        auth_abort: AbortHandle,
+        auth: AuthStart,
         auth_disposition: ExternalAuthFailureDisposition,
-        auth_started_at: Instant,
-        auth_deadline: Instant,
     ) -> RequestEnvelope {
+        let AuthStart {
+            rx: auth_result_rx,
+            abort: auth_abort,
+            started_at: auth_started_at,
+            deadline: auth_deadline,
+        } = auth;
         let DispatchReadyState {
             context,
             routing,
@@ -1029,11 +1030,8 @@ impl Http3Service {
                     request.request.into_awaiting_auth_envelope(
                         routing_transparency_enabled,
                         routing_transparency_include_reason,
-                        start.rx,
-                        start.abort,
+                        start,
                         auth_disposition,
-                        start.started_at,
-                        start.deadline,
                     )
                 } else {
                     request.request.into_dispatch_ready_envelope(
