@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+http.workspace = true
 impulse-contracts = { path = "../contracts" }
 impulse-policy = { path = "../policy" }
 sha2 = "0.10"

@@ -1665,6 +1665,7 @@ dependencies = [
 name = "impulse-plugins"
 version = "0.6.0"
 dependencies = [
+ "http",
  "impulse-contracts",
  "impulse-policy",
  "sha2",

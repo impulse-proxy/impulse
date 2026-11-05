@@ -1,4 +1,11 @@
-use std::{collections::HashMap, fmt, sync::Arc};
+use std::{
+    collections::HashMap,
+    fmt,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+};
 
 use impulse_contracts::PluginKind;
 
@@ -28,11 +35,12 @@ impl fmt::Display for PluginPlanCompileError {
 
 impl std::error::Error for PluginPlanCompileError {}
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct CompiledGenerationPluginPlans {
     generation: u64,
     connection: CompiledConnectionPlan,
     upstreams: HashMap<String, Arc<CompiledPluginPlan>>,
+    response_cache_namespace: Arc<AtomicU64>,
 }
 
 impl CompiledGenerationPluginPlans {
@@ -66,6 +74,16 @@ impl CompiledGenerationPluginPlans {
                     CompiledAsyncRequestPlugin::ExternalAuth(_) => None,
                 })
         })
+    }
+
+    #[must_use]
+    pub fn response_cache_namespace(&self) -> u64 {
+        self.response_cache_namespace.load(Ordering::Acquire)
+    }
+
+    pub fn inherit_response_cache_namespace(&self, namespace: u64) {
+        self.response_cache_namespace
+            .store(namespace, Ordering::Release);
     }
 }
 
@@ -106,12 +124,20 @@ pub fn compile_generation_plugin_plans(
         None => None,
     };
 
+    let response_cache_namespace = Arc::new(AtomicU64::new(generation));
     let upstreams = inputs
         .upstreams
         .into_vec()
         .into_iter()
         .map(|upstream| {
-            compile_upstream_plan(catalog, generation, upstream, &scoped_rate_limits, &quota)
+            compile_upstream_plan(
+                catalog,
+                generation,
+                upstream,
+                &scoped_rate_limits,
+                &quota,
+                &response_cache_namespace,
+            )
         })
         .collect::<Result<HashMap<_, _>, _>>()?;
 
@@ -119,6 +145,7 @@ pub fn compile_generation_plugin_plans(
         generation,
         connection,
         upstreams,
+        response_cache_namespace,
     })
 }
 
@@ -128,6 +155,7 @@ fn compile_upstream_plan(
     inputs: UpstreamPluginInputs,
     scoped_rate_limits: &Option<Arc<CompiledScopedRateLimit>>,
     quota: &Option<Arc<crate::CompiledQuota>>,
+    response_cache_namespace: &Arc<AtomicU64>,
 ) -> Result<(String, Arc<CompiledPluginPlan>), PluginPlanCompileError> {
     let mut request_gate = Vec::with_capacity(3);
     if let Some(api_key) = inputs.api_key_auth {
@@ -158,7 +186,9 @@ fn compile_upstream_plan(
     let mut cache_policy = Vec::with_capacity(1);
     if let Some(cache) = inputs.response_cache {
         require_available(catalog, PluginKind::ResponseCache)?;
-        cache_policy.push(CompiledCachePlugin::ResponseCache(cache));
+        cache_policy.push(CompiledCachePlugin::ResponseCache(Arc::new(
+            crate::CompiledResponseCache::new(cache, Arc::clone(response_cache_namespace)),
+        )));
     }
 
     let mut response_policy = Vec::with_capacity(1);

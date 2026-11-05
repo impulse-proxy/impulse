@@ -7,6 +7,7 @@ use impulse_contracts::{
 use impulse_errors::{HedgePolicyDecision, RetryPolicyDecision, is_idempotent_method};
 use impulse_lb::{BackendSelectionInput, pingora_backend::GenerationSelector};
 use impulse_observability::{HedgeDecisionReason, ResponseCacheOutcome, RetryDecisionReason};
+use impulse_plugins::ResponseCacheKeyParts;
 use impulse_transport::{
     UpstreamBodyFrame, UpstreamExchangeRequest, UpstreamExchangeResponse, UpstreamRequestExecutor,
     UpstreamRequestHead,
@@ -19,10 +20,7 @@ use crate::{
         response_processing::{CacheLookupProcessingInput, process_cache_lookup},
         retry::RetryCoordinator,
     },
-    runtime::{
-        cache::{ResponseCacheKeyInput, canonical_response_cache_key},
-        connection::{request::PendingForward, response::ForwardingPolicyTelemetry},
-    },
+    runtime::connection::{request::PendingForward, response::ForwardingPolicyTelemetry},
 };
 
 pub(in crate::quic_listener) type UpstreamRequest = Request<BoxBody<Bytes, Infallible>>;
@@ -71,33 +69,18 @@ enum H3CacheLookup {
 struct H3CacheLookupInput<'a> {
     cache_store: &'static crate::runtime::cache::BoundedPingoraMemoryCache,
     metrics: &'a Metrics,
-    policy: impulse_config::runtime::RuntimeResponseCachePolicy,
     pending_forward: &'a PendingForward,
-    namespace: u64,
     has_body: bool,
     tunnel_mode: TunnelMode,
 }
 
 struct H3CacheMiss {
     cache: Option<HttpCache>,
-    policy: Option<impulse_config::runtime::RuntimeResponseCachePolicy>,
 }
 
 impl H3CacheMiss {
-    fn into_parts(
-        mut self,
-    ) -> Option<(
-        HttpCache,
-        impulse_config::runtime::RuntimeResponseCachePolicy,
-    )> {
-        match (self.cache.take(), self.policy.take()) {
-            (Some(cache), Some(policy)) => Some((cache, policy)),
-            (Some(mut cache), None) => {
-                cache.disable(NoCacheReason::UpstreamError);
-                None
-            }
-            (None, _) => None,
-        }
+    fn into_cache(mut self) -> Option<HttpCache> {
+        self.cache.take()
     }
 }
 
@@ -136,9 +119,7 @@ impl Http3Service {
         let H3CacheLookupInput {
             cache_store,
             metrics,
-            policy,
             pending_forward,
-            namespace,
             has_body,
             tunnel_mode,
         } = input;
@@ -147,6 +128,9 @@ impl Http3Service {
                 .ingress_observations()
                 .record_response_cache_outcome(ResponseCacheOutcome::Bypass);
             H3CacheLookup::Bypass
+        };
+        let Some(compiled_cache) = pending_forward.plugin_plan.response_cache() else {
+            return bypass();
         };
         let mut headers = http::HeaderMap::new();
         for header in pending_forward.original_request_headers() {
@@ -193,19 +177,21 @@ impl Http3Service {
             Ok(values) => values.join(","),
             Err(_) => return bypass(),
         };
-        let Some(key) = canonical_response_cache_key(ResponseCacheKeyInput {
-            scheme: "https",
-            authority,
-            path_and_query: pending_forward.path.as_ref(),
-            representation,
-            accept_encoding: (!accept_encoding.is_empty()).then_some(accept_encoding.as_str()),
-            namespace,
-        }) else {
+        let Some(key) = compiled_cache
+            .key(ResponseCacheKeyParts {
+                scheme: "https",
+                authority,
+                path_and_query: pending_forward.path.as_ref(),
+                representation,
+                accept_encoding: (!accept_encoding.is_empty()).then_some(accept_encoding.as_str()),
+            })
+            .map(|primary| pingora_cache::key::CacheKey::new(primary, ""))
+        else {
             return bypass();
         };
 
         let mut cache = HttpCache::new();
-        cache_store.enable(&mut cache, policy.max_object_bytes);
+        cache_store.enable(&mut cache, compiled_cache.max_object_bytes());
         cache.set_cache_key(key);
         for _ in 0..2 {
             match cache.cache_lookup().await {
@@ -282,10 +268,7 @@ impl Http3Service {
             metrics
                 .ingress_observations()
                 .record_response_cache_outcome(ResponseCacheOutcome::Miss);
-            return H3CacheLookup::Miss(H3CacheMiss {
-                cache: Some(cache),
-                policy: Some(policy),
-            });
+            return H3CacheLookup::Miss(H3CacheMiss { cache: Some(cache) });
         }
         bypass()
     }
@@ -589,11 +572,6 @@ impl Http3Service {
         let alternate_generation = shared_ctx.generation;
         let alternate_metrics = Arc::clone(&shared_ctx.metrics);
         let response_cache_store = exec_ctx.response_cache;
-        let response_cache_namespace = exec_ctx.response_cache_namespace;
-        let response_cache_policy = shared_ctx
-            .upstream_policies
-            .get(pending_forward.upstream_name.as_ref())
-            .map(|policy| policy.response_cache.clone());
         let trace_span_for_upstream = req.trace_span.clone();
         let (result_tx, result_rx) = oneshot::channel::<UpstreamResult>();
         let tunnel_mode = req.tunnel_mode;
@@ -644,17 +622,11 @@ impl Http3Service {
             let upstream_executor = &executor;
             let mut policy_telemetry = ForwardingPolicyTelemetry::default();
             let result: ForwardResult = async {
-                let cache_miss = if let (
-                    Some(cache_store),
-                    Some(cache_policy),
-                ) = (response_cache_store, response_cache_policy)
-                {
+                let cache_miss = if let Some(cache_store) = response_cache_store {
                     match Self::lookup_h3_response_cache(H3CacheLookupInput {
                         cache_store,
                         metrics: alternate_metrics.as_ref(),
-                        policy: cache_policy,
                         pending_forward: pending_forward.as_ref(),
-                        namespace: response_cache_namespace,
                         has_body: !bodyless_mode,
                         tunnel_mode,
                     })
@@ -895,7 +867,7 @@ impl Http3Service {
                         status: response.head.status,
                         headers: response.head.headers,
                         body: response.body,
-                        cache_miss: cache_miss.and_then(H3CacheMiss::into_parts),
+                        cache_miss: cache_miss.and_then(H3CacheMiss::into_cache),
                         cache_hit: false,
                     }
                 };

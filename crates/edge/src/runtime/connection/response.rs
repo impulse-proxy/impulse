@@ -1,6 +1,5 @@
 use bytes::Bytes;
 use http::StatusCode;
-use impulse_config::runtime::RuntimeResponseCachePolicy;
 use impulse_contracts::{
     HedgeOutcomeTelemetryReason, HedgeTriggerTelemetryReason, RetryAttemptTelemetryReason,
     RetryPolicyDenialReason,
@@ -20,7 +19,7 @@ pub(crate) enum ForwardSuccess {
         status: http::StatusCode,
         headers: http::HeaderMap,
         body: UpstreamBody,
-        cache_miss: Option<(HttpCache, RuntimeResponseCachePolicy)>,
+        cache_miss: Option<HttpCache>,
         cache_hit: bool,
     },
     Tunnel {

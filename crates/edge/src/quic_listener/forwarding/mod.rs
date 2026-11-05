@@ -49,7 +49,6 @@ pub(in crate::quic_listener) struct ForwardingExecutionCtx<'a> {
     pub(in crate::quic_listener) global_inflight: Arc<Semaphore>,
     pub(in crate::quic_listener) inflight_acquire_wait: Duration,
     pub(in crate::quic_listener) response_cache: Option<&'static BoundedPingoraMemoryCache>,
-    pub(in crate::quic_listener) response_cache_namespace: u64,
 }
 
 pub(in crate::quic_listener) struct StreamProgressConfig {

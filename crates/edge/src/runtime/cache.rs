@@ -1,29 +1,21 @@
 use std::{
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
+    sync::Arc,
     time::{Duration, SystemTime},
 };
 
 use async_trait::async_trait;
 use impulse_config::runtime::{RuntimeConfig, RuntimeResponseCachePolicy};
 use impulse_observability::ResponseCacheOutcome;
-pub use impulse_policy::{
-    ResponseCacheAuthInput, ResponseCacheBypassReason, ResponseCacheKeyInput,
-    ResponseCachePolicyInput, ResponseCacheRepresentation, ResponseCacheRequestEligibilityInput,
-    ResponseCacheResponseEligibilityInput, evaluate_cache_request_eligibility,
-    evaluate_cache_response_eligibility, route_auth_requires_cache_bypass,
-};
+pub use impulse_policy::ResponseCacheRepresentation;
+#[cfg(test)]
+use pingora_cache::key::CacheKey;
 use pingora_cache::{
     HttpCache, MemCache,
     eviction::{
         CacheEntryKey, CacheEntryKeyRef, EvictionManager, simple_lru::Manager as LruEvictionManager,
     },
-    key::CacheKey,
     lock::CacheLock,
 };
-use pingora_http::ResponseHeader;
 
 use crate::Metrics;
 
@@ -32,59 +24,46 @@ const CACHE_LOCK_AGE_TIMEOUT: Duration = Duration::from_secs(60);
 #[derive(Clone)]
 pub(crate) struct RuntimeCacheStorage {
     cache: Option<&'static BoundedPingoraMemoryCache>,
-    namespace: Arc<AtomicU64>,
 }
 
 impl RuntimeCacheStorage {
-    pub(crate) fn new(config: &RuntimeConfig, generation: u64, metrics: Arc<Metrics>) -> Self {
+    pub(crate) fn new(config: &RuntimeConfig, metrics: Arc<Metrics>) -> Self {
         let cache = combined_storage_policy(config).map(|policy| {
             Box::leak(Box::new(BoundedPingoraMemoryCache::new(&policy, metrics)))
                 as &'static BoundedPingoraMemoryCache
         });
-        Self {
-            cache,
-            namespace: Arc::new(AtomicU64::new(generation)),
-        }
+        Self { cache }
     }
 
     pub(crate) fn cache(&self) -> Option<&'static BoundedPingoraMemoryCache> {
         self.cache
     }
+}
 
-    pub(crate) fn namespace(&self) -> u64 {
-        self.namespace.load(Ordering::Acquire)
-    }
+pub(crate) fn response_cache_namespaces_compatible(
+    current: &RuntimeConfig,
+    next: &RuntimeConfig,
+) -> bool {
+    let current = current
+        .upstreams
+        .iter()
+        .filter(|(_, upstream)| upstream.policy.response_cache.enabled)
+        .collect::<Vec<_>>();
+    let next_count = next
+        .upstreams
+        .values()
+        .filter(|upstream| upstream.policy.response_cache.enabled)
+        .count();
 
-    pub(crate) fn namespaces_compatible(
-        &self,
-        current: &RuntimeConfig,
-        next: &RuntimeConfig,
-    ) -> bool {
-        let current = current
-            .upstreams
-            .iter()
-            .filter(|(_, upstream)| upstream.policy.response_cache.enabled)
-            .collect::<Vec<_>>();
-        let next_count = next
-            .upstreams
-            .values()
-            .filter(|upstream| upstream.policy.response_cache.enabled)
-            .count();
-
-        current.len() == next_count
-            && current.into_iter().all(|(name, upstream)| {
-                next.upstreams
-                    .get(name)
-                    .filter(|candidate| candidate.policy.response_cache.enabled)
-                    .is_some_and(|candidate| {
-                        upstream.route == candidate.route && upstream.policy == candidate.policy
-                    })
-            })
-    }
-
-    pub(crate) fn rotate_namespace(&self, generation: u64) {
-        self.namespace.store(generation, Ordering::Release);
-    }
+    current.len() == next_count
+        && current.into_iter().all(|(name, upstream)| {
+            next.upstreams
+                .get(name)
+                .filter(|candidate| candidate.policy.response_cache.enabled)
+                .is_some_and(|candidate| {
+                    upstream.route == candidate.route && upstream.policy == candidate.policy
+                })
+        })
 }
 
 pub(crate) fn response_cache_storage_limits(config: &RuntimeConfig) -> Option<(usize, usize)> {
@@ -207,19 +186,6 @@ impl EvictionManager for ObservedEvictionManager {
     async fn load(&self, dir_path: &str) -> pingora_core::Result<()> {
         self.inner.load(dir_path).await
     }
-}
-
-pub fn response_cache_ttl(
-    response: &ResponseHeader,
-    max_ttl_secs: u64,
-    now: SystemTime,
-) -> Option<Duration> {
-    impulse_policy::response_cache_ttl(&response.headers, max_ttl_secs, now)
-}
-
-pub fn canonical_response_cache_key(input: ResponseCacheKeyInput<'_>) -> Option<CacheKey> {
-    impulse_policy::canonical_response_cache_key(input)
-        .map(|key| CacheKey::new(key.into_primary(), ""))
 }
 
 #[cfg(test)]

@@ -55,6 +55,13 @@ impl CompiledPluginPlan {
     }
 
     #[must_use]
+    pub fn response_cache(&self) -> Option<&crate::CompiledResponseCache> {
+        self.cache_policy.iter().find_map(|plugin| match plugin {
+            CompiledCachePlugin::ResponseCache(cache) => Some(cache.as_ref()),
+        })
+    }
+
+    #[must_use]
     pub fn response_policy(&self) -> &[CompiledResponsePlugin] {
         &self.response_policy
     }

@@ -3,8 +3,8 @@ use std::{fmt, net::IpAddr, sync::Arc};
 use impulse_contracts::PluginKind;
 
 use crate::{
-    ApiKeyAuthInput, CompiledQuota, ConnectionRateLimitInput, ExternalAuthInput, JwtAuthInput,
-    ResponseCacheInput, ResponseCompressionInput, ScopedRateLimitInput,
+    ApiKeyAuthInput, CompiledQuota, CompiledResponseCache, ConnectionRateLimitInput,
+    ExternalAuthInput, JwtAuthInput, ResponseCompressionInput, ScopedRateLimitInput,
     rate_limit::{
         ConnectionRateLimitRejection, ConnectionRateLimitRuntime, ScopedRateLimitDecision,
         ScopedRateLimitRuntime,
@@ -156,7 +156,7 @@ impl CompiledAsyncRequestPlugin {
 
 #[derive(Clone, Eq, PartialEq)]
 pub enum CompiledCachePlugin {
-    ResponseCache(ResponseCacheInput),
+    ResponseCache(Arc<CompiledResponseCache>),
 }
 
 impl CompiledCachePlugin {

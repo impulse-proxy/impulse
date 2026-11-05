@@ -9,26 +9,17 @@ use impulse_contracts::{
     PluginCacheView, PluginRequestView, PluginResponseMetadataView, PluginResponseView,
 };
 use impulse_plugins::{
-    CachePluginDecision, CompiledCachePlugin, CompiledPluginPlan, CompiledResponsePlugin,
-    ResponsePluginDecision, execute_cache_plugins, execute_response_plugins,
+    CachePluginDecision, CachePluginFillDecision, CompiledCachePlugin, CompiledPluginPlan,
+    CompiledResponsePlugin, ResponsePluginDecision, execute_cache_plugins,
+    execute_response_plugins,
 };
 use impulse_policy::{
-    ResponseCacheBypassReason, ResponseCacheRepresentation, ResponseCacheRequestEligibilityInput,
-    ResponseCacheResponseEligibilityInput, ResponseCompressionEvaluation, ResponseCompressionInput,
-    ResponseCompressionPolicyInput, ensure_vary_accept_encoding,
-    evaluate_cache_request_eligibility, evaluate_cache_response_eligibility,
-    evaluate_response_compression, response_cache_ttl,
+    ResponseCacheBypassReason, ResponseCacheRepresentation, ResponseCompressionEvaluation,
+    ResponseCompressionInput, ResponseCompressionPolicyInput, ensure_vary_accept_encoding,
+    evaluate_response_compression,
 };
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum ResponseCacheDecision {
-    Disabled,
-    Reject,
-    Store {
-        stored_at: SystemTime,
-        fresh_until: SystemTime,
-    },
-}
+pub(crate) type ResponseCacheDecision = CachePluginFillDecision;
 
 #[derive(Clone, Debug)]
 pub(crate) struct ResponseProcessingResult {
@@ -73,17 +64,13 @@ pub(crate) fn process_cache_lookup(
             representation: None,
         },
         |plugin, _| match plugin {
-            CompiledCachePlugin::ResponseCache(policy) => {
-                decision =
-                    evaluate_cache_request_eligibility(ResponseCacheRequestEligibilityInput {
-                        policy: impulse_policy::ResponseCachePolicyInput { enabled: true },
-                        route_auth_enabled: policy.authenticated_route,
-                        method: input.plugin_request.method,
-                        headers: input.headers,
-                        has_body: input.plugin_request.has_body,
-                        is_upgrade: input.is_upgrade,
-                        is_tunnel: input.is_tunnel,
-                    });
+            CompiledCachePlugin::ResponseCache(cache) => {
+                decision = cache.request_eligibility(
+                    input.plugin_request,
+                    input.headers,
+                    input.is_upgrade,
+                    input.is_tunnel,
+                );
                 if decision.is_ok() {
                     CachePluginDecision::Continue
                 } else {
@@ -152,26 +139,12 @@ pub(crate) fn process_response(input: ResponseProcessingInput<'_>) -> ResponsePr
             },
             |plugin, _| match plugin {
                 CompiledCachePlugin::ResponseCache(policy) => {
-                    cache = if !input.cache_fill_enabled {
-                        ResponseCacheDecision::Disabled
-                    } else if input.status != StatusCode::OK
-                        || evaluate_cache_response_eligibility(
-                            ResponseCacheResponseEligibilityInput { headers: &headers },
-                        )
-                        .is_err()
-                    {
-                        ResponseCacheDecision::Reject
-                    } else if let Some(ttl) =
-                        response_cache_ttl(&headers, policy.max_ttl_seconds, input.now)
-                        && let Some(fresh_until) = input.now.checked_add(ttl)
-                    {
-                        ResponseCacheDecision::Store {
-                            stored_at: input.now,
-                            fresh_until,
-                        }
-                    } else {
-                        ResponseCacheDecision::Reject
-                    };
+                    cache = policy.fill_decision(
+                        input.status,
+                        &headers,
+                        input.cache_fill_enabled,
+                        input.now,
+                    );
                     if matches!(cache, ResponseCacheDecision::Store { .. }) {
                         CachePluginDecision::Continue
                     } else {

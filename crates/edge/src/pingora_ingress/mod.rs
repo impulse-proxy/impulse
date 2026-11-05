@@ -33,7 +33,9 @@ use impulse_pingora_ingress::{
     tunnel_response_established, write_downstream_response, write_error_response,
     write_local_response,
 };
-use impulse_plugins::{AsyncRequestPluginExecutionGuard, CompiledAsyncRequestPlugin};
+use impulse_plugins::{
+    AsyncRequestPluginExecutionGuard, CompiledAsyncRequestPlugin, ResponseCacheKeyParts,
+};
 use pingora_cache::{CacheKey, CacheMeta, CachePhase, NoCacheReason, RespCacheable};
 use pingora_core::{
     Error, HTTPStatus, InternalError, Result,
@@ -80,7 +82,7 @@ use crate::{
     quic_listener::{BackendCandidate, ForwardingSelectionService, TargetResolutionRequest},
     runtime::{
         bundle::{RuntimeBundle, RuntimeBundleHandle},
-        cache::{ResponseCacheKeyInput, ResponseCacheRepresentation, canonical_response_cache_key},
+        cache::ResponseCacheRepresentation,
         connection::{
             auth::PendingHeaderMutation,
             outcome::{
@@ -102,7 +104,6 @@ const RESPONSE_GZIP_LEVEL: u32 = 6;
 
 pub(crate) struct PingoraEdgeRequestState {
     pub(crate) runtime: Arc<RuntimeBundle>,
-    response_cache_namespace: u64,
     pub(crate) route: Option<ResolvedRouteTarget>,
     pub(crate) policy: Option<ResolvedRequestPolicy>,
     auth_header_mutations: Vec<PendingHeaderMutation>,
@@ -624,12 +625,10 @@ impl PingoraRequestService for PingoraEdgeRequestService {
 
     fn new_context(&self) -> Self::Context {
         self.drain.request_started();
-        let (runtime, response_cache_namespace) =
-            self.runtime.current_with_response_cache_namespace();
+        let runtime = self.runtime.current();
         IngressRequestContext::new(
             PingoraEdgeRequestState {
                 runtime,
-                response_cache_namespace,
                 route: None,
                 policy: None,
                 auth_header_mutations: Vec::new(),
@@ -939,7 +938,9 @@ impl PingoraRequestService for PingoraEdgeRequestService {
         ) else {
             return Ok(());
         };
-        let cache_policy = &policy.local_auth_policy.response_cache;
+        let Some(compiled_cache) = policy.plugin_plan.response_cache() else {
+            return Ok(());
+        };
         let (is_upgrade, is_tunnel) = tunnel_cache_flags(ctx.tunnel_mode);
         let has_body = !session.is_body_empty();
         let Some(route) = ctx.route.as_ref() else {
@@ -991,7 +992,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             ctx.response_cache_bypass_recorded = true;
             return Ok(());
         };
-        cache.enable(&mut session.cache, cache_policy.max_object_bytes);
+        cache.enable(&mut session.cache, compiled_cache.max_object_bytes());
         ctx.response_cache_representation = Some(representation);
         Ok(())
     }
@@ -1007,6 +1008,11 @@ impl PingoraRequestService for PingoraEdgeRequestService {
         let path = ctx.path.as_deref().ok_or_else(|| {
             Error::explain(InternalError, "response cache request target is missing")
         })?;
+        let compiled_cache = ctx
+            .policy
+            .as_ref()
+            .and_then(|policy| policy.plugin_plan.response_cache())
+            .ok_or_else(|| Error::explain(InternalError, "response cache plugin is missing"))?;
         let accept_encoding = session
             .req_header()
             .headers
@@ -1022,15 +1028,16 @@ impl PingoraRequestService for PingoraEdgeRequestService {
                 )
             })?
             .join(",");
-        canonical_response_cache_key(ResponseCacheKeyInput {
-            scheme: "https",
-            authority,
-            path_and_query: path,
-            representation,
-            accept_encoding: (!accept_encoding.is_empty()).then_some(accept_encoding.as_str()),
-            namespace: ctx.response_cache_namespace,
-        })
-        .ok_or_else(|| Error::explain(InternalError, "response cache key is invalid"))
+        compiled_cache
+            .key(ResponseCacheKeyParts {
+                scheme: "https",
+                authority,
+                path_and_query: path,
+                representation,
+                accept_encoding: (!accept_encoding.is_empty()).then_some(accept_encoding.as_str()),
+            })
+            .map(|primary| CacheKey::new(primary, ""))
+            .ok_or_else(|| Error::explain(InternalError, "response cache key is invalid"))
     }
 
     fn response_cache_filter(

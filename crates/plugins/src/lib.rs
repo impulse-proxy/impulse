@@ -4,6 +4,7 @@
 #![deny(unused_crate_dependencies)]
 #![warn(unreachable_pub)]
 
+mod cache;
 mod catalog;
 mod compile;
 mod connection;
@@ -15,6 +16,7 @@ mod rate_limit;
 mod request;
 mod response;
 
+pub use cache::{CachePluginFillDecision, CompiledResponseCache, ResponseCacheKeyParts};
 pub use catalog::{
     ALL_COMPILED_PLUGIN_KINDS, PluginCatalog, PluginCatalogBuildError, compiled_plugin_catalog,
 };

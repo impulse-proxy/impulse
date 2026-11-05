@@ -53,16 +53,13 @@ impl Drop for ResponseCompressionByteMetrics {
 }
 
 fn prepare_response_cache(
-    cache_miss: Option<(
-        HttpCache,
-        impulse_config::runtime::RuntimeResponseCachePolicy,
-    )>,
+    cache_miss: Option<HttpCache>,
     status: http::StatusCode,
     headers: &http::HeaderMap,
     decision: ResponseCacheDecision,
     metrics: &Metrics,
 ) -> Option<HttpCache> {
-    let (mut cache, _policy) = cache_miss?;
+    let mut cache = cache_miss?;
     let ResponseCacheDecision::Store {
         stored_at,
         fresh_until,
@@ -460,7 +457,7 @@ impl Http3Service {
                 kind: BodyLimitKind::BodySize,
             })
         ) {
-            if let Some((mut cache, _)) = cache_miss.take() {
+            if let Some(mut cache) = cache_miss.take() {
                 cache.disable(NoCacheReason::ResponseTooLarge);
             }
             return ResponseStartDecision::ImmediateTerminal {

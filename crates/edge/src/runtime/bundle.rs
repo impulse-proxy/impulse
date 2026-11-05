@@ -145,7 +145,6 @@ impl RuntimeBundleHandle {
         let _ = lifecycle.mark_running();
         let response_cache = RuntimeCacheStorage::new(
             &bundle.runtime_config,
-            bundle.generation,
             Arc::clone(&bundle.shared_state.shared_services().metrics),
         );
         bundle
@@ -179,16 +178,27 @@ impl RuntimeBundleHandle {
         self.response_cache.cache()
     }
 
+    #[cfg(test)]
     pub(crate) fn response_cache_namespace(&self) -> u64 {
-        self.response_cache.namespace()
+        self.current()
+            .shared_state
+            .generation_state()
+            .plugin_plans
+            .response_cache_namespace()
     }
 
+    #[cfg(test)]
     pub(crate) fn current_with_response_cache_namespace(&self) -> (Arc<RuntimeBundle>, u64) {
         let guard = self
             .inner
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        (Arc::clone(&guard), self.response_cache.namespace())
+        let namespace = guard
+            .shared_state
+            .generation_state()
+            .plugin_plans
+            .response_cache_namespace();
+        (Arc::clone(&guard), namespace)
     }
 
     /// The shared process lifecycle state machine (Phase 6). All clones of this
@@ -442,9 +452,22 @@ impl RuntimeBundleHandle {
                     expected_generation, previous_generation
                 )));
             }
-            let rotate_response_cache_namespace = !self
-                .response_cache
-                .namespaces_compatible(&guard.runtime_config, &bundle.runtime_config);
+            if crate::runtime::cache::response_cache_namespaces_compatible(
+                &guard.runtime_config,
+                &bundle.runtime_config,
+            ) {
+                bundle
+                    .shared_state
+                    .generation_state()
+                    .plugin_plans
+                    .inherit_response_cache_namespace(
+                        guard
+                            .shared_state
+                            .generation_state()
+                            .plugin_plans
+                            .response_cache_namespace(),
+                    );
+            }
             activate_transport_pool_generation(
                 bundle
                     .shared_state
@@ -458,9 +481,6 @@ impl RuntimeBundleHandle {
             // new readers; existing readers keep their clone until it drains.
             let previous = std::mem::replace(&mut *guard, Arc::new(bundle));
             next_tasks.activate();
-            if rotate_response_cache_namespace {
-                self.response_cache.rotate_namespace(generation);
-            }
             previous
         };
         // Retire only the previous generation's generation-owned background tasks.
