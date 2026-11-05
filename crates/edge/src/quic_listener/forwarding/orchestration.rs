@@ -14,6 +14,7 @@ use crate::{
             BackendOutcomeTarget, RouteOutcomeTarget, observe_admission_outcome,
             observe_proxy_error_outcome,
         },
+        request::PendingForward,
         stream::{
             AdmissionPermits, BackendFailureReason, CancellationReason, RejectionReason,
             TerminalReason,

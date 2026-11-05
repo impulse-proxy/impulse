@@ -3,12 +3,12 @@ use impulse_contracts::{
     BoundedRejectionResponse, PluginRejection, PluginRequestView, RequestDecision,
 };
 use impulse_plugins::{CompiledAsyncRequestPlugin, CompiledPluginPlan};
-use impulse_policy::evaluate_brownout_admission;
-
-use crate::resilience::{
+use impulse_policy::{
+    evaluate_brownout_admission,
     quota::{QuotaDecision, QuotaDenyReason},
-    runtime::RuntimeResilience,
 };
+
+use crate::resilience::runtime::RuntimeResilience;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct QuotaRejectedDecision {

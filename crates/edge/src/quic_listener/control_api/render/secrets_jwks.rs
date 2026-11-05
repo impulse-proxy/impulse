@@ -142,7 +142,7 @@ pub(super) fn build_secrets_payload(
 
 pub(super) fn jwt_provider_payload(
     jwt: &RuntimeJwtAuth,
-    jwks_by_source_id: &HashMap<&str, &crate::quic_listener::admission::JwtJwksRuntimeSnapshot>,
+    jwks_by_source_id: &HashMap<&str, &impulse_policy::jwks::JwtJwksRuntimeSnapshot>,
 ) -> ControlApiJwtProviderPayload {
     let issuers = jwt
         .issuer

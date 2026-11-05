@@ -62,6 +62,10 @@ impl ControlApiServiceState {
         self.runtime.resilience()
     }
 
+    pub(super) fn plugin_plans(&self) -> Arc<impulse_plugins::CompiledGenerationPluginPlans> {
+        self.runtime.plugin_plans()
+    }
+
     pub(super) fn snapshot_backend_inventory(&self) -> BackendLifecycleInventorySnapshot {
         self.observability.backend_inventory()
     }
@@ -92,6 +96,7 @@ impl ControlApiServiceCtx {
             runtime.runtime_config().clone(),
             generation,
             runtime.resilience(),
+            runtime.plugin_plans(),
             runtime.listener_runtime_configs(),
             runtime.listener_tls_store(),
             runtime.primary_listener_label().map(ToOwned::to_owned),

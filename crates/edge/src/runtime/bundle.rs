@@ -179,15 +179,6 @@ impl RuntimeBundleHandle {
     }
 
     #[cfg(test)]
-    pub(crate) fn response_cache_namespace(&self) -> u64 {
-        self.current()
-            .shared_state
-            .generation_state()
-            .plugin_plans
-            .response_cache_namespace()
-    }
-
-    #[cfg(test)]
     pub(crate) fn current_with_response_cache_namespace(&self) -> (Arc<RuntimeBundle>, u64) {
         let guard = self
             .inner
@@ -539,10 +530,10 @@ impl RuntimeBundleHandle {
                     .keys()
                     .map(String::as_str),
                 generation_state
-                    .resilience
-                    .quota
-                    .policies
-                    .iter()
+                    .plugin_plans
+                    .quota()
+                    .into_iter()
+                    .flat_map(|quota| quota.runtime().policies.iter())
                     .map(|policy| policy.name.as_str()),
             );
         metrics
@@ -727,14 +718,19 @@ mod tests {
         config: &ImpulseConfigConfig,
     ) -> RuntimeBundle {
         let runtime_config = RuntimeConfig::from_config(config).expect("runtime config");
-        let mut bundle = Http3Service::build_runtime_bundle(
-            config_path.to_string(),
-            config.log.clone(),
-            &runtime_config,
-        )
-        .expect("runtime bundle");
-        bundle.generation = generation;
-        bundle
+        let shared_state = Arc::new(
+            Http3Service::build_shared_state_for_generation(&runtime_config, None, generation)
+                .expect("runtime state"),
+        );
+        RuntimeBundle {
+            generation,
+            startup: StartupOwnedRuntimeState {
+                config_path: config_path.to_string(),
+                log_config: config.log.clone(),
+            },
+            runtime_config,
+            shared_state,
+        }
     }
 
     fn runtime_bundle_pair(

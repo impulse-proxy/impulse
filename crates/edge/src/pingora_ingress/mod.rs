@@ -52,7 +52,6 @@ use pingora_core::{
 };
 use pingora_http::{RequestHeader, ResponseHeader};
 use pingora_proxy::{HttpProxy, Session, http_proxy};
-use quiche::h3::NameValue;
 use rustls::{
     server::{ClientHello, ResolvesServerCert},
     sign::CertifiedKey,

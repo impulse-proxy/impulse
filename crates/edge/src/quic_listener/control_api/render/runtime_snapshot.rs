@@ -115,6 +115,7 @@ impl Http3Service {
                     &runtime_state,
                     &backend_inventory,
                     &backend_summary,
+                    quota_runtime.enabled,
                     &quota_backend_status,
                 ),
                 retained_generations: runtime_bundle_handle
@@ -171,6 +172,7 @@ impl Http3Service {
                     &runtime_state,
                     &backend_inventory,
                     &backend_summary,
+                    quota_runtime.enabled,
                     &quota_backend_status,
                 ),
                 retained_generation: ControlApiRetainedGenerationPayload::from_record(record),
@@ -250,6 +252,7 @@ impl ControlApiRuntimePayload {
                 &state,
                 &backend_inventory,
                 &backend_summary,
+                quota_runtime.enabled,
                 &quota_backend_status,
             ),
             auth: ControlApiAuthPayload {
@@ -425,6 +428,7 @@ impl ControlApiObservabilityPayload {
         state: &super::context::ControlApiServiceState,
         backend_inventory: &BackendLifecycleInventorySnapshot,
         backend_summary: &crate::runtime::backend::state::BackendLifecycleInventorySummary,
+        quota_enabled: bool,
         quota_backend_status: &QuotaBackendStatusSnapshot,
     ) -> Self {
         Self {
@@ -480,7 +484,7 @@ impl ControlApiObservabilityPayload {
                 *backend_summary,
             ),
             quota_backend_health_summary: ControlApiQuotaBackendHealthSummaryPayload::from_snapshot(
-                quota_runtime.enabled,
+                quota_enabled,
                 quota_backend_status,
             ),
             recent_admin_actions: state

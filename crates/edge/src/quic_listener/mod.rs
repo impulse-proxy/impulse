@@ -106,7 +106,7 @@ mod tls_runtime;
 mod validation;
 mod workers;
 
-pub(crate) use admission::jwt::{
+pub(crate) use admission::{
     log_jwt_validation_rejection, observe_jwt_validation_failure, validate_jwt_token_for_generation,
 };
 pub(crate) use async_runtime::configure_async_runtime;
@@ -119,7 +119,7 @@ use connection::resolve_primary_from_radix_prefix;
 pub(crate) use connection::{ConnectionRoutes, sweep_closed_connections};
 pub(crate) use forwarding::{
     BackendCandidate, ForwardingSelectionService, TargetResolutionRequest,
-    auth::execute_external_auth_request,
+    execute_external_auth_request,
 };
 use forwarding::{
     ForwardingExecutionCtx, ForwardingSharedCtx, H3RequestHandlingConfig, StreamProgressConfig,

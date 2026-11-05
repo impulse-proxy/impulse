@@ -14,7 +14,6 @@ pub(crate) fn resolve_policy(
 ) -> ResolvedRequestPolicy {
     ResolvedRequestPolicy {
         plugin_plan,
-        local_auth_policy: upstream_policy.clone(),
         host_policy: upstream_policy.host.0.clone(),
         forwarded_header_policy: upstream_policy.forwarded_headers.0.clone(),
     }
@@ -25,8 +24,6 @@ pub(crate) fn resolve_policy(
 pub(crate) struct ResolvedRequestPolicy {
     /// Generation-pinned plugin plan selected with this upstream policy.
     pub(crate) plugin_plan: Arc<CompiledPluginPlan>,
-    /// Local API-key and JWT/JWKS policy evaluated before external auth.
-    pub(crate) local_auth_policy: RuntimeUpstreamPolicy,
     pub(crate) host_policy: UpstreamHostPolicy,
     pub(crate) forwarded_header_policy: ForwardedHeaderPolicy,
 }

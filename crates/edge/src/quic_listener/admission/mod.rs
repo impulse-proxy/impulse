@@ -16,12 +16,14 @@ use boring::{
 use http::StatusCode;
 #[cfg(test)]
 use impulse_config::runtime::RuntimeUpstreamPolicy;
-use impulse_config::runtime::{RuntimeJwtAuth, RuntimeJwtVerificationKey};
+use impulse_config::{
+    config::JwtAlgorithm,
+    runtime::{RuntimeJwtAuth, RuntimeJwtVerificationKey},
+};
 use impulse_lb::upstream_pool::UpstreamPool;
 #[cfg(test)]
 use impulse_policy::evaluate_brownout_admission;
 use impulse_policy::{AdaptivePermit, evaluate_adaptive_admission};
-use quiche::h3::NameValue;
 use serde_json::Value;
 #[cfg(test)]
 use serial_test::serial;
@@ -67,7 +69,10 @@ pub(super) use impulse_policy::jwks::{
 
 #[cfg(test)]
 pub(super) use self::jwt::validated_hs256_jwt_claims;
-pub(super) use self::jwt::{JwtValidationFailure, JwtValidationFailureReason};
+pub(crate) use self::jwt::{
+    JwtValidationFailure, JwtValidationFailureReason, log_jwt_validation_rejection,
+    observe_jwt_validation_failure, validate_jwt_token_for_generation,
+};
 #[cfg(test)]
 pub(super) use self::jwt::{jwt_claims_satisfy_rbac, validate_jwt_token};
 use self::{jwt::*, key_resolution::*};

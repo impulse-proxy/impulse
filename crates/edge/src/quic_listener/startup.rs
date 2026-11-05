@@ -74,6 +74,8 @@ impl Http3Service {
         let runtime_config = RuntimeConfig::from_config(&config)
             .map_err(|err| ProxyError::Transport(err.to_string()))?;
         let shared_state = Arc::new(Self::build_shared_state(&runtime_config)?);
+        shared_state.generation_state().generation_tasks.activate();
+        shared_state.shared_services().process_tasks.activate();
         crate::runtime::jwks::register_metrics(&shared_state.shared_services().metrics);
         QuotaRuntime::register_metrics(&Arc::clone(&shared_state.shared_services().metrics));
         crate::runtime::jwks::preflight_require_ready(&runtime_config, "startup_preflight")?;
