@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use impulse_contracts::HealthFailureReason;
+use impulse_contracts::{HealthFailureReason, PluginKind};
 use serde::Serialize;
 
 #[cfg(test)]
@@ -62,6 +62,7 @@ struct ControlApiRuntimePayload {
     workers: ControlApiWorkerPayload,
     watchdog: ControlApiRuntimeWatchdogPayload,
     adaptive_admission: ControlApiAdaptiveAdmissionPayload,
+    plugins: ControlApiPluginRuntimePayload,
     quota: ControlApiQuotaPayload,
     observability: ControlApiObservabilityPayload,
     auth: ControlApiAuthPayload,
@@ -101,6 +102,35 @@ struct ControlApiAdaptiveAdmissionPayload {
     enabled: bool,
     current_limit: usize,
     inflight_percent: u8,
+}
+
+#[derive(Serialize)]
+struct ControlApiPluginRuntimePayload {
+    generation: u64,
+    compiled_availability: Vec<ControlApiCompiledPluginPayload>,
+    active_kinds: Vec<ControlApiActivePluginPayload>,
+    health: ControlApiPluginHealthPayload,
+}
+
+#[derive(Serialize)]
+struct ControlApiCompiledPluginPayload {
+    kind: &'static str,
+    available: bool,
+}
+
+#[derive(Serialize)]
+struct ControlApiActivePluginPayload {
+    kind: &'static str,
+    instances: usize,
+}
+
+#[derive(Serialize)]
+struct ControlApiPluginHealthPayload {
+    status: &'static str,
+    generation_aligned: bool,
+    active_instance_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<&'static str>,
 }
 
 #[derive(Serialize)]

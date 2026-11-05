@@ -237,6 +237,10 @@ impl ControlApiRuntimePayload {
                 current_limit: resilience.adaptive_admission.current_limit(),
                 inflight_percent: resilience.adaptive_admission.inflight_percent(),
             },
+            plugins: ControlApiPluginRuntimePayload::from_runtime(
+                state.generation().map(|generation| generation.generation()),
+                plugin_plans.as_ref(),
+            ),
             quota: ControlApiQuotaPayload::from_snapshot(
                 quota_runtime,
                 quota_backend_status.clone(),
@@ -327,8 +331,8 @@ impl ControlApiRuntimePayload {
             },
             secrets: build_secrets_payload(runtime.runtime_config()),
             extension_model: ControlApiExtensionModelPayload {
-                status: "non_goal",
-                details: "No plugin/middleware ABI is exposed in-process today; extension support remains a deliberate non-goal until a safe isolation model is designed.",
+                status: "compiled_only",
+                details: "Plugins are statically compiled and generation-owned; no dynamic in-process plugin ABI is exposed.",
             },
             runtime: state
                 .generation()
@@ -336,6 +340,61 @@ impl ControlApiRuntimePayload {
                     generation: active.generation(),
                     config_path: active.startup().config_path.clone(),
                 }),
+        }
+    }
+}
+
+impl ControlApiPluginRuntimePayload {
+    fn from_runtime(
+        runtime_generation: Option<u64>,
+        plans: &impulse_plugins::CompiledGenerationPluginPlans,
+    ) -> Self {
+        let catalog = impulse_plugins::compiled_plugin_catalog();
+        let compiled_availability = PluginKind::ALL
+            .into_iter()
+            .map(|kind| ControlApiCompiledPluginPayload {
+                kind: kind.label(),
+                available: catalog.contains(kind),
+            })
+            .collect();
+        let active_kinds = PluginKind::ALL
+            .into_iter()
+            .filter_map(|kind| {
+                let instances = plans.active_count(kind);
+                (instances > 0).then_some(ControlApiActivePluginPayload {
+                    kind: kind.label(),
+                    instances,
+                })
+            })
+            .collect::<Vec<_>>();
+        let generation_aligned = runtime_generation == Some(plans.generation());
+        let active_kinds_available = PluginKind::ALL
+            .into_iter()
+            .filter(|kind| plans.active_count(*kind) > 0)
+            .all(|kind| catalog.contains(kind));
+        let active_instance_count = active_kinds.iter().map(|active| active.instances).sum();
+        let reason = if !generation_aligned {
+            Some("generation_mismatch")
+        } else if !active_kinds_available {
+            Some("compiled_plugin_unavailable")
+        } else {
+            None
+        };
+
+        Self {
+            generation: plans.generation(),
+            compiled_availability,
+            active_kinds,
+            health: ControlApiPluginHealthPayload {
+                status: if reason.is_none() {
+                    "healthy"
+                } else {
+                    "degraded"
+                },
+                generation_aligned,
+                active_instance_count,
+                reason,
+            },
         }
     }
 }
