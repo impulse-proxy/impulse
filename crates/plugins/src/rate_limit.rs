@@ -369,9 +369,12 @@ fn request_key_spec(raw: &str) -> RequestKeySpec {
     }
 }
 
+type ScopedIdentityBuckets = HashMap<String, (TokenBucket, Instant)>;
+type ScopedIdentityShard = Mutex<ScopedIdentityBuckets>;
+
 struct ScopedIdentityStore {
     hash_builder: RandomState,
-    shards: Box<[Mutex<HashMap<String, (TokenBucket, Instant)>>]>,
+    shards: Box<[ScopedIdentityShard]>,
     live_buckets: AtomicUsize,
     prune_state: Mutex<PerSourcePruneState>,
     rate_per_sec: u32,

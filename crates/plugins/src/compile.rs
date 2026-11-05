@@ -214,8 +214,8 @@ fn compile_upstream_plan(
     }
     if let Some(jwt) = inputs.jwt_auth {
         require_available(catalog, PluginKind::JwtAuth)?;
-        request_gate.push(CompiledRequestPlugin::JwtAuth(crate::CompiledJwtAuth::new(
-            generation, jwt,
+        request_gate.push(CompiledRequestPlugin::JwtAuth(Box::new(
+            crate::CompiledJwtAuth::new(generation, jwt),
         )));
     }
     if let Some(scoped_rate_limits) = scoped_rate_limits {

@@ -45,7 +45,6 @@ impl CompiledResponseCache {
         Self { input, namespace }
     }
 
-    #[must_use]
     pub fn request_eligibility(
         &self,
         request: PluginRequestView<'_>,

@@ -108,7 +108,7 @@ impl CompiledScopedRateLimit {
 #[derive(Clone)]
 pub enum CompiledRequestPlugin {
     ApiKeyAuth(ApiKeyAuthInput),
-    JwtAuth(CompiledJwtAuth),
+    JwtAuth(Box<CompiledJwtAuth>),
     ScopedRateLimit(Arc<CompiledScopedRateLimit>),
 }
 

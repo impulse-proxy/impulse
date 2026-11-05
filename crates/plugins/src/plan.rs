@@ -56,9 +56,12 @@ impl CompiledPluginPlan {
 
     #[must_use]
     pub fn response_cache(&self) -> Option<&crate::CompiledResponseCache> {
-        self.cache_policy.iter().find_map(|plugin| match plugin {
-            CompiledCachePlugin::ResponseCache(cache) => Some(cache.as_ref()),
-        })
+        self.cache_policy
+            .iter()
+            .map(|plugin| match plugin {
+                CompiledCachePlugin::ResponseCache(cache) => cache.as_ref(),
+            })
+            .next()
     }
 
     #[must_use]
@@ -68,9 +71,12 @@ impl CompiledPluginPlan {
 
     #[must_use]
     pub fn response_compression(&self) -> Option<&crate::CompiledResponseCompression> {
-        self.response_policy.iter().find_map(|plugin| match plugin {
-            CompiledResponsePlugin::ResponseCompression(compression) => Some(compression),
-        })
+        self.response_policy
+            .iter()
+            .map(|plugin| match plugin {
+                CompiledResponsePlugin::ResponseCompression(compression) => compression,
+            })
+            .next()
     }
 
     #[must_use]
