@@ -10,12 +10,12 @@ use impulse_contracts::{
 };
 use impulse_plugins::{
     CachePluginDecision, CachePluginFillDecision, CompiledCachePlugin, CompiledPluginPlan,
-    CompiledResponseCompression, CompiledResponsePlugin, ResponseCompressionEvaluation,
-    ResponsePluginDecision, execute_cache_plugins, execute_response_plugins,
+    CompiledResponseCompression, CompiledResponsePlugin, ResponsePluginDecision,
+    execute_cache_plugins, execute_response_plugins,
 };
-use impulse_policy::{ResponseCacheBypassReason, ResponseCacheRepresentation};
-
-pub(crate) type ResponseCacheDecision = CachePluginFillDecision;
+use impulse_policy::{
+    ResponseCacheBypassReason, ResponseCacheRepresentation, ResponseCompressionEvaluation,
+};
 
 #[derive(Clone, Debug)]
 pub(crate) struct ResponseProcessingResult {
@@ -23,7 +23,7 @@ pub(crate) struct ResponseProcessingResult {
     pub(crate) body_forwarding_enabled: bool,
     pub(crate) emit_end_stream_on_headers: bool,
     pub(crate) compression: ResponseCompressionEvaluation,
-    pub(crate) cache: ResponseCacheDecision,
+    pub(crate) cache: CachePluginFillDecision,
 }
 
 pub(crate) struct ResponseProcessingInput<'a> {
@@ -134,7 +134,7 @@ pub(crate) fn process_response(input: ResponseProcessingInput<'_>) -> ResponsePr
             body_allowed: matches!(normalized.emission.body, ResponseBodyPolicy::Forward),
         };
 
-        let mut cache = ResponseCacheDecision::Disabled;
+        let mut cache = CachePluginFillDecision::Disabled;
         let _ = execute_cache_plugins(
             input.plugin_plan,
             PluginPhase::CacheFill,
@@ -157,7 +157,7 @@ pub(crate) fn process_response(input: ResponseProcessingInput<'_>) -> ResponsePr
                         input.cache_fill_enabled,
                         input.now,
                     );
-                    if matches!(cache, ResponseCacheDecision::Store { .. }) {
+                    if matches!(cache, CachePluginFillDecision::Store { .. }) {
                         CachePluginDecision::Continue
                     } else {
                         CachePluginDecision::Bypass

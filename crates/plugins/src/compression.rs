@@ -1,7 +1,6 @@
 use http::HeaderMap;
-pub use impulse_policy::ResponseCompressionEvaluation;
 use impulse_policy::{
-    ResponseCompressionAction, ResponseCompressionBypassReason,
+    ResponseCompressionAction, ResponseCompressionBypassReason, ResponseCompressionEvaluation,
     ResponseCompressionInput as PolicyCompressionInput, ResponseCompressionPolicyInput,
     apply_gzip_response_headers, ensure_vary_accept_encoding, evaluate_response_compression,
 };

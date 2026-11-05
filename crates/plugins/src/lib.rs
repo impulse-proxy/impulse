@@ -24,7 +24,7 @@ pub use catalog::{
 pub use compile::{
     CompiledGenerationPluginPlans, PluginPlanCompileError, compile_generation_plugin_plans,
 };
-pub use compression::{CompiledResponseCompression, ResponseCompressionEvaluation};
+pub use compression::CompiledResponseCompression;
 pub use connection::{
     ConnectionPluginExecution, ConnectionPluginRejection, execute_connection_plugins,
 };

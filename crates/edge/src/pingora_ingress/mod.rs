@@ -34,8 +34,10 @@ use impulse_pingora_ingress::{
     write_local_response,
 };
 use impulse_plugins::{
-    AsyncRequestPluginExecutionGuard, CompiledAsyncRequestPlugin, ResponseCacheKeyParts,
+    AsyncRequestPluginExecutionGuard, CachePluginFillDecision, CompiledAsyncRequestPlugin,
+    ResponseCacheKeyParts,
 };
+use impulse_policy::ResponseCacheRepresentation;
 use pingora_cache::{CacheKey, CacheMeta, CachePhase, NoCacheReason, RespCacheable};
 use pingora_core::{
     Error, HTTPStatus, InternalError, Result,
@@ -74,15 +76,14 @@ use crate::{
         },
         request_validation::validate_http_request_parts,
         response_processing::{
-            CacheLookupProcessingInput, ResponseCacheDecision, ResponseProcessingInput,
-            ResponseProcessingResult, process_cache_lookup, process_response,
+            CacheLookupProcessingInput, ResponseProcessingInput, ResponseProcessingResult,
+            process_cache_lookup, process_response,
         },
         retry::RetryCoordinator,
     },
     quic_listener::{BackendCandidate, ForwardingSelectionService, TargetResolutionRequest},
     runtime::{
         bundle::{RuntimeBundle, RuntimeBundleHandle},
-        cache::ResponseCacheRepresentation,
         connection::{
             auth::PendingHeaderMutation,
             outcome::{
@@ -1054,7 +1055,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             Some(processed) => processed,
             None => Self::process_response_head(session, response, ctx)?,
         };
-        let ResponseCacheDecision::Store {
+        let CachePluginFillDecision::Store {
             stored_at,
             fresh_until,
         } = processed.cache

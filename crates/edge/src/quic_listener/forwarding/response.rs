@@ -4,6 +4,7 @@ use bytes::Bytes;
 use impulse_contracts::{HealthFailureReason, IngressProtocol, PluginRequestView};
 use impulse_errors::{UpstreamProxyErrorKind, classify_upstream_proxy_error};
 use impulse_observability::{ResponseCacheOutcome, ResponseCompressionAction};
+use impulse_plugins::CachePluginFillDecision;
 use impulse_transport::{UpstreamBody, UpstreamBodyFrame};
 use pingora_cache::{CacheMeta, HttpCache, NoCacheReason};
 use pingora_core::protocols::http::compression::Algorithm;
@@ -21,8 +22,7 @@ use crate::{
             response_body_limit_reason, response_chunk_ranges,
         },
         response_processing::{
-            ResponseCacheDecision, ResponseProcessingInput, ResponseProcessingResult,
-            process_response,
+            ResponseProcessingInput, ResponseProcessingResult, process_response,
         },
     },
     runtime::connection::{
@@ -55,11 +55,11 @@ fn prepare_response_cache(
     cache_miss: Option<HttpCache>,
     status: http::StatusCode,
     headers: &http::HeaderMap,
-    decision: ResponseCacheDecision,
+    decision: CachePluginFillDecision,
     metrics: &Metrics,
 ) -> Option<HttpCache> {
     let mut cache = cache_miss?;
-    let ResponseCacheDecision::Store {
+    let CachePluginFillDecision::Store {
         stored_at,
         fresh_until,
     } = decision

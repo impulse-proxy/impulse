@@ -6,7 +6,6 @@ use std::{
 use async_trait::async_trait;
 use impulse_config::runtime::{RuntimeConfig, RuntimeResponseCachePolicy};
 use impulse_observability::ResponseCacheOutcome;
-pub use impulse_policy::ResponseCacheRepresentation;
 #[cfg(test)]
 use pingora_cache::key::CacheKey;
 use pingora_cache::{
