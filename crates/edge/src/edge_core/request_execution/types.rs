@@ -5,7 +5,7 @@ use impulse_contracts::{
     PluginRejectionReason, RequestDecision, RequestId,
 };
 
-use super::{policy::ResolvedRequestPolicy, routing::RouteResolutionError};
+use super::policy::ResolvedRequestPolicy;
 use crate::routing::decision::RouteDecisionReason;
 
 pub(crate) type RequestHeaderLookup<'a> = dyn Fn(&str) -> Option<String> + Sync + 'a;
@@ -16,7 +16,6 @@ pub(crate) struct RequestExecutionInput<'a> {
     pub(crate) path: &'a str,
     pub(crate) authority: Option<&'a str>,
     pub(crate) peer_address: SocketAddr,
-    pub(crate) headers: Option<&'a RequestHeaderLookup<'a>>,
 }
 
 /// Request metadata required by the shared compiled-plugin path.
@@ -29,16 +28,6 @@ pub(crate) struct PluginRequestExecutionInput<'a> {
     pub(crate) external_auth_headers: Option<&'a http::HeaderMap>,
     pub(crate) has_body: bool,
     pub(crate) body_replayable: bool,
-}
-
-pub(crate) type RequestExecutionResult =
-    Result<RequestExecutionState<ResolvedRouteTarget>, RouteResolutionError>;
-
-/// Protocol-neutral execution state paired with its resolved route.
-pub(crate) struct RequestExecutionState<Route> {
-    pub(crate) route: Route,
-    pub(crate) policy: ResolvedRequestPolicy,
-    pub(crate) admission: RequestDecision,
 }
 
 pub(crate) struct PluginRequestExecutionState<Route> {

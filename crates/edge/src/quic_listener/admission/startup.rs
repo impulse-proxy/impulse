@@ -124,9 +124,8 @@ impl Http3Service {
                 });
             }
             while let Some(result) = refresh_tasks.join_next().await {
-                if let Err(error) = result {
-                    log::error!("JWKS refresh task failed: {error}");
-                }
+                let Err(error) = result;
+                log::error!("JWKS refresh task failed: {error}");
             }
         });
     }

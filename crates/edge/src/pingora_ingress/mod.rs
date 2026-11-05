@@ -705,12 +705,6 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             return Ok(true);
         };
         let request_headers = &request.headers;
-        let header_lookup = |name: &str| {
-            request_headers
-                .get(name)
-                .and_then(|value| value.to_str().ok())
-                .map(str::to_owned)
-        };
         let plugin_header_lookup =
             |name: &str| request_headers.get(name).map(http::HeaderValue::as_bytes);
         let request_service = EdgeRequestService::new(
@@ -727,7 +721,6 @@ impl PingoraRequestService for PingoraEdgeRequestService {
                         path: &validated.path,
                         authority: validated.authority.as_deref(),
                         peer_address,
-                        headers: Some(&header_lookup),
                     },
                     request_id: ctx.request_id,
                     generation: runtime.generation,

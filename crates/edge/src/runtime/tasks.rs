@@ -80,7 +80,8 @@ impl RuntimeTaskRegistry {
         let mut lifecycle = self.lifecycle.subscribe();
         let join = handle.spawn(async move {
             loop {
-                match *lifecycle.borrow_and_update() {
+                let current = *lifecycle.borrow_and_update();
+                match current {
                     RuntimeTaskLifecycle::Active => {
                         future.await;
                         return;

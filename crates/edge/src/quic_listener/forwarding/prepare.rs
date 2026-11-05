@@ -535,7 +535,6 @@ impl Http3Service {
                     path,
                     authority,
                     peer_address,
-                    headers: Some(&lb_header_lookup),
                 },
                 request_id: intake.request_id(),
                 generation: shared_ctx.generation,

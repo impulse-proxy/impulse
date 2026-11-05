@@ -15,8 +15,7 @@ use impulse_plugins::{
 
 use super::{
     PluginRequestExecutionInput, PluginRequestExecutionOutcome, PluginRequestExecutionState,
-    PluginTerminalObservation, RequestExecutionInput, RequestExecutionResult,
-    RequestExecutionState, admission::evaluate_admission, policy::resolve_policy,
+    PluginTerminalObservation, admission::evaluate_admission, policy::resolve_policy,
     routing::resolve_route,
 };
 use crate::{resilience::runtime::RuntimeResilience, routing::index::RouteIndex};
@@ -28,7 +27,6 @@ pub(crate) struct EdgeRequestService<'a> {
     plugin_plans: &'a CompiledGenerationPluginPlans,
     resilience: &'a RuntimeResilience,
 }
-
 impl<'a> EdgeRequestService<'a> {
     pub(crate) fn new(
         routing_index: &'a RouteIndex,
@@ -42,32 +40,6 @@ impl<'a> EdgeRequestService<'a> {
             plugin_plans,
             resilience,
         }
-    }
-
-    /// Resolves routing, policy, and admission for a protocol-neutral request.
-    pub(crate) fn execute(&self, request: RequestExecutionInput<'_>) -> RequestExecutionResult {
-        let route = resolve_route(
-            self.routing_index,
-            request.method,
-            request.path,
-            request.authority,
-        )?;
-        let upstream_policy = self
-            .upstream_policies
-            .get(route.upstream_name.as_ref())
-            .ok_or(super::RouteResolutionError::MissingUpstreamPolicy)?;
-        let plugin_plan = self
-            .plugin_plans
-            .upstream_plan(route.upstream_name.as_ref())
-            .ok_or(super::RouteResolutionError::MissingUpstreamPluginPlan)?;
-        let policy = resolve_policy(upstream_policy, plugin_plan);
-        let admission = evaluate_admission(self.resilience, route.upstream_name.as_ref());
-
-        Ok(RequestExecutionState {
-            route,
-            policy,
-            admission,
-        })
     }
 
     /// Protocol adapters provide only borrowed request data and translate the
@@ -125,6 +97,10 @@ impl<'a> EdgeRequestService<'a> {
             .upstream_plan(route.upstream_name.as_ref())
             .ok_or(super::RouteResolutionError::MissingUpstreamPluginPlan)?;
         let policy = resolve_policy(upstream_policy, Arc::clone(&plugin_plan));
+        let source_headers = input.headers;
+        let header_lookup = |name: &str| source_headers.and_then(|lookup| lookup(name));
+        let plugin_headers =
+            source_headers.map(|_| &header_lookup as &impulse_contracts::PluginHeaderLookup<'_>);
         let plugin_request = PluginRequestView {
             request_id: input.request_id,
             generation: input.generation,
@@ -134,7 +110,7 @@ impl<'a> EdgeRequestService<'a> {
             path: request.path,
             authority: request.authority,
             peer_address: request.peer_address,
-            headers: input.headers,
+            headers: plugin_headers,
             has_body: input.has_body,
             body_replayable: input.body_replayable,
             ingress_protocol: input.ingress_protocol,
@@ -229,24 +205,6 @@ impl<'a> EdgeRequestService<'a> {
                 admission,
                 mutations,
             },
-        })
-    }
-}
-
-impl impulse_http3_ingress::Http3RequestService for EdgeRequestService<'_> {
-    type Output = RequestExecutionState<super::ResolvedRouteTarget>;
-    type Error = super::RouteResolutionError;
-
-    fn execute_http3(
-        &self,
-        request: impulse_http3_ingress::Http3RequestExecutionInput<'_>,
-    ) -> Result<Self::Output, Self::Error> {
-        self.execute(RequestExecutionInput {
-            method: request.method,
-            path: request.path,
-            authority: request.authority,
-            peer_address: request.peer_address,
-            headers: request.headers,
         })
     }
 }

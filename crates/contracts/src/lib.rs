@@ -26,8 +26,8 @@ pub use outcome::{
 pub use plugin::{
     PluginCacheView, PluginConnectionView, PluginExecutionOutcome, PluginHeaderLookup,
     PluginHeaderMutation, PluginHeaderMutationError, PluginKind, PluginPhase, PluginRejection,
-    PluginRejectionError, PluginRejectionReason, PluginResponseHeader, PluginResponseMetadataView,
-    PluginResponseView, PluginScope, PluginStateOwnership,
+    PluginRejectionError, PluginRejectionReason, PluginRequestView, PluginResponseHeader,
+    PluginResponseMetadataView, PluginResponseView, PluginScope, PluginStateOwnership,
 };
 pub use request::{
     AuthChallengeKind, BoundedRejectionResponse, HeaderMutation, HeaderMutationRef,

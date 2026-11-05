@@ -15,8 +15,6 @@ use boring::{
     pkey::{Id as PKeyId, PKey, Public},
     rsa::Rsa,
 };
-#[cfg(test)]
-use hmac::{Hmac, Mac};
 use http::StatusCode;
 use impulse_config::{
     config::{JwksStartupBehavior, JwtAlgorithm},
@@ -32,8 +30,6 @@ use quiche::h3::NameValue;
 use serde_json::Value;
 #[cfg(test)]
 use serial_test::serial;
-#[cfg(test)]
-use sha2::Sha256;
 use tokio::{
     runtime::RuntimeFlavor,
     sync::{OwnedSemaphorePermit, Semaphore, TryAcquireError},
@@ -152,11 +148,9 @@ pub(super) use impulse_policy::jwks::{
 
 #[cfg(test)]
 pub(super) use self::jwt::validated_hs256_jwt_claims;
-#[allow(unused_imports)]
-pub(super) use self::jwt::{
-    JwtValidationFailure, JwtValidationFailureReason, ValidatedJwt, jwt_claims_satisfy_rbac,
-    validate_jwt_token,
-};
+pub(super) use self::jwt::{JwtValidationFailure, JwtValidationFailureReason};
+#[cfg(test)]
+pub(super) use self::jwt::{jwt_claims_satisfy_rbac, validate_jwt_token};
 use self::{jwt::*, key_resolution::*};
 
 pub(crate) const fn overload_metrics_reason(reason: OverloadDecisionReason) -> OverloadShedReason {
@@ -570,20 +564,6 @@ mod tests {
             brownout::BrownoutController, quota::QuotaDenyReason, runtime::RuntimeResilience,
         },
     };
-
-    fn test_hs256_jwt(secret: &str, claims: serde_json::Value, alg: &str) -> String {
-        let header = URL_SAFE_NO_PAD.encode(
-            serde_json::to_vec(&serde_json::json!({ "alg": alg, "typ": "JWT" }))
-                .expect("serialize header"),
-        );
-        let payload =
-            URL_SAFE_NO_PAD.encode(serde_json::to_vec(&claims).expect("serialize claims"));
-        let signing_input = format!("{header}.{payload}");
-        let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).expect("mac");
-        mac.update(signing_input.as_bytes());
-        let signature = URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes());
-        format!("{signing_input}.{signature}")
-    }
 
     fn test_rs256_jwt(key: &PKey<Private>, kid: &str, claims: serde_json::Value) -> String {
         let header = URL_SAFE_NO_PAD.encode(

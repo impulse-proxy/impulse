@@ -26,6 +26,7 @@ pub(crate) fn validated_hs256_jwt_claims(
     matches!(validated.algorithm, JwtAlgorithm::Hs256).then_some(validated.claims)
 }
 
+#[cfg(test)]
 pub(crate) fn validate_jwt_token(
     token: &str,
     jwt: &RuntimeJwtAuth,
@@ -96,6 +97,7 @@ pub(super) fn jwt_algorithm_name(algorithm: JwtAlgorithm) -> &'static str {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn jwt_claims_satisfy_rbac(policy: &RuntimeUpstreamPolicy, claims: &Value) -> bool {
     impulse_policy::jwt_claims_satisfy_requirements(
         claims,
