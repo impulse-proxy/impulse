@@ -255,7 +255,7 @@ impl ScopedRateLimitRuntime {
             if rule
                 .store
                 .try_consume(&rule.storage_key(&key), rule.idle_ttl)
-                == Some(false)
+                != Some(true)
             {
                 return ScopedRateLimitDecision::Deny {
                     retry_after_seconds: rule.retry_after_seconds,
