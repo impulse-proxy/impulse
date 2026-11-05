@@ -1,5 +1,3 @@
-#[cfg(test)]
-use std::net::SocketAddr;
 use std::{
     collections::HashMap,
     future::Future,
@@ -19,14 +17,10 @@ use http::StatusCode;
 #[cfg(test)]
 use impulse_config::runtime::RuntimeUpstreamPolicy;
 use impulse_config::runtime::{RuntimeJwtAuth, RuntimeJwtVerificationKey};
-use impulse_contracts::{IngressProtocol, PluginRequestView};
 use impulse_lb::upstream_pool::UpstreamPool;
-use impulse_plugins::CompiledAsyncRequestPlugin;
 use impulse_policy::evaluate_adaptive_admission;
 #[cfg(test)]
 use impulse_policy::evaluate_brownout_admission;
-#[cfg(test)]
-use impulse_policy::{ScopedRateLimitEvaluation, evaluate_scoped_rate_limit};
 use quiche::h3::NameValue;
 use serde_json::Value;
 #[cfg(test)]
@@ -37,30 +31,20 @@ use tokio::{
     task::block_in_place,
 };
 
-#[cfg(test)]
-use super::LbHeaderLookup;
 use super::runtime_handle;
-#[cfg(test)]
-use crate::resilience::quota::{QuotaDecision, evaluate_admission_quota};
-#[cfg(test)]
-use crate::resilience::scoped_rate_limit::ScopedRateLimiters;
 use crate::{
     OverloadShedReason, RouteOutcome,
-    edge_core::request_execution::QuotaRejectedDecision,
     resilience::{
         adaptive_admission::AdaptivePermit,
-        quota::QuotaIdentityContext,
         route_queue::{RouteQueuePermit, RouteQueueRejection},
         runtime::RuntimeResilience,
     },
-    runtime::connection::{auth::apply_auth_request_mutations, request::PendingForward},
+    runtime::connection::request::PendingForward,
 };
 
 mod jwt;
 mod key_resolution;
 
-#[cfg(test)]
-pub(crate) use impulse_contracts::RateLimitedDecision;
 pub(crate) use impulse_contracts::{OverloadDecision, OverloadDecisionReason, RequestDecision};
 type AdmissionPolicyDecision = RequestDecision;
 pub(super) use impulse_policy::jwks::JwtJwksFetchFailureReason;
@@ -122,7 +106,6 @@ pub(super) struct PostAuthAdmissionReady {
 
 #[derive(Debug, Clone)]
 pub(super) enum PostAuthAdmissionRejection {
-    Quota(QuotaRejectedDecision),
     Overloaded(OverloadDecision),
     Failed(PostAuthAdmissionFailure),
 }
@@ -130,52 +113,6 @@ pub(super) enum PostAuthAdmissionRejection {
 pub(super) enum PostAuthAdmissionExecution {
     Ready(PostAuthAdmissionReady),
     Rejected(PostAuthAdmissionRejection),
-}
-
-#[cfg(test)]
-pub(crate) fn evaluate_scoped_rate_limit_policy(
-    scoped_rate_limits: &ScopedRateLimiters,
-    route: &str,
-    method: &str,
-    path: &str,
-    authority: Option<&str>,
-    client_addr: SocketAddr,
-    header_lookup: Option<&LbHeaderLookup<'_>>,
-) -> AdmissionPolicyDecision {
-    if runtime_handle().is_none() {
-        return AdmissionPolicyDecision::AdmitReady;
-    }
-    let quota_context = QuotaIdentityContext::new(
-        Some(route),
-        method,
-        path,
-        authority,
-        None,
-        Some(client_addr),
-        header_lookup,
-    );
-
-    let evaluation = match block_on_admission_future(async {
-        evaluate_admission_quota(
-            scoped_rate_limits.quota_runtime(),
-            scoped_rate_limits,
-            &quota_context,
-        )
-        .await
-    })
-    .unwrap_or(QuotaDecision::NotApplied)
-    {
-        QuotaDecision::Denied(denial) => ScopedRateLimitEvaluation::Deny {
-            rule_name: denial.policy_name,
-            retry_after_seconds: denial.retry_after_seconds.unwrap_or(1).max(1),
-        },
-        QuotaDecision::NotApplied
-        | QuotaDecision::Allowed(_)
-        | QuotaDecision::ShadowDenied(_)
-        | QuotaDecision::FailedOpen(_)
-        | QuotaDecision::FailedClosed(_) => ScopedRateLimitEvaluation::Admit,
-    };
-    evaluate_scoped_rate_limit(route, evaluation)
 }
 
 fn overload_decision(
@@ -211,11 +148,6 @@ pub(super) fn execute_forwarding_post_auth_admission(
     global_inflight: Arc<Semaphore>,
     inflight_acquire_wait: Duration,
 ) -> PostAuthAdmissionExecution {
-    if let Some(rejection) = evaluate_forwarding_post_auth_quota_policy(resilience, pending_forward)
-    {
-        return PostAuthAdmissionExecution::Rejected(rejection);
-    }
-
     let upstream_name = pending_forward.upstream_name.as_ref();
     let adaptive_permit = match evaluate_adaptive_admission(
         &resilience.adaptive_admission,
@@ -320,65 +252,6 @@ pub(super) fn execute_forwarding_post_auth_admission(
     })
 }
 
-fn evaluate_forwarding_post_auth_quota_policy(
-    _resilience: &RuntimeResilience,
-    pending_forward: &PendingForward,
-) -> Option<PostAuthAdmissionRejection> {
-    runtime_handle()?;
-
-    let quota = pending_forward
-        .plugin_plan
-        .async_request_gate()
-        .iter()
-        .find_map(|plugin| match plugin {
-            CompiledAsyncRequestPlugin::Quota(quota) => Some(quota),
-            CompiledAsyncRequestPlugin::ExternalAuth(_) => None,
-        })?;
-
-    let mut effective_headers = pending_forward.headers.as_ref().clone();
-    apply_auth_request_mutations(
-        &mut effective_headers,
-        &pending_forward.auth_header_mutations,
-    );
-    let plugin_header_lookup = |name: &str| {
-        effective_headers
-            .iter()
-            .find(|header| header.name().eq_ignore_ascii_case(name.as_bytes()))
-            .map(|header| header.value())
-    };
-    let request = PluginRequestView {
-        request_id: pending_forward.request_id,
-        generation: pending_forward.plugin_plan.generation(),
-        route_id: Some(pending_forward.upstream_name.as_ref()),
-        upstream_name: pending_forward.upstream_name.as_ref(),
-        method: pending_forward.method.as_ref(),
-        path: pending_forward.path.as_ref(),
-        authority: pending_forward.authority.as_deref(),
-        peer_address: pending_forward.client_addr,
-        headers: Some(&plugin_header_lookup),
-        has_body: false,
-        body_replayable: true,
-        ingress_protocol: IngressProtocol::Http3,
-    };
-
-    let decision = block_on_admission_future(quota.evaluate(request, &[]))?;
-    match decision {
-        QuotaDecision::NotApplied | QuotaDecision::Allowed(_) | QuotaDecision::FailedOpen(_) => {
-            None
-        }
-        QuotaDecision::ShadowDenied(denial) => {
-            log::debug!(
-                "quota shadow deny observed: policy={} reason={}",
-                denial.policy_name,
-                denial.reason.slug()
-            );
-            None
-        }
-        denied => QuotaRejectedDecision::from_quota_decision(denied)
-            .map(PostAuthAdmissionRejection::Quota),
-    }
-}
-
 pub(super) fn try_acquire_owned_with_micro_wait(
     semaphore: Arc<Semaphore>,
     _wait_budget: Duration,
@@ -388,7 +261,7 @@ pub(super) fn try_acquire_owned_with_micro_wait(
     semaphore.try_acquire_owned().map(|permit| (permit, false))
 }
 
-fn block_on_admission_future<F>(future: F) -> Option<F::Output>
+pub(super) fn block_on_admission_future<F>(future: F) -> Option<F::Output>
 where
     F: Future,
 {
@@ -437,11 +310,9 @@ mod tests {
     };
     use impulse_config::{
         config::{
-            Backend, Config, DistributedQuotaPolicy, DistributedQuotaSelector,
-            DistributedQuotaSelectorSource, DistributedQuotaWindow, ForwardedHeaderPolicy,
-            HealthCheck, JwksStartupBehavior, JwtAlgorithm, JwtAuth, Listen, LoadBalancing,
-            QuotaCounterBackend, Resilience, RouteAuth, RouteMatch, ScopedRateLimit,
-            ScopedRateLimitScope, Tls, Upstream, UpstreamHostPolicy,
+            Backend, Config, ForwardedHeaderPolicy, HealthCheck, JwksStartupBehavior, JwtAlgorithm,
+            JwtAuth, Listen, LoadBalancing, Resilience, RouteAuth, RouteMatch, Tls, Upstream,
+            UpstreamHostPolicy,
         },
         runtime::{RuntimeConfig, RuntimeJwtAuth},
     };
@@ -450,9 +321,7 @@ mod tests {
     use super::*;
     use crate::{
         quic_listener::admission::jwt::parse_jose_header,
-        resilience::{
-            brownout::BrownoutController, quota::QuotaDenyReason, runtime::RuntimeResilience,
-        },
+        resilience::{brownout::BrownoutController, runtime::RuntimeResilience},
     };
 
     fn test_rs256_jwt(key: &PKey<Private>, kid: &str, claims: serde_json::Value) -> String {
@@ -689,139 +558,6 @@ mod tests {
         }
     }
 
-    mod scoped_rate_limit_policy_contracts {
-        use super::*;
-
-        fn test_scoped_rate_limits() -> ScopedRateLimiters {
-            ScopedRateLimiters::new(&[ScopedRateLimit {
-                name: "tenant-cap".to_string(),
-                scope: ScopedRateLimitScope::Tenant,
-                requests_per_sec: 1,
-                burst: 1,
-                key: Some("header:x-tenant-id".to_string()),
-                route_allowlist: vec!["payments".to_string()],
-                idle_ttl_secs: 60,
-            }])
-        }
-
-        fn test_client_addr() -> SocketAddr {
-            "198.51.100.10:443".parse().expect("client addr")
-        }
-
-        #[test]
-        fn scoped_rate_limit_policy_admits_when_rule_does_not_reject() {
-            let rate_limits = test_scoped_rate_limits();
-            let headers = HashMap::from([("x-tenant-id".to_string(), "tenant-a".to_string())]);
-            let lookup = |name: &str| headers.get(&name.to_ascii_lowercase()).cloned();
-
-            let allowed = evaluate_scoped_rate_limit_policy(
-                &rate_limits,
-                "payments",
-                "GET",
-                "/resource",
-                Some("api.example.com"),
-                test_client_addr(),
-                Some(&lookup),
-            );
-            let no_key = evaluate_scoped_rate_limit_policy(
-                &rate_limits,
-                "payments",
-                "GET",
-                "/resource",
-                Some("api.example.com"),
-                test_client_addr(),
-                None,
-            );
-            let wrong_route = evaluate_scoped_rate_limit_policy(
-                &rate_limits,
-                "admin",
-                "GET",
-                "/resource",
-                Some("api.example.com"),
-                test_client_addr(),
-                Some(&lookup),
-            );
-
-            assert_eq!(allowed, AdmissionPolicyDecision::AdmitReady);
-            assert_eq!(no_key, AdmissionPolicyDecision::AdmitReady);
-            assert_eq!(wrong_route, AdmissionPolicyDecision::AdmitReady);
-        }
-
-        #[test]
-        fn scoped_rate_limit_policy_returns_typed_rejection_for_exhausted_bucket() {
-            let rate_limits = test_scoped_rate_limits();
-            let headers = HashMap::from([("x-tenant-id".to_string(), "tenant-a".to_string())]);
-            let lookup = |name: &str| headers.get(&name.to_ascii_lowercase()).cloned();
-
-            let first = evaluate_scoped_rate_limit_policy(
-                &rate_limits,
-                "payments",
-                "GET",
-                "/resource",
-                Some("api.example.com"),
-                test_client_addr(),
-                Some(&lookup),
-            );
-            let second = evaluate_scoped_rate_limit_policy(
-                &rate_limits,
-                "payments",
-                "GET",
-                "/resource",
-                Some("api.example.com"),
-                test_client_addr(),
-                Some(&lookup),
-            );
-
-            assert_eq!(first, AdmissionPolicyDecision::AdmitReady);
-            assert_eq!(
-                second,
-                AdmissionPolicyDecision::RateLimited(RateLimitedDecision {
-                    rule_name: "tenant-cap".to_string(),
-                    route: "payments".to_string(),
-                    status: StatusCode::TOO_MANY_REQUESTS,
-                    body: b"request rate limited\n",
-                    retry_after_seconds: 1,
-                })
-            );
-        }
-
-        #[test]
-        fn scoped_rate_limit_policy_preserves_legacy_default_key_fallback() {
-            let rate_limits = test_scoped_rate_limits();
-
-            let first = evaluate_scoped_rate_limit_policy(
-                &rate_limits,
-                "payments",
-                "GET",
-                "/resource",
-                Some("api.example.com"),
-                test_client_addr(),
-                None,
-            );
-            let second = evaluate_scoped_rate_limit_policy(
-                &rate_limits,
-                "payments",
-                "GET",
-                "/resource",
-                Some("api.example.com"),
-                test_client_addr(),
-                None,
-            );
-
-            assert_eq!(first, AdmissionPolicyDecision::AdmitReady);
-            assert_eq!(
-                second,
-                AdmissionPolicyDecision::RateLimited(RateLimitedDecision {
-                    rule_name: "tenant-cap".to_string(),
-                    route: "payments".to_string(),
-                    status: StatusCode::TOO_MANY_REQUESTS,
-                    body: b"request rate limited\n",
-                    retry_after_seconds: 1,
-                })
-            );
-        }
-    }
-
     mod brownout_and_overload_policy_contracts {
         use super::*;
 
@@ -879,8 +615,6 @@ mod tests {
     }
 
     mod post_auth_admission_execution {
-        use impulse_config::config::QuotaBackendFailurePolicy;
-
         use super::*;
 
         fn test_pending_forward_for_api(headers: Vec<quiche::h3::Header>) -> PendingForward {
@@ -933,12 +667,6 @@ mod tests {
             );
             match &result {
                 PostAuthAdmissionExecution::Ready(_) => eprintln!("fail_open result: ready"),
-                PostAuthAdmissionExecution::Rejected(PostAuthAdmissionRejection::Quota(
-                    decision,
-                )) => eprintln!(
-                    "fail_open result: quota policy={} reason={:?} status={}",
-                    decision.policy_name, decision.reason, decision.status
-                ),
                 PostAuthAdmissionExecution::Rejected(PostAuthAdmissionRejection::Overloaded(
                     decision,
                 )) => eprintln!(
@@ -1174,223 +902,6 @@ mod tests {
                     panic!("expected successful admission without waits")
                 }
             }
-        }
-
-        #[test]
-        fn post_auth_admission_enforces_quota_before_overload_with_composite_identity() {
-            let resilience = test_runtime_resilience(
-                |config| {
-                    config.adaptive_admission.enabled = true;
-                    config.adaptive_admission.min_limit = 1;
-                    config.adaptive_admission.max_limit = Some(1);
-                    config.quota.enabled = true;
-                    config.quota.backend = QuotaCounterBackend::InMemory {
-                        key_prefix: "impulse:test:quota".to_string(),
-                    };
-                    config.quota.policies = vec![DistributedQuotaPolicy {
-                        name: "tenant-token-client-burst".to_string(),
-                        route_allowlist: vec!["api".to_string()],
-                        selector: DistributedQuotaSelector {
-                            route: true,
-                            tenant: Some(DistributedQuotaSelectorSource {
-                                key: "header:x-tenant-id".to_string(),
-                            }),
-                            token: Some(DistributedQuotaSelectorSource {
-                                key: "bearer_token".to_string(),
-                            }),
-                            client: Some(DistributedQuotaSelectorSource {
-                                key: "client_ip".to_string(),
-                            }),
-                        },
-                        burst: Some(DistributedQuotaWindow {
-                            requests: 1,
-                            window_secs: 1,
-                        }),
-                        sustained: None,
-                    }];
-                },
-                8,
-            );
-            let pending_forward = test_pending_forward_for_api(vec![
-                quiche::h3::Header::new(b"authorization", b"Bearer token-123"),
-                quiche::h3::Header::new(b"x-tenant-id", b"tenant-a"),
-            ]);
-
-            let first = execute_post_auth_for_api(
-                &resilience,
-                &pending_forward,
-                Some(&test_upstream_pool()),
-                Some(0),
-                &HashMap::from([(String::from("api"), Arc::new(Semaphore::new(2)))]),
-                Arc::new(Semaphore::new(2)),
-            );
-            assert!(matches!(first, PostAuthAdmissionExecution::Ready(_)));
-            drop(first);
-
-            let _adaptive_held = resilience
-                .adaptive_admission
-                .clone()
-                .try_acquire()
-                .expect("held adaptive permit");
-
-            let second = execute_post_auth_for_api(
-                &resilience,
-                &pending_forward,
-                Some(&test_upstream_pool()),
-                Some(0),
-                &HashMap::from([(String::from("api"), Arc::new(Semaphore::new(2)))]),
-                Arc::new(Semaphore::new(2)),
-            );
-
-            assert!(matches!(
-                second,
-                PostAuthAdmissionExecution::Rejected(PostAuthAdmissionRejection::Quota(
-                    QuotaRejectedDecision {
-                        policy_name,
-                        reason: QuotaDenyReason::BurstQuotaExhausted,
-                        status: StatusCode::TOO_MANY_REQUESTS,
-                        body: b"burst quota exhausted\n",
-                        retry_after_seconds: Some(1),
-                    }
-                )) if policy_name == "tenant-token-client-burst"
-            ));
-        }
-
-        #[test]
-        fn post_auth_admission_fail_open_quota_backend_errors_preserve_overload_classification() {
-            let resilience = test_runtime_resilience(
-                |config| {
-                    config.adaptive_admission.enabled = true;
-                    config.adaptive_admission.min_limit = 1;
-                    config.adaptive_admission.max_limit = Some(1);
-                    config.quota.enabled = true;
-                    config.quota.backend_failure_policy = QuotaBackendFailurePolicy::FailOpen;
-                    config.quota.backend = QuotaCounterBackend::Redis {
-                        url: "://bad-redis-url".to_string(),
-                        key_prefix: "impulse:test:quota".to_string(),
-                        connect_timeout_ms: 250,
-                        command_timeout_ms: 100,
-                        max_inflight: 8,
-                    };
-                    config.quota.policies = vec![DistributedQuotaPolicy {
-                        name: "tenant-contract".to_string(),
-                        route_allowlist: vec!["api".to_string()],
-                        selector: DistributedQuotaSelector {
-                            route: true,
-                            tenant: Some(DistributedQuotaSelectorSource {
-                                key: "header:x-tenant-id".to_string(),
-                            }),
-                            token: None,
-                            client: None,
-                        },
-                        burst: Some(DistributedQuotaWindow {
-                            requests: 50,
-                            window_secs: 1,
-                        }),
-                        sustained: None,
-                    }];
-                },
-                8,
-            );
-            let _held = resilience
-                .adaptive_admission
-                .clone()
-                .try_acquire()
-                .expect("held adaptive permit");
-            let pending_forward = test_pending_forward_for_api(vec![quiche::h3::Header::new(
-                b"x-tenant-id",
-                b"tenant-a",
-            )]);
-
-            let result = execute_post_auth_for_api(
-                &resilience,
-                &pending_forward,
-                Some(&test_upstream_pool()),
-                Some(0),
-                &test_upstream_inflight(),
-                Arc::new(Semaphore::new(1)),
-            );
-
-            assert!(matches!(
-                result,
-                PostAuthAdmissionExecution::Rejected(PostAuthAdmissionRejection::Overloaded(
-                    OverloadDecision {
-                        reason: OverloadDecisionReason::AdaptiveAdmission,
-                        status: StatusCode::SERVICE_UNAVAILABLE,
-                        body: b"adaptive admission overload\n",
-                        ..
-                    }
-                ))
-            ));
-        }
-
-        #[test]
-        fn post_auth_admission_fail_closed_quota_backend_errors_reject_before_overload() {
-            let resilience = test_runtime_resilience(
-                |config| {
-                    config.adaptive_admission.enabled = true;
-                    config.adaptive_admission.min_limit = 1;
-                    config.adaptive_admission.max_limit = Some(1);
-                    config.quota.enabled = true;
-                    config.quota.backend_failure_policy = QuotaBackendFailurePolicy::FailClosed;
-                    config.quota.backend = QuotaCounterBackend::Redis {
-                        url: "://bad-redis-url".to_string(),
-                        key_prefix: "impulse:test:quota".to_string(),
-                        connect_timeout_ms: 250,
-                        command_timeout_ms: 100,
-                        max_inflight: 8,
-                    };
-                    config.quota.policies = vec![DistributedQuotaPolicy {
-                        name: "tenant-contract".to_string(),
-                        route_allowlist: vec!["api".to_string()],
-                        selector: DistributedQuotaSelector {
-                            route: true,
-                            tenant: Some(DistributedQuotaSelectorSource {
-                                key: "header:x-tenant-id".to_string(),
-                            }),
-                            token: None,
-                            client: None,
-                        },
-                        burst: Some(DistributedQuotaWindow {
-                            requests: 50,
-                            window_secs: 1,
-                        }),
-                        sustained: None,
-                    }];
-                },
-                8,
-            );
-            let _held = resilience
-                .adaptive_admission
-                .clone()
-                .try_acquire()
-                .expect("held adaptive permit");
-            let pending_forward = test_pending_forward_for_api(vec![quiche::h3::Header::new(
-                b"x-tenant-id",
-                b"tenant-a",
-            )]);
-
-            let result = execute_post_auth_for_api(
-                &resilience,
-                &pending_forward,
-                Some(&test_upstream_pool()),
-                Some(0),
-                &test_upstream_inflight(),
-                Arc::new(Semaphore::new(1)),
-            );
-
-            assert!(matches!(
-                result,
-                PostAuthAdmissionExecution::Rejected(PostAuthAdmissionRejection::Quota(
-                    QuotaRejectedDecision {
-                        policy_name,
-                        reason: QuotaDenyReason::BackendError,
-                        status: StatusCode::SERVICE_UNAVAILABLE,
-                        body: b"quota backend error\n",
-                        retry_after_seconds: None,
-                    }
-                )) if policy_name == "tenant-contract"
-            ));
         }
     }
 

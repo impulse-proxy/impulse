@@ -16,7 +16,6 @@ use impulse_plugins::{
     SynchronousRequestPluginDecision, SynchronousRequestPluginExecution,
     execute_async_request_plugins, execute_synchronous_request_plugins,
 };
-use impulse_policy::quota::QuotaDecision;
 
 use super::{
     PluginRequestExecutionInput, PluginRequestExecutionOutcome, PluginRequestExecutionState,
@@ -194,73 +193,50 @@ impl<'a> EdgeRequestService<'a> {
             } => {
                 mutations.extend(async_mutations);
                 if input.ingress_protocol != IngressProtocol::Http3
-                    && let Some(quota) =
-                        plugin_plan
-                            .async_request_gate()
-                            .iter()
-                            .find_map(|plugin| match plugin {
-                                CompiledAsyncRequestPlugin::Quota(quota) => Some(quota),
-                                CompiledAsyncRequestPlugin::ExternalAuth(_) => None,
-                            })
+                    && plugin_plan
+                        .async_request_gate()
+                        .iter()
+                        .any(|plugin| matches!(plugin, CompiledAsyncRequestPlugin::Quota(_)))
                 {
                     let started_at = Instant::now();
-                    let decision = quota.evaluate(plugin_request, &mutations).await;
+                    let decision = super::execute_compiled_quota_plugin(
+                        &plugin_plan,
+                        plugin_request,
+                        &mutations,
+                    )
+                    .await;
                     self.metrics.plugin_observations().record_execution(
                         PluginExecutionObservation {
                             kind: PluginKind::Quota,
                             phase: PluginPhase::AsyncRequestGate,
-                            outcome: match &decision {
-                                QuotaDecision::Denied(_) => PluginExecutionOutcome::Reject,
-                                QuotaDecision::FailedClosed(_) => PluginExecutionOutcome::Fail,
-                                QuotaDecision::NotApplied
-                                | QuotaDecision::Allowed(_)
-                                | QuotaDecision::ShadowDenied(_)
-                                | QuotaDecision::FailedOpen(_) => PluginExecutionOutcome::Continue,
-                            },
+                            outcome: decision.as_ref().map_or(
+                                PluginExecutionOutcome::Continue,
+                                |rejection| {
+                                    if rejection.status == http::StatusCode::TOO_MANY_REQUESTS {
+                                        PluginExecutionOutcome::Reject
+                                    } else {
+                                        PluginExecutionOutcome::Fail
+                                    }
+                                },
+                            ),
                             async_duration: Some(started_at.elapsed()),
                         },
                     );
-                    match decision {
-                        QuotaDecision::Denied(denial) => {
-                            let rejection = super::QuotaRejectedDecision::from_quota_decision(
-                                QuotaDecision::Denied(denial),
-                            )
-                            .map(|decision| decision.as_plugin_rejection());
-                            if let Some(rejection) = rejection {
-                                return Ok(PluginRequestExecutionState {
-                                    route,
-                                    policy,
-                                    outcome: PluginRequestExecutionOutcome::Rejected {
-                                        rejection,
-                                        observation: PluginTerminalObservation::QuotaDenied,
-                                    },
-                                });
-                            }
-                        }
-                        QuotaDecision::FailedClosed(failure) => {
-                            let rejection = super::QuotaRejectedDecision::from_quota_decision(
-                                QuotaDecision::FailedClosed(failure),
-                            )
-                            .map(|decision| decision.as_plugin_rejection());
-                            if let Some(rejection) = rejection {
-                                return Ok(PluginRequestExecutionState {
-                                    route,
-                                    policy,
-                                    outcome: PluginRequestExecutionOutcome::Rejected {
-                                        rejection,
-                                        observation: PluginTerminalObservation::Failed,
-                                    },
-                                });
-                            }
-                        }
-                        QuotaDecision::ShadowDenied(denial) => log::debug!(
-                            "quota shadow deny observed: policy={} reason={}",
-                            denial.policy_name,
-                            denial.reason.slug()
-                        ),
-                        QuotaDecision::NotApplied
-                        | QuotaDecision::Allowed(_)
-                        | QuotaDecision::FailedOpen(_) => {}
+                    if let Some(decision) = decision {
+                        let observation = if decision.status == http::StatusCode::TOO_MANY_REQUESTS
+                        {
+                            PluginTerminalObservation::QuotaDenied
+                        } else {
+                            PluginTerminalObservation::Failed
+                        };
+                        return Ok(PluginRequestExecutionState {
+                            route,
+                            policy,
+                            outcome: PluginRequestExecutionOutcome::Rejected {
+                                rejection: decision.as_plugin_rejection(),
+                                observation,
+                            },
+                        });
                     }
                 }
             }

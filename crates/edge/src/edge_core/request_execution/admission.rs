@@ -1,5 +1,8 @@
 use http::StatusCode;
-use impulse_contracts::{BoundedRejectionResponse, PluginRejection, RequestDecision};
+use impulse_contracts::{
+    BoundedRejectionResponse, PluginRejection, PluginRequestView, RequestDecision,
+};
+use impulse_plugins::{CompiledAsyncRequestPlugin, CompiledPluginPlan};
 use impulse_policy::evaluate_brownout_admission;
 
 use crate::resilience::{
@@ -9,8 +12,6 @@ use crate::resilience::{
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct QuotaRejectedDecision {
-    pub(crate) policy_name: String,
-    pub(crate) reason: QuotaDenyReason,
     pub(crate) status: StatusCode,
     pub(crate) body: &'static [u8],
     pub(crate) retry_after_seconds: Option<u32>,
@@ -20,15 +21,11 @@ impl QuotaRejectedDecision {
     pub(crate) fn from_quota_decision(decision: QuotaDecision) -> Option<Self> {
         match decision {
             QuotaDecision::Denied(denial) | QuotaDecision::ShadowDenied(denial) => Some(Self {
-                policy_name: denial.policy_name,
-                reason: denial.reason,
                 status: StatusCode::TOO_MANY_REQUESTS,
                 body: quota_response_body(denial.reason),
                 retry_after_seconds: denial.retry_after_seconds.map(|value| value.max(1)),
             }),
             QuotaDecision::FailedClosed(failure) => Some(Self {
-                policy_name: failure.policy_name.unwrap_or_else(|| "unknown".to_string()),
-                reason: failure.reason,
                 status: StatusCode::SERVICE_UNAVAILABLE,
                 body: quota_response_body(failure.reason),
                 retry_after_seconds: None,
@@ -54,6 +51,35 @@ impl QuotaRejectedDecision {
         } else {
             PluginRejection::quota_unavailable(self.body)
         }
+    }
+}
+
+pub(crate) async fn execute_compiled_quota_plugin(
+    plan: &CompiledPluginPlan,
+    request: PluginRequestView<'_>,
+    mutations: &[impulse_contracts::PluginHeaderMutation],
+) -> Option<QuotaRejectedDecision> {
+    let quota = plan
+        .async_request_gate()
+        .iter()
+        .find_map(|plugin| match plugin {
+            CompiledAsyncRequestPlugin::Quota(quota) => Some(quota),
+            CompiledAsyncRequestPlugin::ExternalAuth(_) => None,
+        })?;
+
+    match quota.evaluate(request, mutations).await {
+        QuotaDecision::NotApplied | QuotaDecision::Allowed(_) | QuotaDecision::FailedOpen(_) => {
+            None
+        }
+        QuotaDecision::ShadowDenied(denial) => {
+            log::debug!(
+                "quota shadow deny observed: policy={} reason={}",
+                denial.policy_name,
+                denial.reason.slug()
+            );
+            None
+        }
+        denied => QuotaRejectedDecision::from_quota_decision(denied),
     }
 }
 

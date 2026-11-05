@@ -1,5 +1,3 @@
-#[cfg(test)]
-use impulse_config::config::ScopedRateLimitScope;
 use impulse_lb::{LoadBalancingStrategy, RequestKeyInput};
 
 use super::*;
@@ -310,68 +308,6 @@ impl Http3Service {
             return None;
         }
         Some(token.to_string())
-    }
-}
-
-#[cfg(test)]
-impl Http3Service {
-    pub(crate) fn resolve_scoped_rate_limit_key(
-        rule: &crate::resilience::scoped_rate_limit::ScopedRateLimitRule,
-        route: &str,
-        method: &str,
-        path: &str,
-        authority: Option<&str>,
-        client_addr: SocketAddr,
-        header_lookup: Option<&LbHeaderLookup<'_>>,
-    ) -> Option<String> {
-        match rule.scope() {
-            ScopedRateLimitScope::Route => Some(route.to_string()),
-            ScopedRateLimitScope::Client => Some(
-                Self::resolve_lb_key(
-                    "",
-                    Some(rule.key_spec().unwrap_or("peer_ip")),
-                    LbKeyRequestParts::new(
-                        method,
-                        path,
-                        authority,
-                        None,
-                        Some(client_addr),
-                        header_lookup,
-                    ),
-                )
-                .value,
-            ),
-            ScopedRateLimitScope::Tenant => rule.key_spec().map(|key_spec| {
-                Self::resolve_lb_key(
-                    "",
-                    Some(key_spec),
-                    LbKeyRequestParts::new(
-                        method,
-                        path,
-                        authority,
-                        None,
-                        Some(client_addr),
-                        header_lookup,
-                    ),
-                )
-                .value
-            }),
-            ScopedRateLimitScope::Token => Some(
-                Self::resolve_lb_key(
-                    "",
-                    Some(rule.key_spec().unwrap_or("bearer_token")),
-                    LbKeyRequestParts::new(
-                        method,
-                        path,
-                        authority,
-                        None,
-                        Some(client_addr),
-                        header_lookup,
-                    ),
-                )
-                .value,
-            ),
-        }
     }
 }
 

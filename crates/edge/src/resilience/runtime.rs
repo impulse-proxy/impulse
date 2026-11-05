@@ -1,193 +1,19 @@
 use std::{collections::HashSet, sync::Arc, time::Duration};
 
-use impulse_config::{
-    config::{
-        QuotaBackendFailurePolicy as ConfigQuotaBackendFailurePolicy,
-        QuotaCounterBackend as ConfigQuotaCounterBackend,
-        QuotaEnforcementMode as ConfigQuotaEnforcementMode, QuotaPolicyConfig,
-        Resilience as ResilienceConfig,
-    },
-    runtime::{
-        RuntimeAdmissionPolicy, RuntimeQuotaBackendFailurePolicy, RuntimeQuotaCounterBackend,
-        RuntimeQuotaEnforcementMode, RuntimeQuotaPolicySet, RuntimeRateLimitPolicy,
-        RuntimeRequestKeySpec,
-    },
-};
+use impulse_config::{config::Resilience as ResilienceConfig, runtime::RuntimeAdmissionPolicy};
 
 use crate::resilience::{
     adaptive_admission::AdaptiveAdmission,
     brownout::BrownoutController,
     circuit_breaker::CircuitBreakers,
     connect::{connect_authority_port, normalize_connect_authority},
-    quota::{
-        QuotaBackendFailurePolicy, QuotaCounterBackend, QuotaEnforcementMode,
-        QuotaLocalFallbackPolicy, QuotaPolicyRuntime, QuotaRuntime, QuotaSelectorKeySpec,
-        QuotaSelectorMatcher, QuotaWindowPolicy,
-    },
     retry_budget::RetryBudget,
     route_queue::RouteQueueLimiter,
 };
 
-fn quota_selector_key(spec: &RuntimeRequestKeySpec) -> QuotaSelectorKeySpec {
-    match spec {
-        RuntimeRequestKeySpec::Path => QuotaSelectorKeySpec::Path,
-        RuntimeRequestKeySpec::Authority => QuotaSelectorKeySpec::Authority,
-        RuntimeRequestKeySpec::Method => QuotaSelectorKeySpec::Method,
-        RuntimeRequestKeySpec::Cid => QuotaSelectorKeySpec::Cid,
-        RuntimeRequestKeySpec::StickyCid => QuotaSelectorKeySpec::StickyCid,
-        RuntimeRequestKeySpec::PeerIp => QuotaSelectorKeySpec::PeerIp,
-        RuntimeRequestKeySpec::ClientIp => QuotaSelectorKeySpec::ClientIp,
-        RuntimeRequestKeySpec::BearerToken => QuotaSelectorKeySpec::BearerToken,
-        RuntimeRequestKeySpec::Header(name) => QuotaSelectorKeySpec::Header(name.clone()),
-        RuntimeRequestKeySpec::Cookie(name) => QuotaSelectorKeySpec::Cookie(name.clone()),
-        RuntimeRequestKeySpec::Query(name) => QuotaSelectorKeySpec::Query(name.clone()),
-    }
-}
-
-fn quota_runtime_from_policy_set(config: &RuntimeQuotaPolicySet) -> QuotaRuntime {
-    QuotaRuntime {
-        enabled: config.enabled,
-        enforcement: match config.enforcement {
-            RuntimeQuotaEnforcementMode::Shadow => QuotaEnforcementMode::Shadow,
-            RuntimeQuotaEnforcementMode::Enforce => QuotaEnforcementMode::Enforce,
-        },
-        backend_failure_policy: match config.backend_failure_policy {
-            RuntimeQuotaBackendFailurePolicy::FailOpen => QuotaBackendFailurePolicy::FailOpen,
-            RuntimeQuotaBackendFailurePolicy::FailClosed => QuotaBackendFailurePolicy::FailClosed,
-        },
-        backend: match &config.backend {
-            RuntimeQuotaCounterBackend::InMemory { key_prefix } => QuotaCounterBackend::InMemory {
-                key_prefix: key_prefix.clone(),
-            },
-            RuntimeQuotaCounterBackend::Redis {
-                url,
-                key_prefix,
-                connect_timeout,
-                command_timeout,
-                max_inflight,
-            } => QuotaCounterBackend::Redis {
-                url: url.clone(),
-                key_prefix: key_prefix.clone(),
-                connect_timeout: *connect_timeout,
-                command_timeout: *command_timeout,
-                max_inflight: *max_inflight,
-            },
-        },
-        local_fallback: config
-            .local_fallback
-            .as_ref()
-            .map(|fallback| QuotaLocalFallbackPolicy {
-                key_prefix: fallback.key_prefix.clone(),
-                max_entries: fallback.max_entries,
-            }),
-        policies: config
-            .policies
-            .iter()
-            .map(|policy| QuotaPolicyRuntime {
-                name: policy.name.clone(),
-                route_allowlist: policy.route_allowlist.iter().cloned().collect(),
-                selector: QuotaSelectorMatcher {
-                    route: policy.selector.route,
-                    tenant: policy.selector.tenant.as_ref().map(quota_selector_key),
-                    token: policy.selector.token.as_ref().map(quota_selector_key),
-                    client: policy.selector.client.as_ref().map(quota_selector_key),
-                },
-                burst: policy.burst.as_ref().map(|window| QuotaWindowPolicy {
-                    requests: window.requests,
-                    window: window.window,
-                }),
-                sustained: policy.sustained.as_ref().map(|window| QuotaWindowPolicy {
-                    requests: window.requests,
-                    window: window.window,
-                }),
-            })
-            .collect(),
-    }
-}
-
-fn quota_runtime_from_config(config: &QuotaPolicyConfig) -> QuotaRuntime {
-    QuotaRuntime {
-        enabled: config.enabled,
-        enforcement: match config.enforcement {
-            ConfigQuotaEnforcementMode::Shadow => QuotaEnforcementMode::Shadow,
-            ConfigQuotaEnforcementMode::Enforce => QuotaEnforcementMode::Enforce,
-        },
-        backend_failure_policy: match config.backend_failure_policy {
-            ConfigQuotaBackendFailurePolicy::FailOpen => QuotaBackendFailurePolicy::FailOpen,
-            ConfigQuotaBackendFailurePolicy::FailClosed => QuotaBackendFailurePolicy::FailClosed,
-        },
-        backend: match &config.backend {
-            ConfigQuotaCounterBackend::InMemory { key_prefix } => QuotaCounterBackend::InMemory {
-                key_prefix: key_prefix.trim().to_string(),
-            },
-            ConfigQuotaCounterBackend::Redis {
-                url,
-                key_prefix,
-                connect_timeout_ms,
-                command_timeout_ms,
-                max_inflight,
-            } => QuotaCounterBackend::Redis {
-                url: url.trim().to_string(),
-                key_prefix: key_prefix.trim().to_string(),
-                connect_timeout: Duration::from_millis(*connect_timeout_ms),
-                command_timeout: Duration::from_millis(*command_timeout_ms),
-                max_inflight: *max_inflight,
-            },
-        },
-        local_fallback: config
-            .local_fallback
-            .as_ref()
-            .map(|fallback| QuotaLocalFallbackPolicy {
-                key_prefix: fallback.key_prefix.trim().to_string(),
-                max_entries: fallback.max_entries.max(1),
-            }),
-        policies: config
-            .policies
-            .iter()
-            .map(|policy| QuotaPolicyRuntime {
-                name: policy.name.trim().to_string(),
-                route_allowlist: policy
-                    .route_allowlist
-                    .iter()
-                    .map(|route| route.trim())
-                    .filter(|route| !route.is_empty())
-                    .map(ToOwned::to_owned)
-                    .collect(),
-                selector: QuotaSelectorMatcher {
-                    route: policy.selector.route,
-                    tenant: policy
-                        .selector
-                        .tenant
-                        .as_ref()
-                        .map(|source| QuotaSelectorKeySpec::from_raw_key(&source.key)),
-                    token: policy
-                        .selector
-                        .token
-                        .as_ref()
-                        .map(|source| QuotaSelectorKeySpec::from_raw_key(&source.key)),
-                    client: policy
-                        .selector
-                        .client
-                        .as_ref()
-                        .map(|source| QuotaSelectorKeySpec::from_raw_key(&source.key)),
-                },
-                burst: policy.burst.as_ref().map(|window| QuotaWindowPolicy {
-                    requests: window.requests.max(1),
-                    window: Duration::from_secs(window.window_secs.max(1)),
-                }),
-                sustained: policy.sustained.as_ref().map(|window| QuotaWindowPolicy {
-                    requests: window.requests.max(1),
-                    window: Duration::from_secs(window.window_secs.max(1)),
-                }),
-            })
-            .collect(),
-    }
-}
-
 pub struct RuntimeResilience {
     pub adaptive_admission: Arc<AdaptiveAdmission>,
     pub route_queue: Arc<RouteQueueLimiter>,
-    pub quota: Arc<QuotaRuntime>,
     pub circuit_breakers: Arc<CircuitBreakers>,
     pub retry_budget: Arc<RetryBudget>,
     pub brownout: Arc<BrownoutController>,
@@ -227,7 +53,6 @@ impl RuntimeResilience {
             config.route_queue.global_cap,
             config.route_queue.caps.clone(),
         ));
-        let quota = Arc::new(quota_runtime_from_config(&config.quota));
         let cb = &config.circuit_breaker;
         let circuit_breakers = Arc::new(CircuitBreakers::new(
             cb.enabled,
@@ -286,7 +111,6 @@ impl RuntimeResilience {
         Self {
             adaptive_admission: admission,
             route_queue,
-            quota,
             circuit_breakers,
             retry_budget,
             brownout,
@@ -308,10 +132,7 @@ impl RuntimeResilience {
         }
     }
 
-    pub fn from_policies(
-        admission_policy: &RuntimeAdmissionPolicy,
-        rate_limit_policy: &RuntimeRateLimitPolicy,
-    ) -> Self {
+    pub fn from_policies(admission_policy: &RuntimeAdmissionPolicy) -> Self {
         let adaptive = &admission_policy.adaptive_admission;
         let admission = Arc::new(AdaptiveAdmission::new(
             adaptive.enabled,
@@ -330,7 +151,6 @@ impl RuntimeResilience {
             admission_policy.route_queue.global_cap,
             admission_policy.route_queue.caps.clone(),
         ));
-        let quota = Arc::new(quota_runtime_from_policy_set(&rate_limit_policy.quota));
         let circuit_breakers = Arc::new(CircuitBreakers::new(
             admission_policy.circuit_breaker.enabled,
             admission_policy.circuit_breaker.failure_threshold,
@@ -395,7 +215,6 @@ impl RuntimeResilience {
         Self {
             adaptive_admission: admission,
             route_queue,
-            quota,
             circuit_breakers,
             retry_budget,
             brownout,

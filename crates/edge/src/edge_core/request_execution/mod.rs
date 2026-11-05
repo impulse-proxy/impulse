@@ -6,7 +6,7 @@ mod policy;
 mod routing;
 mod types;
 
-pub(crate) use admission::QuotaRejectedDecision;
+pub(crate) use admission::{QuotaRejectedDecision, execute_compiled_quota_plugin};
 pub(crate) use execution::EdgeRequestService;
 pub(crate) use policy::ResolvedRequestPolicy;
 pub(crate) use routing::RouteResolutionError;

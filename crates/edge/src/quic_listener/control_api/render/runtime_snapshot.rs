@@ -96,11 +96,11 @@ impl Http3Service {
         let backend_inventory = runtime_state.snapshot_backend_inventory();
         let backend_summary = backend_inventory.summary();
         let plugin_plans = runtime_state.plugin_plans();
-        let resilience = runtime_state.resilience();
+        let disabled_quota = crate::resilience::quota::QuotaRuntime::disabled();
         let quota_runtime = plugin_plans
             .quota()
             .map(impulse_plugins::CompiledQuota::runtime)
-            .unwrap_or(resilience.quota.as_ref());
+            .unwrap_or(&disabled_quota);
         let quota_backend_status = quota_runtime.backend_status_snapshot(
             plugin_plans
                 .quota()
@@ -138,11 +138,11 @@ impl Http3Service {
         let backend_inventory = runtime_state.snapshot_backend_inventory();
         let backend_summary = backend_inventory.summary();
         let plugin_plans = runtime_state.plugin_plans();
-        let resilience = runtime_state.resilience();
+        let disabled_quota = crate::resilience::quota::QuotaRuntime::disabled();
         let quota_runtime = plugin_plans
             .quota()
             .map(impulse_plugins::CompiledQuota::runtime)
-            .unwrap_or(resilience.quota.as_ref());
+            .unwrap_or(&disabled_quota);
         let quota_backend_status = quota_runtime.backend_status_snapshot(
             plugin_plans
                 .quota()
@@ -204,10 +204,11 @@ impl ControlApiRuntimePayload {
         let backend_inventory = state.snapshot_backend_inventory();
         let backend_summary = backend_inventory.summary();
         let plugin_plans = state.plugin_plans();
+        let disabled_quota = crate::resilience::quota::QuotaRuntime::disabled();
         let quota_runtime = plugin_plans
             .quota()
             .map(impulse_plugins::CompiledQuota::runtime)
-            .unwrap_or(resilience.quota.as_ref());
+            .unwrap_or(&disabled_quota);
         let quota_backend_status = quota_runtime.backend_status_snapshot(
             plugin_plans
                 .quota()

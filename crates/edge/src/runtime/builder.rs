@@ -346,10 +346,7 @@ impl RuntimeBuilder {
             global_route_cap_limit,
             Duration::from_millis(tuned_high_latency),
         );
-        let resilience = Arc::new(RuntimeResilience::from_policies(
-            &effective_admission,
-            &config.policies.rate_limits,
-        ));
+        let resilience = Arc::new(RuntimeResilience::from_policies(&effective_admission));
         // Process-scoped: reuse the active generation's watchdog on reload so an
         // in-flight restart/drain is not silently reset; only startup creates one.
         let watchdog = match &carried {

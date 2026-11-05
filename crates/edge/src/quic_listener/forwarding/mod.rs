@@ -108,7 +108,7 @@ mod tests {
     };
     use hmac::{Hmac, Mac};
     use impulse_config::{
-        config::{JwtAlgorithm, ScopedRateLimit, ScopedRateLimitScope},
+        config::JwtAlgorithm,
         runtime::{
             RuntimeAuthPolicy, RuntimeJwtAuth, RuntimeJwtVerificationKey, RuntimeUpstreamPolicy,
         },
@@ -1396,96 +1396,6 @@ mod tests {
             routed_sticky.source,
             super::lb_key::LbKeySource::StickyCidFallback
         ));
-    }
-
-    #[test]
-    fn resolve_scoped_rate_limit_key_defaults_match_scope() {
-        let client_rule = crate::resilience::scoped_rate_limit::ScopedRateLimitRule::from_config(
-            &ScopedRateLimit {
-                name: "client".to_string(),
-                scope: ScopedRateLimitScope::Client,
-                requests_per_sec: 10,
-                burst: 10,
-                key: None,
-                route_allowlist: Vec::new(),
-                idle_ttl_secs: 300,
-            },
-        );
-        let token_rule = crate::resilience::scoped_rate_limit::ScopedRateLimitRule::from_config(
-            &ScopedRateLimit {
-                name: "token".to_string(),
-                scope: ScopedRateLimitScope::Token,
-                requests_per_sec: 10,
-                burst: 10,
-                key: None,
-                route_allowlist: Vec::new(),
-                idle_ttl_secs: 300,
-            },
-        );
-        let headers = [("authorization".to_string(), "Bearer token-2".to_string())]
-            .into_iter()
-            .collect::<std::collections::HashMap<_, _>>();
-        let lookup = |name: &str| headers.get(&name.to_ascii_lowercase()).cloned();
-        let client_addr = "198.51.100.10:443".parse().expect("client addr");
-
-        assert_eq!(
-            Http3Service::resolve_scoped_rate_limit_key(
-                &client_rule,
-                "api",
-                "GET",
-                "/resource",
-                Some("api.example.com"),
-                client_addr,
-                Some(&lookup),
-            )
-            .as_deref(),
-            Some("198.51.100.10")
-        );
-        assert_eq!(
-            Http3Service::resolve_scoped_rate_limit_key(
-                &token_rule,
-                "api",
-                "GET",
-                "/resource",
-                Some("api.example.com"),
-                client_addr,
-                Some(&lookup),
-            )
-            .as_deref(),
-            Some("token-2")
-        );
-    }
-
-    #[test]
-    fn resolve_scoped_rate_limit_key_falls_back_to_default_request_key() {
-        let tenant_rule = crate::resilience::scoped_rate_limit::ScopedRateLimitRule::from_config(
-            &ScopedRateLimit {
-                name: "tenant".to_string(),
-                scope: ScopedRateLimitScope::Tenant,
-                requests_per_sec: 10,
-                burst: 10,
-                key: Some("header:x-tenant-id".to_string()),
-                route_allowlist: Vec::new(),
-                idle_ttl_secs: 300,
-            },
-        );
-        let headers = std::collections::HashMap::<String, String>::new();
-        let lookup = |name: &str| headers.get(&name.to_ascii_lowercase()).cloned();
-        let client_addr = "198.51.100.10:443".parse().expect("client addr");
-
-        assert_eq!(
-            Http3Service::resolve_scoped_rate_limit_key(
-                &tenant_rule,
-                "api",
-                "GET",
-                "/resource",
-                Some("api.example.com"),
-                client_addr,
-                Some(&lookup),
-            )
-            .as_deref(),
-            Some("api.example.com")
-        );
     }
 
     #[test]

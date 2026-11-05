@@ -21,6 +21,45 @@ use crate::{
     },
 };
 
+fn execute_deferred_quota_plugin(
+    pending_forward: &PendingForward,
+) -> Option<crate::edge_core::request_execution::QuotaRejectedDecision> {
+    let mut effective_headers = pending_forward.headers.as_ref().clone();
+    crate::runtime::connection::auth::apply_auth_request_mutations(
+        &mut effective_headers,
+        &pending_forward.auth_header_mutations,
+    );
+    let header_lookup = |name: &str| {
+        effective_headers
+            .iter()
+            .find(|header| header.name().eq_ignore_ascii_case(name.as_bytes()))
+            .map(|header| header.value())
+    };
+    let request = impulse_contracts::PluginRequestView {
+        request_id: pending_forward.request_id,
+        generation: pending_forward.plugin_plan.generation(),
+        route_id: Some(pending_forward.upstream_name.as_ref()),
+        upstream_name: pending_forward.upstream_name.as_ref(),
+        method: pending_forward.method.as_ref(),
+        path: pending_forward.path.as_ref(),
+        authority: pending_forward.authority.as_deref(),
+        peer_address: pending_forward.client_addr,
+        headers: Some(&header_lookup),
+        has_body: false,
+        body_replayable: true,
+        ingress_protocol: impulse_contracts::IngressProtocol::Http3,
+    };
+
+    crate::quic_listener::admission::block_on_admission_future(
+        crate::edge_core::request_execution::execute_compiled_quota_plugin(
+            &pending_forward.plugin_plan,
+            request,
+            &[],
+        ),
+    )
+    .flatten()
+}
+
 impl Http3Service {
     pub(super) fn materialize_forward_after_auth(
         stream_id: u64,
@@ -81,6 +120,35 @@ impl Http3Service {
             return Ok(false);
         };
 
+        if let Some(decision) = execute_deferred_quota_plugin(pending_forward.as_ref()) {
+            if decision.status == http::StatusCode::TOO_MANY_REQUESTS {
+                metrics.policy_observations().inc_request_rate_limited();
+            }
+            let _ = req.complete_with(|| {
+                observe_admission_outcome(
+                    metrics,
+                    RouteOutcomeTarget {
+                        route: &upstream_name,
+                    },
+                    Some(BackendOutcomeTarget {
+                        upstream: &upstream_name,
+                        backend_addr: Some(pending_forward.backend_addr.as_ref()),
+                        backend_index: Some(pending_forward.backend_index),
+                    }),
+                    req.start.elapsed(),
+                    decision.status,
+                    crate::runtime::connection::outcome::AdmissionOutcomeClass::QuotaDenied,
+                )
+            });
+            Self::send_admission_rejection_response(h3, quic, stream_id, &decision.as_response())?;
+            terminalize_stream(
+                req,
+                TerminalReason::Rejected(RejectionReason::QuotaDenied),
+                metrics,
+            );
+            return Ok(false);
+        }
+
         let (
             backend_index,
             upstream_pool,
@@ -97,41 +165,6 @@ impl Http3Service {
             Arc::clone(&exec_ctx.global_inflight),
             exec_ctx.inflight_acquire_wait,
         ) {
-            crate::quic_listener::admission::PostAuthAdmissionExecution::Rejected(
-                crate::quic_listener::admission::PostAuthAdmissionRejection::Quota(decision),
-            ) => {
-                if decision.status == http::StatusCode::TOO_MANY_REQUESTS {
-                    metrics.policy_observations().inc_request_rate_limited();
-                }
-                let _ = req.complete_with(|| {
-                    observe_admission_outcome(
-                        metrics,
-                        RouteOutcomeTarget {
-                            route: &upstream_name,
-                        },
-                        Some(BackendOutcomeTarget {
-                            upstream: &upstream_name,
-                            backend_addr: Some(pending_forward.backend_addr.as_ref()),
-                            backend_index: Some(pending_forward.backend_index),
-                        }),
-                        req.start.elapsed(),
-                        decision.status,
-                        crate::runtime::connection::outcome::AdmissionOutcomeClass::QuotaDenied,
-                    )
-                });
-                Self::send_admission_rejection_response(
-                    h3,
-                    quic,
-                    stream_id,
-                    &decision.as_response(),
-                )?;
-                terminalize_stream(
-                    req,
-                    TerminalReason::Rejected(RejectionReason::QuotaDenied),
-                    metrics,
-                );
-                return Ok(false);
-            }
             crate::quic_listener::admission::PostAuthAdmissionExecution::Ready(ready) => {
                 if ready.waited_for_global_permit {
                     metrics
