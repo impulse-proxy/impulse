@@ -194,7 +194,9 @@ fn compile_upstream_plan(
     let mut response_policy = Vec::with_capacity(1);
     if let Some(compression) = inputs.response_compression {
         require_available(catalog, PluginKind::ResponseCompression)?;
-        response_policy.push(CompiledResponsePlugin::ResponseCompression(compression));
+        response_policy.push(CompiledResponsePlugin::ResponseCompression(
+            crate::CompiledResponseCompression::new(compression),
+        ));
     }
 
     Ok((

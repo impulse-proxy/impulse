@@ -841,7 +841,6 @@ impl Http3Service {
                         .map(Arc::<str>::from),
                     host_policy: resolved_policy.host_policy,
                     forwarded_header_policy: resolved_policy.forwarded_header_policy,
-                    response_compression: resolved_policy.response_compression,
                     plugin_plan: Arc::clone(&resolved_policy.plugin_plan),
                     auth_header_mutations: plugin_mutations
                         .iter()

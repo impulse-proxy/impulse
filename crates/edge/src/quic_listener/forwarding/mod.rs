@@ -361,7 +361,6 @@ mod tests {
             host: Default::default(),
             forwarded_headers: Default::default(),
             response_cache: Default::default(),
-            response_compression: Default::default(),
             protocol: Default::default(),
         };
         assert!(
@@ -1151,7 +1150,6 @@ mod tests {
             host: Default::default(),
             forwarded_headers: Default::default(),
             response_cache: Default::default(),
-            response_compression: Default::default(),
             protocol: Default::default(),
         };
         let allowed_claims = serde_json::json!({

@@ -7,6 +7,7 @@
 mod cache;
 mod catalog;
 mod compile;
+mod compression;
 mod connection;
 mod input;
 mod instance;
@@ -23,6 +24,7 @@ pub use catalog::{
 pub use compile::{
     CompiledGenerationPluginPlans, PluginPlanCompileError, compile_generation_plugin_plans,
 };
+pub use compression::{CompiledResponseCompression, ResponseCompressionEvaluation};
 pub use connection::{
     ConnectionPluginExecution, ConnectionPluginRejection, execute_connection_plugins,
 };

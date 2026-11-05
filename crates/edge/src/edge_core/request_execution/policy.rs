@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use impulse_config::{
     config::{ForwardedHeaderPolicy, UpstreamHostPolicy},
-    runtime::{RuntimeResponseCompressionPolicy, RuntimeUpstreamPolicy},
+    runtime::RuntimeUpstreamPolicy,
 };
 use impulse_plugins::CompiledPluginPlan;
 
@@ -17,7 +17,6 @@ pub(crate) fn resolve_policy(
         local_auth_policy: upstream_policy.clone(),
         host_policy: upstream_policy.host.0.clone(),
         forwarded_header_policy: upstream_policy.forwarded_headers.0.clone(),
-        response_compression: upstream_policy.response_compression.clone(),
     }
 }
 
@@ -30,7 +29,6 @@ pub(crate) struct ResolvedRequestPolicy {
     pub(crate) local_auth_policy: RuntimeUpstreamPolicy,
     pub(crate) host_policy: UpstreamHostPolicy,
     pub(crate) forwarded_header_policy: ForwardedHeaderPolicy,
-    pub(crate) response_compression: RuntimeResponseCompressionPolicy,
 }
 
 #[cfg(test)]

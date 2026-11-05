@@ -67,6 +67,13 @@ impl CompiledPluginPlan {
     }
 
     #[must_use]
+    pub fn response_compression(&self) -> Option<&crate::CompiledResponseCompression> {
+        self.response_policy.iter().find_map(|plugin| match plugin {
+            CompiledResponsePlugin::ResponseCompression(compression) => Some(compression),
+        })
+    }
+
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.request_gate.is_empty()
             && self.async_request_gate.is_empty()

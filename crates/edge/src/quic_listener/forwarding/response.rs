@@ -3,7 +3,7 @@ use std::sync::Arc;
 use bytes::Bytes;
 use impulse_contracts::{HealthFailureReason, IngressProtocol, PluginRequestView};
 use impulse_errors::{UpstreamProxyErrorKind, classify_upstream_proxy_error};
-use impulse_observability::ResponseCacheOutcome;
+use impulse_observability::{ResponseCacheOutcome, ResponseCompressionAction};
 use impulse_transport::{UpstreamBody, UpstreamBodyFrame};
 use pingora_cache::{CacheMeta, HttpCache, NoCacheReason};
 use pingora_core::protocols::http::compression::Algorithm;
@@ -20,7 +20,6 @@ use crate::{
             checked_response_body_guardrails, is_unknown_length_response_prebuffer_reason,
             response_body_limit_reason, response_chunk_ranges,
         },
-        request_execution::{ResponseCompressionAction, apply_gzip_response_headers},
         response_processing::{
             ResponseCacheDecision, ResponseProcessingInput, ResponseProcessingResult,
             process_response,
@@ -426,7 +425,9 @@ impl Http3Service {
             cache,
         } = processed_response;
         if matches!(compression.action, ResponseCompressionAction::Gzip) {
-            apply_gzip_response_headers(&mut response_headers);
+            if let Some(policy) = req.plugin_plan.response_compression() {
+                policy.apply_selected_representation_headers(&mut response_headers, compression);
+            }
         }
         let progressive_body_emission_allowed = !emit_end_stream_on_headers;
         let response_guardrails = ResponseBodyGuardrailConfig {

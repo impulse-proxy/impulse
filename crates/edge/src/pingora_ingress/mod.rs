@@ -22,7 +22,7 @@ use impulse_errors::{
     is_idempotent_method,
 };
 use impulse_lb::{BackendSelectionInput, upstream_pool::UpstreamPool};
-use impulse_observability::ResponseCacheOutcome;
+use impulse_observability::{ResponseCacheOutcome, ResponseCompressionAction};
 pub use impulse_pingora_ingress::PingoraListenerTask;
 use impulse_pingora_ingress::{
     ConnectionAdmission, PingoraDrainState, PingoraIngressAdapter, PingoraListenerConfig,
@@ -70,7 +70,7 @@ use crate::{
         request_execution::{
             EdgeRequestService, PluginRequestExecutionInput, PluginRequestExecutionOutcome,
             PluginTerminalObservation, RequestExecutionInput, ResolvedRequestPolicy,
-            ResolvedRouteTarget, ResponseCompressionAction, RouteResolutionError,
+            ResolvedRouteTarget, RouteResolutionError,
         },
         request_validation::validate_http_request_parts,
         response_processing::{

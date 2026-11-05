@@ -10,14 +10,10 @@ use impulse_contracts::{
 };
 use impulse_plugins::{
     CachePluginDecision, CachePluginFillDecision, CompiledCachePlugin, CompiledPluginPlan,
-    CompiledResponsePlugin, ResponsePluginDecision, execute_cache_plugins,
-    execute_response_plugins,
+    CompiledResponseCompression, CompiledResponsePlugin, ResponseCompressionEvaluation,
+    ResponsePluginDecision, execute_cache_plugins, execute_response_plugins,
 };
-use impulse_policy::{
-    ResponseCacheBypassReason, ResponseCacheRepresentation, ResponseCompressionEvaluation,
-    ResponseCompressionInput, ResponseCompressionPolicyInput, ensure_vary_accept_encoding,
-    evaluate_response_compression,
-};
+use impulse_policy::{ResponseCacheBypassReason, ResponseCacheRepresentation};
 
 pub(crate) type ResponseCacheDecision = CachePluginFillDecision;
 
@@ -160,16 +156,7 @@ pub(crate) fn process_response(input: ResponseProcessingInput<'_>) -> ResponsePr
         {
             compression_headers.insert(http::header::CONTENT_LENGTH, content_length.clone());
         }
-        let mut compression = evaluate_response_compression(ResponseCompressionInput {
-            policy: ResponseCompressionPolicyInput {
-                enabled: false,
-                minimum_size_bytes: 0,
-            },
-            request_method: input.request_method,
-            request_headers: input.request_headers,
-            response_status: input.status,
-            response_headers: &compression_headers,
-        });
+        let mut compression = CompiledResponseCompression::disabled_evaluation();
         let _ = execute_response_plugins(
             input.plugin_plan,
             PluginResponseView {
@@ -178,16 +165,12 @@ pub(crate) fn process_response(input: ResponseProcessingInput<'_>) -> ResponsePr
             },
             |plugin, _| match plugin {
                 CompiledResponsePlugin::ResponseCompression(policy) => {
-                    compression = evaluate_response_compression(ResponseCompressionInput {
-                        policy: ResponseCompressionPolicyInput {
-                            enabled: true,
-                            minimum_size_bytes: policy.minimum_size_bytes,
-                        },
-                        request_method: input.request_method,
-                        request_headers: input.request_headers,
-                        response_status: input.status,
-                        response_headers: &compression_headers,
-                    });
+                    compression = policy.evaluate(
+                        input.request_method,
+                        input.request_headers,
+                        input.status,
+                        &compression_headers,
+                    );
                     if matches!(
                         compression.action,
                         impulse_observability::ResponseCompressionAction::Gzip
@@ -201,8 +184,8 @@ pub(crate) fn process_response(input: ResponseProcessingInput<'_>) -> ResponsePr
         );
         (cache, compression)
     };
-    if compression.vary_accept_encoding {
-        ensure_vary_accept_encoding(&mut headers);
+    if let Some(policy) = input.plugin_plan.response_compression() {
+        policy.apply_negotiation_headers(&mut headers, compression);
     }
 
     ResponseProcessingResult {
