@@ -18,9 +18,9 @@ use http::StatusCode;
 use impulse_config::runtime::RuntimeUpstreamPolicy;
 use impulse_config::runtime::{RuntimeJwtAuth, RuntimeJwtVerificationKey};
 use impulse_lb::upstream_pool::UpstreamPool;
-use impulse_policy::evaluate_adaptive_admission;
 #[cfg(test)]
 use impulse_policy::evaluate_brownout_admission;
+use impulse_policy::{AdaptivePermit, evaluate_adaptive_admission};
 use quiche::h3::NameValue;
 use serde_json::Value;
 #[cfg(test)]
@@ -35,7 +35,6 @@ use super::runtime_handle;
 use crate::{
     OverloadShedReason, RouteOutcome,
     resilience::{
-        adaptive_admission::AdaptivePermit,
         route_queue::{RouteQueuePermit, RouteQueueRejection},
         runtime::RuntimeResilience,
     },
@@ -316,12 +315,12 @@ mod tests {
         },
         runtime::{RuntimeConfig, RuntimeJwtAuth},
     };
+    use impulse_policy::BrownoutController;
     use tokio::sync::Semaphore;
 
     use super::*;
     use crate::{
-        quic_listener::admission::jwt::parse_jose_header,
-        resilience::{brownout::BrownoutController, runtime::RuntimeResilience},
+        quic_listener::admission::jwt::parse_jose_header, resilience::runtime::RuntimeResilience,
     };
 
     fn test_rs256_jwt(key: &PKey<Private>, kid: &str, claims: serde_json::Value) -> String {

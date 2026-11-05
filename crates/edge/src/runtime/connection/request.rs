@@ -1046,12 +1046,11 @@ mod tests {
 
     use bytes::Bytes;
     use http::StatusCode;
+    use impulse_policy::AdaptiveAdmission;
     use tokio::sync::{Semaphore, mpsc, oneshot};
 
     use super::*;
-    use crate::resilience::{
-        adaptive_admission::AdaptiveAdmission, route_queue::RouteQueueLimiter,
-    };
+    use crate::resilience::route_queue::RouteQueueLimiter;
 
     fn make_request_context(start: Instant) -> RequestContext {
         RequestContext {

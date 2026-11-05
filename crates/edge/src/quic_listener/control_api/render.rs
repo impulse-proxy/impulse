@@ -1,6 +1,10 @@
 use std::collections::HashMap;
 
 use impulse_contracts::{HealthFailureReason, PluginKind};
+use impulse_policy::quota::{
+    QuotaBackendErrorSnapshot, QuotaBackendStatusSnapshot, QuotaPolicyIntrospectionSnapshot,
+    QuotaSelectorIntrospectionSnapshot, QuotaWindowIntrospectionSnapshot,
+};
 use serde::Serialize;
 
 #[cfg(test)]
@@ -8,10 +12,6 @@ use self::upstreams::health_failure_reason_label;
 use super::{state::ControlApiState, *};
 use crate::{
     quic_listener::control_api::audit::ADMIN_AUDIT_SCHEMA_VERSION,
-    resilience::quota::{
-        QuotaBackendErrorSnapshot, QuotaBackendStatusSnapshot, QuotaPolicyIntrospectionSnapshot,
-        QuotaSelectorIntrospectionSnapshot, QuotaWindowIntrospectionSnapshot,
-    },
     runtime::{
         activation::{
             GenerationChangeEvent, GenerationEventKind, GenerationHistoryEntry,

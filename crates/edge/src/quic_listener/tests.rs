@@ -2008,9 +2008,10 @@ fn sweep_partial_batch_clears_only_removed_entries() {
 
 use std::time::Instant;
 
+use impulse_policy::AdaptiveAdmission;
 use tokio::sync::{Semaphore, mpsc, oneshot};
 
-use crate::resilience::{adaptive_admission::AdaptiveAdmission, route_queue::RouteQueueLimiter};
+use crate::resilience::route_queue::RouteQueueLimiter;
 
 fn make_envelope(phase: StreamPhase) -> RequestEnvelope {
     let start = Instant::now();

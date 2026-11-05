@@ -96,7 +96,7 @@ impl Http3Service {
         let backend_inventory = runtime_state.snapshot_backend_inventory();
         let backend_summary = backend_inventory.summary();
         let plugin_plans = runtime_state.plugin_plans();
-        let disabled_quota = crate::resilience::quota::QuotaRuntime::disabled();
+        let disabled_quota = impulse_policy::quota::QuotaRuntime::disabled();
         let quota_runtime = plugin_plans
             .quota()
             .map(impulse_plugins::CompiledQuota::runtime)
@@ -138,7 +138,7 @@ impl Http3Service {
         let backend_inventory = runtime_state.snapshot_backend_inventory();
         let backend_summary = backend_inventory.summary();
         let plugin_plans = runtime_state.plugin_plans();
-        let disabled_quota = crate::resilience::quota::QuotaRuntime::disabled();
+        let disabled_quota = impulse_policy::quota::QuotaRuntime::disabled();
         let quota_runtime = plugin_plans
             .quota()
             .map(impulse_plugins::CompiledQuota::runtime)
@@ -204,7 +204,7 @@ impl ControlApiRuntimePayload {
         let backend_inventory = state.snapshot_backend_inventory();
         let backend_summary = backend_inventory.summary();
         let plugin_plans = state.plugin_plans();
-        let disabled_quota = crate::resilience::quota::QuotaRuntime::disabled();
+        let disabled_quota = impulse_policy::quota::QuotaRuntime::disabled();
         let quota_runtime = plugin_plans
             .quota()
             .map(impulse_plugins::CompiledQuota::runtime)
@@ -402,7 +402,7 @@ impl ControlApiPluginRuntimePayload {
 
 impl ControlApiQuotaPayload {
     fn from_snapshot(
-        runtime: &crate::resilience::quota::QuotaRuntime,
+        runtime: &impulse_policy::quota::QuotaRuntime,
         backend_status: QuotaBackendStatusSnapshot,
     ) -> Self {
         Self {

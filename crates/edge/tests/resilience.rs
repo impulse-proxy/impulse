@@ -2,13 +2,12 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use impulse_config::config::Resilience as ResilienceConfig;
 use impulse_edge::resilience::{
-    adaptive_admission::AdaptiveAdmission,
-    brownout::BrownoutController,
     circuit_breaker::CircuitBreakers,
     retry_budget::RetryBudget,
     route_queue::{RouteQueueLimiter, RouteQueueRejection},
     runtime::RuntimeResilience,
 };
+use impulse_policy::{AdaptiveAdmission, BrownoutController};
 
 #[test]
 fn adaptive_admission_adjusts_limit() {

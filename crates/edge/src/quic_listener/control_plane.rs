@@ -3,6 +3,7 @@ use std::sync::Arc;
 use impulse_config::runtime::RuntimeConfig;
 use impulse_errors::ProxyError;
 use impulse_operations::watchdog::WatchdogCoordinator;
+use impulse_policy::quota::QuotaRuntime;
 use log::error;
 
 use super::{
@@ -12,20 +13,17 @@ use super::{
     runtime_handle,
     runtime_state::{ControlPlaneStartup, WatchdogServiceCtx},
 };
-use crate::{
-    resilience::quota::QuotaRuntime,
-    runtime::{
-        backend::{
-            coordination::spawn_pingora_discovery_refresh,
-            health_service::{PingoraHealthServiceInput, spawn_pingora_health_service},
-        },
-        bundle::RuntimeBundleHandle,
-        shared_state::SharedRuntimeState,
-        subsystem_mapping::watchdog_runtime_config,
-        watchdog::{
-            service::run_watchdog_service,
-            state::{WatchdogServiceState, WatchdogSpawnState},
-        },
+use crate::runtime::{
+    backend::{
+        coordination::spawn_pingora_discovery_refresh,
+        health_service::{PingoraHealthServiceInput, spawn_pingora_health_service},
+    },
+    bundle::RuntimeBundleHandle,
+    shared_state::SharedRuntimeState,
+    subsystem_mapping::watchdog_runtime_config,
+    watchdog::{
+        service::run_watchdog_service,
+        state::{WatchdogServiceState, WatchdogSpawnState},
     },
 };
 

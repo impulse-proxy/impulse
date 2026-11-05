@@ -1,10 +1,9 @@
 use std::{collections::HashSet, sync::Arc, time::Duration};
 
 use impulse_config::{config::Resilience as ResilienceConfig, runtime::RuntimeAdmissionPolicy};
+use impulse_policy::{AdaptiveAdmission, BrownoutController};
 
 use crate::resilience::{
-    adaptive_admission::AdaptiveAdmission,
-    brownout::BrownoutController,
     circuit_breaker::CircuitBreakers,
     connect::{connect_authority_port, normalize_connect_authority},
     retry_budget::RetryBudget,

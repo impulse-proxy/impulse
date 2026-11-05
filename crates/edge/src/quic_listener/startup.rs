@@ -8,13 +8,13 @@ use std::{
 use impulse_config::runtime::{ListenerRuntimeConfig, RuntimeConfig};
 use impulse_errors::ProxyError;
 use impulse_http3_ingress::{UdpSocketConfig, bind_udp_socket};
+use impulse_policy::quota::QuotaRuntime;
 use log::debug;
 
 use crate::{
     Metrics,
     constants::UDP_READ_TIMEOUT_MS,
     quic_listener::{ListenerRuntimeSettings, runtime_state::PreparedListenerStartup},
-    resilience::quota::QuotaRuntime,
     runtime::{
         builder::RuntimeBuilder,
         bundle::{RuntimeBundle, RuntimeBundleHandle},
