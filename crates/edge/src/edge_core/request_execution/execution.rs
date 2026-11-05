@@ -2,10 +2,14 @@ use std::{
     collections::HashMap,
     sync::Arc,
     task::{Context, Poll, Waker},
+    time::Instant,
 };
 
 use impulse_config::runtime::RuntimeUpstreamPolicy;
-use impulse_contracts::{IngressProtocol, PluginRequestView};
+use impulse_contracts::{
+    IngressProtocol, PluginExecutionObservation, PluginExecutionOutcome, PluginKind, PluginPhase,
+    PluginRequestView,
+};
 use impulse_plugins::{
     AsyncRequestPluginDecision, AsyncRequestPluginExecution, AsyncRequestPluginExecutionGuard,
     CompiledAsyncRequestPlugin, CompiledGenerationPluginPlans, CompiledRequestPlugin,
@@ -19,7 +23,7 @@ use super::{
     PluginTerminalObservation, admission::evaluate_admission, policy::resolve_policy,
     routing::resolve_route,
 };
-use crate::{resilience::runtime::RuntimeResilience, routing::index::RouteIndex};
+use crate::{Metrics, resilience::runtime::RuntimeResilience, routing::index::RouteIndex};
 
 /// Borrowed protocol-neutral request executor for one runtime generation.
 pub(crate) struct EdgeRequestService<'a> {
@@ -27,6 +31,7 @@ pub(crate) struct EdgeRequestService<'a> {
     upstream_policies: &'a HashMap<String, RuntimeUpstreamPolicy>,
     plugin_plans: &'a CompiledGenerationPluginPlans,
     resilience: &'a RuntimeResilience,
+    metrics: &'a Metrics,
 }
 impl<'a> EdgeRequestService<'a> {
     pub(crate) fn new(
@@ -34,12 +39,14 @@ impl<'a> EdgeRequestService<'a> {
         upstream_policies: &'a HashMap<String, RuntimeUpstreamPolicy>,
         plugin_plans: &'a CompiledGenerationPluginPlans,
         resilience: &'a RuntimeResilience,
+        metrics: &'a Metrics,
     ) -> Self {
         Self {
             routing_index,
             upstream_policies,
             plugin_plans,
             resilience,
+            metrics,
         }
     }
 
@@ -125,6 +132,11 @@ impl<'a> EdgeRequestService<'a> {
         let mut mutations = match execute_synchronous_request_plugins(
             &plugin_plan,
             plugin_request,
+            |observation| {
+                self.metrics
+                    .plugin_observations()
+                    .record_execution(observation);
+            },
             |plugin, request| match plugin {
                 CompiledRequestPlugin::JwtAuth(jwt) => {
                     crate::quic_listener::evaluate_compiled_jwt_policy(
@@ -155,6 +167,13 @@ impl<'a> EdgeRequestService<'a> {
             async_guard,
             &plugin_plan,
             plugin_request,
+            |observation| {
+                if observation.kind != PluginKind::Quota {
+                    self.metrics
+                        .plugin_observations()
+                        .record_execution(observation);
+                }
+            },
             |plugin, _| async move {
                 match (plugin, external_auth_headers) {
                     (CompiledAsyncRequestPlugin::ExternalAuth(input), Some(headers)) => {
@@ -188,7 +207,24 @@ impl<'a> EdgeRequestService<'a> {
                                 CompiledAsyncRequestPlugin::ExternalAuth(_) => None,
                             })
                 {
-                    match quota.evaluate(plugin_request, &mutations).await {
+                    let started_at = Instant::now();
+                    let decision = quota.evaluate(plugin_request, &mutations).await;
+                    self.metrics.plugin_observations().record_execution(
+                        PluginExecutionObservation {
+                            kind: PluginKind::Quota,
+                            phase: PluginPhase::AsyncRequestGate,
+                            outcome: match &decision {
+                                QuotaDecision::Denied(_) => PluginExecutionOutcome::Reject,
+                                QuotaDecision::FailedClosed(_) => PluginExecutionOutcome::Fail,
+                                QuotaDecision::NotApplied
+                                | QuotaDecision::Allowed(_)
+                                | QuotaDecision::ShadowDenied(_)
+                                | QuotaDecision::FailedOpen(_) => PluginExecutionOutcome::Continue,
+                            },
+                            async_duration: Some(started_at.elapsed()),
+                        },
+                    );
+                    match decision {
                         QuotaDecision::Denied(denial) => {
                             let rejection = super::QuotaRejectedDecision::from_quota_decision(
                                 QuotaDecision::Denied(denial),

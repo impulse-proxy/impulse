@@ -551,6 +551,11 @@ impl RuntimeBundleHandle {
         metrics
             .runtime_observations()
             .set_runtime_history_depth(history_depth);
+        for kind in impulse_contracts::PluginKind::ALL {
+            metrics
+                .plugin_observations()
+                .set_active_count(kind, generation_state.plugin_plans.active_count(kind));
+        }
     }
 
     fn archive_previous_generation(

@@ -526,6 +526,7 @@ impl Http3Service {
             shared_ctx.upstream_policies,
             shared_ctx.plugin_plans,
             resilience,
+            metrics,
         );
         let body_replayable = intake.state.request_mode.bodyless_mode();
         let Some(execution) =

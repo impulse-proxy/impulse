@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum PluginKind {
     ConnectionRateLimit,
@@ -10,6 +12,39 @@ pub enum PluginKind {
     ResponseCompression,
 }
 
+impl PluginKind {
+    pub const ALL: [Self; 8] = [
+        Self::ConnectionRateLimit,
+        Self::ApiKeyAuth,
+        Self::JwtAuth,
+        Self::ExternalAuth,
+        Self::ScopedRateLimit,
+        Self::Quota,
+        Self::ResponseCache,
+        Self::ResponseCompression,
+    ];
+    pub const COUNT: usize = Self::ALL.len();
+
+    #[must_use]
+    pub const fn index(self) -> usize {
+        self as usize
+    }
+
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::ConnectionRateLimit => "connection_rate_limit",
+            Self::ApiKeyAuth => "api_key_auth",
+            Self::JwtAuth => "jwt_auth",
+            Self::ExternalAuth => "external_auth",
+            Self::ScopedRateLimit => "scoped_rate_limit",
+            Self::Quota => "quota",
+            Self::ResponseCache => "response_cache",
+            Self::ResponseCompression => "response_compression",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum PluginPhase {
     ConnectionAdmission,
@@ -18,6 +53,35 @@ pub enum PluginPhase {
     CacheLookup,
     CacheFill,
     ResponsePolicy,
+}
+
+impl PluginPhase {
+    pub const ALL: [Self; 6] = [
+        Self::ConnectionAdmission,
+        Self::RequestGate,
+        Self::AsyncRequestGate,
+        Self::CacheLookup,
+        Self::CacheFill,
+        Self::ResponsePolicy,
+    ];
+    pub const COUNT: usize = Self::ALL.len();
+
+    #[must_use]
+    pub const fn index(self) -> usize {
+        self as usize
+    }
+
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::ConnectionAdmission => "connection_admission",
+            Self::RequestGate => "request_gate",
+            Self::AsyncRequestGate => "async_request_gate",
+            Self::CacheLookup => "cache_lookup",
+            Self::CacheFill => "cache_fill",
+            Self::ResponsePolicy => "response_policy",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -33,6 +97,58 @@ pub enum PluginExecutionOutcome {
     Reject,
     Bypass,
     Fail,
+}
+
+impl PluginExecutionOutcome {
+    pub const ALL: [Self; 4] = [Self::Continue, Self::Reject, Self::Bypass, Self::Fail];
+    pub const COUNT: usize = Self::ALL.len();
+
+    #[must_use]
+    pub const fn index(self) -> usize {
+        self as usize
+    }
+
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Continue => "allow",
+            Self::Reject => "reject",
+            Self::Bypass => "bypass",
+            Self::Fail => "failure",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PluginExecutionObservation {
+    pub kind: PluginKind,
+    pub phase: PluginPhase,
+    pub outcome: PluginExecutionOutcome,
+    pub async_duration: Option<Duration>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PluginActivationOutcome {
+    Success,
+    Failure,
+}
+
+impl PluginActivationOutcome {
+    pub const ALL: [Self; 2] = [Self::Success, Self::Failure];
+    pub const COUNT: usize = Self::ALL.len();
+
+    #[must_use]
+    pub const fn index(self) -> usize {
+        self as usize
+    }
+
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Success => "success",
+            Self::Failure => "failure",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]

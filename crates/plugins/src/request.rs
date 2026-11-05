@@ -1,8 +1,8 @@
-use std::future::Future;
+use std::{future::Future, time::Instant};
 
 use impulse_contracts::{
-    AuthChallengeKind, PluginHeaderMutation, PluginRejection, PluginRejectionReason,
-    PluginRequestView,
+    AuthChallengeKind, PluginExecutionObservation, PluginExecutionOutcome, PluginHeaderMutation,
+    PluginPhase, PluginRejection, PluginRejectionReason, PluginRequestView,
 };
 use impulse_policy::{ApiKeyAuthorization, ApiKeyPolicyInput, evaluate_api_key};
 
@@ -62,6 +62,7 @@ pub enum SynchronousRequestPluginExecution {
 pub fn execute_synchronous_request_plugins<'a>(
     plan: &CompiledPluginPlan,
     request: PluginRequestView<'a>,
+    mut observe: impl FnMut(PluginExecutionObservation),
     mut evaluate: impl FnMut(
         &CompiledRequestPlugin,
         PluginRequestView<'a>,
@@ -105,6 +106,12 @@ pub fn execute_synchronous_request_plugins<'a>(
             },
             _ => evaluate(plugin, request),
         };
+        observe(PluginExecutionObservation {
+            kind: plugin.kind(),
+            phase: PluginPhase::RequestGate,
+            outcome: request_decision_outcome(&decision),
+            async_duration: None,
+        });
         match decision {
             SynchronousRequestPluginDecision::Continue => {}
             SynchronousRequestPluginDecision::Mutate(plugin_mutations) => {
@@ -128,6 +135,7 @@ pub async fn execute_async_request_plugins<'a, Evaluate, Evaluation>(
     guard: &mut AsyncRequestPluginExecutionGuard,
     plan: &'a CompiledPluginPlan,
     request: PluginRequestView<'a>,
+    mut observe: impl FnMut(PluginExecutionObservation),
     mut evaluate: Evaluate,
 ) -> AsyncRequestPluginExecution
 where
@@ -148,7 +156,15 @@ where
 
     let mut mutations = Vec::new();
     for plugin in plugins {
-        match evaluate(plugin, request).await {
+        let started_at = Instant::now();
+        let decision = evaluate(plugin, request).await;
+        observe(PluginExecutionObservation {
+            kind: plugin.kind(),
+            phase: PluginPhase::AsyncRequestGate,
+            outcome: async_request_decision_outcome(&decision),
+            async_duration: Some(started_at.elapsed()),
+        });
+        match decision {
             AsyncRequestPluginDecision::Continue => {}
             AsyncRequestPluginDecision::Mutate(plugin_mutations) => {
                 mutations.extend(plugin_mutations);
@@ -160,4 +176,32 @@ where
     }
 
     AsyncRequestPluginExecution::Continue { mutations }
+}
+
+fn rejection_outcome(reason: PluginRejectionReason) -> PluginExecutionOutcome {
+    match reason {
+        PluginRejectionReason::JwksUnavailable
+        | PluginRejectionReason::ExternalAuthUnavailable
+        | PluginRejectionReason::QuotaUnavailable => PluginExecutionOutcome::Fail,
+        _ => PluginExecutionOutcome::Reject,
+    }
+}
+
+fn request_decision_outcome(decision: &SynchronousRequestPluginDecision) -> PluginExecutionOutcome {
+    match decision {
+        SynchronousRequestPluginDecision::Continue
+        | SynchronousRequestPluginDecision::Mutate(_) => PluginExecutionOutcome::Continue,
+        SynchronousRequestPluginDecision::Reject(rejection) => {
+            rejection_outcome(rejection.reason())
+        }
+    }
+}
+
+fn async_request_decision_outcome(decision: &AsyncRequestPluginDecision) -> PluginExecutionOutcome {
+    match decision {
+        AsyncRequestPluginDecision::Continue | AsyncRequestPluginDecision::Mutate(_) => {
+            PluginExecutionOutcome::Continue
+        }
+        AsyncRequestPluginDecision::Reject(rejection) => rejection_outcome(rejection.reason()),
+    }
 }

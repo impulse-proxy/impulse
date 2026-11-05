@@ -26,6 +26,7 @@ impl impulse_http3_ingress::ConnectionAdmissionAdapter for Http3Service {
                 listener,
                 peer_address: Some(peer),
             },
+            &self.metrics,
         )
         .map_err(|reason| match reason {
             impulse_plugins::ConnectionPluginRejection::GlobalRateLimit => {

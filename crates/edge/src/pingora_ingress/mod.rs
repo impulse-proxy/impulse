@@ -221,6 +221,7 @@ impl PingoraEdgeRequestService {
             ResponseBodyMode::Normal
         };
         Ok(process_response(ResponseProcessingInput {
+            metrics: &ctx.runtime.shared_state.shared_services().metrics,
             plugin_plan: &policy.plugin_plan,
             plugin_request,
             status: upstream_response.status,
@@ -403,6 +404,7 @@ impl ConnectionAdmission for PingoraRuntimeConnectionAdmission {
                 listener: &self.listener_label,
                 peer_address: addr.copied(),
             },
+            metrics,
         )
         .is_ok();
         if !admitted {
@@ -709,6 +711,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             &state.upstream_policies,
             &state.plugin_plans,
             &state.resilience,
+            &shared.metrics,
         );
         let execution = match request_service
             .execute_ingress_plugins(
@@ -963,6 +966,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
         let request_header =
             |name: &str| request_headers.get(name).map(http::HeaderValue::as_bytes);
         let representation = process_cache_lookup(CacheLookupProcessingInput {
+            metrics: &ctx.runtime.shared_state.shared_services().metrics,
             plugin_plan: &policy.plugin_plan,
             plugin_request: PluginRequestView {
                 request_id: ctx.request_id,

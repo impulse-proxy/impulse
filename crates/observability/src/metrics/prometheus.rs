@@ -780,6 +780,69 @@ impl Metrics {
         ));
 
         out.push_str(
+            "# HELP impulse_plugin_executions_total Compiled plugin executions by fixed kind, phase, and outcome.\n",
+        );
+        out.push_str("# TYPE impulse_plugin_executions_total counter\n");
+        for kind in PluginKind::ALL {
+            for phase in PluginPhase::ALL {
+                for outcome in PluginExecutionOutcome::ALL {
+                    out.push_str(&format!(
+                        "impulse_plugin_executions_total{{kind=\"{}\",phase=\"{}\",outcome=\"{}\"}} {}\n",
+                        kind.label(),
+                        phase.label(),
+                        outcome.label(),
+                        self.plugin_execution_count(kind, phase, outcome)
+                    ));
+                }
+            }
+        }
+
+        out.push_str(
+            "# HELP impulse_plugin_async_duration_seconds_total Total time spent executing asynchronous plugins by fixed kind.\n",
+        );
+        out.push_str("# TYPE impulse_plugin_async_duration_seconds_total counter\n");
+        out.push_str(
+            "# HELP impulse_plugin_async_duration_samples_total Number of timed asynchronous plugin executions by fixed kind.\n",
+        );
+        out.push_str("# TYPE impulse_plugin_async_duration_samples_total counter\n");
+        for kind in PluginKind::ALL {
+            out.push_str(&format!(
+                "impulse_plugin_async_duration_seconds_total{{kind=\"{}\"}} {}\n",
+                kind.label(),
+                self.plugin_async_duration_ns(kind) as f64 / 1_000_000_000.0
+            ));
+            out.push_str(&format!(
+                "impulse_plugin_async_duration_samples_total{{kind=\"{}\"}} {}\n",
+                kind.label(),
+                self.plugin_async_duration_samples(kind)
+            ));
+        }
+
+        out.push_str(
+            "# HELP impulse_plugin_activations_total Compiled plugin generation activations by outcome.\n",
+        );
+        out.push_str("# TYPE impulse_plugin_activations_total counter\n");
+        for outcome in PluginActivationOutcome::ALL {
+            out.push_str(&format!(
+                "impulse_plugin_activations_total{{outcome=\"{}\"}} {}\n",
+                outcome.label(),
+                self.plugin_activation_count(outcome)
+            ));
+        }
+
+        out.push_str(
+            "# HELP impulse_active_plugins Number of active compiled plugin instances by fixed kind.\n",
+        );
+        out.push_str("# TYPE impulse_active_plugins gauge\n");
+        for kind in PluginKind::ALL {
+            out.push_str(&format!(
+                "impulse_active_plugins{{kind=\"{}\"}} {}\n",
+                kind.label(),
+                self.active_plugin_count(kind)
+            ));
+        }
+
+        out.push_str(
             "# HELP impulse_pingora_lb_selector_generation Current Pingora selector runtime generation.\n",
         );
         out.push_str("# TYPE impulse_pingora_lb_selector_generation gauge\n");

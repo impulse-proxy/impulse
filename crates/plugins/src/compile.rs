@@ -85,6 +85,56 @@ impl CompiledGenerationPluginPlans {
         self.response_cache_namespace
             .store(namespace, Ordering::Release);
     }
+
+    #[must_use]
+    pub fn active_count(&self, kind: PluginKind) -> usize {
+        if matches!(kind, PluginKind::ScopedRateLimit | PluginKind::Quota) {
+            return if self.upstreams.values().any(|plan| {
+                plan.request_gate()
+                    .iter()
+                    .any(|plugin| plugin.kind() == kind)
+                    || plan
+                        .async_request_gate()
+                        .iter()
+                        .any(|plugin| plugin.kind() == kind)
+            }) {
+                1
+            } else {
+                0
+            };
+        }
+
+        self.connection
+            .connection_admission()
+            .iter()
+            .filter(|plugin| plugin.kind() == kind)
+            .count()
+            + self
+                .upstreams
+                .values()
+                .map(|plan| {
+                    plan.request_gate()
+                        .iter()
+                        .filter(|plugin| plugin.kind() == kind)
+                        .count()
+                        + plan
+                            .async_request_gate()
+                            .iter()
+                            .filter(|plugin| plugin.kind() == kind)
+                            .count()
+                        + plan
+                            .cache_policy()
+                            .iter()
+                            .filter(|plugin| plugin.kind() == kind)
+                            .count()
+                        + plan
+                            .response_policy()
+                            .iter()
+                            .filter(|plugin| plugin.kind() == kind)
+                            .count()
+                })
+                .sum::<usize>()
+    }
 }
 
 fn require_available(

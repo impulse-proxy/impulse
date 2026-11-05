@@ -143,6 +143,13 @@ impl Metrics {
             response_compression_input_bytes: AtomicU64::new(0),
             response_compression_output_bytes: AtomicU64::new(0),
             response_cache_outcomes: std::array::from_fn(|_| AtomicU64::new(0)),
+            plugin_executions: std::array::from_fn(|_| {
+                std::array::from_fn(|_| std::array::from_fn(|_| AtomicU64::new(0)))
+            }),
+            plugin_async_duration_ns: std::array::from_fn(|_| AtomicU64::new(0)),
+            plugin_async_duration_samples: std::array::from_fn(|_| AtomicU64::new(0)),
+            plugin_activation_outcomes: std::array::from_fn(|_| AtomicU64::new(0)),
+            active_plugin_counts: std::array::from_fn(|_| AtomicU64::new(0)),
             scid_rotations: AtomicU64::new(0),
             control_api_connection_limit_drops: AtomicU64::new(0),
             control_api_audit_event_drops: AtomicU64::new(0),
@@ -1007,6 +1014,53 @@ impl Metrics {
 
     pub fn record_runtime_activation_outcome(&self, reason: RuntimeOperationOutcomeReason) {
         self.runtime_activation_outcomes[reason.index()].fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_plugin_execution(&self, observation: PluginExecutionObservation) {
+        self.plugin_executions[observation.kind.index()][observation.phase.index()]
+            [observation.outcome.index()]
+        .fetch_add(1, Ordering::Relaxed);
+        if let Some(duration) = observation.async_duration {
+            let duration_ns = u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX);
+            self.plugin_async_duration_ns[observation.kind.index()]
+                .fetch_add(duration_ns, Ordering::Relaxed);
+            self.plugin_async_duration_samples[observation.kind.index()]
+                .fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    pub fn record_plugin_activation(&self, outcome: PluginActivationOutcome) {
+        self.plugin_activation_outcomes[outcome.index()].fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn set_active_plugin_count(&self, kind: PluginKind, count: usize) {
+        self.active_plugin_counts[kind.index()]
+            .store(u64::try_from(count).unwrap_or(u64::MAX), Ordering::Relaxed);
+    }
+
+    pub fn plugin_execution_count(
+        &self,
+        kind: PluginKind,
+        phase: PluginPhase,
+        outcome: PluginExecutionOutcome,
+    ) -> u64 {
+        self.plugin_executions[kind.index()][phase.index()][outcome.index()].load(Ordering::Relaxed)
+    }
+
+    pub fn plugin_async_duration_ns(&self, kind: PluginKind) -> u64 {
+        self.plugin_async_duration_ns[kind.index()].load(Ordering::Relaxed)
+    }
+
+    pub fn plugin_async_duration_samples(&self, kind: PluginKind) -> u64 {
+        self.plugin_async_duration_samples[kind.index()].load(Ordering::Relaxed)
+    }
+
+    pub fn plugin_activation_count(&self, outcome: PluginActivationOutcome) -> u64 {
+        self.plugin_activation_outcomes[outcome.index()].load(Ordering::Relaxed)
+    }
+
+    pub fn active_plugin_count(&self, kind: PluginKind) -> u64 {
+        self.active_plugin_counts[kind.index()].load(Ordering::Relaxed)
     }
 
     pub fn record_runtime_rollback_outcome(&self, reason: RuntimeOperationOutcomeReason) {

@@ -389,6 +389,7 @@ impl Http3Service {
         let request_header =
             |name: &str| request_headers.get(name).map(http::HeaderValue::as_bytes);
         let processed_response = process_response(ResponseProcessingInput {
+            metrics,
             plugin_plan: &req.plugin_plan,
             plugin_request: PluginRequestView {
                 request_id: req.request_id,

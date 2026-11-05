@@ -5,7 +5,8 @@ use std::{
 
 use impulse_contracts::{
     HealthFailureReason, HedgeOutcomeTelemetryReason, HedgeTriggerTelemetryReason,
-    RetryAttemptTelemetryReason, RetryPolicyDenialReason,
+    PluginActivationOutcome, PluginExecutionObservation, PluginKind, RetryAttemptTelemetryReason,
+    RetryPolicyDenialReason,
 };
 
 use crate::{
@@ -34,6 +35,11 @@ pub struct IngressObservationRecorder<'a> {
     metrics: &'a Metrics,
 }
 
+#[derive(Clone, Copy)]
+pub struct PluginObservationRecorder<'a> {
+    metrics: &'a Metrics,
+}
+
 impl Metrics {
     #[must_use]
     pub fn request_observations(&self) -> RequestObservationRecorder<'_> {
@@ -53,6 +59,25 @@ impl Metrics {
     #[must_use]
     pub fn ingress_observations(&self) -> IngressObservationRecorder<'_> {
         IngressObservationRecorder { metrics: self }
+    }
+
+    #[must_use]
+    pub fn plugin_observations(&self) -> PluginObservationRecorder<'_> {
+        PluginObservationRecorder { metrics: self }
+    }
+}
+
+impl PluginObservationRecorder<'_> {
+    pub fn record_execution(self, observation: PluginExecutionObservation) {
+        self.metrics.record_plugin_execution(observation);
+    }
+
+    pub fn record_activation(self, outcome: PluginActivationOutcome) {
+        self.metrics.record_plugin_activation(outcome);
+    }
+
+    pub fn set_active_count(self, kind: PluginKind, count: usize) {
+        self.metrics.set_active_plugin_count(kind, count);
     }
 }
 

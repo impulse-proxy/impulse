@@ -15,6 +15,16 @@ pub(super) fn record_preview_result(handle: &RuntimeBundleHandle, plan: &ReloadP
 }
 
 pub(super) fn record_activation_result(handle: &RuntimeBundleHandle, result: &ActivationResult) {
+    handle
+        .current_view()
+        .shared_services()
+        .metrics
+        .plugin_observations()
+        .record_activation(if result.succeeded() {
+            impulse_contracts::PluginActivationOutcome::Success
+        } else {
+            impulse_contracts::PluginActivationOutcome::Failure
+        });
     let kind = if result.succeeded() {
         GenerationEventKind::ActivationSucceeded
     } else {

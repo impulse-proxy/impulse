@@ -6,7 +6,7 @@ use impulse_bridge::response::{
     UpstreamResponseView, normalize_upstream_response,
 };
 use impulse_contracts::{
-    PluginCacheView, PluginRequestView, PluginResponseMetadataView, PluginResponseView,
+    PluginCacheView, PluginPhase, PluginRequestView, PluginResponseMetadataView, PluginResponseView,
 };
 use impulse_plugins::{
     CachePluginDecision, CachePluginFillDecision, CompiledCachePlugin, CompiledPluginPlan,
@@ -27,6 +27,7 @@ pub(crate) struct ResponseProcessingResult {
 }
 
 pub(crate) struct ResponseProcessingInput<'a> {
+    pub(crate) metrics: &'a crate::Metrics,
     pub(crate) plugin_plan: &'a CompiledPluginPlan,
     pub(crate) plugin_request: PluginRequestView<'a>,
     pub(crate) status: StatusCode,
@@ -41,6 +42,7 @@ pub(crate) struct ResponseProcessingInput<'a> {
 }
 
 pub(crate) struct CacheLookupProcessingInput<'a> {
+    pub(crate) metrics: &'a crate::Metrics,
     pub(crate) plugin_plan: &'a CompiledPluginPlan,
     pub(crate) plugin_request: PluginRequestView<'a>,
     pub(crate) headers: &'a HeaderMap,
@@ -54,10 +56,17 @@ pub(crate) fn process_cache_lookup(
     let mut decision = Err(ResponseCacheBypassReason::Disabled);
     let _ = execute_cache_plugins(
         input.plugin_plan,
+        PluginPhase::CacheLookup,
         PluginCacheView {
             request: input.plugin_request,
             response: None,
             representation: None,
+        },
+        |observation| {
+            input
+                .metrics
+                .plugin_observations()
+                .record_execution(observation);
         },
         |plugin, _| match plugin {
             CompiledCachePlugin::ResponseCache(cache) => {
@@ -128,10 +137,17 @@ pub(crate) fn process_response(input: ResponseProcessingInput<'_>) -> ResponsePr
         let mut cache = ResponseCacheDecision::Disabled;
         let _ = execute_cache_plugins(
             input.plugin_plan,
+            PluginPhase::CacheFill,
             PluginCacheView {
                 request: plugin_request,
                 response: Some(plugin_response),
                 representation: input.cache_representation,
+            },
+            |observation| {
+                input
+                    .metrics
+                    .plugin_observations()
+                    .record_execution(observation);
             },
             |plugin, _| match plugin {
                 CompiledCachePlugin::ResponseCache(policy) => {
@@ -162,6 +178,12 @@ pub(crate) fn process_response(input: ResponseProcessingInput<'_>) -> ResponsePr
             PluginResponseView {
                 request: plugin_request,
                 response: plugin_response,
+            },
+            |observation| {
+                input
+                    .metrics
+                    .plugin_observations()
+                    .record_execution(observation);
             },
             |plugin, _| match plugin {
                 CompiledResponsePlugin::ResponseCompression(policy) => {

@@ -1,4 +1,7 @@
-use impulse_contracts::{PluginCacheView, PluginKind, PluginResponseView};
+use impulse_contracts::{
+    PluginCacheView, PluginExecutionObservation, PluginExecutionOutcome, PluginKind, PluginPhase,
+    PluginResponseView,
+};
 
 use crate::{CompiledCachePlugin, CompiledPluginPlan, CompiledResponsePlugin};
 
@@ -30,7 +33,9 @@ pub enum ResponsePluginExecution {
 #[must_use]
 pub fn execute_cache_plugins<'a>(
     plan: &CompiledPluginPlan,
+    phase: PluginPhase,
     cache: PluginCacheView<'a>,
+    mut observe: impl FnMut(PluginExecutionObservation),
     mut evaluate: impl FnMut(&CompiledCachePlugin, PluginCacheView<'a>) -> CachePluginDecision,
 ) -> CachePluginExecution {
     let plugins = plan.cache_policy();
@@ -39,7 +44,17 @@ pub fn execute_cache_plugins<'a>(
     }
 
     for plugin in plugins {
-        if evaluate(plugin, cache) == CachePluginDecision::Bypass {
+        let decision = evaluate(plugin, cache);
+        observe(PluginExecutionObservation {
+            kind: plugin.kind(),
+            phase,
+            outcome: match decision {
+                CachePluginDecision::Continue => PluginExecutionOutcome::Continue,
+                CachePluginDecision::Bypass => PluginExecutionOutcome::Bypass,
+            },
+            async_duration: None,
+        });
+        if decision == CachePluginDecision::Bypass {
             return CachePluginExecution::Bypass {
                 kind: plugin.kind(),
             };
@@ -54,6 +69,7 @@ pub fn execute_cache_plugins<'a>(
 pub fn execute_response_plugins<'a>(
     plan: &CompiledPluginPlan,
     response: PluginResponseView<'a>,
+    mut observe: impl FnMut(PluginExecutionObservation),
     mut evaluate: impl FnMut(&CompiledResponsePlugin, PluginResponseView<'a>) -> ResponsePluginDecision,
 ) -> ResponsePluginExecution {
     let plugins = plan.response_policy();
@@ -62,7 +78,17 @@ pub fn execute_response_plugins<'a>(
     }
 
     for plugin in plugins {
-        if evaluate(plugin, response) == ResponsePluginDecision::Bypass {
+        let decision = evaluate(plugin, response);
+        observe(PluginExecutionObservation {
+            kind: plugin.kind(),
+            phase: PluginPhase::ResponsePolicy,
+            outcome: match decision {
+                ResponsePluginDecision::Continue => PluginExecutionOutcome::Continue,
+                ResponsePluginDecision::Bypass => PluginExecutionOutcome::Bypass,
+            },
+            async_duration: None,
+        });
+        if decision == ResponsePluginDecision::Bypass {
             return ResponsePluginExecution::Bypass {
                 kind: plugin.kind(),
             };
