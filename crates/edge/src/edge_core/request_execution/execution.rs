@@ -281,7 +281,7 @@ fn bearer_token(raw: &str) -> Option<&str> {
     (scheme.eq_ignore_ascii_case("bearer") && !token.is_empty()).then_some(token)
 }
 
-async fn execute_compiled_external_auth(
+pub(crate) async fn execute_compiled_external_auth(
     request: crate::runtime::connection::auth::ExternalAuthRequest,
     input: &impulse_plugins::ExternalAuthInput,
 ) -> AsyncRequestPluginDecision {

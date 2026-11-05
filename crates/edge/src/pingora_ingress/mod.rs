@@ -34,8 +34,8 @@ use impulse_pingora_ingress::{
     write_local_response,
 };
 use impulse_plugins::{
-    AsyncRequestPluginExecutionGuard, CachePluginFillDecision, CompiledAsyncRequestPlugin,
-    ResponseCacheKeyParts,
+    AsyncRequestPluginDecision, AsyncRequestPluginExecutionGuard, CachePluginFillDecision,
+    CompiledAsyncRequestPlugin, ResponseCacheKeyParts,
 };
 use impulse_policy::ResponseCacheRepresentation;
 use pingora_cache::{CacheKey, CacheMeta, CachePhase, NoCacheReason, RespCacheable};
@@ -71,7 +71,7 @@ use crate::{
         request_execution::{
             EdgeRequestService, PluginRequestExecutionInput, PluginRequestExecutionOutcome,
             PluginTerminalObservation, RequestExecutionInput, ResolvedRequestPolicy,
-            ResolvedRouteTarget, RouteResolutionError,
+            ResolvedRouteTarget, RouteResolutionError, execute_compiled_external_auth,
         },
         request_validation::validate_http_request_parts,
         response_processing::{
@@ -726,7 +726,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
                     generation: runtime.generation,
                     ingress_protocol,
                     headers: Some(&plugin_header_lookup),
-                    external_auth_headers: Some(request_headers),
+                    external_auth_headers: None,
                     has_body: !request_body_replayable,
                     body_replayable: request_body_replayable,
                 },
@@ -776,24 +776,11 @@ impl PingoraRequestService for PingoraEdgeRequestService {
         ctx.content_length = validated.content_length;
         ctx.tunnel_mode = tunnel_mode;
 
-        let (admission, plugin_mutations) = match execution.outcome {
+        let (admission, mut plugin_mutations) = match execution.outcome {
             PluginRequestExecutionOutcome::Admitted {
                 admission,
                 mutations,
-            } => {
-                if policy
-                    .plugin_plan
-                    .async_request_gate()
-                    .iter()
-                    .any(|plugin| matches!(plugin, CompiledAsyncRequestPlugin::ExternalAuth(_)))
-                {
-                    shared
-                        .metrics
-                        .policy_observations()
-                        .inc_external_auth_allowed();
-                }
-                (admission, mutations)
-            }
+            } => (admission, mutations),
             PluginRequestExecutionOutcome::Rejected {
                 rejection,
                 observation,
@@ -842,6 +829,87 @@ impl PingoraRequestService for PingoraEdgeRequestService {
                 return Ok(true);
             }
         };
+
+        if let Some(external_auth) =
+            policy
+                .plugin_plan
+                .async_request_gate()
+                .iter()
+                .find_map(|plugin| match plugin {
+                    CompiledAsyncRequestPlugin::ExternalAuth(input) => Some(input.clone()),
+                    CompiledAsyncRequestPlugin::Quota(_) => None,
+                })
+        {
+            let selected = self.select_backend(session, ctx)?;
+            let backend_addr = selected.address.clone();
+            ctx.selected_backend = Some(selected);
+            let method = ctx.method.clone().ok_or_else(|| {
+                Error::explain(
+                    InternalError,
+                    "Pingora ingress request filter did not validate a method",
+                )
+            })?;
+            let path = ctx.path.clone().ok_or_else(|| {
+                Error::explain(
+                    InternalError,
+                    "Pingora ingress request filter did not validate a path",
+                )
+            })?;
+            let decision = execute_compiled_external_auth(
+                crate::runtime::connection::auth::ExternalAuthRequest {
+                    method,
+                    path,
+                    authority: ctx.authority.clone(),
+                    headers: request_headers.clone(),
+                    upstream_name: route.upstream_name.to_string(),
+                    backend_addr: Some(backend_addr),
+                },
+                &external_auth,
+            )
+            .await;
+            match decision {
+                AsyncRequestPluginDecision::Continue => {}
+                AsyncRequestPluginDecision::Mutate(mutations) => {
+                    plugin_mutations.extend(mutations);
+                }
+                AsyncRequestPluginDecision::Reject(rejection) => {
+                    let external_auth_timed_out = rejection.reason()
+                        == PluginRejectionReason::ExternalAuthUnavailable
+                        && rejection.status() == http::StatusCode::GATEWAY_TIMEOUT;
+                    match rejection.reason() {
+                        PluginRejectionReason::ExternalAuthDenied => shared
+                            .metrics
+                            .policy_observations()
+                            .inc_external_auth_denied(),
+                        PluginRejectionReason::ExternalAuthUnavailable
+                            if external_auth_timed_out =>
+                        {
+                            shared
+                                .metrics
+                                .policy_observations()
+                                .inc_external_auth_timeout();
+                        }
+                        PluginRejectionReason::ExternalAuthUnavailable => shared
+                            .metrics
+                            .policy_observations()
+                            .inc_external_auth_error(),
+                        _ => {}
+                    }
+                    apply_plugin_terminal_observation(
+                        ctx,
+                        &shared.metrics,
+                        PluginTerminalObservation::from_rejection_reason(rejection.reason()),
+                        external_auth_timed_out,
+                    );
+                    write_plugin_rejection_response(session, &rejection).await?;
+                    return Ok(true);
+                }
+            }
+            shared
+                .metrics
+                .policy_observations()
+                .inc_external_auth_allowed();
+        }
         ctx.auth_header_mutations = plugin_mutations
             .iter()
             .map(pending_header_mutation)
