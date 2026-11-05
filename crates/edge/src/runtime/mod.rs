@@ -12,6 +12,7 @@ pub mod cache;
 pub(crate) mod connection;
 pub(crate) mod generation;
 pub mod ingress;
+pub(crate) mod jwks;
 pub mod listener;
 pub(crate) mod listener_group;
 pub(crate) mod operations;

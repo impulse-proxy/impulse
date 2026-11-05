@@ -7,8 +7,7 @@ use super::{redaction::option_is_present, *};
 pub(super) fn build_auth_and_jwks_payloads(
     runtime_config: &impulse_config::runtime::RuntimeConfig,
 ) -> (Vec<ControlApiAuthProviderPayload>, ControlApiJwksPayload) {
-    let jwks_sources =
-        crate::quic_listener::admission::snapshot_runtime_jwks_sources(runtime_config);
+    let jwks_sources = crate::runtime::jwks::snapshot_sources(runtime_config);
     let jwks_by_source_id = jwks_sources
         .iter()
         .map(|snapshot| (snapshot.source_id.as_str(), snapshot))
@@ -160,7 +159,7 @@ pub(super) fn jwt_provider_payload(
     let jwks_snapshot = jwt
         .jwks_url
         .as_deref()
-        .and_then(|_| crate::quic_listener::admission::runtime_jwks_source_identity(jwt))
+        .and_then(|_| crate::runtime::jwks::source_identity(jwt))
         .and_then(|source_id| jwks_by_source_id.get(source_id.as_str()).copied());
     let jwks_cache_state = jwks_snapshot.map(|snapshot| snapshot.state);
     let serving_from_stale_cache = jwks_cache_state.map(|state| {

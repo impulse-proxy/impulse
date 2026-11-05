@@ -108,7 +108,7 @@ pub(crate) fn jwt_claims_satisfy_rbac(policy: &RuntimeUpstreamPolicy, claims: &V
     )
 }
 
-pub(super) fn log_jwt_validation_rejection(
+pub(crate) fn log_jwt_validation_rejection(
     jwt: &RuntimeJwtAuth,
     token: &str,
     failure: &JwtValidationFailure,
@@ -158,7 +158,7 @@ pub(super) fn log_jwt_validation_rejection(
     );
 }
 
-pub(super) fn observe_jwt_validation_failure(
+pub(crate) fn observe_jwt_validation_failure(
     jwt: &RuntimeJwtAuth,
     token: &str,
     failure: &JwtValidationFailure,

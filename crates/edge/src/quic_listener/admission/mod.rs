@@ -16,10 +16,9 @@ use boring::{
     rsa::Rsa,
 };
 use http::StatusCode;
-use impulse_config::{
-    config::{JwksStartupBehavior, JwtAlgorithm},
-    runtime::{RuntimeConfig, RuntimeJwtAuth, RuntimeJwtVerificationKey, RuntimeUpstreamPolicy},
-};
+#[cfg(test)]
+use impulse_config::runtime::RuntimeUpstreamPolicy;
+use impulse_config::runtime::{RuntimeJwtAuth, RuntimeJwtVerificationKey};
 use impulse_contracts::{IngressProtocol, PluginRequestView};
 use impulse_lb::upstream_pool::UpstreamPool;
 use impulse_plugins::CompiledAsyncRequestPlugin;
@@ -40,7 +39,7 @@ use tokio::{
 
 #[cfg(test)]
 use super::LbHeaderLookup;
-use super::{Http3Service, runtime_handle};
+use super::runtime_handle;
 #[cfg(test)]
 use crate::resilience::quota::{QuotaDecision, evaluate_admission_quota};
 #[cfg(test)]
@@ -54,22 +53,17 @@ use crate::{
         route_queue::{RouteQueuePermit, RouteQueueRejection},
         runtime::RuntimeResilience,
     },
-    runtime::{
-        connection::{auth::apply_auth_request_mutations, request::PendingForward},
-        tasks::RuntimeTaskRegistry,
-    },
+    runtime::connection::{auth::apply_auth_request_mutations, request::PendingForward},
 };
 
 mod jwt;
 mod key_resolution;
-mod startup;
 
 #[cfg(test)]
 pub(crate) use impulse_contracts::RateLimitedDecision;
-pub(crate) use impulse_contracts::{
-    AuthChallengeKind, OverloadDecision, OverloadDecisionReason, RequestDecision,
-};
+pub(crate) use impulse_contracts::{OverloadDecision, OverloadDecisionReason, RequestDecision};
 type AdmissionPolicyDecision = RequestDecision;
+pub(super) use impulse_policy::jwks::JwtJwksFetchFailureReason;
 use impulse_policy::jwks::*;
 #[cfg(test)]
 pub(super) use impulse_policy::jwks::{
@@ -77,71 +71,11 @@ pub(super) use impulse_policy::jwks::{
     mark_jwks_source_invalid_for_test, mark_jwks_source_unavailable_for_test,
     prime_jwks_cache_for_test,
 };
-pub(super) use impulse_policy::jwks::{
-    JwtJwksFetchFailureReason, JwtJwksRuntimeSnapshot, runtime_jwks_source_identity,
-};
-
-fn runtime_jwks_sources(config: &RuntimeConfig) -> Vec<JwtJwksSourceConfig> {
-    merge_jwks_source_configs(config.upstreams.values().filter_map(|upstream| {
-        upstream
-            .policy
-            .upstream_auth
-            .jwt
-            .as_ref()
-            .and_then(JwtJwksSourceConfig::from_jwt)
-    }))
-}
-
-fn compiled_jwks_sources(
-    plans: &impulse_plugins::CompiledGenerationPluginPlans,
+#[cfg(test)]
+fn runtime_jwks_sources(
+    config: &impulse_config::runtime::RuntimeConfig,
 ) -> Vec<JwtJwksSourceConfig> {
-    let sources = plans.upstreams().values().flat_map(|plan| {
-        plan.request_gate().iter().filter_map(|plugin| {
-            let impulse_plugins::CompiledRequestPlugin::JwtAuth(compiled) = plugin else {
-                return None;
-            };
-            let input = compiled.input();
-            let jwks_url = input.jwks_url.clone()?;
-            let mut allowed_algorithms = input
-                .allowed_algorithms
-                .iter()
-                .filter_map(|algorithm| match algorithm {
-                    impulse_plugins::JwtAlgorithmInput::Hs256 => None,
-                    impulse_plugins::JwtAlgorithmInput::Rs256 => Some(JwtAlgorithm::Rs256),
-                    impulse_plugins::JwtAlgorithmInput::Es256 => Some(JwtAlgorithm::Es256),
-                })
-                .collect::<Vec<_>>();
-            allowed_algorithms.sort_by_key(|algorithm| match algorithm {
-                JwtAlgorithm::Hs256 => 0,
-                JwtAlgorithm::Rs256 => 1,
-                JwtAlgorithm::Es256 => 2,
-            });
-            allowed_algorithms.dedup();
-            Some(JwtJwksSourceConfig {
-                generation: compiled.generation(),
-                source_identity: jwt_jwks_source_identity(&jwks_url, &allowed_algorithms),
-                jwks_url,
-                allowed_algorithms,
-                refresh_interval: input.jwks_refresh_interval,
-                request_timeout: input.jwks_request_timeout,
-                cache_ttl: input.jwks_cache_ttl,
-                stale_if_error: input.jwks_stale_if_error,
-                startup_behavior: match input.jwks_startup_behavior {
-                    impulse_plugins::JwksStartupBehaviorInput::RequireReady => {
-                        JwksStartupBehavior::RequireReady
-                    }
-                    impulse_plugins::JwksStartupBehaviorInput::AllowDegraded => {
-                        JwksStartupBehavior::AllowDegraded
-                    }
-                },
-            })
-        })
-    });
-    merge_jwks_source_configs(sources)
-}
-
-pub(super) fn snapshot_runtime_jwks_sources(config: &RuntimeConfig) -> Vec<JwtJwksRuntimeSnapshot> {
-    snapshot_jwks_sources(runtime_jwks_sources(config))
+    crate::runtime::jwks::runtime_sources(config)
 }
 #[cfg(test)]
 pub(super) use impulse_policy::jwks::{
@@ -470,78 +404,6 @@ where
     Some(handle.block_on(future))
 }
 
-pub(crate) fn evaluate_compiled_jwt_policy(
-    compiled: &impulse_plugins::CompiledJwtAuth,
-    policy: &RuntimeUpstreamPolicy,
-    request: impulse_contracts::PluginRequestView<'_>,
-) -> impulse_plugins::SynchronousRequestPluginDecision {
-    use impulse_contracts::{PluginRejection, PluginRejectionReason};
-    use impulse_plugins::SynchronousRequestPluginDecision;
-
-    let reject = |reason| {
-        SynchronousRequestPluginDecision::Reject(PluginRejection::unauthorized(
-            reason,
-            AuthChallengeKind::Bearer,
-        ))
-    };
-    let input = compiled.input();
-    if compiled.generation() != request.generation {
-        return reject(if input.jwks_url.is_some() {
-            PluginRejectionReason::JwksUnavailable
-        } else {
-            PluginRejectionReason::JwtInvalid
-        });
-    }
-    let Some(jwt) = policy.upstream_auth.jwt.as_ref() else {
-        return reject(PluginRejectionReason::JwtInvalid);
-    };
-    let Some(raw) = request.header(http::header::AUTHORIZATION.as_str()) else {
-        return reject(PluginRejectionReason::JwtMissing);
-    };
-    let Ok(raw) = std::str::from_utf8(raw) else {
-        return reject(PluginRejectionReason::JwtInvalid);
-    };
-    let Some(token) = Http3Service::bearer_token_from_authorization_value(raw) else {
-        return reject(PluginRejectionReason::JwtInvalid);
-    };
-    let claims = match validate_jwt_token_for_generation(
-        token.as_str(),
-        jwt,
-        compiled.generation(),
-        SystemTime::now(),
-    ) {
-        Ok(validated) => validated.claims,
-        Err(failure) => {
-            observe_jwt_validation_failure(jwt, token.as_str(), &failure);
-            log_jwt_validation_rejection(jwt, token.as_str(), &failure);
-            let reason = match failure.reason {
-                JwtValidationFailureReason::KeySourceUnavailable => {
-                    PluginRejectionReason::JwksUnavailable
-                }
-                JwtValidationFailureReason::MissingExpiration
-                | JwtValidationFailureReason::TokenExpired
-                | JwtValidationFailureReason::TokenNotYetValid
-                | JwtValidationFailureReason::TokenIssuedInFuture
-                | JwtValidationFailureReason::IssuerMismatch
-                | JwtValidationFailureReason::AudienceMismatch => {
-                    PluginRejectionReason::JwtClaimsRejected
-                }
-                _ => PluginRejectionReason::JwtInvalid,
-            };
-            return reject(reason);
-        }
-    };
-    if !impulse_policy::jwt_claims_satisfy_requirements(
-        &claims,
-        impulse_policy::JwtClaimsRequirements {
-            required_scopes: &input.required_scopes,
-            required_roles: &input.required_roles,
-        },
-    ) {
-        return reject(PluginRejectionReason::JwtClaimsRejected);
-    }
-    SynchronousRequestPluginDecision::Continue
-}
 fn overloaded(reason: OverloadDecisionReason, retry_after_seconds: u32) -> OverloadDecision {
     match overload_decision(reason, retry_after_seconds) {
         AdmissionPolicyDecision::Overloaded(decision) => decision,
@@ -1594,7 +1456,8 @@ mod tests {
         });
 
         let error =
-            Http3Service::initialize_jwks_startup(&runtime_config).expect_err("startup must fail");
+            crate::runtime::jwks::preflight_require_ready(&runtime_config, "startup_preflight")
+                .expect_err("startup must fail");
 
         assert!(error.to_string().contains("startup_behavior=require_ready"));
         clear_jwks_cache_for_test(jwks_url);
@@ -1695,7 +1558,8 @@ mod tests {
         })
         .expect("runtime config without jwks");
 
-        Http3Service::initialize_jwks_startup(&runtime_config).expect("preflight without jwks");
+        crate::runtime::jwks::preflight_require_ready(&runtime_config, "startup_preflight")
+            .expect("preflight without jwks");
 
         let snapshot = JwtJwksSharedCache::shared()
             .snapshot(&source_identity, Instant::now())

@@ -2,7 +2,7 @@ use std::{
     collections::HashMap,
     sync::Arc,
     task::{Context, Poll, Waker},
-    time::Instant,
+    time::{Instant, SystemTime},
 };
 
 use impulse_config::runtime::RuntimeUpstreamPolicy;
@@ -139,11 +139,7 @@ impl<'a> EdgeRequestService<'a> {
             },
             |plugin, request| match plugin {
                 CompiledRequestPlugin::JwtAuth(jwt) => {
-                    crate::quic_listener::evaluate_compiled_jwt_policy(
-                        jwt,
-                        upstream_policy,
-                        request,
-                    )
+                    evaluate_compiled_jwt_policy(jwt, upstream_policy, request)
                 }
                 _ => SynchronousRequestPluginDecision::Continue,
             },
@@ -185,7 +181,7 @@ impl<'a> EdgeRequestService<'a> {
                             upstream_name: external_auth_upstream.to_string(),
                             backend_addr: None,
                         };
-                        crate::quic_listener::execute_compiled_external_auth(request, input).await
+                        execute_compiled_external_auth(request, input).await
                     }
                     _ => AsyncRequestPluginDecision::Continue,
                 }
@@ -299,4 +295,217 @@ impl<'a> EdgeRequestService<'a> {
             },
         })
     }
+}
+
+fn bearer_token(raw: &str) -> Option<&str> {
+    let raw = raw.trim();
+    let split = raw.find(char::is_whitespace)?;
+    let (scheme, rest) = raw.split_at(split);
+    let token = rest.trim_start();
+    (scheme.eq_ignore_ascii_case("bearer") && !token.is_empty()).then_some(token)
+}
+
+async fn execute_compiled_external_auth(
+    request: crate::runtime::connection::auth::ExternalAuthRequest,
+    input: &impulse_plugins::ExternalAuthInput,
+) -> AsyncRequestPluginDecision {
+    use impulse_contracts::PluginRejectionReason;
+
+    use crate::runtime::connection::auth::{
+        ExternalAuthDecision, ExternalAuthExecutionPolicy, ExternalAuthStateTransition,
+        resolve_external_auth_state_transition,
+    };
+
+    let policy = crate::runtime::connection::auth::external_auth_policy_from_plugin(input);
+    let disposition = ExternalAuthExecutionPolicy::from_external_auth(&policy).disposition();
+    match resolve_external_auth_state_transition(
+        crate::quic_listener::execute_external_auth_request(request, policy).await,
+        disposition,
+    ) {
+        ExternalAuthStateTransition::Admitted {
+            request_header_mutations,
+        } => external_auth_decision(ExternalAuthDecision::Allow {
+            request_header_mutations,
+        }),
+        ExternalAuthStateTransition::RejectedAuthDenied { decision } => {
+            external_auth_decision(decision)
+        }
+        ExternalAuthStateTransition::RejectedAuthUnavailable { status, body, .. }
+        | ExternalAuthStateTransition::TimedOutAuth { status, body } => plugin_rejection(
+            PluginRejectionReason::ExternalAuthUnavailable,
+            status,
+            Vec::new(),
+            body.to_vec(),
+        ),
+    }
+}
+
+fn plugin_mutation(
+    mutation: impulse_contracts::HeaderMutation,
+) -> Option<impulse_contracts::PluginHeaderMutation> {
+    use impulse_contracts::{HeaderMutation, PluginHeaderMutation};
+
+    match mutation {
+        HeaderMutation::Upsert { name, value } => PluginHeaderMutation::upsert(&name, &value).ok(),
+        HeaderMutation::Remove { name } => PluginHeaderMutation::remove(&name).ok(),
+    }
+}
+
+fn plugin_response_headers(
+    headers: &[(String, String)],
+    extra: Option<(&str, &str)>,
+) -> Vec<impulse_contracts::PluginResponseHeader> {
+    use impulse_contracts::{PluginRejection, PluginResponseHeader};
+
+    headers
+        .iter()
+        .filter_map(|(name, value)| {
+            PluginResponseHeader::new(name.as_bytes(), value.as_bytes()).ok()
+        })
+        .chain(extra.into_iter().filter_map(|(name, value)| {
+            PluginResponseHeader::new(name.as_bytes(), value.as_bytes()).ok()
+        }))
+        .take(PluginRejection::MAX_HEADERS)
+        .collect()
+}
+
+fn plugin_rejection(
+    reason: impulse_contracts::PluginRejectionReason,
+    status: http::StatusCode,
+    headers: Vec<impulse_contracts::PluginResponseHeader>,
+    body: Vec<u8>,
+) -> AsyncRequestPluginDecision {
+    use impulse_contracts::{PluginRejection, PluginRejectionReason};
+
+    match PluginRejection::new(reason, status, headers, body) {
+        Ok(rejection) => AsyncRequestPluginDecision::Reject(rejection),
+        Err(_) => AsyncRequestPluginDecision::Reject(
+            PluginRejection::new(
+                PluginRejectionReason::ExternalAuthUnavailable,
+                http::StatusCode::SERVICE_UNAVAILABLE,
+                Vec::new(),
+                b"external auth unavailable\n".to_vec(),
+            )
+            .unwrap_or_else(|_| unreachable!("static external-auth rejection is bounded")),
+        ),
+    }
+}
+
+fn external_auth_decision(
+    decision: crate::runtime::connection::auth::ExternalAuthDecision,
+) -> AsyncRequestPluginDecision {
+    use impulse_contracts::PluginRejectionReason;
+
+    use crate::runtime::connection::auth::ExternalAuthDecision;
+
+    match decision {
+        ExternalAuthDecision::Allow {
+            request_header_mutations,
+        } => AsyncRequestPluginDecision::Mutate(
+            request_header_mutations
+                .into_iter()
+                .filter_map(plugin_mutation)
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+        ),
+        ExternalAuthDecision::Deny(response) => plugin_rejection(
+            PluginRejectionReason::ExternalAuthDenied,
+            response.status,
+            plugin_response_headers(&response.headers, None),
+            response.body,
+        ),
+        ExternalAuthDecision::Redirect(response) => plugin_rejection(
+            PluginRejectionReason::ExternalAuthDenied,
+            response.status,
+            plugin_response_headers(
+                &response.headers,
+                Some((http::header::LOCATION.as_str(), &response.location)),
+            ),
+            Vec::new(),
+        ),
+        ExternalAuthDecision::Challenge(response) => plugin_rejection(
+            PluginRejectionReason::ExternalAuthDenied,
+            response.status,
+            plugin_response_headers(
+                &response.headers,
+                Some((
+                    http::header::WWW_AUTHENTICATE.as_str(),
+                    &response.www_authenticate,
+                )),
+            ),
+            response.body,
+        ),
+    }
+}
+
+fn evaluate_compiled_jwt_policy(
+    compiled: &impulse_plugins::CompiledJwtAuth,
+    policy: &RuntimeUpstreamPolicy,
+    request: PluginRequestView<'_>,
+) -> SynchronousRequestPluginDecision {
+    use impulse_contracts::{AuthChallengeKind, PluginRejection, PluginRejectionReason};
+
+    let reject = |reason| {
+        SynchronousRequestPluginDecision::Reject(PluginRejection::unauthorized(
+            reason,
+            AuthChallengeKind::Bearer,
+        ))
+    };
+    let input = compiled.input();
+    if compiled.generation() != request.generation {
+        return reject(if input.jwks_url.is_some() {
+            PluginRejectionReason::JwksUnavailable
+        } else {
+            PluginRejectionReason::JwtInvalid
+        });
+    }
+    let Some(jwt) = policy.upstream_auth.jwt.as_ref() else {
+        return reject(PluginRejectionReason::JwtInvalid);
+    };
+    let Some(raw) = request.header(http::header::AUTHORIZATION.as_str()) else {
+        return reject(PluginRejectionReason::JwtMissing);
+    };
+    let Ok(raw) = std::str::from_utf8(raw) else {
+        return reject(PluginRejectionReason::JwtInvalid);
+    };
+    let Some(token) = bearer_token(raw) else {
+        return reject(PluginRejectionReason::JwtInvalid);
+    };
+    let claims = match crate::quic_listener::validate_jwt_token_for_generation(
+        token,
+        jwt,
+        compiled.generation(),
+        SystemTime::now(),
+    ) {
+        Ok(validated) => validated.claims,
+        Err(failure) => {
+            crate::quic_listener::observe_jwt_validation_failure(jwt, token, &failure);
+            crate::quic_listener::log_jwt_validation_rejection(jwt, token, &failure);
+            let reason = match failure.reason {
+                impulse_policy::JwtValidationFailureReason::KeySourceUnavailable => {
+                    PluginRejectionReason::JwksUnavailable
+                }
+                impulse_policy::JwtValidationFailureReason::MissingExpiration
+                | impulse_policy::JwtValidationFailureReason::TokenExpired
+                | impulse_policy::JwtValidationFailureReason::TokenNotYetValid
+                | impulse_policy::JwtValidationFailureReason::TokenIssuedInFuture
+                | impulse_policy::JwtValidationFailureReason::IssuerMismatch
+                | impulse_policy::JwtValidationFailureReason::AudienceMismatch => {
+                    PluginRejectionReason::JwtClaimsRejected
+                }
+                _ => PluginRejectionReason::JwtInvalid,
+            };
+            return reject(reason);
+        }
+    };
+    if !impulse_policy::jwt_claims_satisfy_requirements(
+        &claims,
+        impulse_policy::JwtClaimsRequirements {
+            required_scopes: &input.required_scopes,
+            required_roles: &input.required_roles,
+        },
+    ) {
+        return reject(PluginRejectionReason::JwtClaimsRejected);
+    }
+    SynchronousRequestPluginDecision::Continue
 }

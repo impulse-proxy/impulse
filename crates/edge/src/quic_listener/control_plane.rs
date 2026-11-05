@@ -73,7 +73,7 @@ impl Http3Service {
                 runtime.watchdog().as_ref(),
                 runtime.expected_workers(),
             );
-            Self::register_jwt_jwks_metrics(&runtime.metrics());
+            crate::runtime::jwks::register_metrics(&runtime.metrics());
             QuotaRuntime::register_metrics(&runtime.metrics());
             let task_registry = runtime.generation_tasks();
             spawn_pingora_discovery_refresh(
@@ -86,7 +86,11 @@ impl Http3Service {
                 Arc::clone(&task_registry),
             );
             let pingora_load_balancing = runtime.pingora_load_balancing();
-            Self::spawn_jwks_refresh(&runtime.plugin_plans(), Arc::clone(&task_registry));
+            crate::runtime::jwks::spawn_refresh(
+                &runtime.plugin_plans(),
+                Arc::clone(&task_registry),
+                runtime_handle(),
+            );
             spawn_pingora_health_service(
                 runtime_handle(),
                 PingoraHealthServiceInput {

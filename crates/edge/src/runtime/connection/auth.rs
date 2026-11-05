@@ -1,5 +1,6 @@
 pub(crate) use impulse_contracts::HeaderMutation as PendingHeaderMutation;
 use impulse_errors::ProxyError;
+use impulse_plugins::{ExternalAuthFailureModeInput, ExternalAuthInput};
 pub(crate) use impulse_policy::{
     ExternalAuthChallengeResponse, ExternalAuthCompletion, ExternalAuthDecision,
     ExternalAuthDenyResponse, ExternalAuthExecutionPolicy, ExternalAuthFailureDisposition,
@@ -16,6 +17,65 @@ pub(crate) use impulse_policy::{
     external_auth_allow_mutations as auth_allow_mutations,
 };
 use quiche::h3::NameValue;
+
+pub(crate) fn external_auth_policy_from_plugin(
+    input: &ExternalAuthInput,
+) -> impulse_policy::ExternalAuthPolicy {
+    use impulse_policy::{ExternalAuthFailureMode, ExternalAuthPolicy, ExternalAuthRequestHeader};
+
+    let failure_mode = |mode| match mode {
+        ExternalAuthFailureModeInput::FailOpen => ExternalAuthFailureMode::FailOpen,
+        ExternalAuthFailureModeInput::FailClosed => ExternalAuthFailureMode::FailClosed,
+    };
+    let request_headers = |headers: &[impulse_plugins::ExternalAuthRequestHeaderInput]| {
+        headers
+            .iter()
+            .map(|header| ExternalAuthRequestHeader {
+                name: header.name.clone(),
+                value: header.value.clone(),
+            })
+            .collect()
+    };
+
+    match input {
+        ExternalAuthInput::Http {
+            endpoint,
+            request_headers: headers,
+            response_header_allowlist,
+            timeout,
+            failure_mode: mode,
+        } => ExternalAuthPolicy::Http {
+            endpoint: endpoint.clone(),
+            request_headers: request_headers(headers),
+            response_header_allowlist: response_header_allowlist.to_vec(),
+            timeout: *timeout,
+            failure_mode: failure_mode(*mode),
+        },
+        ExternalAuthInput::Oidc {
+            discovery_url,
+            issuer_url,
+            client_id,
+            client_secret,
+            audience,
+            scopes,
+            request_headers: headers,
+            response_header_allowlist,
+            timeout,
+            failure_mode: mode,
+        } => ExternalAuthPolicy::Oidc {
+            discovery_url: discovery_url.clone(),
+            issuer_url: issuer_url.clone(),
+            client_id: client_id.clone(),
+            client_secret: client_secret.clone(),
+            audience: audience.clone(),
+            scopes: scopes.to_vec(),
+            request_headers: request_headers(headers),
+            response_header_allowlist: response_header_allowlist.to_vec(),
+            timeout: *timeout,
+            failure_mode: failure_mode(*mode),
+        },
+    }
+}
 
 #[derive(Clone, Debug)]
 pub(crate) struct ExternalAuthRequest {

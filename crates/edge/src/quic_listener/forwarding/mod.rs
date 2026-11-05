@@ -22,7 +22,6 @@ pub(in crate::quic_listener) use self::resolve::{
     TargetResolutionRequest as TestTargetResolutionRequest, selectors_for_test as test_selectors,
 };
 pub(crate) use self::{
-    auth::execute_compiled_external_auth,
     resolve::TargetResolutionRequest,
     selection::{BackendCandidate, ForwardingSelectionService},
 };

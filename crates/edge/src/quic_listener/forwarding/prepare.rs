@@ -10,7 +10,7 @@ use smallvec::SmallVec;
 use tokio::{sync::oneshot, task::AbortHandle};
 
 use super::{
-    auth::{external_auth_policy_from_plugin, start_external_auth_task},
+    auth::start_external_auth_task,
     resolve::{
         ForwardTargetResolution, ForwardTargetResolutionInput, ResolutionContext,
         ResolutionObservation, TargetResolutionRequest,
@@ -940,7 +940,10 @@ impl Http3Service {
                 let mut request = *request;
                 request.request.state.context.total_request_deadline =
                     request.request.state.context.start + backend_total_request_timeout;
-                let external_auth = external_auth_policy_from_plugin(&request.external_auth);
+                let external_auth =
+                    crate::runtime::connection::auth::external_auth_policy_from_plugin(
+                        &request.external_auth,
+                    );
                 let auth_disposition =
                     ExternalAuthTaskConfig::from_external_auth(&external_auth).disposition;
                 let pending_forward = Arc::clone(&request.request.state.pending_forward);
