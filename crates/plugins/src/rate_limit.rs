@@ -1,7 +1,10 @@
+#[cfg(feature = "scoped-rate-limit")]
+use std::collections::HashSet;
+#[cfg(feature = "connection-rate-limit")]
+use std::net::IpAddr;
 use std::{
-    collections::{HashMap, HashSet, hash_map::RandomState},
+    collections::{HashMap, hash_map::RandomState},
     hash::BuildHasher,
-    net::IpAddr,
     sync::{
         Mutex,
         atomic::{AtomicUsize, Ordering},
@@ -9,36 +12,54 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[cfg(feature = "scoped-rate-limit")]
 use impulse_contracts::PluginRequestView;
+#[cfg(feature = "scoped-rate-limit")]
 use impulse_policy::{
     RequestKeySpec, ScopedRateLimitIdentity, ScopedRateLimitKeyExtraction,
     extract_scoped_rate_limit_key,
 };
+#[cfg(feature = "scoped-rate-limit")]
 use sha2::{Digest, Sha256};
 
-use crate::{ConnectionRateLimitInput, ScopedRateLimitInput, ScopedRateLimitScopeInput};
+#[cfg(feature = "connection-rate-limit")]
+use crate::ConnectionRateLimitInput;
+#[cfg(feature = "scoped-rate-limit")]
+use crate::{ScopedRateLimitInput, ScopedRateLimitScopeInput};
 
+#[cfg(feature = "connection-rate-limit")]
 const PER_SOURCE_RATE_DIVISOR: u32 = 10;
+#[cfg(feature = "connection-rate-limit")]
 const MAX_TRACKED_SOURCES: usize = 4_096;
+#[cfg(feature = "scoped-rate-limit")]
 const MAX_SCOPED_IDENTITY_BYTES: usize = 256;
+#[cfg(feature = "connection-rate-limit")]
 const SOURCE_IDLE_TTL: Duration = Duration::from_secs(300);
+#[cfg(feature = "connection-rate-limit")]
 const SOURCE_PRUNE_INTERVAL: Duration = Duration::from_secs(1);
+#[cfg(feature = "connection-rate-limit")]
 const SOURCE_BUCKET_SHARDS: usize = 16;
+#[cfg(feature = "scoped-rate-limit")]
 const MAX_SCOPED_IDENTITIES_PER_RULE: usize = 1_024;
+#[cfg(feature = "scoped-rate-limit")]
 const SCOPED_IDENTITY_PRUNE_INTERVAL: Duration = Duration::from_secs(1);
+#[cfg(feature = "scoped-rate-limit")]
 const SCOPED_IDENTITY_BUCKET_SHARDS: usize = 16;
 
+#[cfg(feature = "connection-rate-limit")]
 pub(crate) enum ConnectionRateLimitRejection {
     Global,
     Source,
 }
 
+#[cfg(feature = "connection-rate-limit")]
 pub(crate) struct ConnectionRateLimitRuntime {
     input: ConnectionRateLimitInput,
     global: Mutex<TokenBucket>,
     per_source: PerSourceTokenBucket,
 }
 
+#[cfg(feature = "connection-rate-limit")]
 impl ConnectionRateLimitRuntime {
     pub(crate) fn new(input: ConnectionRateLimitInput) -> Self {
         Self {
@@ -69,6 +90,7 @@ impl ConnectionRateLimitRuntime {
     }
 }
 
+#[cfg(any(feature = "connection-rate-limit", feature = "scoped-rate-limit"))]
 struct TokenBucket {
     burst: f64,
     rate_per_sec: f64,
@@ -76,6 +98,7 @@ struct TokenBucket {
     last_refill: Instant,
 }
 
+#[cfg(any(feature = "connection-rate-limit", feature = "scoped-rate-limit"))]
 impl TokenBucket {
     fn new(rate_per_sec: u32, burst: u32) -> Self {
         let burst = burst.max(1) as f64;
@@ -109,6 +132,7 @@ impl TokenBucket {
     }
 }
 
+#[cfg(feature = "connection-rate-limit")]
 struct PerSourceTokenBucket {
     hash_builder: RandomState,
     shards: Box<[Mutex<PerSourceTokenBucketShard>]>,
@@ -118,16 +142,19 @@ struct PerSourceTokenBucket {
     burst: u32,
 }
 
+#[cfg(feature = "connection-rate-limit")]
 #[derive(Default)]
 struct PerSourceTokenBucketShard {
     buckets: HashMap<IpAddr, (TokenBucket, Instant)>,
 }
 
+#[cfg(any(feature = "connection-rate-limit", feature = "scoped-rate-limit"))]
 struct PerSourcePruneState {
     last_pruned_at: Instant,
     next_shard: usize,
 }
 
+#[cfg(feature = "connection-rate-limit")]
 impl PerSourceTokenBucket {
     fn new(rate_per_sec: u32, burst: u32) -> Self {
         Self {
@@ -199,16 +226,19 @@ impl PerSourceTokenBucket {
     }
 }
 
+#[cfg(feature = "scoped-rate-limit")]
 pub(crate) enum ScopedRateLimitDecision {
     Admit,
     Deny { retry_after_seconds: u32 },
 }
 
+#[cfg(feature = "scoped-rate-limit")]
 pub(crate) struct ScopedRateLimitRuntime {
     inputs: std::sync::Arc<[ScopedRateLimitInput]>,
     rules: Box<[ScopedRateLimitRule]>,
 }
 
+#[cfg(feature = "scoped-rate-limit")]
 impl ScopedRateLimitRuntime {
     pub(crate) fn new(inputs: std::sync::Arc<[ScopedRateLimitInput]>) -> Self {
         let rules = inputs
@@ -266,6 +296,7 @@ impl ScopedRateLimitRuntime {
     }
 }
 
+#[cfg(feature = "scoped-rate-limit")]
 struct ScopedRateLimitRule {
     scope: ScopedRateLimitScopeInput,
     key: Option<RequestKeySpec>,
@@ -275,6 +306,7 @@ struct ScopedRateLimitRule {
     store: ScopedIdentityStore,
 }
 
+#[cfg(feature = "scoped-rate-limit")]
 impl ScopedRateLimitRule {
     fn new(input: ScopedRateLimitInput) -> Self {
         Self {
@@ -322,6 +354,7 @@ impl ScopedRateLimitRule {
     }
 }
 
+#[cfg(feature = "scoped-rate-limit")]
 fn legacy_identity_key(context: &ScopedRateLimitIdentity<'_>) -> ScopedRateLimitKeyExtraction {
     if let Some(authority) = context
         .authority
@@ -341,6 +374,7 @@ fn legacy_identity_key(context: &ScopedRateLimitIdentity<'_>) -> ScopedRateLimit
     ScopedRateLimitKeyExtraction::Missing
 }
 
+#[cfg(feature = "scoped-rate-limit")]
 fn bounded_legacy_identity(value: String) -> ScopedRateLimitKeyExtraction {
     if value.len() > MAX_SCOPED_IDENTITY_BYTES {
         ScopedRateLimitKeyExtraction::Invalid
@@ -349,6 +383,7 @@ fn bounded_legacy_identity(value: String) -> ScopedRateLimitKeyExtraction {
     }
 }
 
+#[cfg(feature = "scoped-rate-limit")]
 fn request_key_spec(raw: &str) -> RequestKeySpec {
     let normalized = raw.trim().to_ascii_lowercase();
     match normalized.as_str() {
@@ -369,9 +404,12 @@ fn request_key_spec(raw: &str) -> RequestKeySpec {
     }
 }
 
+#[cfg(feature = "scoped-rate-limit")]
 type ScopedIdentityBuckets = HashMap<String, (TokenBucket, Instant)>;
+#[cfg(feature = "scoped-rate-limit")]
 type ScopedIdentityShard = Mutex<ScopedIdentityBuckets>;
 
+#[cfg(feature = "scoped-rate-limit")]
 struct ScopedIdentityStore {
     hash_builder: RandomState,
     shards: Box<[ScopedIdentityShard]>,
@@ -381,6 +419,7 @@ struct ScopedIdentityStore {
     burst: u32,
 }
 
+#[cfg(feature = "scoped-rate-limit")]
 impl ScopedIdentityStore {
     fn new(rate_per_sec: u32, burst: u32) -> Self {
         Self {

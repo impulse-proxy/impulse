@@ -7,13 +7,13 @@ license.workspace = true
 [features]
 default = ["plugins-full"]
 connection-rate-limit = []
-api-key-auth = []
+api-key-auth = ["dep:impulse-policy"]
 jwt-auth = []
 external-auth = []
-scoped-rate-limit = []
-quota = []
-response-cache = []
-response-compression = []
+scoped-rate-limit = ["dep:impulse-policy", "dep:sha2"]
+quota = ["dep:impulse-policy"]
+response-cache = ["dep:http", "dep:impulse-policy"]
+response-compression = ["dep:http", "dep:impulse-policy"]
 plugins-full = [
     "connection-rate-limit",
     "api-key-auth",
@@ -27,7 +27,7 @@ plugins-full = [
 plugins-minimal = ["connection-rate-limit"]
 
 [dependencies]
-http.workspace = true
+http = { workspace = true, optional = true }
 impulse-contracts = { path = "../contracts" }
-impulse-policy = { path = "../policy" }
-sha2 = "0.10"
+impulse-policy = { path = "../policy", optional = true }
+sha2 = { version = "0.10", optional = true }

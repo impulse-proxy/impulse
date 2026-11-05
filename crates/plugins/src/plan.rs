@@ -55,6 +55,7 @@ impl CompiledPluginPlan {
     }
 
     #[must_use]
+    #[cfg(feature = "response-cache")]
     pub fn response_cache(&self) -> Option<&crate::CompiledResponseCache> {
         self.cache_policy
             .iter()
@@ -70,6 +71,7 @@ impl CompiledPluginPlan {
     }
 
     #[must_use]
+    #[cfg(feature = "response-compression")]
     pub fn response_compression(&self) -> Option<&crate::CompiledResponseCompression> {
         self.response_policy
             .iter()
