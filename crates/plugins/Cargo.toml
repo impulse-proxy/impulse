@@ -4,6 +4,28 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+default = ["plugins-full"]
+connection-rate-limit = []
+api-key-auth = []
+jwt-auth = []
+external-auth = []
+scoped-rate-limit = []
+quota = []
+response-cache = []
+response-compression = []
+plugins-full = [
+    "connection-rate-limit",
+    "api-key-auth",
+    "jwt-auth",
+    "external-auth",
+    "scoped-rate-limit",
+    "quota",
+    "response-cache",
+    "response-compression",
+]
+plugins-minimal = ["connection-rate-limit"]
+
 [dependencies]
 http.workspace = true
 impulse-contracts = { path = "../contracts" }
