@@ -1471,6 +1471,7 @@ fn non_connect_requires_request_completion_before_upstream_poll() {
             .expect("runtime")
             .spawn(async {})
             .abort_handle(),
+        auth_started_at: start,
         auth_deadline: start + Duration::from_secs(1),
         auth_disposition:
             crate::runtime::connection::auth::ExternalAuthFailureDisposition::FailClosed,
@@ -2306,6 +2307,7 @@ fn abort_stream_waiting_for_auth_clears_async_auth_state() {
         }),
         auth_result_rx: auth_rx,
         auth_abort: auth_task.abort_handle(),
+        auth_started_at: req.start,
         auth_deadline: Instant::now() + std::time::Duration::from_secs(1),
         auth_disposition:
             crate::runtime::connection::auth::ExternalAuthFailureDisposition::FailClosed,

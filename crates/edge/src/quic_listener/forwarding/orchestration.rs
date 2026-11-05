@@ -1,4 +1,10 @@
+use std::time::{Duration, Instant};
+
 use http_body_util::Full;
+use impulse_contracts::{
+    PluginExecutionObservation, PluginExecutionOutcome, PluginKind, PluginPhase,
+};
+use impulse_plugins::CompiledAsyncRequestPlugin;
 
 use super::{
     prepare::{RequestFinalizationConfig, RequestRoutingInput, StartedRequestEnvelope},
@@ -24,7 +30,18 @@ use crate::{
 
 fn execute_deferred_quota_plugin(
     pending_forward: &PendingForward,
-) -> Option<crate::edge_core::request_execution::QuotaRejectedDecision> {
+) -> Option<(
+    Option<crate::edge_core::request_execution::QuotaRejectedDecision>,
+    Duration,
+)> {
+    if !pending_forward
+        .plugin_plan
+        .async_request_gate()
+        .iter()
+        .any(|plugin| matches!(plugin, CompiledAsyncRequestPlugin::Quota(_)))
+    {
+        return None;
+    }
     let mut effective_headers = pending_forward.headers.as_ref().clone();
     crate::runtime::connection::auth::apply_auth_request_mutations(
         &mut effective_headers,
@@ -51,14 +68,15 @@ fn execute_deferred_quota_plugin(
         ingress_protocol: impulse_contracts::IngressProtocol::Http3,
     };
 
-    crate::quic_listener::admission::block_on_admission_future(
+    let started_at = Instant::now();
+    let decision = crate::quic_listener::admission::block_on_admission_future(
         crate::edge_core::request_execution::execute_compiled_quota_plugin(
             &pending_forward.plugin_plan,
             request,
             &[],
         ),
-    )
-    .flatten()
+    )?;
+    Some((decision, started_at.elapsed()))
 }
 
 impl Http3Service {
@@ -121,33 +139,59 @@ impl Http3Service {
             return Ok(false);
         };
 
-        if let Some(decision) = execute_deferred_quota_plugin(pending_forward.as_ref()) {
-            if decision.status == http::StatusCode::TOO_MANY_REQUESTS {
-                metrics.policy_observations().inc_request_rate_limited();
-            }
-            let _ = req.complete_with(|| {
-                observe_admission_outcome(
+        if let Some((decision, duration)) = execute_deferred_quota_plugin(pending_forward.as_ref())
+        {
+            metrics
+                .plugin_observations()
+                .record_execution(PluginExecutionObservation {
+                    kind: PluginKind::Quota,
+                    phase: PluginPhase::AsyncRequestGate,
+                    outcome: decision.as_ref().map_or(
+                        PluginExecutionOutcome::Continue,
+                        |rejection| {
+                            if rejection.status == http::StatusCode::TOO_MANY_REQUESTS {
+                                PluginExecutionOutcome::Reject
+                            } else {
+                                PluginExecutionOutcome::Fail
+                            }
+                        },
+                    ),
+                    async_duration: Some(duration),
+                });
+
+            if let Some(decision) = decision {
+                if decision.status == http::StatusCode::TOO_MANY_REQUESTS {
+                    metrics.policy_observations().inc_request_rate_limited();
+                }
+                let _ = req.complete_with(|| {
+                    observe_admission_outcome(
+                        metrics,
+                        RouteOutcomeTarget {
+                            route: &upstream_name,
+                        },
+                        Some(BackendOutcomeTarget {
+                            upstream: &upstream_name,
+                            backend_addr: Some(pending_forward.backend_addr.as_ref()),
+                            backend_index: Some(pending_forward.backend_index),
+                        }),
+                        req.start.elapsed(),
+                        decision.status,
+                        crate::runtime::connection::outcome::AdmissionOutcomeClass::QuotaDenied,
+                    )
+                });
+                Self::send_admission_rejection_response(
+                    h3,
+                    quic,
+                    stream_id,
+                    &decision.as_response(),
+                )?;
+                terminalize_stream(
+                    req,
+                    TerminalReason::Rejected(RejectionReason::QuotaDenied),
                     metrics,
-                    RouteOutcomeTarget {
-                        route: &upstream_name,
-                    },
-                    Some(BackendOutcomeTarget {
-                        upstream: &upstream_name,
-                        backend_addr: Some(pending_forward.backend_addr.as_ref()),
-                        backend_index: Some(pending_forward.backend_index),
-                    }),
-                    req.start.elapsed(),
-                    decision.status,
-                    crate::runtime::connection::outcome::AdmissionOutcomeClass::QuotaDenied,
-                )
-            });
-            Self::send_admission_rejection_response(h3, quic, stream_id, &decision.as_response())?;
-            terminalize_stream(
-                req,
-                TerminalReason::Rejected(RejectionReason::QuotaDenied),
-                metrics,
-            );
-            return Ok(false);
+                );
+                return Ok(false);
+            }
         }
 
         let (

@@ -163,7 +163,9 @@ impl<'a> EdgeRequestService<'a> {
             &plugin_plan,
             plugin_request,
             |observation| {
-                if observation.kind != PluginKind::Quota {
+                let external_auth_deferred =
+                    observation.kind == PluginKind::ExternalAuth && external_auth_headers.is_none();
+                if observation.kind != PluginKind::Quota && !external_auth_deferred {
                     self.metrics
                         .plugin_observations()
                         .record_execution(observation);

@@ -75,6 +75,7 @@ pub struct AwaitingAuthState {
     pub pending_forward: Arc<PendingForward>,
     pub(crate) auth_result_rx: oneshot::Receiver<ExternalAuthResult>,
     pub auth_abort: AbortHandle,
+    pub auth_started_at: Instant,
     pub auth_deadline: Instant,
     pub(crate) auth_disposition: ExternalAuthFailureDisposition,
 }

@@ -163,6 +163,7 @@ impl RequestEnvelope {
             pending_forward,
             auth_result_rx: _,
             auth_abort: _,
+            auth_started_at: _,
             auth_deadline: _,
             auth_disposition: _,
         } = &state;

@@ -10,7 +10,7 @@ use smallvec::SmallVec;
 use tokio::{sync::oneshot, task::AbortHandle};
 
 use super::{
-    auth::start_external_auth_task,
+    auth::{observe_external_auth_plugin_completion, start_external_auth_task},
     resolve::{
         ForwardTargetResolution, ForwardTargetResolutionInput, ResolutionContext,
         ResolutionObservation, TargetResolutionRequest,
@@ -98,6 +98,7 @@ impl DispatchReadyCandidate {
         auth_result_rx: oneshot::Receiver<ExternalAuthResult>,
         auth_abort: AbortHandle,
         auth_disposition: ExternalAuthFailureDisposition,
+        auth_started_at: Instant,
         auth_deadline: Instant,
     ) -> RequestEnvelope {
         let DispatchReadyState {
@@ -119,6 +120,7 @@ impl DispatchReadyCandidate {
                 pending_forward,
                 auth_result_rx,
                 auth_abort,
+                auth_started_at,
                 auth_deadline,
                 auth_disposition,
             },
@@ -947,9 +949,15 @@ impl Http3Service {
                 let auth_disposition =
                     ExternalAuthTaskConfig::from_external_auth(&external_auth).disposition;
                 let pending_forward = Arc::clone(&request.request.state.pending_forward);
+                let auth_started_at = Instant::now();
                 let auth_start = match start_external_auth_task(pending_forward, external_auth) {
                     Ok(start) => Some(start),
                     Err(err) => {
+                        observe_external_auth_plugin_completion(
+                            metrics,
+                            impulse_contracts::PluginExecutionOutcome::Fail,
+                            auth_started_at,
+                        );
                         match evaluate_external_auth_completion(Err(err), auth_disposition) {
                             ExternalAuthCompletion::FailOpen { timed_out, error } => {
                                 metrics.policy_observations().inc_external_auth_error();
@@ -1024,6 +1032,7 @@ impl Http3Service {
                         start.rx,
                         start.abort,
                         auth_disposition,
+                        start.started_at,
                         start.deadline,
                     )
                 } else {

@@ -14,7 +14,8 @@ use impulse_bridge::response::{
 use impulse_config::{backend_endpoint::BackendScheme, runtime::ListenerRuntimeConfig};
 use impulse_contracts::{
     AlternateBackendFailureReason, HealthFailureReason, IngressProtocol, PluginConnectionView,
-    PluginHeaderMutation, PluginRejection, PluginRejectionReason, PluginRequestView,
+    PluginExecutionObservation, PluginExecutionOutcome, PluginHeaderMutation, PluginKind,
+    PluginPhase, PluginRejection, PluginRejectionReason, PluginRequestView,
     RequestDecision as AdmissionPolicyDecision, RetryAttemptTelemetryReason, TunnelMode,
 };
 use impulse_errors::{
@@ -855,6 +856,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
                     "Pingora ingress request filter did not validate a path",
                 )
             })?;
+            let started_at = Instant::now();
             let decision = execute_compiled_external_auth(
                 crate::runtime::connection::auth::ExternalAuthRequest {
                     method,
@@ -867,6 +869,24 @@ impl PingoraRequestService for PingoraEdgeRequestService {
                 &external_auth,
             )
             .await;
+            shared
+                .metrics
+                .plugin_observations()
+                .record_execution(PluginExecutionObservation {
+                    kind: PluginKind::ExternalAuth,
+                    phase: PluginPhase::AsyncRequestGate,
+                    outcome: match &decision {
+                        AsyncRequestPluginDecision::Continue
+                        | AsyncRequestPluginDecision::Mutate(_) => PluginExecutionOutcome::Continue,
+                        AsyncRequestPluginDecision::Reject(rejection)
+                            if rejection.reason() == PluginRejectionReason::ExternalAuthDenied =>
+                        {
+                            PluginExecutionOutcome::Reject
+                        }
+                        AsyncRequestPluginDecision::Reject(_) => PluginExecutionOutcome::Fail,
+                    },
+                    async_duration: Some(started_at.elapsed()),
+                });
             match decision {
                 AsyncRequestPluginDecision::Continue => {}
                 AsyncRequestPluginDecision::Mutate(mutations) => {
