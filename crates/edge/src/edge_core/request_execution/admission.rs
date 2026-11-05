@@ -1,9 +1,9 @@
 use http::StatusCode;
-use impulse_contracts::{BoundedRejectionResponse, RequestDecision};
+use impulse_contracts::{BoundedRejectionResponse, PluginRejection, RequestDecision};
 use impulse_policy::evaluate_brownout_admission;
 
 use crate::resilience::{
-    quota::{QuotaDecision, QuotaDenyReason, QuotaIdentityContext, evaluate_admission_quota},
+    quota::{QuotaDecision, QuotaDenyReason},
     runtime::RuntimeResilience,
 };
 
@@ -17,7 +17,7 @@ pub(crate) struct QuotaRejectedDecision {
 }
 
 impl QuotaRejectedDecision {
-    fn from_quota_decision(decision: QuotaDecision) -> Option<Self> {
+    pub(crate) fn from_quota_decision(decision: QuotaDecision) -> Option<Self> {
         match decision {
             QuotaDecision::Denied(denial) | QuotaDecision::ShadowDenied(denial) => Some(Self {
                 policy_name: denial.policy_name,
@@ -47,6 +47,14 @@ impl QuotaRejectedDecision {
             retry_after_seconds: self.retry_after_seconds,
         }
     }
+
+    pub(crate) fn as_plugin_rejection(&self) -> PluginRejection {
+        if self.status == StatusCode::TOO_MANY_REQUESTS {
+            PluginRejection::quota_denied(self.retry_after_seconds, self.body)
+        } else {
+            PluginRejection::quota_unavailable(self.body)
+        }
+    }
 }
 
 fn quota_response_body(reason: QuotaDenyReason) -> &'static [u8] {
@@ -58,28 +66,6 @@ fn quota_response_body(reason: QuotaDenyReason) -> &'static [u8] {
         QuotaDenyReason::BackendTimeout => b"quota backend timed out\n",
         QuotaDenyReason::BackendUnavailable => b"quota backend unavailable\n",
         QuotaDenyReason::BackendError => b"quota backend error\n",
-    }
-}
-
-pub(crate) async fn evaluate_post_auth_quota_policy(
-    resilience: &RuntimeResilience,
-    quota_context: &QuotaIdentityContext<'_>,
-) -> Option<QuotaRejectedDecision> {
-    let backend = resilience.quota_backend.as_ref()?;
-    match evaluate_admission_quota(resilience.quota.as_ref(), backend.as_ref(), quota_context).await
-    {
-        QuotaDecision::NotApplied | QuotaDecision::Allowed(_) | QuotaDecision::FailedOpen(_) => {
-            None
-        }
-        QuotaDecision::ShadowDenied(denial) => {
-            log::debug!(
-                "quota shadow deny observed: policy={} reason={}",
-                denial.policy_name,
-                denial.reason.slug()
-            );
-            None
-        }
-        denied => QuotaRejectedDecision::from_quota_decision(denied),
     }
 }
 

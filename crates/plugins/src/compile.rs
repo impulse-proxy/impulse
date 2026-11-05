@@ -55,6 +55,18 @@ impl CompiledGenerationPluginPlans {
     pub fn upstream_plan(&self, upstream_name: &str) -> Option<Arc<CompiledPluginPlan>> {
         self.upstreams.get(upstream_name).map(Arc::clone)
     }
+
+    #[must_use]
+    pub fn quota(&self) -> Option<&crate::CompiledQuota> {
+        self.upstreams.values().find_map(|plan| {
+            plan.async_request_gate()
+                .iter()
+                .find_map(|plugin| match plugin {
+                    CompiledAsyncRequestPlugin::Quota(quota) => Some(quota.as_ref()),
+                    CompiledAsyncRequestPlugin::ExternalAuth(_) => None,
+                })
+        })
+    }
 }
 
 fn require_available(
@@ -89,7 +101,7 @@ pub fn compile_generation_plugin_plans(
     let quota = match inputs.quota {
         Some(quota) => {
             require_available(catalog, PluginKind::Quota)?;
-            Some(Arc::new(quota))
+            Some(Arc::new(crate::CompiledQuota::new(quota)))
         }
         None => None,
     };
@@ -115,7 +127,7 @@ fn compile_upstream_plan(
     generation: u64,
     inputs: UpstreamPluginInputs,
     scoped_rate_limits: &Option<Arc<CompiledScopedRateLimit>>,
-    quota: &Option<Arc<crate::QuotaInput>>,
+    quota: &Option<Arc<crate::CompiledQuota>>,
 ) -> Result<(String, Arc<CompiledPluginPlan>), PluginPlanCompileError> {
     let mut request_gate = Vec::with_capacity(3);
     if let Some(api_key) = inputs.api_key_auth {

@@ -5,13 +5,14 @@ use std::{
 };
 
 use impulse_config::runtime::RuntimeUpstreamPolicy;
-use impulse_contracts::PluginRequestView;
+use impulse_contracts::{IngressProtocol, PluginRequestView};
 use impulse_plugins::{
     AsyncRequestPluginDecision, AsyncRequestPluginExecution, AsyncRequestPluginExecutionGuard,
     CompiledAsyncRequestPlugin, CompiledGenerationPluginPlans, CompiledRequestPlugin,
     SynchronousRequestPluginDecision, SynchronousRequestPluginExecution,
     execute_async_request_plugins, execute_synchronous_request_plugins,
 };
+use impulse_policy::quota::QuotaDecision;
 
 use super::{
     PluginRequestExecutionInput, PluginRequestExecutionOutcome, PluginRequestExecutionState,
@@ -175,7 +176,62 @@ impl<'a> EdgeRequestService<'a> {
         {
             AsyncRequestPluginExecution::Continue {
                 mutations: async_mutations,
-            } => mutations.extend(async_mutations),
+            } => {
+                mutations.extend(async_mutations);
+                if input.ingress_protocol != IngressProtocol::Http3
+                    && let Some(quota) =
+                        plugin_plan
+                            .async_request_gate()
+                            .iter()
+                            .find_map(|plugin| match plugin {
+                                CompiledAsyncRequestPlugin::Quota(quota) => Some(quota),
+                                CompiledAsyncRequestPlugin::ExternalAuth(_) => None,
+                            })
+                {
+                    match quota.evaluate(plugin_request, &mutations).await {
+                        QuotaDecision::Denied(denial) => {
+                            let rejection = super::QuotaRejectedDecision::from_quota_decision(
+                                QuotaDecision::Denied(denial),
+                            )
+                            .map(|decision| decision.as_plugin_rejection());
+                            if let Some(rejection) = rejection {
+                                return Ok(PluginRequestExecutionState {
+                                    route,
+                                    policy,
+                                    outcome: PluginRequestExecutionOutcome::Rejected {
+                                        rejection,
+                                        observation: PluginTerminalObservation::QuotaDenied,
+                                    },
+                                });
+                            }
+                        }
+                        QuotaDecision::FailedClosed(failure) => {
+                            let rejection = super::QuotaRejectedDecision::from_quota_decision(
+                                QuotaDecision::FailedClosed(failure),
+                            )
+                            .map(|decision| decision.as_plugin_rejection());
+                            if let Some(rejection) = rejection {
+                                return Ok(PluginRequestExecutionState {
+                                    route,
+                                    policy,
+                                    outcome: PluginRequestExecutionOutcome::Rejected {
+                                        rejection,
+                                        observation: PluginTerminalObservation::Failed,
+                                    },
+                                });
+                            }
+                        }
+                        QuotaDecision::ShadowDenied(denial) => log::debug!(
+                            "quota shadow deny observed: policy={} reason={}",
+                            denial.policy_name,
+                            denial.reason.slug()
+                        ),
+                        QuotaDecision::NotApplied
+                        | QuotaDecision::Allowed(_)
+                        | QuotaDecision::FailedOpen(_) => {}
+                    }
+                }
+            }
             AsyncRequestPluginExecution::Reject(rejection) => {
                 let observation =
                     PluginTerminalObservation::from_rejection_reason(rejection.reason());

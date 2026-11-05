@@ -256,6 +256,34 @@ impl PluginRejection {
     }
 
     #[must_use]
+    pub fn quota_denied(retry_after_seconds: Option<u32>, body: &'static [u8]) -> Self {
+        let headers = retry_after_seconds
+            .map(|seconds| PluginResponseHeader {
+                name: http::header::RETRY_AFTER,
+                value: HeaderValue::from_str(&seconds.max(1).to_string())
+                    .unwrap_or(HeaderValue::from_static("1")),
+            })
+            .into_iter()
+            .collect();
+        Self {
+            reason: PluginRejectionReason::QuotaDenied,
+            status: StatusCode::TOO_MANY_REQUESTS,
+            headers,
+            body: body.to_vec(),
+        }
+    }
+
+    #[must_use]
+    pub fn quota_unavailable(body: &'static [u8]) -> Self {
+        Self {
+            reason: PluginRejectionReason::QuotaUnavailable,
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            headers: Vec::new(),
+            body: body.to_vec(),
+        }
+    }
+
+    #[must_use]
     pub const fn reason(&self) -> PluginRejectionReason {
         self.reason
     }

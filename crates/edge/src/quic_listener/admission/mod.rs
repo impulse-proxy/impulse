@@ -20,7 +20,9 @@ use impulse_config::{
     config::{JwksStartupBehavior, JwtAlgorithm},
     runtime::{RuntimeConfig, RuntimeJwtAuth, RuntimeJwtVerificationKey, RuntimeUpstreamPolicy},
 };
+use impulse_contracts::{IngressProtocol, PluginRequestView};
 use impulse_lb::upstream_pool::UpstreamPool;
+use impulse_plugins::CompiledAsyncRequestPlugin;
 use impulse_policy::evaluate_adaptive_admission;
 #[cfg(test)]
 use impulse_policy::evaluate_brownout_admission;
@@ -45,7 +47,7 @@ use crate::resilience::quota::{QuotaDecision, evaluate_admission_quota};
 use crate::resilience::scoped_rate_limit::ScopedRateLimiters;
 use crate::{
     OverloadShedReason, RouteOutcome,
-    edge_core::request_execution::{QuotaRejectedDecision, evaluate_post_auth_quota_policy},
+    edge_core::request_execution::QuotaRejectedDecision,
     resilience::{
         adaptive_admission::AdaptivePermit,
         quota::QuotaIdentityContext,
@@ -385,36 +387,62 @@ pub(super) fn execute_forwarding_post_auth_admission(
 }
 
 fn evaluate_forwarding_post_auth_quota_policy(
-    resilience: &RuntimeResilience,
+    _resilience: &RuntimeResilience,
     pending_forward: &PendingForward,
 ) -> Option<PostAuthAdmissionRejection> {
     runtime_handle()?;
+
+    let quota = pending_forward
+        .plugin_plan
+        .async_request_gate()
+        .iter()
+        .find_map(|plugin| match plugin {
+            CompiledAsyncRequestPlugin::Quota(quota) => Some(quota),
+            CompiledAsyncRequestPlugin::ExternalAuth(_) => None,
+        })?;
 
     let mut effective_headers = pending_forward.headers.as_ref().clone();
     apply_auth_request_mutations(
         &mut effective_headers,
         &pending_forward.auth_header_mutations,
     );
-    let header_lookup = |name: &str| {
+    let plugin_header_lookup = |name: &str| {
         effective_headers
             .iter()
             .find(|header| header.name().eq_ignore_ascii_case(name.as_bytes()))
-            .and_then(|header| std::str::from_utf8(header.value()).ok())
-            .map(str::to_string)
+            .map(|header| header.value())
     };
-    let quota_context = QuotaIdentityContext::new(
-        Some(pending_forward.upstream_name.as_ref()),
-        pending_forward.method.as_ref(),
-        pending_forward.path.as_ref(),
-        pending_forward.authority.as_deref(),
-        None,
-        Some(pending_forward.client_addr),
-        Some(&header_lookup),
-    );
+    let request = PluginRequestView {
+        request_id: pending_forward.request_id,
+        generation: pending_forward.plugin_plan.generation(),
+        route_id: Some(pending_forward.upstream_name.as_ref()),
+        upstream_name: pending_forward.upstream_name.as_ref(),
+        method: pending_forward.method.as_ref(),
+        path: pending_forward.path.as_ref(),
+        authority: pending_forward.authority.as_deref(),
+        peer_address: pending_forward.client_addr,
+        headers: Some(&plugin_header_lookup),
+        has_body: false,
+        body_replayable: true,
+        ingress_protocol: IngressProtocol::Http3,
+    };
 
-    block_on_admission_future(evaluate_post_auth_quota_policy(resilience, &quota_context))
-        .flatten()
-        .map(PostAuthAdmissionRejection::Quota)
+    let decision = block_on_admission_future(quota.evaluate(request, &[]))?;
+    match decision {
+        QuotaDecision::NotApplied | QuotaDecision::Allowed(_) | QuotaDecision::FailedOpen(_) => {
+            None
+        }
+        QuotaDecision::ShadowDenied(denial) => {
+            log::debug!(
+                "quota shadow deny observed: policy={} reason={}",
+                denial.policy_name,
+                denial.reason.slug()
+            );
+            None
+        }
+        denied => QuotaRejectedDecision::from_quota_decision(denied)
+            .map(PostAuthAdmissionRejection::Quota),
+    }
 }
 
 pub(super) fn try_acquire_owned_with_micro_wait(

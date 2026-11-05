@@ -69,7 +69,6 @@ use crate::{
             EdgeRequestService, PluginRequestExecutionInput, PluginRequestExecutionOutcome,
             PluginTerminalObservation, RequestExecutionInput, ResolvedRequestPolicy,
             ResolvedRouteTarget, ResponseCompressionAction, RouteResolutionError,
-            evaluate_post_auth_quota_policy,
         },
         request_validation::validate_http_request_parts,
         response_processing::{
@@ -79,12 +78,11 @@ use crate::{
         retry::RetryCoordinator,
     },
     quic_listener::{BackendCandidate, ForwardingSelectionService, TargetResolutionRequest},
-    resilience::quota::QuotaIdentityContext,
     runtime::{
         bundle::{RuntimeBundle, RuntimeBundleHandle},
         cache::{ResponseCacheKeyInput, ResponseCacheRepresentation, canonical_response_cache_key},
         connection::{
-            auth::{PendingHeaderMutation, apply_auth_request_mutations},
+            auth::PendingHeaderMutation,
             outcome::{
                 AdmissionOutcomeClass, BackendHealthObservationInput, BackendOutcomeTarget,
                 ClassifiedBackendFailureInput, RouteOutcomeTarget,
@@ -916,54 +914,6 @@ impl PingoraRequestService for PingoraEdgeRequestService {
                 REQUEST_BODY_TOO_LARGE_BODY,
                 None,
                 None,
-            )
-            .await?;
-            return Ok(true);
-        }
-
-        let (Some(method), Some(path)) = (ctx.method.as_deref(), ctx.path.as_deref()) else {
-            return Error::e_explain(
-                InternalError,
-                "Pingora ingress quota evaluation is missing validated request metadata",
-            );
-        };
-        let mut effective_headers = bridge_headers(&session.req_header().headers);
-        apply_auth_request_mutations(&mut effective_headers, &ctx.auth_header_mutations);
-        let quota_header_lookup = |name: &str| {
-            effective_headers
-                .iter()
-                .find(|header| header.name().eq_ignore_ascii_case(name.as_bytes()))
-                .and_then(|header| std::str::from_utf8(header.value()).ok())
-                .map(str::to_string)
-        };
-        let quota_context = QuotaIdentityContext::new(
-            Some(route.upstream_name.as_ref()),
-            method,
-            path,
-            ctx.authority.as_deref(),
-            None,
-            Some(peer_address),
-            Some(&quota_header_lookup),
-        );
-        if let Some(rejection) =
-            evaluate_post_auth_quota_policy(&state.resilience, &quota_context).await
-        {
-            let response = rejection.as_response();
-            if response.status == http::StatusCode::TOO_MANY_REQUESTS {
-                shared
-                    .metrics
-                    .policy_observations()
-                    .inc_request_rate_limited();
-            }
-            ctx.terminal_classification = Some(PingoraTerminalClassification::Admission(
-                AdmissionOutcomeClass::QuotaDenied,
-            ));
-            write_local_response(
-                session,
-                response.status,
-                response.body,
-                response.www_authenticate,
-                response.retry_after_seconds,
             )
             .await?;
             return Ok(true);

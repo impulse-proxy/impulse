@@ -95,11 +95,16 @@ impl Http3Service {
         };
         let backend_inventory = runtime_state.snapshot_backend_inventory();
         let backend_summary = backend_inventory.summary();
-        let quota_backend_status = runtime_state.resilience().quota.backend_status_snapshot(
-            runtime_state
-                .resilience()
-                .quota_backend_initialization_error
-                .as_ref(),
+        let plugin_plans = runtime_state.plugin_plans();
+        let resilience = runtime_state.resilience();
+        let quota_runtime = plugin_plans
+            .quota()
+            .map(impulse_plugins::CompiledQuota::runtime)
+            .unwrap_or(resilience.quota.as_ref());
+        let quota_backend_status = quota_runtime.backend_status_snapshot(
+            plugin_plans
+                .quota()
+                .and_then(impulse_plugins::CompiledQuota::initialization_error),
         );
 
         Self::json_response(
@@ -132,11 +137,16 @@ impl Http3Service {
         };
         let backend_inventory = runtime_state.snapshot_backend_inventory();
         let backend_summary = backend_inventory.summary();
-        let quota_backend_status = runtime_state.resilience().quota.backend_status_snapshot(
-            runtime_state
-                .resilience()
-                .quota_backend_initialization_error
-                .as_ref(),
+        let plugin_plans = runtime_state.plugin_plans();
+        let resilience = runtime_state.resilience();
+        let quota_runtime = plugin_plans
+            .quota()
+            .map(impulse_plugins::CompiledQuota::runtime)
+            .unwrap_or(resilience.quota.as_ref());
+        let quota_backend_status = quota_runtime.backend_status_snapshot(
+            plugin_plans
+                .quota()
+                .and_then(impulse_plugins::CompiledQuota::initialization_error),
         );
 
         let entries = runtime_bundle_handle
@@ -193,9 +203,16 @@ impl ControlApiRuntimePayload {
         let listener_tls_states = listener_tls_store.snapshot_states();
         let backend_inventory = state.snapshot_backend_inventory();
         let backend_summary = backend_inventory.summary();
-        let quota_backend_status = resilience
-            .quota
-            .backend_status_snapshot(resilience.quota_backend_initialization_error.as_ref());
+        let plugin_plans = state.plugin_plans();
+        let quota_runtime = plugin_plans
+            .quota()
+            .map(impulse_plugins::CompiledQuota::runtime)
+            .unwrap_or(resilience.quota.as_ref());
+        let quota_backend_status = quota_runtime.backend_status_snapshot(
+            plugin_plans
+                .quota()
+                .and_then(impulse_plugins::CompiledQuota::initialization_error),
+        );
         let (auth_providers, jwks) = build_auth_and_jwks_payloads(runtime.runtime_config());
 
         Self {
@@ -221,7 +238,7 @@ impl ControlApiRuntimePayload {
                 inflight_percent: resilience.adaptive_admission.inflight_percent(),
             },
             quota: ControlApiQuotaPayload::from_snapshot(
-                resilience.quota.as_ref(),
+                quota_runtime,
                 quota_backend_status.clone(),
             ),
             observability: ControlApiObservabilityPayload::from_runtime_state(
@@ -403,7 +420,7 @@ impl ControlApiObservabilityPayload {
                 *backend_summary,
             ),
             quota_backend_health_summary: ControlApiQuotaBackendHealthSummaryPayload::from_snapshot(
-                state.resilience().quota.enabled,
+                quota_runtime.enabled,
                 quota_backend_status,
             ),
             recent_admin_actions: state

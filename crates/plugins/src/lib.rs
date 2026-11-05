@@ -10,6 +10,7 @@ mod connection;
 mod input;
 mod instance;
 mod plan;
+mod quota;
 mod rate_limit;
 mod request;
 mod response;
@@ -37,6 +38,7 @@ pub use instance::{
     CompiledRequestPlugin, CompiledResponsePlugin, CompiledScopedRateLimit,
 };
 pub use plan::{CompiledConnectionPlan, CompiledPluginPlan};
+pub use quota::CompiledQuota;
 pub use request::{
     AsyncRequestPluginDecision, AsyncRequestPluginExecution, AsyncRequestPluginExecutionGuard,
     SynchronousRequestPluginDecision, SynchronousRequestPluginExecution,
