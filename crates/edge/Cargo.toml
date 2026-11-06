@@ -4,6 +4,28 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+default = ["plugins-full"]
+connection-rate-limit = ["impulse-plugins/connection-rate-limit"]
+api-key-auth = ["impulse-plugins/api-key-auth"]
+jwt-auth = ["impulse-plugins/jwt-auth"]
+external-auth = ["impulse-plugins/external-auth"]
+scoped-rate-limit = ["impulse-plugins/scoped-rate-limit"]
+quota = ["impulse-plugins/quota"]
+response-cache = ["impulse-plugins/response-cache"]
+response-compression = ["impulse-plugins/response-compression"]
+plugins-full = [
+    "connection-rate-limit",
+    "api-key-auth",
+    "jwt-auth",
+    "external-auth",
+    "scoped-rate-limit",
+    "quota",
+    "response-cache",
+    "response-compression",
+]
+plugins-minimal = ["connection-rate-limit"]
+
 [dependencies]
 async-trait.workspace = true
 boring.workspace = true
@@ -15,7 +37,7 @@ impulse-config = { path = "../config" }
 impulse-contracts = { path = "../contracts" }
 impulse-runtime = { path = "../runtime" }
 impulse-policy = { path = "../policy" }
-impulse-plugins = { path = "../plugins" }
+impulse-plugins = { path = "../plugins", default-features = false }
 impulse-observability = { path = "../observability" }
 impulse-operations = { path = "../operations" }
 impulse-http3-ingress = { path = "../http3-ingress" }
