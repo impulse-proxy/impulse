@@ -7,6 +7,7 @@ use std::{
 };
 
 use impulse_config::runtime::{ListenerRuntimeConfig, RuntimeBackendAddressKind, RuntimeConfig};
+use impulse_contracts::PluginKind;
 use impulse_errors::ProxyError;
 use impulse_lb::pingora_backend::{
     GenerationBackendView, HealthRegistry, PingoraLoadBalancingRuntimeState, map_validated_backend,
@@ -41,6 +42,25 @@ use crate::{
 pub(crate) struct RuntimeBuilder;
 
 impl RuntimeBuilder {
+    pub(crate) fn unavailable_plugin_requirement(
+        config: &RuntimeConfig,
+    ) -> Option<(PluginKind, String)> {
+        let catalog = compiled_plugin_catalog();
+        let requirements = config.plugin_requirements();
+        requirements
+            .kinds()
+            .iter()
+            .copied()
+            .find(|kind| !catalog.contains(*kind))
+            .map(|kind| {
+                let location = requirements
+                    .configuration_location(kind)
+                    .unwrap_or("runtime plugin configuration")
+                    .to_string();
+                (kind, location)
+            })
+    }
+
     pub(crate) fn rebuild_generation(
         config: &RuntimeConfig,
         carried: CarriedProcessSharedServices,
@@ -56,6 +76,7 @@ impl RuntimeBuilder {
         generation: u64,
         listener_tls_store: Arc<ListenerTlsReloadStore>,
     ) -> Result<SharedRuntimeState, ProxyError> {
+        validate_plugin_availability(config)?;
         let plugin_plans = Arc::new(
             compile_generation_plugin_plans(
                 compiled_plugin_catalog(),
@@ -391,6 +412,16 @@ impl RuntimeBuilder {
             },
         ))
     }
+}
+
+fn validate_plugin_availability(config: &RuntimeConfig) -> Result<(), ProxyError> {
+    let Some((missing, location)) = RuntimeBuilder::unavailable_plugin_requirement(config) else {
+        return Ok(());
+    };
+    Err(ProxyError::Transport(format!(
+        "configuration '{location}' requires plugin kind '{}' which is not compiled into this binary",
+        missing.label()
+    )))
 }
 
 fn listener_label(config: &ListenerRuntimeConfig) -> String {

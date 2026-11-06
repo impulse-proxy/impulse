@@ -290,6 +290,24 @@ impl RejectedChange {
         }
     }
 
+    fn unavailable_plugin(configuration_location: String, plugin_kind: &str) -> Self {
+        let message = format!(
+            "configuration '{configuration_location}' requires plugin kind '{plugin_kind}' which is not compiled into this binary"
+        );
+        Self {
+            reason: RuntimeRejectionReason::InvalidConfig,
+            kind: RejectedChangeKind::InvalidConfiguration,
+            field_path: Some(configuration_location),
+            current_value: None,
+            requested_value: Some(plugin_kind.to_string()),
+            operator_action:
+                "use a binary compiled with the required plugin or disable its configuration"
+                    .to_string(),
+            active_generation_changed: false,
+            message,
+        }
+    }
+
     fn resource_preparation_failed(
         field_path: impl Into<String>,
         detail: impl Into<String>,
