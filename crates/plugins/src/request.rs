@@ -181,17 +181,16 @@ where
     Evaluate: FnMut(&'a CompiledAsyncRequestPlugin, PluginRequestView<'a>) -> Evaluation,
     Evaluation: Future<Output = AsyncRequestPluginDecision>,
 {
-    if guard.started {
-        return AsyncRequestPluginExecution::AlreadyExecuted;
-    }
-    guard.started = true;
-
     let plugins = plan.async_request_gate();
     if plugins.is_empty() {
         return AsyncRequestPluginExecution::Continue {
             mutations: Vec::new(),
         };
     }
+    if guard.started {
+        return AsyncRequestPluginExecution::AlreadyExecuted;
+    }
+    guard.started = true;
 
     let mut mutations = Vec::new();
     for plugin in plugins {

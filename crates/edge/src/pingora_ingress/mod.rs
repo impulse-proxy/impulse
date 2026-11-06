@@ -13,7 +13,7 @@ use impulse_bridge::response::{
 };
 use impulse_config::{backend_endpoint::BackendScheme, runtime::ListenerRuntimeConfig};
 use impulse_contracts::{
-    AlternateBackendFailureReason, HealthFailureReason, IngressProtocol, PluginConnectionView,
+    AlternateBackendFailureReason, HealthFailureReason, IngressProtocol,
     PluginExecutionObservation, PluginExecutionOutcome, PluginHeaderMutation, PluginKind,
     PluginPhase, PluginRejection, PluginRejectionReason, PluginRequestView,
     RequestDecision as AdmissionPolicyDecision, RetryAttemptTelemetryReason, TunnelMode,
@@ -173,44 +173,50 @@ impl PingoraEdgeRequestService {
                 "Pingora ingress request filter did not validate a method",
             )
         })?;
-        let path = ctx.path.as_deref().ok_or_else(|| {
-            Error::explain(
-                InternalError,
-                "Pingora ingress request filter did not validate a path",
-            )
-        })?;
-        let route = ctx.route.as_ref().ok_or_else(|| {
-            Error::explain(
-                InternalError,
-                "Pingora ingress request filter did not resolve a route",
-            )
-        })?;
-        let peer_address = session
-            .client_addr()
-            .and_then(|address| address.as_inet())
-            .copied()
-            .unwrap_or_else(|| ([0, 0, 0, 0], 0).into());
         let request_headers = &session.req_header().headers;
         let request_header =
             |name: &str| request_headers.get(name).map(http::HeaderValue::as_bytes);
-        let plugin_request = PluginRequestView {
-            request_id: ctx.request_id,
-            generation: policy.plugin_plan.generation(),
-            route_id: Some(route.upstream_name.as_ref()),
-            upstream_name: route.upstream_name.as_ref(),
-            method,
-            path,
-            authority: ctx.authority.as_deref(),
-            peer_address,
-            headers: Some(&request_header),
-            has_body: ctx.content_length.is_some_and(|length| length > 0)
-                || ctx.body_bytes_received > 0,
-            body_replayable: ctx.request_body_replayable,
-            ingress_protocol: if session.downstream_session.is_http2() {
-                IngressProtocol::Http2
-            } else {
-                IngressProtocol::Http1
-            },
+        let has_response_plugins = !policy.plugin_plan.cache_policy().is_empty()
+            || !policy.plugin_plan.response_policy().is_empty();
+        let plugin_request = if has_response_plugins {
+            let path = ctx.path.as_deref().ok_or_else(|| {
+                Error::explain(
+                    InternalError,
+                    "Pingora ingress request filter did not validate a path",
+                )
+            })?;
+            let route = ctx.route.as_ref().ok_or_else(|| {
+                Error::explain(
+                    InternalError,
+                    "Pingora ingress request filter did not resolve a route",
+                )
+            })?;
+            let peer_address = session
+                .client_addr()
+                .and_then(|address| address.as_inet())
+                .copied()
+                .unwrap_or_else(|| ([0, 0, 0, 0], 0).into());
+            Some(PluginRequestView {
+                request_id: ctx.request_id,
+                generation: policy.plugin_plan.generation(),
+                route_id: Some(route.upstream_name.as_ref()),
+                upstream_name: route.upstream_name.as_ref(),
+                method,
+                path,
+                authority: ctx.authority.as_deref(),
+                peer_address,
+                headers: Some(&request_header),
+                has_body: ctx.content_length.is_some_and(|length| length > 0)
+                    || ctx.body_bytes_received > 0,
+                body_replayable: ctx.request_body_replayable,
+                ingress_protocol: if session.downstream_session.is_http2() {
+                    IngressProtocol::Http2
+                } else {
+                    IngressProtocol::Http1
+                },
+            })
+        } else {
+            None
         };
         let tunnel_response =
             tunnel_response_established(ctx.tunnel_mode, method, upstream_response.status);
@@ -230,7 +236,7 @@ impl PingoraEdgeRequestService {
             body_mode,
             constraints: pingora_response_constraints(tunnel_response),
             request_method: method,
-            request_headers,
+            request_headers: has_response_plugins.then_some(request_headers),
             cache_fill_enabled: ctx.response_cache_representation.is_some(),
             cache_representation: ctx.response_cache_representation.map(|representation| {
                 match representation {
@@ -400,11 +406,9 @@ impl ConnectionAdmission for PingoraRuntimeConnectionAdmission {
                 .generation_state()
                 .plugin_plans
                 .connection(),
-            PluginConnectionView {
-                generation: current.generation,
-                listener: &self.listener_label,
-                peer_address: addr.copied(),
-            },
+            current.generation,
+            &self.listener_label,
+            addr.copied(),
             metrics,
         )
         .is_ok();

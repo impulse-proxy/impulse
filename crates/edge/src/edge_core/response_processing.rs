@@ -29,13 +29,13 @@ pub(crate) struct ResponseProcessingResult {
 pub(crate) struct ResponseProcessingInput<'a> {
     pub(crate) metrics: &'a crate::Metrics,
     pub(crate) plugin_plan: &'a CompiledPluginPlan,
-    pub(crate) plugin_request: PluginRequestView<'a>,
+    pub(crate) plugin_request: Option<PluginRequestView<'a>>,
     pub(crate) status: StatusCode,
     pub(crate) upstream_headers: &'a HeaderMap,
     pub(crate) body_mode: ResponseBodyMode,
     pub(crate) constraints: ResponseProtocolConstraints,
     pub(crate) request_method: &'a str,
-    pub(crate) request_headers: &'a HeaderMap,
+    pub(crate) request_headers: Option<&'a HeaderMap>,
     pub(crate) cache_fill_enabled: bool,
     pub(crate) cache_representation: Option<&'a str>,
     pub(crate) now: SystemTime,
@@ -102,30 +102,40 @@ pub(crate) fn process_response(input: ResponseProcessingInput<'_>) -> ResponsePr
         headers.append(header.name, header.value);
     }
 
+    let mut cache = CachePluginFillDecision::Disabled;
+    let mut compression = CompiledResponseCompression::disabled_evaluation();
+    if input.plugin_plan.cache_policy().is_empty() && input.plugin_plan.response_policy().is_empty()
+    {
+        return ResponseProcessingResult {
+            headers,
+            body_forwarding_enabled: matches!(
+                normalized.emission.body,
+                ResponseBodyPolicy::Forward
+            ),
+            emit_end_stream_on_headers: normalized.emission.emit_end_stream_on_headers,
+            compression,
+            cache,
+        };
+    }
+
+    let Some(plugin_request) = input.plugin_request else {
+        return ResponseProcessingResult {
+            headers,
+            body_forwarding_enabled: matches!(
+                normalized.emission.body,
+                ResponseBodyPolicy::Forward
+            ),
+            emit_end_stream_on_headers: normalized.emission.emit_end_stream_on_headers,
+            compression,
+            cache,
+        };
+    };
+
     let declared_content_length = headers
         .get(http::header::CONTENT_LENGTH)
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.parse().ok());
-    let source_request = input.plugin_request;
-    let source_request_headers = source_request.headers;
-    let request_header = |name: &str| source_request_headers.and_then(|lookup| lookup(name));
-    let request_headers = source_request_headers
-        .map(|_| &request_header as &impulse_contracts::PluginHeaderLookup<'_>);
-    let plugin_request = PluginRequestView {
-        request_id: source_request.request_id,
-        generation: source_request.generation,
-        route_id: source_request.route_id,
-        upstream_name: source_request.upstream_name,
-        method: source_request.method,
-        path: source_request.path,
-        authority: source_request.authority,
-        peer_address: source_request.peer_address,
-        headers: request_headers,
-        has_body: source_request.has_body,
-        body_replayable: source_request.body_replayable,
-        ingress_protocol: source_request.ingress_protocol,
-    };
-    let (cache, compression) = {
+    {
         let response_header = |name: &str| headers.get(name).map(http::HeaderValue::as_bytes);
         let plugin_response = PluginResponseMetadataView {
             status: input.status,
@@ -134,78 +144,82 @@ pub(crate) fn process_response(input: ResponseProcessingInput<'_>) -> ResponsePr
             body_allowed: matches!(normalized.emission.body, ResponseBodyPolicy::Forward),
         };
 
-        let mut cache = CachePluginFillDecision::Disabled;
-        let _ = execute_cache_plugins(
-            input.plugin_plan,
-            PluginPhase::CacheFill,
-            PluginCacheView {
-                request: plugin_request,
-                response: Some(plugin_response),
-                representation: input.cache_representation,
-            },
-            |observation| {
-                input
-                    .metrics
-                    .plugin_observations()
-                    .record_execution(observation);
-            },
-            |plugin, _| match plugin {
-                CompiledCachePlugin::ResponseCache(policy) => {
-                    cache = policy.fill_decision(
-                        input.status,
-                        &headers,
-                        input.cache_fill_enabled,
-                        input.now,
-                    );
-                    if matches!(cache, CachePluginFillDecision::Store { .. }) {
-                        CachePluginDecision::Continue
-                    } else {
-                        CachePluginDecision::Bypass
+        if !input.plugin_plan.cache_policy().is_empty() {
+            let _ = execute_cache_plugins(
+                input.plugin_plan,
+                PluginPhase::CacheFill,
+                PluginCacheView {
+                    request: plugin_request,
+                    response: Some(plugin_response),
+                    representation: input.cache_representation,
+                },
+                |observation| {
+                    input
+                        .metrics
+                        .plugin_observations()
+                        .record_execution(observation);
+                },
+                |plugin, _| match plugin {
+                    CompiledCachePlugin::ResponseCache(policy) => {
+                        cache = policy.fill_decision(
+                            input.status,
+                            &headers,
+                            input.cache_fill_enabled,
+                            input.now,
+                        );
+                        if matches!(cache, CachePluginFillDecision::Store { .. }) {
+                            CachePluginDecision::Continue
+                        } else {
+                            CachePluginDecision::Bypass
+                        }
                     }
-                }
-            },
-        );
-
-        let mut compression_headers = headers.clone();
-        if !compression_headers.contains_key(http::header::CONTENT_LENGTH)
-            && let Some(content_length) = input.upstream_headers.get(http::header::CONTENT_LENGTH)
-        {
-            compression_headers.insert(http::header::CONTENT_LENGTH, content_length.clone());
+                },
+            );
         }
-        let mut compression = CompiledResponseCompression::disabled_evaluation();
-        let _ = execute_response_plugins(
-            input.plugin_plan,
-            PluginResponseView {
-                request: plugin_request,
-                response: plugin_response,
-            },
-            |observation| {
-                input
-                    .metrics
-                    .plugin_observations()
-                    .record_execution(observation);
-            },
-            |plugin, _| match plugin {
-                CompiledResponsePlugin::ResponseCompression(policy) => {
-                    compression = policy.evaluate(
-                        input.request_method,
-                        input.request_headers,
-                        input.status,
-                        &compression_headers,
-                    );
-                    if matches!(
-                        compression.action,
-                        impulse_observability::ResponseCompressionAction::Gzip
-                    ) {
-                        ResponsePluginDecision::Continue
-                    } else {
-                        ResponsePluginDecision::Bypass
+
+        if !input.plugin_plan.response_policy().is_empty()
+            && let Some(request_headers) = input.request_headers
+        {
+            let mut compression_headers = headers.clone();
+            if !compression_headers.contains_key(http::header::CONTENT_LENGTH)
+                && let Some(content_length) =
+                    input.upstream_headers.get(http::header::CONTENT_LENGTH)
+            {
+                compression_headers.insert(http::header::CONTENT_LENGTH, content_length.clone());
+            }
+            let _ = execute_response_plugins(
+                input.plugin_plan,
+                PluginResponseView {
+                    request: plugin_request,
+                    response: plugin_response,
+                },
+                |observation| {
+                    input
+                        .metrics
+                        .plugin_observations()
+                        .record_execution(observation);
+                },
+                |plugin, _| match plugin {
+                    CompiledResponsePlugin::ResponseCompression(policy) => {
+                        compression = policy.evaluate(
+                            input.request_method,
+                            request_headers,
+                            input.status,
+                            &compression_headers,
+                        );
+                        if matches!(
+                            compression.action,
+                            impulse_observability::ResponseCompressionAction::Gzip
+                        ) {
+                            ResponsePluginDecision::Continue
+                        } else {
+                            ResponsePluginDecision::Bypass
+                        }
                     }
-                }
-            },
-        );
-        (cache, compression)
-    };
+                },
+            );
+        }
+    }
     if let Some(policy) = input.plugin_plan.response_compression() {
         policy.apply_negotiation_headers(&mut headers, compression);
     }

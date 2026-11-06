@@ -104,6 +104,19 @@ impl<'a> EdgeRequestService<'a> {
             .upstream_plan(route.upstream_name.as_ref())
             .ok_or(super::RouteResolutionError::MissingUpstreamPluginPlan)?;
         let policy = resolve_policy(upstream_policy, Arc::clone(&plugin_plan));
+        let has_synchronous_plugins = !plugin_plan.request_gate().is_empty();
+        let has_asynchronous_plugins = !plugin_plan.async_request_gate().is_empty();
+        if !has_synchronous_plugins && !has_asynchronous_plugins {
+            let admission = evaluate_admission(self.resilience, route.upstream_name.as_ref());
+            return Ok(PluginRequestExecutionState {
+                route,
+                policy,
+                outcome: PluginRequestExecutionOutcome::Admitted {
+                    admission,
+                    mutations: Vec::new(),
+                },
+            });
+        }
         let source_headers = input.headers;
         let header_lookup = |name: &str| source_headers.and_then(|lookup| lookup(name));
         let plugin_headers =
@@ -128,138 +141,144 @@ impl<'a> EdgeRequestService<'a> {
         let external_auth_authority = request.authority;
         let external_auth_upstream = route.upstream_name.as_ref();
 
-        let mut mutations = match execute_synchronous_request_plugins(
-            &plugin_plan,
-            plugin_request,
-            |observation| {
-                self.metrics
-                    .plugin_observations()
-                    .record_execution(observation);
-            },
-            |plugin, request| match plugin {
-                CompiledRequestPlugin::JwtAuth(jwt) => {
-                    evaluate_compiled_jwt_policy(jwt, upstream_policy, request)
-                }
-                _ => SynchronousRequestPluginDecision::Continue,
-            },
-        ) {
-            SynchronousRequestPluginExecution::Continue { mutations } => mutations,
-            SynchronousRequestPluginExecution::Reject(rejection) => {
-                let observation =
-                    PluginTerminalObservation::from_rejection_reason(rejection.reason());
-                return Ok(PluginRequestExecutionState {
-                    route,
-                    policy,
-                    outcome: PluginRequestExecutionOutcome::Rejected {
-                        rejection,
-                        observation,
-                    },
-                });
-            }
-        };
-
-        match execute_async_request_plugins(
-            async_guard,
-            &plugin_plan,
-            plugin_request,
-            |observation| {
-                let external_auth_deferred =
-                    observation.kind == PluginKind::ExternalAuth && external_auth_headers.is_none();
-                if observation.kind != PluginKind::Quota && !external_auth_deferred {
+        let mut mutations = if has_synchronous_plugins {
+            match execute_synchronous_request_plugins(
+                &plugin_plan,
+                plugin_request,
+                |observation| {
                     self.metrics
                         .plugin_observations()
                         .record_execution(observation);
-                }
-            },
-            |plugin, _| async move {
-                match (plugin, external_auth_headers) {
-                    (CompiledAsyncRequestPlugin::ExternalAuth(input), Some(headers)) => {
-                        let request = crate::runtime::connection::auth::ExternalAuthRequest {
-                            method: external_auth_method.to_string(),
-                            path: external_auth_path.to_string(),
-                            authority: external_auth_authority.map(str::to_string),
-                            headers: headers.clone(),
-                            upstream_name: external_auth_upstream.to_string(),
-                            backend_addr: None,
-                        };
-                        execute_compiled_external_auth(request, input).await
+                },
+                |plugin, request| match plugin {
+                    CompiledRequestPlugin::JwtAuth(jwt) => {
+                        evaluate_compiled_jwt_policy(jwt, upstream_policy, request)
                     }
-                    _ => AsyncRequestPluginDecision::Continue,
-                }
-            },
-        )
-        .await
-        {
-            AsyncRequestPluginExecution::Continue {
-                mutations: async_mutations,
-            } => {
-                mutations.extend(async_mutations);
-                if input.ingress_protocol != IngressProtocol::Http3
-                    && plugin_plan
-                        .async_request_gate()
-                        .iter()
-                        .any(|plugin| matches!(plugin, CompiledAsyncRequestPlugin::Quota(_)))
-                {
-                    let started_at = Instant::now();
-                    let decision = super::execute_compiled_quota_plugin(
-                        &plugin_plan,
-                        plugin_request,
-                        &mutations,
-                    )
-                    .await;
-                    self.metrics.plugin_observations().record_execution(
-                        PluginExecutionObservation {
-                            kind: PluginKind::Quota,
-                            phase: PluginPhase::AsyncRequestGate,
-                            outcome: decision.as_ref().map_or(
-                                PluginExecutionOutcome::Continue,
-                                |rejection| {
-                                    if rejection.status == http::StatusCode::TOO_MANY_REQUESTS {
-                                        PluginExecutionOutcome::Reject
-                                    } else {
-                                        PluginExecutionOutcome::Fail
-                                    }
-                                },
-                            ),
-                            async_duration: Some(started_at.elapsed()),
+                    _ => SynchronousRequestPluginDecision::Continue,
+                },
+            ) {
+                SynchronousRequestPluginExecution::Continue { mutations } => mutations,
+                SynchronousRequestPluginExecution::Reject(rejection) => {
+                    let observation =
+                        PluginTerminalObservation::from_rejection_reason(rejection.reason());
+                    return Ok(PluginRequestExecutionState {
+                        route,
+                        policy,
+                        outcome: PluginRequestExecutionOutcome::Rejected {
+                            rejection,
+                            observation,
                         },
-                    );
-                    if let Some(decision) = decision {
-                        let observation = if decision.status == http::StatusCode::TOO_MANY_REQUESTS
-                        {
-                            PluginTerminalObservation::QuotaDenied
-                        } else {
-                            PluginTerminalObservation::Failed
-                        };
-                        return Ok(PluginRequestExecutionState {
-                            route,
-                            policy,
-                            outcome: PluginRequestExecutionOutcome::Rejected {
-                                rejection: decision.as_plugin_rejection(),
-                                observation,
-                            },
-                        });
-                    }
+                    });
                 }
             }
-            AsyncRequestPluginExecution::Reject(rejection) => {
-                let observation =
-                    PluginTerminalObservation::from_rejection_reason(rejection.reason());
-                return Ok(PluginRequestExecutionState {
-                    route,
-                    policy,
-                    outcome: PluginRequestExecutionOutcome::Rejected {
-                        rejection,
-                        observation,
-                    },
-                });
-            }
-            AsyncRequestPluginExecution::AlreadyExecuted => {
-                return Ok(PluginRequestExecutionState {
-                    route,
-                    policy,
-                    outcome: PluginRequestExecutionOutcome::AlreadyExecuted,
-                });
+        } else {
+            Vec::new()
+        };
+
+        if has_asynchronous_plugins {
+            match execute_async_request_plugins(
+                async_guard,
+                &plugin_plan,
+                plugin_request,
+                |observation| {
+                    let external_auth_deferred = observation.kind == PluginKind::ExternalAuth
+                        && external_auth_headers.is_none();
+                    if observation.kind != PluginKind::Quota && !external_auth_deferred {
+                        self.metrics
+                            .plugin_observations()
+                            .record_execution(observation);
+                    }
+                },
+                |plugin, _| async move {
+                    match (plugin, external_auth_headers) {
+                        (CompiledAsyncRequestPlugin::ExternalAuth(input), Some(headers)) => {
+                            let request = crate::runtime::connection::auth::ExternalAuthRequest {
+                                method: external_auth_method.to_string(),
+                                path: external_auth_path.to_string(),
+                                authority: external_auth_authority.map(str::to_string),
+                                headers: headers.clone(),
+                                upstream_name: external_auth_upstream.to_string(),
+                                backend_addr: None,
+                            };
+                            execute_compiled_external_auth(request, input).await
+                        }
+                        _ => AsyncRequestPluginDecision::Continue,
+                    }
+                },
+            )
+            .await
+            {
+                AsyncRequestPluginExecution::Continue {
+                    mutations: async_mutations,
+                } => {
+                    mutations.extend(async_mutations);
+                    if input.ingress_protocol != IngressProtocol::Http3
+                        && plugin_plan
+                            .async_request_gate()
+                            .iter()
+                            .any(|plugin| matches!(plugin, CompiledAsyncRequestPlugin::Quota(_)))
+                    {
+                        let started_at = Instant::now();
+                        let decision = super::execute_compiled_quota_plugin(
+                            &plugin_plan,
+                            plugin_request,
+                            &mutations,
+                        )
+                        .await;
+                        self.metrics.plugin_observations().record_execution(
+                            PluginExecutionObservation {
+                                kind: PluginKind::Quota,
+                                phase: PluginPhase::AsyncRequestGate,
+                                outcome: decision.as_ref().map_or(
+                                    PluginExecutionOutcome::Continue,
+                                    |rejection| {
+                                        if rejection.status == http::StatusCode::TOO_MANY_REQUESTS {
+                                            PluginExecutionOutcome::Reject
+                                        } else {
+                                            PluginExecutionOutcome::Fail
+                                        }
+                                    },
+                                ),
+                                async_duration: Some(started_at.elapsed()),
+                            },
+                        );
+                        if let Some(decision) = decision {
+                            let observation =
+                                if decision.status == http::StatusCode::TOO_MANY_REQUESTS {
+                                    PluginTerminalObservation::QuotaDenied
+                                } else {
+                                    PluginTerminalObservation::Failed
+                                };
+                            return Ok(PluginRequestExecutionState {
+                                route,
+                                policy,
+                                outcome: PluginRequestExecutionOutcome::Rejected {
+                                    rejection: decision.as_plugin_rejection(),
+                                    observation,
+                                },
+                            });
+                        }
+                    }
+                }
+                AsyncRequestPluginExecution::Reject(rejection) => {
+                    let observation =
+                        PluginTerminalObservation::from_rejection_reason(rejection.reason());
+                    return Ok(PluginRequestExecutionState {
+                        route,
+                        policy,
+                        outcome: PluginRequestExecutionOutcome::Rejected {
+                            rejection,
+                            observation,
+                        },
+                    });
+                }
+                AsyncRequestPluginExecution::AlreadyExecuted => {
+                    return Ok(PluginRequestExecutionState {
+                        route,
+                        policy,
+                        outcome: PluginRequestExecutionOutcome::AlreadyExecuted,
+                    });
+                }
             }
         }
 

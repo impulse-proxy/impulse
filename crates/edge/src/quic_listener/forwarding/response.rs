@@ -377,13 +377,17 @@ impl Http3Service {
                 "upstream response is missing its generation-pinned request policy".into(),
             ));
         };
+        let has_response_plugins = !req.plugin_plan.cache_policy().is_empty()
+            || !req.plugin_plan.response_policy().is_empty();
         let mut request_headers = http::HeaderMap::new();
-        for header in pending_forward.original_request_headers() {
-            if let (Ok(name), Ok(value)) = (
-                http::header::HeaderName::from_bytes(header.name()),
-                http::HeaderValue::from_bytes(header.value()),
-            ) {
-                request_headers.append(name, value);
+        if has_response_plugins {
+            for header in pending_forward.original_request_headers() {
+                if let (Ok(name), Ok(value)) = (
+                    http::header::HeaderName::from_bytes(header.name()),
+                    http::HeaderValue::from_bytes(header.value()),
+                ) {
+                    request_headers.append(name, value);
+                }
             }
         }
         let request_header =
@@ -391,7 +395,7 @@ impl Http3Service {
         let processed_response = process_response(ResponseProcessingInput {
             metrics,
             plugin_plan: &req.plugin_plan,
-            plugin_request: PluginRequestView {
+            plugin_request: has_response_plugins.then(|| PluginRequestView {
                 request_id: req.request_id,
                 generation: req.plugin_plan.generation(),
                 route_id: req.upstream_name.as_deref(),
@@ -404,7 +408,7 @@ impl Http3Service {
                 has_body: !req.bodyless_mode,
                 body_replayable: req.bodyless_mode,
                 ingress_protocol: IngressProtocol::Http3,
-            },
+            }),
             status,
             upstream_headers: &resp_headers,
             body_mode: response_body_mode,
@@ -413,7 +417,7 @@ impl Http3Service {
                 preserve_upgrade: false,
             },
             request_method: &req.method,
-            request_headers: &request_headers,
+            request_headers: has_response_plugins.then_some(&request_headers),
             cache_fill_enabled: cache_miss.is_some(),
             cache_representation: None,
             now: std::time::SystemTime::now(),

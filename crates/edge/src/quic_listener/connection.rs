@@ -21,11 +21,9 @@ impl impulse_http3_ingress::ConnectionAdmissionAdapter for Http3Service {
             .connection();
         crate::runtime::connection::plugin::execute_listener_connection_plan(
             plan,
-            impulse_contracts::PluginConnectionView {
-                generation,
-                listener,
-                peer_address: Some(peer),
-            },
+            generation,
+            listener,
+            Some(peer),
             &self.metrics,
         )
         .map_err(|reason| match reason {
