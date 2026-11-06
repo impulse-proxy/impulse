@@ -300,10 +300,14 @@ pub(crate) fn plugin_construction_inputs(config: &RuntimeConfig) -> PluginConstr
     upstreams.sort_unstable_by(|left, right| left.upstream_name.cmp(&right.upstream_name));
 
     PluginConstructionInputs {
-        connection_rate_limit: ConnectionRateLimitInput {
-            requests_per_second: config.policies.transport.new_connections_per_sec,
-            burst: config.policies.transport.new_connections_burst,
-        },
+        connection_rate_limit: config
+            .policies
+            .transport
+            .connection_rate_limit_enabled
+            .then_some(ConnectionRateLimitInput {
+                requests_per_second: config.policies.transport.new_connections_per_sec,
+                burst: config.policies.transport.new_connections_burst,
+            }),
         scoped_rate_limits: config
             .policies
             .rate_limits

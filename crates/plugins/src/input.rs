@@ -2,7 +2,7 @@ use std::time::Duration;
 
 #[derive(Clone, Eq, PartialEq)]
 pub struct PluginConstructionInputs {
-    pub connection_rate_limit: ConnectionRateLimitInput,
+    pub connection_rate_limit: Option<ConnectionRateLimitInput>,
     pub scoped_rate_limits: Box<[ScopedRateLimitInput]>,
     pub quota: Option<QuotaInput>,
     pub upstreams: Box<[UpstreamPluginInputs]>,

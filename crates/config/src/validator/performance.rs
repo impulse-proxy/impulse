@@ -227,13 +227,15 @@ fn validate_performance(config: &Config) -> bool {
         validation_error!("performance.per_backend_inflight_limit must be greater than 0");
         return false;
     }
-    if config.performance.new_connections_per_sec == 0 {
-        validation_error!("performance.new_connections_per_sec must be greater than 0");
-        return false;
-    }
-    if config.performance.new_connections_burst == 0 {
-        validation_error!("performance.new_connections_burst must be greater than 0");
-        return false;
+    if config.performance.connection_rate_limit_enabled {
+        if config.performance.new_connections_per_sec == 0 {
+            validation_error!("performance.new_connections_per_sec must be greater than 0");
+            return false;
+        }
+        if config.performance.new_connections_burst == 0 {
+            validation_error!("performance.new_connections_burst must be greater than 0");
+            return false;
+        }
     }
     if config.performance.max_active_connections == 0 {
         validation_error!("performance.max_active_connections must be greater than 0");

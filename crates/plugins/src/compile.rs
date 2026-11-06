@@ -178,11 +178,14 @@ pub fn compile_generation_plugin_plans(
     inputs: PluginConstructionInputs,
 ) -> Result<CompiledGenerationPluginPlans, PluginPlanCompileError> {
     #[cfg(feature = "connection-rate-limit")]
-    let connection = {
-        require_available(catalog, PluginKind::ConnectionRateLimit)?;
-        CompiledConnectionPlan::new(vec![CompiledConnectionPlugin::connection_rate_limit(
-            inputs.connection_rate_limit,
-        )])
+    let connection = match inputs.connection_rate_limit {
+        Some(input) => {
+            require_available(catalog, PluginKind::ConnectionRateLimit)?;
+            CompiledConnectionPlan::new(vec![CompiledConnectionPlugin::connection_rate_limit(
+                input,
+            )])
+        }
+        None => CompiledConnectionPlan::default(),
     };
     #[cfg(not(feature = "connection-rate-limit"))]
     let connection = CompiledConnectionPlan::default();

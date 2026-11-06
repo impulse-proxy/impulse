@@ -41,12 +41,14 @@ impl RuntimePluginRequirements {
 
         let mut kinds = Vec::with_capacity(PluginKind::COUNT);
         let mut configuration_locations = Vec::with_capacity(PluginKind::COUNT);
-        push_requirement(
-            &mut kinds,
-            &mut configuration_locations,
-            PluginKind::ConnectionRateLimit,
-            "performance.new_connections_per_sec".to_string(),
-        );
+        if config.policies.transport.connection_rate_limit_enabled {
+            push_requirement(
+                &mut kinds,
+                &mut configuration_locations,
+                PluginKind::ConnectionRateLimit,
+                "performance.connection_rate_limit_enabled".to_string(),
+            );
+        }
         if let Some(location) = api_key_auth {
             push_requirement(
                 &mut kinds,
