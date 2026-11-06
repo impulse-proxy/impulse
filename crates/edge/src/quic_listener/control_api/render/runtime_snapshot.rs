@@ -217,6 +217,9 @@ impl ControlApiRuntimePayload {
                 .and_then(impulse_plugins::CompiledQuota::initialization_error),
         );
         let (auth_providers, jwks) = build_auth_and_jwks_payloads(runtime.runtime_config());
+        let latest_generation_preparation = state
+            .runtime_bundle_handle()
+            .and_then(|handle| handle.generation_change_history().into_iter().next());
 
         Self {
             uptime_ms: service_ctx.started_at.elapsed().as_millis() as u64,
@@ -243,6 +246,7 @@ impl ControlApiRuntimePayload {
             plugins: ControlApiPluginRuntimePayload::from_runtime(
                 state.generation().map(|generation| generation.generation()),
                 plugin_plans.as_ref(),
+                latest_generation_preparation.as_ref(),
             ),
             quota: ControlApiQuotaPayload::from_snapshot(
                 quota_runtime,
@@ -352,31 +356,40 @@ impl ControlApiPluginRuntimePayload {
     fn from_runtime(
         runtime_generation: Option<u64>,
         plans: &impulse_plugins::CompiledGenerationPluginPlans,
+        latest_generation_preparation: Option<&GenerationHistoryEntry>,
     ) -> Self {
         let catalog = impulse_plugins::compiled_plugin_catalog();
-        let compiled_availability = PluginKind::ALL
-            .into_iter()
-            .map(|kind| ControlApiCompiledPluginPayload {
-                kind: kind.label(),
-                available: catalog.contains(kind),
-            })
+        let compiled = catalog
+            .available_kinds()
+            .iter()
+            .map(|kind| kind.label())
             .collect();
-        let active_kinds = PluginKind::ALL
+        let active = PluginKind::ALL
             .into_iter()
-            .filter_map(|kind| {
-                let instances = plans.active_count(kind);
-                (instances > 0).then_some(ControlApiActivePluginPayload {
-                    kind: kind.label(),
-                    instances,
-                })
+            .filter(|kind| plans.active_count(*kind) > 0)
+            .map(PluginKind::label)
+            .collect::<Vec<_>>();
+        let required_but_unavailable = latest_generation_preparation
+            .filter(|entry| {
+                matches!(
+                    entry.status,
+                    GenerationStatus::Rejected | GenerationStatus::Failed
+                )
             })
+            .into_iter()
+            .flat_map(|entry| &entry.rejected_changes)
+            .filter_map(|rejection| rejection.unavailable_plugin_kind())
+            .map(PluginKind::label)
             .collect::<Vec<_>>();
         let generation_aligned = runtime_generation == Some(plans.generation());
         let active_kinds_available = PluginKind::ALL
             .into_iter()
             .filter(|kind| plans.active_count(*kind) > 0)
             .all(|kind| catalog.contains(kind));
-        let active_instance_count = active_kinds.iter().map(|active| active.instances).sum();
+        let active_instance_count = PluginKind::ALL
+            .into_iter()
+            .map(|kind| plans.active_count(kind))
+            .sum();
         let reason = if !generation_aligned {
             Some("generation_mismatch")
         } else if !active_kinds_available {
@@ -387,8 +400,9 @@ impl ControlApiPluginRuntimePayload {
 
         Self {
             generation: plans.generation(),
-            compiled_availability,
-            active_kinds,
+            compiled,
+            active,
+            required_but_unavailable,
             health: ControlApiPluginHealthPayload {
                 status: if reason.is_none() {
                     "healthy"
