@@ -3,6 +3,7 @@ use std::sync::Arc;
 use impulse_config::runtime::RuntimeConfig;
 use impulse_errors::ProxyError;
 use impulse_operations::watchdog::WatchdogCoordinator;
+#[cfg(feature = "quota")]
 use impulse_policy::quota::QuotaRuntime;
 use log::error;
 
@@ -71,7 +72,9 @@ impl Http3Service {
                 runtime.watchdog().as_ref(),
                 runtime.expected_workers(),
             );
+            #[cfg(feature = "jwt-auth")]
             crate::runtime::jwks::register_metrics(&runtime.metrics());
+            #[cfg(feature = "quota")]
             QuotaRuntime::register_metrics(&runtime.metrics());
             let task_registry = runtime.generation_tasks();
             spawn_pingora_discovery_refresh(
@@ -84,6 +87,7 @@ impl Http3Service {
                 Arc::clone(&task_registry),
             );
             let pingora_load_balancing = runtime.pingora_load_balancing();
+            #[cfg(feature = "jwt-auth")]
             crate::runtime::jwks::spawn_refresh(
                 &runtime.plugin_plans(),
                 Arc::clone(&task_registry),

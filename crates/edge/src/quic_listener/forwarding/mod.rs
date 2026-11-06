@@ -13,6 +13,8 @@ mod stream_progress;
 use impulse_config::runtime::RuntimeBackendTlsPolicy;
 use impulse_lb::pingora_backend::PingoraLoadBalancingRuntimeState;
 
+#[cfg(feature = "external-auth")]
+pub(crate) use self::auth::execute_external_auth_request;
 pub(in crate::quic_listener) use self::outcome::{
     backend_failure_reason_for_proxy_error, rejection_reason_for_status, terminalize_stream,
 };
@@ -22,11 +24,11 @@ pub(in crate::quic_listener) use self::resolve::{
     TargetResolutionRequest as TestTargetResolutionRequest, selectors_for_test as test_selectors,
 };
 pub(crate) use self::{
-    auth::execute_external_auth_request,
     resolve::TargetResolutionRequest,
     selection::{BackendCandidate, ForwardingSelectionService},
 };
 use super::*;
+#[cfg(feature = "response-cache")]
 use crate::runtime::cache::BoundedPingoraMemoryCache;
 
 // Shared forwarding dependencies passed through extracted submodules.
@@ -48,6 +50,7 @@ pub(in crate::quic_listener) struct ForwardingExecutionCtx<'a> {
     pub(in crate::quic_listener) upstream_inflight: &'a HashMap<String, Arc<Semaphore>>,
     pub(in crate::quic_listener) global_inflight: Arc<Semaphore>,
     pub(in crate::quic_listener) inflight_acquire_wait: Duration,
+    #[cfg(feature = "response-cache")]
     pub(in crate::quic_listener) response_cache: Option<&'static BoundedPingoraMemoryCache>,
 }
 

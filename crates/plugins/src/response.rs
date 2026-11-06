@@ -1,39 +1,40 @@
-#[cfg(feature = "response-cache")]
-use impulse_contracts::PluginCacheView;
-#[cfg(feature = "response-compression")]
-use impulse_contracts::PluginResponseView;
+use std::time::SystemTime;
+
 use impulse_contracts::{
-    PluginExecutionObservation, PluginExecutionOutcome, PluginKind, PluginPhase,
+    PluginCacheView, PluginExecutionObservation, PluginExecutionOutcome, PluginKind, PluginPhase,
+    PluginResponseView,
 };
 
-#[cfg(feature = "response-cache")]
-use crate::CompiledCachePlugin;
-use crate::CompiledPluginPlan;
-#[cfg(feature = "response-compression")]
-use crate::CompiledResponsePlugin;
+use crate::{CompiledCachePlugin, CompiledPluginPlan, CompiledResponsePlugin};
 
-#[cfg(feature = "response-cache")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CachePluginFillDecision {
+    Disabled,
+    Reject,
+    Store {
+        stored_at: SystemTime,
+        fresh_until: SystemTime,
+    },
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CachePluginDecision {
     Continue,
     Bypass,
 }
 
-#[cfg(feature = "response-cache")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CachePluginExecution {
     Continue,
     Bypass { kind: PluginKind },
 }
 
-#[cfg(feature = "response-compression")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ResponsePluginDecision {
     Continue,
     Bypass,
 }
 
-#[cfg(feature = "response-compression")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ResponsePluginExecution {
     Continue,
@@ -42,7 +43,6 @@ pub enum ResponsePluginExecution {
 
 /// Executes cache lookup or fill policy using request and response metadata only.
 #[must_use]
-#[cfg(feature = "response-cache")]
 pub fn execute_cache_plugins<'a>(
     plan: &CompiledPluginPlan,
     phase: PluginPhase,
@@ -78,7 +78,6 @@ pub fn execute_cache_plugins<'a>(
 
 /// Executes response policy using metadata only; response bodies and writes stay host-owned.
 #[must_use]
-#[cfg(feature = "response-compression")]
 pub fn execute_response_plugins<'a>(
     plan: &CompiledPluginPlan,
     response: PluginResponseView<'a>,

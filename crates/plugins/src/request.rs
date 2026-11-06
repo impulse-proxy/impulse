@@ -1,4 +1,3 @@
-#[cfg(any(feature = "external-auth", feature = "quota"))]
 use std::{future::Future, time::Instant};
 
 #[cfg(feature = "api-key-auth")]
@@ -10,28 +9,18 @@ use impulse_contracts::{
 #[cfg(feature = "api-key-auth")]
 use impulse_policy::{ApiKeyAuthorization, ApiKeyPolicyInput, evaluate_api_key};
 
-#[cfg(any(feature = "external-auth", feature = "quota"))]
-use crate::CompiledAsyncRequestPlugin;
-use crate::CompiledPluginPlan;
-#[cfg(any(
-    feature = "api-key-auth",
-    feature = "jwt-auth",
-    feature = "scoped-rate-limit"
-))]
-use crate::CompiledRequestPlugin;
 #[cfg(feature = "scoped-rate-limit")]
 use crate::rate_limit::ScopedRateLimitDecision;
+use crate::{CompiledAsyncRequestPlugin, CompiledPluginPlan, CompiledRequestPlugin};
 
 /// Request-owned guard preventing asynchronous policy work from running again
 /// during retries.
-#[cfg(any(feature = "external-auth", feature = "quota"))]
 #[derive(Debug, Default)]
 pub struct AsyncRequestPluginExecutionGuard {
     started: bool,
 }
 
 /// One asynchronous plugin's decision for the current request phase.
-#[cfg(any(feature = "external-auth", feature = "quota"))]
 #[derive(Debug, Eq, PartialEq)]
 pub enum AsyncRequestPluginDecision {
     Continue,
@@ -40,7 +29,6 @@ pub enum AsyncRequestPluginDecision {
 }
 
 /// Host-owned result of executing the asynchronous request phase.
-#[cfg(any(feature = "external-auth", feature = "quota"))]
 #[derive(Debug, Eq, PartialEq)]
 pub enum AsyncRequestPluginExecution {
     Continue {
@@ -51,11 +39,6 @@ pub enum AsyncRequestPluginExecution {
 }
 
 /// One synchronous plugin's decision for the current request phase.
-#[cfg(any(
-    feature = "api-key-auth",
-    feature = "jwt-auth",
-    feature = "scoped-rate-limit"
-))]
 #[derive(Debug, Eq, PartialEq)]
 pub enum SynchronousRequestPluginDecision {
     Continue,
@@ -64,11 +47,6 @@ pub enum SynchronousRequestPluginDecision {
 }
 
 /// Host-owned result of executing the synchronous request phase.
-#[cfg(any(
-    feature = "api-key-auth",
-    feature = "jwt-auth",
-    feature = "scoped-rate-limit"
-))]
 #[derive(Debug, Eq, PartialEq)]
 pub enum SynchronousRequestPluginExecution {
     Continue {
@@ -83,11 +61,6 @@ pub enum SynchronousRequestPluginExecution {
 /// trait object or boxed hook. Headers remain available through the borrowed
 /// lookup in `request`; this runner never materializes a header map.
 #[must_use]
-#[cfg(any(
-    feature = "api-key-auth",
-    feature = "jwt-auth",
-    feature = "scoped-rate-limit"
-))]
 pub fn execute_synchronous_request_plugins<'a>(
     plan: &CompiledPluginPlan,
     request: PluginRequestView<'a>,
@@ -169,7 +142,6 @@ pub fn execute_synchronous_request_plugins<'a>(
 /// The request-owned guard is marked before the first await, so retry attempts
 /// cannot repeat authentication, consume quota again, or duplicate mutations.
 #[must_use]
-#[cfg(any(feature = "external-auth", feature = "quota"))]
 pub async fn execute_async_request_plugins<'a, Evaluate, Evaluation>(
     guard: &mut AsyncRequestPluginExecutionGuard,
     plan: &'a CompiledPluginPlan,
@@ -225,11 +197,6 @@ fn rejection_outcome(reason: PluginRejectionReason) -> PluginExecutionOutcome {
     }
 }
 
-#[cfg(any(
-    feature = "api-key-auth",
-    feature = "jwt-auth",
-    feature = "scoped-rate-limit"
-))]
 fn request_decision_outcome(decision: &SynchronousRequestPluginDecision) -> PluginExecutionOutcome {
     match decision {
         SynchronousRequestPluginDecision::Continue
@@ -240,7 +207,6 @@ fn request_decision_outcome(decision: &SynchronousRequestPluginDecision) -> Plug
     }
 }
 
-#[cfg(any(feature = "external-auth", feature = "quota"))]
 fn async_request_decision_outcome(decision: &AsyncRequestPluginDecision) -> PluginExecutionOutcome {
     match decision {
         AsyncRequestPluginDecision::Continue | AsyncRequestPluginDecision::Mutate(_) => {

@@ -1,3 +1,4 @@
+#[cfg(feature = "response-cache")]
 use std::time::SystemTime;
 
 use http::{HeaderMap, StatusCode};
@@ -5,16 +6,27 @@ use impulse_bridge::response::{
     ResponseBodyMode, ResponseBodyPolicy, ResponseNormalizationInput, ResponseProtocolConstraints,
     UpstreamResponseView, normalize_upstream_response,
 };
-use impulse_contracts::{
-    PluginCacheView, PluginPhase, PluginRequestView, PluginResponseMetadataView, PluginResponseView,
-};
-use impulse_plugins::{
-    CachePluginDecision, CachePluginFillDecision, CompiledCachePlugin, CompiledPluginPlan,
-    CompiledResponseCompression, CompiledResponsePlugin, ResponsePluginDecision,
-    execute_cache_plugins, execute_response_plugins,
-};
+#[cfg(any(feature = "response-cache", feature = "response-compression"))]
+use impulse_contracts::PluginRequestView;
+#[cfg(any(feature = "response-cache", feature = "response-compression"))]
+use impulse_contracts::PluginResponseMetadataView;
+#[cfg(feature = "response-compression")]
+use impulse_contracts::PluginResponseView;
+#[cfg(feature = "response-cache")]
+use impulse_contracts::{PluginCacheView, PluginPhase};
+#[cfg(feature = "response-cache")]
+use impulse_plugins::CachePluginFillDecision;
+#[cfg(any(feature = "response-cache", feature = "response-compression"))]
+use impulse_plugins::CompiledPluginPlan;
+#[cfg(feature = "response-cache")]
+use impulse_plugins::{CachePluginDecision, CompiledCachePlugin, execute_cache_plugins};
+#[cfg(feature = "response-compression")]
+use impulse_plugins::{CompiledResponsePlugin, ResponsePluginDecision, execute_response_plugins};
+#[cfg(feature = "response-cache")]
+use impulse_policy::{ResponseCacheBypassReason, ResponseCacheRepresentation};
+#[cfg(feature = "response-compression")]
 use impulse_policy::{
-    ResponseCacheBypassReason, ResponseCacheRepresentation, ResponseCompressionEvaluation,
+    ResponseCompressionAction, ResponseCompressionBypassReason, ResponseCompressionEvaluation,
 };
 
 #[derive(Clone, Debug)]
@@ -22,25 +34,36 @@ pub(crate) struct ResponseProcessingResult {
     pub(crate) headers: HeaderMap,
     pub(crate) body_forwarding_enabled: bool,
     pub(crate) emit_end_stream_on_headers: bool,
+    #[cfg(feature = "response-compression")]
     pub(crate) compression: ResponseCompressionEvaluation,
+    #[cfg(feature = "response-cache")]
     pub(crate) cache: CachePluginFillDecision,
 }
 
 pub(crate) struct ResponseProcessingInput<'a> {
+    #[cfg(any(feature = "response-cache", feature = "response-compression"))]
     pub(crate) metrics: &'a crate::Metrics,
+    #[cfg(any(feature = "response-cache", feature = "response-compression"))]
     pub(crate) plugin_plan: &'a CompiledPluginPlan,
+    #[cfg(any(feature = "response-cache", feature = "response-compression"))]
     pub(crate) plugin_request: Option<PluginRequestView<'a>>,
     pub(crate) status: StatusCode,
     pub(crate) upstream_headers: &'a HeaderMap,
     pub(crate) body_mode: ResponseBodyMode,
     pub(crate) constraints: ResponseProtocolConstraints,
+    #[cfg(feature = "response-compression")]
     pub(crate) request_method: &'a str,
+    #[cfg(feature = "response-compression")]
     pub(crate) request_headers: Option<&'a HeaderMap>,
+    #[cfg(feature = "response-cache")]
     pub(crate) cache_fill_enabled: bool,
+    #[cfg(feature = "response-cache")]
     pub(crate) cache_representation: Option<&'a str>,
+    #[cfg(feature = "response-cache")]
     pub(crate) now: SystemTime,
 }
 
+#[cfg(feature = "response-cache")]
 pub(crate) struct CacheLookupProcessingInput<'a> {
     pub(crate) metrics: &'a crate::Metrics,
     pub(crate) plugin_plan: &'a CompiledPluginPlan,
@@ -50,6 +73,7 @@ pub(crate) struct CacheLookupProcessingInput<'a> {
     pub(crate) is_tunnel: bool,
 }
 
+#[cfg(feature = "response-cache")]
 pub(crate) fn process_cache_lookup(
     input: CacheLookupProcessingInput<'_>,
 ) -> Result<ResponseCacheRepresentation, ResponseCacheBypassReason> {
@@ -102,8 +126,14 @@ pub(crate) fn process_response(input: ResponseProcessingInput<'_>) -> ResponsePr
         headers.append(header.name, header.value);
     }
 
+    #[cfg(feature = "response-cache")]
     let mut cache = CachePluginFillDecision::Disabled;
-    let mut compression = CompiledResponseCompression::disabled_evaluation();
+    #[cfg(feature = "response-compression")]
+    let mut compression = ResponseCompressionEvaluation {
+        action: ResponseCompressionAction::Bypass(ResponseCompressionBypassReason::Disabled),
+        vary_accept_encoding: false,
+    };
+    #[cfg(any(feature = "response-cache", feature = "response-compression"))]
     if input.plugin_plan.cache_policy().is_empty() && input.plugin_plan.response_policy().is_empty()
     {
         return ResponseProcessingResult {
@@ -113,11 +143,14 @@ pub(crate) fn process_response(input: ResponseProcessingInput<'_>) -> ResponsePr
                 ResponseBodyPolicy::Forward
             ),
             emit_end_stream_on_headers: normalized.emission.emit_end_stream_on_headers,
+            #[cfg(feature = "response-compression")]
             compression,
+            #[cfg(feature = "response-cache")]
             cache,
         };
     }
 
+    #[cfg(any(feature = "response-cache", feature = "response-compression"))]
     let Some(plugin_request) = input.plugin_request else {
         return ResponseProcessingResult {
             headers,
@@ -126,15 +159,19 @@ pub(crate) fn process_response(input: ResponseProcessingInput<'_>) -> ResponsePr
                 ResponseBodyPolicy::Forward
             ),
             emit_end_stream_on_headers: normalized.emission.emit_end_stream_on_headers,
+            #[cfg(feature = "response-compression")]
             compression,
+            #[cfg(feature = "response-cache")]
             cache,
         };
     };
 
+    #[cfg(any(feature = "response-cache", feature = "response-compression"))]
     let declared_content_length = headers
         .get(http::header::CONTENT_LENGTH)
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.parse().ok());
+    #[cfg(any(feature = "response-cache", feature = "response-compression"))]
     {
         let response_header = |name: &str| headers.get(name).map(http::HeaderValue::as_bytes);
         let plugin_response = PluginResponseMetadataView {
@@ -144,6 +181,7 @@ pub(crate) fn process_response(input: ResponseProcessingInput<'_>) -> ResponsePr
             body_allowed: matches!(normalized.emission.body, ResponseBodyPolicy::Forward),
         };
 
+        #[cfg(feature = "response-cache")]
         if !input.plugin_plan.cache_policy().is_empty() {
             let _ = execute_cache_plugins(
                 input.plugin_plan,
@@ -177,6 +215,7 @@ pub(crate) fn process_response(input: ResponseProcessingInput<'_>) -> ResponsePr
             );
         }
 
+        #[cfg(feature = "response-compression")]
         if !input.plugin_plan.response_policy().is_empty()
             && let Some(request_headers) = input.request_headers
         {
@@ -220,6 +259,7 @@ pub(crate) fn process_response(input: ResponseProcessingInput<'_>) -> ResponsePr
             );
         }
     }
+    #[cfg(feature = "response-compression")]
     if let Some(policy) = input.plugin_plan.response_compression() {
         policy.apply_negotiation_headers(&mut headers, compression);
     }
@@ -228,7 +268,9 @@ pub(crate) fn process_response(input: ResponseProcessingInput<'_>) -> ResponsePr
         headers,
         body_forwarding_enabled: matches!(normalized.emission.body, ResponseBodyPolicy::Forward),
         emit_end_stream_on_headers: normalized.emission.emit_end_stream_on_headers,
+        #[cfg(feature = "response-compression")]
         compression,
+        #[cfg(feature = "response-cache")]
         cache,
     }
 }

@@ -1,13 +1,22 @@
 use std::sync::Arc;
 
 use bytes::Bytes;
-use impulse_contracts::{HealthFailureReason, IngressProtocol, PluginRequestView};
+use impulse_contracts::HealthFailureReason;
+#[cfg(any(feature = "response-cache", feature = "response-compression"))]
+use impulse_contracts::{IngressProtocol, PluginRequestView};
 use impulse_errors::{UpstreamProxyErrorKind, classify_upstream_proxy_error};
-use impulse_observability::{ResponseCacheOutcome, ResponseCompressionAction};
+#[cfg(feature = "response-cache")]
+use impulse_observability::ResponseCacheOutcome;
+#[cfg(feature = "response-compression")]
+use impulse_observability::ResponseCompressionAction;
+#[cfg(feature = "response-cache")]
 use impulse_plugins::CachePluginFillDecision;
 use impulse_transport::{UpstreamBody, UpstreamBodyFrame};
-use pingora_cache::{CacheMeta, HttpCache, NoCacheReason};
+#[cfg(feature = "response-cache")]
+use pingora_cache::CacheMeta;
+use pingora_cache::{HttpCache, NoCacheReason};
 use pingora_core::protocols::http::compression::Algorithm;
+#[cfg(feature = "response-cache")]
 use pingora_http::ResponseHeader;
 use tokio::sync::mpsc::error::TryRecvError;
 
@@ -51,6 +60,7 @@ impl Drop for ResponseCompressionByteMetrics {
     }
 }
 
+#[cfg(feature = "response-cache")]
 fn prepare_response_cache(
     cache_miss: Option<HttpCache>,
     status: http::StatusCode,
@@ -372,14 +382,18 @@ impl Http3Service {
             .get(http::header::CONTENT_LENGTH)
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.parse::<usize>().ok());
+        #[cfg(any(feature = "response-cache", feature = "response-compression"))]
         let Some(pending_forward) = req.pending_forward() else {
             return ResponseStartDecision::BackendFailure(ProxyError::Transport(
                 "upstream response is missing its generation-pinned request policy".into(),
             ));
         };
+        #[cfg(any(feature = "response-cache", feature = "response-compression"))]
         let has_response_plugins = !req.plugin_plan.cache_policy().is_empty()
             || !req.plugin_plan.response_policy().is_empty();
+        #[cfg(any(feature = "response-cache", feature = "response-compression"))]
         let mut request_headers = http::HeaderMap::new();
+        #[cfg(any(feature = "response-cache", feature = "response-compression"))]
         if has_response_plugins {
             for header in pending_forward.original_request_headers() {
                 if let (Ok(name), Ok(value)) = (
@@ -390,11 +404,15 @@ impl Http3Service {
                 }
             }
         }
+        #[cfg(any(feature = "response-cache", feature = "response-compression"))]
         let request_header =
             |name: &str| request_headers.get(name).map(http::HeaderValue::as_bytes);
         let processed_response = process_response(ResponseProcessingInput {
+            #[cfg(any(feature = "response-cache", feature = "response-compression"))]
             metrics,
+            #[cfg(any(feature = "response-cache", feature = "response-compression"))]
             plugin_plan: &req.plugin_plan,
+            #[cfg(any(feature = "response-cache", feature = "response-compression"))]
             plugin_request: has_response_plugins.then(|| PluginRequestView {
                 request_id: req.request_id,
                 generation: req.plugin_plan.generation(),
@@ -416,19 +434,27 @@ impl Http3Service {
                 protocol: ResponseNormalizationProtocol::Http3,
                 preserve_upgrade: false,
             },
+            #[cfg(feature = "response-compression")]
             request_method: &req.method,
+            #[cfg(feature = "response-compression")]
             request_headers: has_response_plugins.then_some(&request_headers),
+            #[cfg(feature = "response-cache")]
             cache_fill_enabled: cache_miss.is_some(),
+            #[cfg(feature = "response-cache")]
             cache_representation: None,
+            #[cfg(feature = "response-cache")]
             now: std::time::SystemTime::now(),
         });
         let ResponseProcessingResult {
             headers: mut response_headers,
             body_forwarding_enabled,
             emit_end_stream_on_headers,
+            #[cfg(feature = "response-compression")]
             compression,
+            #[cfg(feature = "response-cache")]
             cache,
         } = processed_response;
+        #[cfg(feature = "response-compression")]
         if matches!(compression.action, ResponseCompressionAction::Gzip)
             && let Some(policy) = req.plugin_plan.response_compression()
         {
@@ -483,14 +509,21 @@ impl Http3Service {
             };
         }
 
+        #[cfg(feature = "response-compression")]
         if req.pending_forward().is_some() {
             metrics
                 .ingress_observations()
                 .record_response_compression_outcome(compression.action);
         }
+        #[cfg(feature = "response-compression")]
         let compress_response = matches!(compression.action, ResponseCompressionAction::Gzip);
+        #[cfg(not(feature = "response-compression"))]
+        let compress_response = false;
+        #[cfg(feature = "response-cache")]
         let mut response_cache =
             prepare_response_cache(cache_miss, status, &response_headers, cache, metrics);
+        #[cfg(not(feature = "response-cache"))]
+        let mut response_cache = None;
         let mut headers: Vec<(Vec<u8>, Vec<u8>)> = response_headers
             .iter()
             .map(|(name, value)| (name.as_str().as_bytes().to_vec(), value.as_bytes().to_vec()))

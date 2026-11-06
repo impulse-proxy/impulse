@@ -1,12 +1,15 @@
 use std::convert::Infallible;
 
 use impulse_config::runtime::RuntimeBackendTlsPolicy;
-use impulse_contracts::{
-    AlternateBackendFailureReason, HedgeOutcomeTelemetryReason, IngressProtocol, PluginRequestView,
-};
+use impulse_contracts::{AlternateBackendFailureReason, HedgeOutcomeTelemetryReason};
+#[cfg(feature = "response-cache")]
+use impulse_contracts::{IngressProtocol, PluginRequestView};
 use impulse_errors::{HedgePolicyDecision, RetryPolicyDecision, is_idempotent_method};
 use impulse_lb::{BackendSelectionInput, pingora_backend::GenerationSelector};
-use impulse_observability::{HedgeDecisionReason, ResponseCacheOutcome, RetryDecisionReason};
+#[cfg(feature = "response-cache")]
+use impulse_observability::ResponseCacheOutcome;
+use impulse_observability::{HedgeDecisionReason, RetryDecisionReason};
+#[cfg(feature = "response-cache")]
 use impulse_plugins::ResponseCacheKeyParts;
 use impulse_transport::{
     UpstreamBodyFrame, UpstreamExchangeRequest, UpstreamExchangeResponse, UpstreamRequestExecutor,
@@ -15,11 +18,10 @@ use impulse_transport::{
 use pingora_cache::{HitStatus, HttpCache, NoCacheReason, lock::LockWaitOutcome};
 
 use super::{selection::ForwardingSelectionService, *};
+#[cfg(feature = "response-cache")]
+use crate::edge_core::response_processing::{CacheLookupProcessingInput, process_cache_lookup};
 use crate::{
-    edge_core::{
-        response_processing::{CacheLookupProcessingInput, process_cache_lookup},
-        retry::RetryCoordinator,
-    },
+    edge_core::retry::RetryCoordinator,
     runtime::connection::{request::PendingForward, response::ForwardingPolicyTelemetry},
 };
 
@@ -60,12 +62,14 @@ struct WebsocketTunnelForwardInput {
     body_rx: mpsc::Receiver<Bytes>,
 }
 
+#[cfg(feature = "response-cache")]
 enum H3CacheLookup {
     Hit(ForwardSuccess),
     Miss(H3CacheMiss),
     Bypass,
 }
 
+#[cfg(feature = "response-cache")]
 struct H3CacheLookupInput<'a> {
     cache_store: &'static crate::runtime::cache::BoundedPingoraMemoryCache,
     metrics: &'a Metrics,
@@ -115,6 +119,7 @@ fn alternate_backend_policy_state(
 }
 
 impl Http3Service {
+    #[cfg(feature = "response-cache")]
     async fn lookup_h3_response_cache(input: H3CacheLookupInput<'_>) -> H3CacheLookup {
         let H3CacheLookupInput {
             cache_store,
@@ -572,6 +577,7 @@ impl Http3Service {
             .cloned();
         let alternate_generation = shared_ctx.generation;
         let alternate_metrics = Arc::clone(&shared_ctx.metrics);
+        #[cfg(feature = "response-cache")]
         let response_cache_store = exec_ctx.response_cache;
         let trace_span_for_upstream = req.trace_span.clone();
         let (result_tx, result_rx) = oneshot::channel::<UpstreamResult>();
@@ -623,6 +629,7 @@ impl Http3Service {
             let upstream_executor = &executor;
             let mut policy_telemetry = ForwardingPolicyTelemetry::default();
             let result: ForwardResult = async {
+                #[cfg(feature = "response-cache")]
                 let cache_miss = if let Some(cache_store) = response_cache_store {
                     match Self::lookup_h3_response_cache(H3CacheLookupInput {
                         cache_store,
@@ -640,6 +647,8 @@ impl Http3Service {
                 } else {
                     None
                 };
+                #[cfg(not(feature = "response-cache"))]
+                let cache_miss = None;
                 retry_budget.mark_primary(route_name);
 
                 let h1_websocket = impulse_http3_ingress::requires_h1_websocket_adaptation(

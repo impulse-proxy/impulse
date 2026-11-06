@@ -5,7 +5,9 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 
+#[cfg(feature = "jwt-auth")]
 use base64::{Engine as _engine, engine::general_purpose::URL_SAFE_NO_PAD};
+#[cfg(feature = "jwt-auth")]
 use boring::{
     bn::BigNum,
     ec::{EcGroup, EcKey},
@@ -16,6 +18,7 @@ use boring::{
 use http::StatusCode;
 #[cfg(test)]
 use impulse_config::runtime::RuntimeUpstreamPolicy;
+#[cfg(feature = "jwt-auth")]
 use impulse_config::{
     config::JwtAlgorithm,
     runtime::{RuntimeJwtAuth, RuntimeJwtVerificationKey},
@@ -24,6 +27,7 @@ use impulse_lb::upstream_pool::UpstreamPool;
 #[cfg(test)]
 use impulse_policy::evaluate_brownout_admission;
 use impulse_policy::{AdaptivePermit, evaluate_adaptive_admission};
+#[cfg(feature = "jwt-auth")]
 use serde_json::Value;
 #[cfg(test)]
 use serial_test::serial;
@@ -43,12 +47,16 @@ use crate::{
     runtime::connection::request::PendingForward,
 };
 
+#[cfg(feature = "jwt-auth")]
 mod jwt;
+#[cfg(feature = "jwt-auth")]
 mod key_resolution;
 
 pub(crate) use impulse_contracts::{OverloadDecision, OverloadDecisionReason, RequestDecision};
 type AdmissionPolicyDecision = RequestDecision;
+#[cfg(feature = "jwt-auth")]
 pub(super) use impulse_policy::jwks::JwtJwksFetchFailureReason;
+#[cfg(feature = "jwt-auth")]
 use impulse_policy::jwks::*;
 #[cfg(test)]
 pub(super) use impulse_policy::jwks::{
@@ -56,7 +64,7 @@ pub(super) use impulse_policy::jwks::{
     mark_jwks_source_invalid_for_test, mark_jwks_source_unavailable_for_test,
     prime_jwks_cache_for_test,
 };
-#[cfg(test)]
+#[cfg(all(test, feature = "jwt-auth"))]
 fn runtime_jwks_sources(
     config: &impulse_config::runtime::RuntimeConfig,
 ) -> Vec<JwtJwksSourceConfig> {
@@ -67,14 +75,16 @@ pub(super) use impulse_policy::jwks::{
     normalize_jwks_document_for_test, script_jwks_fetches_for_test,
 };
 
-#[cfg(test)]
+#[cfg(all(test, feature = "jwt-auth"))]
 pub(super) use self::jwt::validated_hs256_jwt_claims;
+#[cfg(feature = "jwt-auth")]
 pub(crate) use self::jwt::{
     JwtValidationFailure, JwtValidationFailureReason, log_jwt_validation_rejection,
     observe_jwt_validation_failure, validate_jwt_token_for_generation,
 };
-#[cfg(test)]
+#[cfg(all(test, feature = "jwt-auth"))]
 pub(super) use self::jwt::{jwt_claims_satisfy_rbac, validate_jwt_token};
+#[cfg(feature = "jwt-auth")]
 use self::{jwt::*, key_resolution::*};
 
 pub(crate) const fn overload_metrics_reason(reason: OverloadDecisionReason) -> OverloadShedReason {

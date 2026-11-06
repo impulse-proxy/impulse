@@ -8,10 +8,12 @@ pub mod activation;
 pub mod backend;
 pub(crate) mod builder;
 pub mod bundle;
+#[cfg(feature = "response-cache")]
 pub mod cache;
 pub(crate) mod connection;
 pub(crate) mod generation;
 pub mod ingress;
+#[cfg(feature = "jwt-auth")]
 pub(crate) mod jwks;
 pub mod listener;
 pub(crate) mod listener_group;

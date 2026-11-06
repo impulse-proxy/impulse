@@ -123,6 +123,7 @@ pub(crate) fn plan_runtime_reload(
         );
     }
 
+    #[cfg(feature = "jwt-auth")]
     if let Err(err) =
         crate::runtime::jwks::preflight_require_ready(&runtime_config, "reload_preflight")
     {

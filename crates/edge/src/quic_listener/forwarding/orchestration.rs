@@ -1,9 +1,11 @@
 use std::time::{Duration, Instant};
 
 use http_body_util::Full;
+#[cfg(feature = "quota")]
 use impulse_contracts::{
     PluginExecutionObservation, PluginExecutionOutcome, PluginKind, PluginPhase,
 };
+#[cfg(feature = "quota")]
 use impulse_plugins::CompiledAsyncRequestPlugin;
 
 use super::{
@@ -28,6 +30,7 @@ use crate::{
     },
 };
 
+#[cfg(feature = "quota")]
 fn execute_deferred_quota_plugin(
     pending_forward: &PendingForward,
 ) -> Option<(
@@ -139,6 +142,7 @@ impl Http3Service {
             return Ok(false);
         };
 
+        #[cfg(feature = "quota")]
         if let Some((decision, duration)) = execute_deferred_quota_plugin(pending_forward.as_ref())
         {
             metrics

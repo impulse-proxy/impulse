@@ -5,7 +5,9 @@ use impulse_contracts::{
     BoundedRejectionResponse as AdmissionRejectionResponse, IngressProtocol, PluginHeaderMutation,
     PluginRejection, RequestDecision as AdmissionPolicyDecision,
 };
-use impulse_plugins::{CompiledAsyncRequestPlugin, ExternalAuthInput};
+#[cfg(feature = "external-auth")]
+use impulse_plugins::CompiledAsyncRequestPlugin;
+use impulse_plugins::ExternalAuthInput;
 use smallvec::SmallVec;
 
 use super::{
@@ -544,6 +546,7 @@ impl Http3Service {
                 generation: shared_ctx.generation,
                 ingress_protocol: IngressProtocol::Http3,
                 headers: Some(&plugin_header_lookup),
+                #[cfg(feature = "external-auth")]
                 external_auth_headers: None,
                 has_body: !body_replayable,
                 body_replayable,
@@ -858,14 +861,18 @@ impl Http3Service {
                     pending_forward,
                 );
 
+                #[cfg(feature = "external-auth")]
                 let external_auth = resolved_policy
                     .plugin_plan
                     .async_request_gate()
                     .iter()
                     .find_map(|plugin| match plugin {
                         CompiledAsyncRequestPlugin::ExternalAuth(input) => Some(input.clone()),
+                        #[cfg(feature = "quota")]
                         CompiledAsyncRequestPlugin::Quota(_) => None,
                     });
+                #[cfg(not(feature = "external-auth"))]
+                let external_auth: Option<ExternalAuthInput> = None;
                 Some(match external_auth {
                     Some(external_auth) => PreAdmissionNextState::RequiresExternalAuth(Box::new(
                         ExternalAuthCandidate {

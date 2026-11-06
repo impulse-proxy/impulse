@@ -106,6 +106,7 @@ mod tls_runtime;
 mod validation;
 mod workers;
 
+#[cfg(feature = "jwt-auth")]
 pub(crate) use admission::{
     log_jwt_validation_rejection, observe_jwt_validation_failure, validate_jwt_token_for_generation,
 };
@@ -117,9 +118,10 @@ pub(crate) use connection::purge_connection_routes;
 #[cfg(test)]
 use connection::resolve_primary_from_radix_prefix;
 pub(crate) use connection::{ConnectionRoutes, sweep_closed_connections};
+#[cfg(feature = "external-auth")]
+pub(crate) use forwarding::execute_external_auth_request;
 pub(crate) use forwarding::{
     BackendCandidate, ForwardingSelectionService, TargetResolutionRequest,
-    execute_external_auth_request,
 };
 use forwarding::{
     ForwardingExecutionCtx, ForwardingSharedCtx, H3RequestHandlingConfig, StreamProgressConfig,
@@ -426,6 +428,7 @@ impl Http3Service {
             upstream_inflight: &self.upstream_inflight,
             global_inflight: Arc::clone(&self.global_inflight),
             inflight_acquire_wait: self.inflight_acquire_wait,
+            #[cfg(feature = "response-cache")]
             response_cache: self
                 .runtime_bundle
                 .as_ref()
@@ -542,6 +545,7 @@ impl Http3Service {
             upstream_inflight: &self.upstream_inflight,
             global_inflight: Arc::clone(&self.global_inflight),
             inflight_acquire_wait: self.inflight_acquire_wait,
+            #[cfg(feature = "response-cache")]
             response_cache: self
                 .runtime_bundle
                 .as_ref()

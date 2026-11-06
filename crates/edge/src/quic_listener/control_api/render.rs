@@ -1,9 +1,11 @@
 use std::collections::HashMap;
 
 use impulse_contracts::{HealthFailureReason, PluginKind};
+use impulse_policy::quota::{QuotaBackendErrorSnapshot, QuotaBackendStatusSnapshot};
+#[cfg(feature = "quota")]
 use impulse_policy::quota::{
-    QuotaBackendErrorSnapshot, QuotaBackendStatusSnapshot, QuotaPolicyIntrospectionSnapshot,
-    QuotaSelectorIntrospectionSnapshot, QuotaWindowIntrospectionSnapshot,
+    QuotaPolicyIntrospectionSnapshot, QuotaSelectorIntrospectionSnapshot,
+    QuotaWindowIntrospectionSnapshot,
 };
 use serde::Serialize;
 

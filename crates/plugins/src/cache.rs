@@ -15,17 +15,7 @@ use impulse_policy::{
     evaluate_cache_request_eligibility, evaluate_cache_response_eligibility, response_cache_ttl,
 };
 
-use crate::ResponseCacheInput;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum CachePluginFillDecision {
-    Disabled,
-    Reject,
-    Store {
-        stored_at: SystemTime,
-        fresh_until: SystemTime,
-    },
-}
+use crate::{CachePluginFillDecision, ResponseCacheInput};
 
 pub struct ResponseCacheKeyParts<'a> {
     pub scheme: &'a str,

@@ -3,41 +3,71 @@ use impulse_bridge::{
     UpstreamTargetInput,
     request::{RequestBuildPolicies, RequestBuildTarget},
 };
+#[cfg(feature = "scoped-rate-limit")]
+use impulse_config::config::ScopedRateLimitScope;
+#[cfg(feature = "external-auth")]
+use impulse_config::runtime::{
+    RuntimeExternalAuth, RuntimeExternalAuthFailureMode, RuntimeExternalAuthRequestHeader,
+};
+#[cfg(feature = "quota")]
+use impulse_config::runtime::{
+    RuntimeQuotaBackendFailurePolicy, RuntimeQuotaCounterBackend, RuntimeQuotaEnforcementMode,
+    RuntimeQuotaPolicySet,
+};
 use impulse_config::{
     backend_endpoint::{BackendEndpoint, BackendScheme},
     config::{
-        ForwardedHeaderPolicy, ForwardedHeaderPolicyMode, JwksStartupBehavior, JwtAlgorithm,
-        ScopedRateLimitScope, UpstreamHostPolicy, UpstreamHostPolicyMode,
+        ForwardedHeaderPolicy, ForwardedHeaderPolicyMode, UpstreamHostPolicy,
+        UpstreamHostPolicyMode,
     },
     runtime::{
-        RuntimeAuthPolicy, RuntimeBackend, RuntimeBackendTransportKind, RuntimeConfig,
-        RuntimeExternalAuth, RuntimeExternalAuthFailureMode, RuntimeExternalAuthRequestHeader,
-        RuntimeJwtAuth, RuntimeJwtVerificationKey, RuntimeLoadBalancingStrategy,
-        RuntimeQuotaBackendFailurePolicy, RuntimeQuotaCounterBackend, RuntimeQuotaEnforcementMode,
-        RuntimeQuotaPolicySet, RuntimeRequestKeySpec, RuntimeUpstream, RuntimeWatchdogPolicy,
+        RuntimeBackend, RuntimeBackendTransportKind, RuntimeConfig, RuntimeLoadBalancingStrategy,
+        RuntimeRequestKeySpec, RuntimeUpstream, RuntimeWatchdogPolicy,
     },
+};
+#[cfg(feature = "jwt-auth")]
+use impulse_config::{
+    config::{JwksStartupBehavior, JwtAlgorithm},
+    runtime::{RuntimeAuthPolicy, RuntimeJwtAuth, RuntimeJwtVerificationKey},
 };
 use impulse_lb::{
     BackendHealthInput, BackendInput, BackendWeight, LoadBalancingStrategy, RequestKeyInput,
     upstream_pool::UpstreamPool,
 };
 use impulse_operations::watchdog::WatchdogRuntimeConfig;
+#[cfg(feature = "api-key-auth")]
+use impulse_plugins::ApiKeyAuthInput as PluginApiKeyAuthInput;
+#[cfg(feature = "connection-rate-limit")]
+use impulse_plugins::ConnectionRateLimitInput;
+#[cfg(feature = "response-cache")]
+use impulse_plugins::ResponseCacheInput;
+#[cfg(feature = "response-compression")]
+use impulse_plugins::ResponseCompressionInput;
+#[cfg(feature = "external-auth")]
 use impulse_plugins::{
-    ApiKeyAuthInput as PluginApiKeyAuthInput, ConnectionRateLimitInput,
     ExternalAuthFailureModeInput, ExternalAuthInput, ExternalAuthRequestHeaderInput,
-    JwksStartupBehaviorInput, JwtAlgorithmInput, JwtAuthInput, JwtVerificationKeyInput,
-    PluginConstructionInputs, QuotaBackendFailureInput, QuotaCounterBackendInput,
-    QuotaEnforcementInput, QuotaInput, QuotaLocalFallbackInput, QuotaPolicyInput,
-    QuotaSelectorInput, QuotaWindowInput, RequestKeyInput as PluginRequestKeyInput,
-    ResponseCacheInput, ResponseCompressionInput, ScopedRateLimitInput, ScopedRateLimitScopeInput,
-    UpstreamPluginInputs,
 };
+#[cfg(feature = "jwt-auth")]
+use impulse_plugins::{
+    JwksStartupBehaviorInput, JwtAlgorithmInput, JwtAuthInput, JwtVerificationKeyInput,
+};
+use impulse_plugins::{PluginConstructionInputs, UpstreamPluginInputs};
+#[cfg(feature = "quota")]
+use impulse_plugins::{
+    QuotaBackendFailureInput, QuotaCounterBackendInput, QuotaEnforcementInput, QuotaInput,
+    QuotaLocalFallbackInput, QuotaPolicyInput, QuotaSelectorInput, QuotaWindowInput,
+    RequestKeyInput as PluginRequestKeyInput,
+};
+#[cfg(feature = "scoped-rate-limit")]
+use impulse_plugins::{ScopedRateLimitInput, ScopedRateLimitScopeInput};
+#[cfg(feature = "jwt-auth")]
 use impulse_policy::{JwtAllowedAlgorithms, JwtPolicyInput};
 use impulse_transport::{
     UpstreamConnectionLimitsInput, UpstreamEndpointInput, UpstreamProtocol, UpstreamTimeoutInput,
     UpstreamTlsInput, UpstreamTransportInput,
 };
 
+#[cfg(feature = "jwt-auth")]
 pub(crate) fn jwt_allowed_algorithms(jwt: &RuntimeJwtAuth) -> JwtAllowedAlgorithms {
     JwtAllowedAlgorithms {
         hs256: jwt.allowed_algorithms.contains(&JwtAlgorithm::Hs256),
@@ -46,6 +76,7 @@ pub(crate) fn jwt_allowed_algorithms(jwt: &RuntimeJwtAuth) -> JwtAllowedAlgorith
     }
 }
 
+#[cfg(feature = "jwt-auth")]
 pub(crate) fn jwt_policy_input(jwt: &RuntimeJwtAuth) -> JwtPolicyInput<'_> {
     JwtPolicyInput {
         allowed_algorithms: jwt_allowed_algorithms(jwt),
@@ -57,6 +88,7 @@ pub(crate) fn jwt_policy_input(jwt: &RuntimeJwtAuth) -> JwtPolicyInput<'_> {
     }
 }
 
+#[cfg(feature = "jwt-auth")]
 fn plugin_jwt_algorithm(algorithm: JwtAlgorithm) -> JwtAlgorithmInput {
     match algorithm {
         JwtAlgorithm::Hs256 => JwtAlgorithmInput::Hs256,
@@ -65,6 +97,7 @@ fn plugin_jwt_algorithm(algorithm: JwtAlgorithm) -> JwtAlgorithmInput {
     }
 }
 
+#[cfg(feature = "jwt-auth")]
 fn plugin_jwt_verification_key(key: &RuntimeJwtVerificationKey) -> JwtVerificationKeyInput {
     match key {
         RuntimeJwtVerificationKey::Pem {
@@ -84,6 +117,7 @@ fn plugin_jwt_verification_key(key: &RuntimeJwtVerificationKey) -> JwtVerificati
     }
 }
 
+#[cfg(feature = "jwt-auth")]
 fn plugin_jwt_input(jwt: &RuntimeJwtAuth, auth: &RuntimeAuthPolicy) -> JwtAuthInput {
     JwtAuthInput {
         secret: jwt.secret.clone(),
@@ -120,6 +154,7 @@ fn plugin_jwt_input(jwt: &RuntimeJwtAuth, auth: &RuntimeAuthPolicy) -> JwtAuthIn
     }
 }
 
+#[cfg(feature = "external-auth")]
 fn plugin_external_auth_headers(
     headers: &[RuntimeExternalAuthRequestHeader],
 ) -> Box<[ExternalAuthRequestHeaderInput]> {
@@ -133,6 +168,7 @@ fn plugin_external_auth_headers(
         .into_boxed_slice()
 }
 
+#[cfg(feature = "external-auth")]
 fn plugin_external_auth_failure_mode(
     mode: RuntimeExternalAuthFailureMode,
 ) -> ExternalAuthFailureModeInput {
@@ -142,6 +178,7 @@ fn plugin_external_auth_failure_mode(
     }
 }
 
+#[cfg(feature = "external-auth")]
 fn plugin_external_auth_input(policy: &RuntimeExternalAuth) -> ExternalAuthInput {
     match policy {
         RuntimeExternalAuth::Http {
@@ -183,6 +220,7 @@ fn plugin_external_auth_input(policy: &RuntimeExternalAuth) -> ExternalAuthInput
     }
 }
 
+#[cfg(feature = "quota")]
 fn plugin_request_key(input: &RuntimeRequestKeySpec) -> PluginRequestKeyInput {
     match input {
         RuntimeRequestKeySpec::Path => PluginRequestKeyInput::Path,
@@ -199,6 +237,7 @@ fn plugin_request_key(input: &RuntimeRequestKeySpec) -> PluginRequestKeyInput {
     }
 }
 
+#[cfg(feature = "quota")]
 fn plugin_quota_input(policy: &RuntimeQuotaPolicySet) -> Option<QuotaInput> {
     policy.enabled.then(|| QuotaInput {
         enforcement: match policy.enforcement {
@@ -267,69 +306,160 @@ pub(crate) fn plugin_construction_inputs(config: &RuntimeConfig) -> PluginConstr
         .upstreams
         .iter()
         .map(|(upstream_name, upstream)| {
+            #[cfg(any(
+                feature = "api-key-auth",
+                feature = "jwt-auth",
+                feature = "external-auth",
+                feature = "response-cache"
+            ))]
             let auth = &upstream.policy.upstream_auth;
+            #[cfg(not(any(
+                feature = "api-key-auth",
+                feature = "jwt-auth",
+                feature = "external-auth",
+                feature = "response-cache",
+                feature = "response-compression"
+            )))]
+            let _ = upstream;
             UpstreamPluginInputs {
                 upstream_name: upstream_name.clone(),
-                api_key_auth: auth.api_key.as_ref().map(|policy| PluginApiKeyAuthInput {
-                    header_name: policy.header_name.clone(),
-                    accepted_keys: policy.keys.clone().into_boxed_slice(),
-                }),
-                jwt_auth: auth.jwt.as_ref().map(|jwt| plugin_jwt_input(jwt, auth)),
-                external_auth: auth.external_auth.as_ref().map(plugin_external_auth_input),
-                response_cache: upstream.policy.response_cache.enabled.then(|| {
-                    ResponseCacheInput {
-                        max_bytes: upstream.policy.response_cache.max_bytes,
-                        max_entries: upstream.policy.response_cache.max_entries,
-                        max_object_bytes: upstream.policy.response_cache.max_object_bytes,
-                        max_ttl_seconds: upstream.policy.response_cache.max_ttl_secs,
-                        authenticated_route: auth.api_key.is_some()
-                            || auth.jwt.is_some()
-                            || auth.external_auth.is_some()
-                            || !auth.required_scopes.is_empty()
-                            || !auth.required_roles.is_empty(),
+                api_key_auth: {
+                    #[cfg(feature = "api-key-auth")]
+                    {
+                        auth.api_key.as_ref().map(|policy| PluginApiKeyAuthInput {
+                            header_name: policy.header_name.clone(),
+                            accepted_keys: policy.keys.clone().into_boxed_slice(),
+                        })
                     }
-                }),
-                response_compression: upstream.policy.response_compression.enabled.then_some(
-                    ResponseCompressionInput {
-                        minimum_size_bytes: upstream.policy.response_compression.minimum_size_bytes,
-                    },
-                ),
+                    #[cfg(not(feature = "api-key-auth"))]
+                    {
+                        None
+                    }
+                },
+                jwt_auth: {
+                    #[cfg(feature = "jwt-auth")]
+                    {
+                        auth.jwt.as_ref().map(|jwt| plugin_jwt_input(jwt, auth))
+                    }
+                    #[cfg(not(feature = "jwt-auth"))]
+                    {
+                        None
+                    }
+                },
+                external_auth: {
+                    #[cfg(feature = "external-auth")]
+                    {
+                        auth.external_auth.as_ref().map(plugin_external_auth_input)
+                    }
+                    #[cfg(not(feature = "external-auth"))]
+                    {
+                        None
+                    }
+                },
+                response_cache: {
+                    #[cfg(feature = "response-cache")]
+                    {
+                        upstream
+                            .policy
+                            .response_cache
+                            .enabled
+                            .then(|| ResponseCacheInput {
+                                max_bytes: upstream.policy.response_cache.max_bytes,
+                                max_entries: upstream.policy.response_cache.max_entries,
+                                max_object_bytes: upstream.policy.response_cache.max_object_bytes,
+                                max_ttl_seconds: upstream.policy.response_cache.max_ttl_secs,
+                                authenticated_route: auth.api_key.is_some()
+                                    || auth.jwt.is_some()
+                                    || auth.external_auth.is_some()
+                                    || !auth.required_scopes.is_empty()
+                                    || !auth.required_roles.is_empty(),
+                            })
+                    }
+                    #[cfg(not(feature = "response-cache"))]
+                    {
+                        None
+                    }
+                },
+                response_compression: {
+                    #[cfg(feature = "response-compression")]
+                    {
+                        upstream.policy.response_compression.enabled.then_some(
+                            ResponseCompressionInput {
+                                minimum_size_bytes: upstream
+                                    .policy
+                                    .response_compression
+                                    .minimum_size_bytes,
+                            },
+                        )
+                    }
+                    #[cfg(not(feature = "response-compression"))]
+                    {
+                        None
+                    }
+                },
             }
         })
         .collect::<Vec<_>>();
     upstreams.sort_unstable_by(|left, right| left.upstream_name.cmp(&right.upstream_name));
 
     PluginConstructionInputs {
-        connection_rate_limit: config
-            .policies
-            .transport
-            .connection_rate_limit_enabled
-            .then_some(ConnectionRateLimitInput {
-                requests_per_second: config.policies.transport.new_connections_per_sec,
-                burst: config.policies.transport.new_connections_burst,
-            }),
-        scoped_rate_limits: config
-            .policies
-            .rate_limits
-            .scoped_limits
-            .iter()
-            .map(|policy| ScopedRateLimitInput {
-                name: policy.name.clone(),
-                scope: match policy.scope {
-                    ScopedRateLimitScope::Route => ScopedRateLimitScopeInput::Route,
-                    ScopedRateLimitScope::Tenant => ScopedRateLimitScopeInput::Tenant,
-                    ScopedRateLimitScope::Client => ScopedRateLimitScopeInput::Client,
-                    ScopedRateLimitScope::Token => ScopedRateLimitScopeInput::Token,
-                },
-                requests_per_second: policy.requests_per_sec,
-                burst: policy.burst,
-                key: policy.key.clone(),
-                route_allowlist: policy.route_allowlist.clone().into_boxed_slice(),
-                idle_ttl: policy.idle_ttl,
-            })
-            .collect::<Vec<_>>()
-            .into_boxed_slice(),
-        quota: plugin_quota_input(&config.policies.rate_limits.quota),
+        connection_rate_limit: {
+            #[cfg(feature = "connection-rate-limit")]
+            {
+                config
+                    .policies
+                    .transport
+                    .connection_rate_limit_enabled
+                    .then_some(ConnectionRateLimitInput {
+                        requests_per_second: config.policies.transport.new_connections_per_sec,
+                        burst: config.policies.transport.new_connections_burst,
+                    })
+            }
+            #[cfg(not(feature = "connection-rate-limit"))]
+            {
+                None
+            }
+        },
+        scoped_rate_limits: {
+            #[cfg(feature = "scoped-rate-limit")]
+            {
+                config
+                    .policies
+                    .rate_limits
+                    .scoped_limits
+                    .iter()
+                    .map(|policy| ScopedRateLimitInput {
+                        name: policy.name.clone(),
+                        scope: match policy.scope {
+                            ScopedRateLimitScope::Route => ScopedRateLimitScopeInput::Route,
+                            ScopedRateLimitScope::Tenant => ScopedRateLimitScopeInput::Tenant,
+                            ScopedRateLimitScope::Client => ScopedRateLimitScopeInput::Client,
+                            ScopedRateLimitScope::Token => ScopedRateLimitScopeInput::Token,
+                        },
+                        requests_per_second: policy.requests_per_sec,
+                        burst: policy.burst,
+                        key: policy.key.clone(),
+                        route_allowlist: policy.route_allowlist.clone().into_boxed_slice(),
+                        idle_ttl: policy.idle_ttl,
+                    })
+                    .collect::<Vec<_>>()
+                    .into_boxed_slice()
+            }
+            #[cfg(not(feature = "scoped-rate-limit"))]
+            {
+                Box::new([])
+            }
+        },
+        quota: {
+            #[cfg(feature = "quota")]
+            {
+                plugin_quota_input(&config.policies.rate_limits.quota)
+            }
+            #[cfg(not(feature = "quota"))]
+            {
+                None
+            }
+        },
         upstreams: upstreams.into_boxed_slice(),
     }
 }

@@ -7,6 +7,7 @@
 
 pub(crate) mod auth;
 pub(crate) mod outcome;
+#[cfg(feature = "connection-rate-limit")]
 pub(crate) mod plugin;
 pub(crate) mod quic;
 pub(crate) mod request;
