@@ -13,11 +13,13 @@ use crate::config::{
 };
 
 mod listeners;
+mod plugins;
 mod policies;
 mod secrets;
 mod upstreams;
 
 pub use self::{
+    plugins::RuntimePluginRequirements,
     policies::{
         RuntimeAdmissionPolicy, RuntimeAlternateBackendPolicy, RuntimeApiKeyAuth,
         RuntimeAuthPolicy, RuntimeBackendAddressKind, RuntimeBackendConnectionPolicy,
@@ -93,6 +95,11 @@ impl RuntimeConfig {
 
     pub fn primary_listener_runtime_config(&self) -> Option<ListenerRuntimeConfig> {
         self.listener_runtime_configs().into_iter().next()
+    }
+
+    #[must_use]
+    pub fn plugin_requirements(&self) -> RuntimePluginRequirements {
+        RuntimePluginRequirements::from_runtime_config(self)
     }
 
     #[cfg(test)]
