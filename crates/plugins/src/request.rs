@@ -1,15 +1,17 @@
 use std::{future::Future, time::Instant};
 
+#[cfg(feature = "api-key-auth")]
+use impulse_contracts::AuthChallengeKind;
 use impulse_contracts::{
-    AuthChallengeKind, PluginExecutionObservation, PluginExecutionOutcome, PluginHeaderMutation,
-    PluginPhase, PluginRejection, PluginRejectionReason, PluginRequestView,
+    PluginExecutionObservation, PluginExecutionOutcome, PluginHeaderMutation, PluginPhase,
+    PluginRejection, PluginRejectionReason, PluginRequestView,
 };
+#[cfg(feature = "api-key-auth")]
 use impulse_policy::{ApiKeyAuthorization, ApiKeyPolicyInput, evaluate_api_key};
 
-use crate::{
-    CompiledAsyncRequestPlugin, CompiledPluginPlan, CompiledRequestPlugin,
-    rate_limit::ScopedRateLimitDecision,
-};
+#[cfg(feature = "scoped-rate-limit")]
+use crate::rate_limit::ScopedRateLimitDecision;
+use crate::{CompiledAsyncRequestPlugin, CompiledPluginPlan, CompiledRequestPlugin};
 
 /// Request-owned guard preventing asynchronous policy work from running again
 /// during retries.
@@ -63,7 +65,7 @@ pub fn execute_synchronous_request_plugins<'a>(
     plan: &CompiledPluginPlan,
     request: PluginRequestView<'a>,
     mut observe: impl FnMut(PluginExecutionObservation),
-    mut evaluate: impl FnMut(
+    mut _evaluate: impl FnMut(
         &CompiledRequestPlugin,
         PluginRequestView<'a>,
     ) -> SynchronousRequestPluginDecision,
@@ -78,6 +80,7 @@ pub fn execute_synchronous_request_plugins<'a>(
     let mut mutations = Vec::new();
     for plugin in plugins {
         let decision = match plugin {
+            #[cfg(feature = "api-key-auth")]
             CompiledRequestPlugin::ApiKeyAuth(policy) => match evaluate_api_key(
                 ApiKeyPolicyInput::new(&policy.header_name, &policy.accepted_keys),
                 request.headers,
@@ -96,6 +99,7 @@ pub fn execute_synchronous_request_plugins<'a>(
                     ))
                 }
             },
+            #[cfg(feature = "scoped-rate-limit")]
             CompiledRequestPlugin::ScopedRateLimit(compiled) => match compiled.evaluate(request) {
                 ScopedRateLimitDecision::Deny {
                     retry_after_seconds,
@@ -104,7 +108,14 @@ pub fn execute_synchronous_request_plugins<'a>(
                 )),
                 ScopedRateLimitDecision::Admit => SynchronousRequestPluginDecision::Continue,
             },
-            _ => evaluate(plugin, request),
+            #[cfg(feature = "jwt-auth")]
+            CompiledRequestPlugin::JwtAuth(_) => _evaluate(plugin, request),
+            #[cfg(not(any(
+                feature = "api-key-auth",
+                feature = "jwt-auth",
+                feature = "scoped-rate-limit"
+            )))]
+            CompiledRequestPlugin::Unavailable(unavailable) => match *unavailable {},
         };
         observe(PluginExecutionObservation {
             kind: plugin.kind(),
@@ -142,17 +153,16 @@ where
     Evaluate: FnMut(&'a CompiledAsyncRequestPlugin, PluginRequestView<'a>) -> Evaluation,
     Evaluation: Future<Output = AsyncRequestPluginDecision>,
 {
-    if guard.started {
-        return AsyncRequestPluginExecution::AlreadyExecuted;
-    }
-    guard.started = true;
-
     let plugins = plan.async_request_gate();
     if plugins.is_empty() {
         return AsyncRequestPluginExecution::Continue {
             mutations: Vec::new(),
         };
     }
+    if guard.started {
+        return AsyncRequestPluginExecution::AlreadyExecuted;
+    }
+    guard.started = true;
 
     let mut mutations = Vec::new();
     for plugin in plugins {

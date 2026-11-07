@@ -1,22 +1,28 @@
+#[cfg(feature = "quota")]
 use http::StatusCode;
+#[cfg(not(feature = "quota"))]
+use impulse_contracts::RequestDecision;
+#[cfg(feature = "quota")]
 use impulse_contracts::{
     BoundedRejectionResponse, PluginRejection, PluginRequestView, RequestDecision,
 };
+#[cfg(feature = "quota")]
 use impulse_plugins::{CompiledAsyncRequestPlugin, CompiledPluginPlan};
-use impulse_policy::{
-    evaluate_brownout_admission,
-    quota::{QuotaDecision, QuotaDenyReason},
-};
+use impulse_policy::evaluate_brownout_admission;
+#[cfg(feature = "quota")]
+use impulse_policy::quota::{QuotaDecision, QuotaDenyReason};
 
 use crate::resilience::runtime::RuntimeResilience;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg(feature = "quota")]
 pub(crate) struct QuotaRejectedDecision {
     pub(crate) status: StatusCode,
     pub(crate) body: &'static [u8],
     pub(crate) retry_after_seconds: Option<u32>,
 }
 
+#[cfg(feature = "quota")]
 impl QuotaRejectedDecision {
     pub(crate) fn from_quota_decision(decision: QuotaDecision) -> Option<Self> {
         match decision {
@@ -54,6 +60,7 @@ impl QuotaRejectedDecision {
     }
 }
 
+#[cfg(feature = "quota")]
 pub(crate) async fn execute_compiled_quota_plugin(
     plan: &CompiledPluginPlan,
     request: PluginRequestView<'_>,
@@ -64,6 +71,7 @@ pub(crate) async fn execute_compiled_quota_plugin(
         .iter()
         .find_map(|plugin| match plugin {
             CompiledAsyncRequestPlugin::Quota(quota) => Some(quota),
+            #[cfg(feature = "external-auth")]
             CompiledAsyncRequestPlugin::ExternalAuth(_) => None,
         })?;
 
@@ -83,6 +91,7 @@ pub(crate) async fn execute_compiled_quota_plugin(
     }
 }
 
+#[cfg(feature = "quota")]
 fn quota_response_body(reason: QuotaDenyReason) -> &'static [u8] {
     match reason {
         QuotaDenyReason::BurstQuotaExhausted => b"burst quota exhausted\n",

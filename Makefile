@@ -1,4 +1,4 @@
-.PHONY: run build build-impulse clean test test-edge test-transport bench-route-index bench-load-balancing certs certs-selfsigned certs-ca certs-clean certs-verify certs-dir
+.PHONY: run build build-impulse build-full build-minimal build-custom clean test test-edge test-transport bench-route-index bench-load-balancing certs certs-selfsigned certs-ca certs-clean certs-verify certs-dir
 
 CERTS_DIR := certs
 SAN_CONF := $(CERTS_DIR)/san.conf
@@ -13,6 +13,16 @@ build:
 
 build-impulse:
 	cargo build -p impulse --bin impulse --release
+
+build-full:
+	cargo build -p impulse --bin impulse --release --no-default-features --features plugins-full
+
+build-minimal:
+	cargo build -p impulse --bin impulse --release --no-default-features --features plugins-minimal
+
+build-custom:
+	test -n "$(PLUGIN_FEATURES)"
+	cargo build -p impulse --bin impulse --release --no-default-features --features "$(PLUGIN_FEATURES)"
 
 test:
 	cargo test --workspace

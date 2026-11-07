@@ -13,7 +13,7 @@ use impulse_bridge::response::{
 };
 use impulse_config::{backend_endpoint::BackendScheme, runtime::ListenerRuntimeConfig};
 use impulse_contracts::{
-    AlternateBackendFailureReason, HealthFailureReason, IngressProtocol, PluginConnectionView,
+    AlternateBackendFailureReason, HealthFailureReason, IngressProtocol,
     PluginExecutionObservation, PluginExecutionOutcome, PluginHeaderMutation, PluginKind,
     PluginPhase, PluginRejection, PluginRejectionReason, PluginRequestView,
     RequestDecision as AdmissionPolicyDecision, RetryAttemptTelemetryReason, TunnelMode,
@@ -23,7 +23,10 @@ use impulse_errors::{
     is_idempotent_method,
 };
 use impulse_lb::{BackendSelectionInput, upstream_pool::UpstreamPool};
-use impulse_observability::{ResponseCacheOutcome, ResponseCompressionAction};
+#[cfg(feature = "response-cache")]
+use impulse_observability::ResponseCacheOutcome;
+#[cfg(feature = "response-compression")]
+use impulse_observability::ResponseCompressionAction;
 pub use impulse_pingora_ingress::PingoraListenerTask;
 use impulse_pingora_ingress::{
     ConnectionAdmission, PingoraDrainState, PingoraIngressAdapter, PingoraListenerConfig,
@@ -34,19 +37,23 @@ use impulse_pingora_ingress::{
     tunnel_response_established, write_downstream_response, write_error_response,
     write_local_response,
 };
-use impulse_plugins::{
-    AsyncRequestPluginDecision, AsyncRequestPluginExecutionGuard, CachePluginFillDecision,
-    CompiledAsyncRequestPlugin, ResponseCacheKeyParts,
-};
+use impulse_plugins::AsyncRequestPluginExecutionGuard;
+#[cfg(feature = "response-cache")]
+use impulse_plugins::CachePluginFillDecision;
+#[cfg(feature = "response-cache")]
+use impulse_plugins::ResponseCacheKeyParts;
+#[cfg(feature = "external-auth")]
+use impulse_plugins::{AsyncRequestPluginDecision, CompiledAsyncRequestPlugin};
+#[cfg(feature = "response-cache")]
 use impulse_policy::ResponseCacheRepresentation;
+#[cfg(feature = "response-cache")]
 use pingora_cache::{CacheKey, CacheMeta, CachePhase, NoCacheReason, RespCacheable};
+#[cfg(feature = "response-compression")]
+use pingora_core::protocols::http::compression::Algorithm;
 use pingora_core::{
     Error, HTTPStatus, InternalError, Result,
     apps::{HttpServerApp, HttpServerOptions, ReusedHttpStream, ServerApp},
-    protocols::{
-        Stream,
-        http::{ServerSession, compression::Algorithm},
-    },
+    protocols::{Stream, http::ServerSession},
     server::{ShutdownWatch, configuration::ServerConf},
     services::listening::Service,
     upstreams::peer::HttpPeer,
@@ -58,6 +65,12 @@ use rustls::{
     sign::CertifiedKey,
 };
 
+#[cfg(feature = "external-auth")]
+use crate::edge_core::request_execution::execute_compiled_external_auth;
+#[cfg(feature = "response-cache")]
+use crate::edge_core::response_processing::{CacheLookupProcessingInput, process_cache_lookup};
+#[cfg(feature = "connection-rate-limit")]
+use crate::runtime::connection::plugin::execute_listener_connection_plan;
 use crate::{
     Metrics, REQUEST_ID_COUNTER,
     edge_core::{
@@ -72,12 +85,11 @@ use crate::{
         request_execution::{
             EdgeRequestService, PluginRequestExecutionInput, PluginRequestExecutionOutcome,
             PluginTerminalObservation, RequestExecutionInput, ResolvedRequestPolicy,
-            ResolvedRouteTarget, RouteResolutionError, execute_compiled_external_auth,
+            ResolvedRouteTarget, RouteResolutionError,
         },
         request_validation::validate_http_request_parts,
         response_processing::{
-            CacheLookupProcessingInput, ResponseProcessingInput, ResponseProcessingResult,
-            process_cache_lookup, process_response,
+            ResponseProcessingInput, ResponseProcessingResult, process_response,
         },
         retry::RetryCoordinator,
     },
@@ -94,13 +106,13 @@ use crate::{
                 observe_classified_backend_failure_and_log, observe_proxy_error_outcome,
                 observe_status_outcome,
             },
-            plugin::execute_listener_connection_plan,
         },
         listener::Http3Service,
         tls::store::ListenerTlsReloadStore,
     },
 };
 
+#[cfg(feature = "response-compression")]
 const RESPONSE_GZIP_LEVEL: u32 = 6;
 
 pub(crate) struct PingoraEdgeRequestState {
@@ -111,7 +123,9 @@ pub(crate) struct PingoraEdgeRequestState {
     pub(crate) completion: RequestCompletion,
     terminal_classification: Option<PingoraTerminalClassification>,
     response_processing: Option<ResponseProcessingResult>,
+    #[cfg(feature = "response-cache")]
     response_cache_representation: Option<ResponseCacheRepresentation>,
+    #[cfg(feature = "response-cache")]
     response_cache_bypass_recorded: bool,
     selected_backend: Option<PingoraSelectedBackend>,
     plugin_execution: AsyncRequestPluginExecutionGuard,
@@ -161,6 +175,9 @@ impl PingoraEdgeRequestService {
         upstream_response: &ResponseHeader,
         ctx: &PingoraRequestContext,
     ) -> Result<ResponseProcessingResult> {
+        #[cfg(not(any(feature = "response-cache", feature = "response-compression")))]
+        let _ = session;
+        #[cfg(any(feature = "response-cache", feature = "response-compression"))]
         let policy = ctx.policy.as_ref().ok_or_else(|| {
             Error::explain(
                 InternalError,
@@ -173,44 +190,54 @@ impl PingoraEdgeRequestService {
                 "Pingora ingress request filter did not validate a method",
             )
         })?;
-        let path = ctx.path.as_deref().ok_or_else(|| {
-            Error::explain(
-                InternalError,
-                "Pingora ingress request filter did not validate a path",
-            )
-        })?;
-        let route = ctx.route.as_ref().ok_or_else(|| {
-            Error::explain(
-                InternalError,
-                "Pingora ingress request filter did not resolve a route",
-            )
-        })?;
-        let peer_address = session
-            .client_addr()
-            .and_then(|address| address.as_inet())
-            .copied()
-            .unwrap_or_else(|| ([0, 0, 0, 0], 0).into());
+        #[cfg(any(feature = "response-cache", feature = "response-compression"))]
         let request_headers = &session.req_header().headers;
+        #[cfg(any(feature = "response-cache", feature = "response-compression"))]
         let request_header =
             |name: &str| request_headers.get(name).map(http::HeaderValue::as_bytes);
-        let plugin_request = PluginRequestView {
-            request_id: ctx.request_id,
-            generation: policy.plugin_plan.generation(),
-            route_id: Some(route.upstream_name.as_ref()),
-            upstream_name: route.upstream_name.as_ref(),
-            method,
-            path,
-            authority: ctx.authority.as_deref(),
-            peer_address,
-            headers: Some(&request_header),
-            has_body: ctx.content_length.is_some_and(|length| length > 0)
-                || ctx.body_bytes_received > 0,
-            body_replayable: ctx.request_body_replayable,
-            ingress_protocol: if session.downstream_session.is_http2() {
-                IngressProtocol::Http2
-            } else {
-                IngressProtocol::Http1
-            },
+        #[cfg(any(feature = "response-cache", feature = "response-compression"))]
+        let has_response_plugins = !policy.plugin_plan.cache_policy().is_empty()
+            || !policy.plugin_plan.response_policy().is_empty();
+        #[cfg(any(feature = "response-cache", feature = "response-compression"))]
+        let plugin_request = if has_response_plugins {
+            let path = ctx.path.as_deref().ok_or_else(|| {
+                Error::explain(
+                    InternalError,
+                    "Pingora ingress request filter did not validate a path",
+                )
+            })?;
+            let route = ctx.route.as_ref().ok_or_else(|| {
+                Error::explain(
+                    InternalError,
+                    "Pingora ingress request filter did not resolve a route",
+                )
+            })?;
+            let peer_address = session
+                .client_addr()
+                .and_then(|address| address.as_inet())
+                .copied()
+                .unwrap_or_else(|| ([0, 0, 0, 0], 0).into());
+            Some(PluginRequestView {
+                request_id: ctx.request_id,
+                generation: policy.plugin_plan.generation(),
+                route_id: Some(route.upstream_name.as_ref()),
+                upstream_name: route.upstream_name.as_ref(),
+                method,
+                path,
+                authority: ctx.authority.as_deref(),
+                peer_address,
+                headers: Some(&request_header),
+                has_body: ctx.content_length.is_some_and(|length| length > 0)
+                    || ctx.body_bytes_received > 0,
+                body_replayable: ctx.request_body_replayable,
+                ingress_protocol: if session.downstream_session.is_http2() {
+                    IngressProtocol::Http2
+                } else {
+                    IngressProtocol::Http1
+                },
+            })
+        } else {
+            None
         };
         let tunnel_response =
             tunnel_response_established(ctx.tunnel_mode, method, upstream_response.status);
@@ -222,22 +249,30 @@ impl PingoraEdgeRequestService {
             ResponseBodyMode::Normal
         };
         Ok(process_response(ResponseProcessingInput {
+            #[cfg(any(feature = "response-cache", feature = "response-compression"))]
             metrics: &ctx.runtime.shared_state.shared_services().metrics,
+            #[cfg(any(feature = "response-cache", feature = "response-compression"))]
             plugin_plan: &policy.plugin_plan,
+            #[cfg(any(feature = "response-cache", feature = "response-compression"))]
             plugin_request,
             status: upstream_response.status,
             upstream_headers: &upstream_response.headers,
             body_mode,
             constraints: pingora_response_constraints(tunnel_response),
+            #[cfg(feature = "response-compression")]
             request_method: method,
-            request_headers,
+            #[cfg(feature = "response-compression")]
+            request_headers: has_response_plugins.then_some(request_headers),
+            #[cfg(feature = "response-cache")]
             cache_fill_enabled: ctx.response_cache_representation.is_some(),
+            #[cfg(feature = "response-cache")]
             cache_representation: ctx.response_cache_representation.map(|representation| {
                 match representation {
                     ResponseCacheRepresentation::Get => "get",
                     ResponseCacheRepresentation::Head => "head",
                 }
             }),
+            #[cfg(feature = "response-cache")]
             now: std::time::SystemTime::now(),
         }))
     }
@@ -394,20 +429,21 @@ impl ConnectionAdmission for PingoraRuntimeConnectionAdmission {
             metrics.ingress_observations().inc_ingress_rate_limited();
             return false;
         }
+        #[cfg(feature = "connection-rate-limit")]
         let admitted = execute_listener_connection_plan(
             current
                 .shared_state
                 .generation_state()
                 .plugin_plans
                 .connection(),
-            PluginConnectionView {
-                generation: current.generation,
-                listener: &self.listener_label,
-                peer_address: addr.copied(),
-            },
+            current.generation,
+            &self.listener_label,
+            addr.copied(),
             metrics,
         )
         .is_ok();
+        #[cfg(not(feature = "connection-rate-limit"))]
+        let admitted = true;
         if !admitted {
             metrics.ingress_observations().inc_ingress_rate_limited();
         }
@@ -638,7 +674,9 @@ impl PingoraRequestService for PingoraEdgeRequestService {
                 completion: RequestCompletion::default(),
                 terminal_classification: None,
                 response_processing: None,
+                #[cfg(feature = "response-cache")]
                 response_cache_representation: None,
+                #[cfg(feature = "response-cache")]
                 response_cache_bypass_recorded: false,
                 selected_backend: None,
                 plugin_execution: AsyncRequestPluginExecutionGuard::default(),
@@ -727,6 +765,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
                     generation: runtime.generation,
                     ingress_protocol,
                     headers: Some(&plugin_header_lookup),
+                    #[cfg(feature = "external-auth")]
                     external_auth_headers: None,
                     has_body: !request_body_replayable,
                     body_replayable: request_body_replayable,
@@ -831,6 +870,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             }
         };
 
+        #[cfg(feature = "external-auth")]
         if let Some(external_auth) =
             policy
                 .plugin_plan
@@ -838,6 +878,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
                 .iter()
                 .find_map(|plugin| match plugin {
                     CompiledAsyncRequestPlugin::ExternalAuth(input) => Some(input.clone()),
+                    #[cfg(feature = "quota")]
                     CompiledAsyncRequestPlugin::Quota(_) => None,
                 })
         {
@@ -1009,6 +1050,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             return Ok(true);
         }
 
+        #[cfg(feature = "response-compression")]
         if !policy.plugin_plan.response_policy().is_empty() {
             session.upstream_compression.adjust_level(0);
             session
@@ -1020,6 +1062,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
         Ok(false)
     }
 
+    #[cfg(feature = "response-cache")]
     fn request_cache_filter(&self, session: &mut Session, ctx: &mut Self::Context) -> Result<()> {
         let (Some(cache), Some(policy), Some(method), Some(path)) = (
             self.runtime.response_cache(),
@@ -1089,6 +1132,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
         Ok(())
     }
 
+    #[cfg(feature = "response-cache")]
     fn cache_key_callback(&self, session: &Session, ctx: &mut Self::Context) -> Result<CacheKey> {
         let representation = ctx.response_cache_representation.ok_or_else(|| {
             Error::explain(InternalError, "response cache representation is missing")
@@ -1132,6 +1176,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             .ok_or_else(|| Error::explain(InternalError, "response cache key is invalid"))
     }
 
+    #[cfg(feature = "response-cache")]
     fn response_cache_filter(
         &self,
         session: &Session,
@@ -1446,20 +1491,23 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             .and_then(|value| value.to_str().ok())
             .and_then(|value| value.parse::<usize>().ok());
         let processed = Self::process_response_head(session, upstream_response, ctx)?;
-        ctx.runtime
-            .shared_state
-            .shared_services()
-            .metrics
-            .ingress_observations()
-            .record_response_compression_outcome(processed.compression.action);
-        session.upstream_compression.adjust_level(0);
-        if matches!(
-            processed.compression.action,
-            ResponseCompressionAction::Gzip
-        ) {
-            session
-                .upstream_compression
-                .adjust_algorithm_level(Algorithm::Gzip, RESPONSE_GZIP_LEVEL);
+        #[cfg(feature = "response-compression")]
+        {
+            ctx.runtime
+                .shared_state
+                .shared_services()
+                .metrics
+                .ingress_observations()
+                .record_response_compression_outcome(processed.compression.action);
+            session.upstream_compression.adjust_level(0);
+            if matches!(
+                processed.compression.action,
+                ResponseCompressionAction::Gzip
+            ) {
+                session
+                    .upstream_compression
+                    .adjust_algorithm_level(Algorithm::Gzip, RESPONSE_GZIP_LEVEL);
+            }
         }
         ctx.response_processing = Some(processed);
         Ok(())
@@ -1716,6 +1764,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
                 backend_index: Some(selected.index),
             });
         let metrics = &ctx.runtime.shared_state.shared_services().metrics;
+        #[cfg(feature = "response-cache")]
         match session.cache.phase() {
             CachePhase::Hit | CachePhase::Revalidated => {
                 metrics
@@ -1754,11 +1803,13 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             | CachePhase::Bypass
             | CachePhase::RevalidatedNoCache(_) => {}
         }
+        #[cfg(feature = "response-cache")]
         if session.cache.lock_duration().is_some() {
             metrics
                 .ingress_observations()
                 .record_response_cache_outcome(ResponseCacheOutcome::LockWait);
         }
+        #[cfg(feature = "response-compression")]
         if let Some(("gzip", input, output, _duration)) = session.upstream_compression.get_info() {
             metrics
                 .ingress_observations()

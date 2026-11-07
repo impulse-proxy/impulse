@@ -103,6 +103,27 @@ pub(crate) fn plan_runtime_reload(
         }
     };
 
+    if let Some((kind, configuration_location)) =
+        RuntimeBuilder::unavailable_plugin_requirement(&runtime_config)
+    {
+        let rejected = RejectedChange::unavailable_plugin(configuration_location, kind.label());
+        validation.push(PlanningPhaseResult {
+            phase: PlanningPhase::NormalizeRuntime,
+            status: PlanningPhaseStatus::Rejected,
+            summary: rejected.message.clone(),
+        });
+        return rejected_reload_plan(
+            request,
+            config_source,
+            Some(config.version),
+            current_generation,
+            candidate_generation,
+            validation,
+            vec![rejected],
+        );
+    }
+
+    #[cfg(feature = "jwt-auth")]
     if let Err(err) =
         crate::runtime::jwks::preflight_require_ready(&runtime_config, "reload_preflight")
     {

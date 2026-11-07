@@ -9,33 +9,40 @@ impl impulse_http3_ingress::ConnectionAdmissionAdapter for Http3Service {
         &mut self,
         peer: std::net::SocketAddr,
     ) -> Result<(), impulse_http3_ingress::ConnectionAdmissionRejection> {
-        use impulse_http3_ingress::ConnectionAdmissionRejection;
+        #[cfg(not(feature = "connection-rate-limit"))]
+        {
+            let _ = peer;
+            return Ok(());
+        }
 
-        let generation = self.runtime_state.generation();
-        let listener = self.listener_label.as_str();
-        let plan = self
-            .runtime_state
-            .shared_state()
-            .generation_state()
-            .plugin_plans
-            .connection();
-        crate::runtime::connection::plugin::execute_listener_connection_plan(
-            plan,
-            impulse_contracts::PluginConnectionView {
+        #[cfg(feature = "connection-rate-limit")]
+        {
+            use impulse_http3_ingress::ConnectionAdmissionRejection;
+
+            let generation = self.runtime_state.generation();
+            let listener = self.listener_label.as_str();
+            let plan = self
+                .runtime_state
+                .shared_state()
+                .generation_state()
+                .plugin_plans
+                .connection();
+            crate::runtime::connection::plugin::execute_listener_connection_plan(
+                plan,
                 generation,
                 listener,
-                peer_address: Some(peer),
-            },
-            &self.metrics,
-        )
-        .map_err(|reason| match reason {
-            impulse_plugins::ConnectionPluginRejection::GlobalRateLimit => {
-                ConnectionAdmissionRejection::GlobalRateLimit
-            }
-            impulse_plugins::ConnectionPluginRejection::SourceRateLimit => {
-                ConnectionAdmissionRejection::SourceRateLimit
-            }
-        })
+                Some(peer),
+                &self.metrics,
+            )
+            .map_err(|reason| match reason {
+                impulse_plugins::ConnectionPluginRejection::GlobalRateLimit => {
+                    ConnectionAdmissionRejection::GlobalRateLimit
+                }
+                impulse_plugins::ConnectionPluginRejection::SourceRateLimit => {
+                    ConnectionAdmissionRejection::SourceRateLimit
+                }
+            })
+        }
     }
 
     fn active_connections(&self) -> usize {

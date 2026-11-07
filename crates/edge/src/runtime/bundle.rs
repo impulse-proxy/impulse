@@ -8,9 +8,10 @@ use impulse_config::runtime::RuntimeConfig;
 use impulse_errors::ProxyError;
 use log::{info, warn};
 
+#[cfg(feature = "response-cache")]
+use crate::runtime::cache::{BoundedPingoraMemoryCache, RuntimeCacheStorage};
 use crate::runtime::{
     activation::{GenerationChangeEvent, GenerationHistoryEntry},
-    cache::{BoundedPingoraMemoryCache, RuntimeCacheStorage},
     generation::{RuntimeGenerationView, StartupOwnedRuntimeState},
     policy::RuntimeLifecycleState,
     shared_state::SharedRuntimeState,
@@ -128,6 +129,7 @@ impl RuntimeGenerationRecord {
 #[derive(Clone)]
 pub struct RuntimeBundleHandle {
     inner: Arc<RwLock<Arc<RuntimeBundle>>>,
+    #[cfg(feature = "response-cache")]
     response_cache: RuntimeCacheStorage,
     history: Arc<RwLock<VecDeque<RuntimeGenerationRecord>>>,
     generation_history: Arc<RwLock<VecDeque<GenerationHistoryEntry>>>,
@@ -143,6 +145,7 @@ impl RuntimeBundleHandle {
         // here (see `begin_drain`/`begin_shutdown`).
         let lifecycle = RuntimeLifecycleState::new();
         let _ = lifecycle.mark_running();
+        #[cfg(feature = "response-cache")]
         let response_cache = RuntimeCacheStorage::new(
             &bundle.runtime_config,
             Arc::clone(&bundle.shared_state.shared_services().metrics),
@@ -159,6 +162,7 @@ impl RuntimeBundleHandle {
             .activate();
         let handle = Self {
             inner: Arc::new(RwLock::new(Arc::new(bundle))),
+            #[cfg(feature = "response-cache")]
             response_cache,
             history: Arc::new(RwLock::new(VecDeque::new())),
             generation_history: Arc::new(RwLock::new(VecDeque::new())),
@@ -174,11 +178,12 @@ impl RuntimeBundleHandle {
         handle
     }
 
+    #[cfg(feature = "response-cache")]
     pub(crate) fn response_cache(&self) -> Option<&'static BoundedPingoraMemoryCache> {
         self.response_cache.cache()
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, feature = "response-cache"))]
     pub(crate) fn current_with_response_cache_namespace(&self) -> (Arc<RuntimeBundle>, u64) {
         let guard = self
             .inner
@@ -443,6 +448,7 @@ impl RuntimeBundleHandle {
                     expected_generation, previous_generation
                 )));
             }
+            #[cfg(feature = "response-cache")]
             if crate::runtime::cache::response_cache_namespaces_compatible(
                 &guard.runtime_config,
                 &bundle.runtime_config,
@@ -514,6 +520,15 @@ impl RuntimeBundleHandle {
             .len();
         let metrics = &current.shared_state.shared_services().metrics;
         let generation_state = current.shared_state.generation_state();
+        #[cfg(feature = "quota")]
+        let quota_policy_names = generation_state
+            .plugin_plans
+            .quota()
+            .into_iter()
+            .flat_map(|quota| quota.runtime().policies.iter())
+            .map(|policy| policy.name.as_str());
+        #[cfg(not(feature = "quota"))]
+        let quota_policy_names = std::iter::empty::<&str>();
         metrics
             .runtime_observations()
             .reconcile_runtime_metric_labels(
@@ -529,12 +544,7 @@ impl RuntimeBundleHandle {
                     .listener_runtime_configs
                     .keys()
                     .map(String::as_str),
-                generation_state
-                    .plugin_plans
-                    .quota()
-                    .into_iter()
-                    .flat_map(|quota| quota.runtime().policies.iter())
-                    .map(|policy| policy.name.as_str()),
+                quota_policy_names,
             );
         metrics
             .runtime_observations()
@@ -542,10 +552,22 @@ impl RuntimeBundleHandle {
         metrics
             .runtime_observations()
             .set_runtime_history_depth(history_depth);
-        for kind in impulse_contracts::PluginKind::ALL {
-            metrics
-                .plugin_observations()
-                .set_active_count(kind, generation_state.plugin_plans.active_count(kind));
+        #[cfg(any(
+            feature = "connection-rate-limit",
+            feature = "api-key-auth",
+            feature = "jwt-auth",
+            feature = "external-auth",
+            feature = "scoped-rate-limit",
+            feature = "quota",
+            feature = "response-cache",
+            feature = "response-compression"
+        ))]
+        {
+            for &kind in impulse_plugins::compiled_plugin_catalog().available_kinds() {
+                metrics
+                    .plugin_observations()
+                    .set_active_count(kind, generation_state.plugin_plans.active_count(kind));
+            }
         }
     }
 

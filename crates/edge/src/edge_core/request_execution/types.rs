@@ -25,6 +25,7 @@ pub(crate) struct PluginRequestExecutionInput<'a> {
     pub(crate) generation: u64,
     pub(crate) ingress_protocol: IngressProtocol,
     pub(crate) headers: Option<&'a PluginHeaderLookup<'a>>,
+    #[cfg(feature = "external-auth")]
     pub(crate) external_auth_headers: Option<&'a http::HeaderMap>,
     pub(crate) has_body: bool,
     pub(crate) body_replayable: bool,

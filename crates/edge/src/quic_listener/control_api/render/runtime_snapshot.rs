@@ -95,17 +95,27 @@ impl Http3Service {
         };
         let backend_inventory = runtime_state.snapshot_backend_inventory();
         let backend_summary = backend_inventory.summary();
+        #[cfg(feature = "quota")]
         let plugin_plans = runtime_state.plugin_plans();
+        #[cfg(feature = "quota")]
         let disabled_quota = impulse_policy::quota::QuotaRuntime::disabled();
+        #[cfg(feature = "quota")]
         let quota_runtime = plugin_plans
             .quota()
             .map(impulse_plugins::CompiledQuota::runtime)
             .unwrap_or(&disabled_quota);
+        #[cfg(feature = "quota")]
         let quota_backend_status = quota_runtime.backend_status_snapshot(
             plugin_plans
                 .quota()
                 .and_then(impulse_plugins::CompiledQuota::initialization_error),
         );
+        #[cfg(not(feature = "quota"))]
+        let quota_backend_status = disabled_quota_backend_status();
+        #[cfg(feature = "quota")]
+        let quota_enabled = quota_runtime.enabled;
+        #[cfg(not(feature = "quota"))]
+        let quota_enabled = false;
 
         Self::json_response(
             StatusCode::OK,
@@ -115,7 +125,7 @@ impl Http3Service {
                     &runtime_state,
                     &backend_inventory,
                     &backend_summary,
-                    quota_runtime.enabled,
+                    quota_enabled,
                     &quota_backend_status,
                 ),
                 retained_generations: runtime_bundle_handle
@@ -138,17 +148,27 @@ impl Http3Service {
         };
         let backend_inventory = runtime_state.snapshot_backend_inventory();
         let backend_summary = backend_inventory.summary();
+        #[cfg(feature = "quota")]
         let plugin_plans = runtime_state.plugin_plans();
+        #[cfg(feature = "quota")]
         let disabled_quota = impulse_policy::quota::QuotaRuntime::disabled();
+        #[cfg(feature = "quota")]
         let quota_runtime = plugin_plans
             .quota()
             .map(impulse_plugins::CompiledQuota::runtime)
             .unwrap_or(&disabled_quota);
+        #[cfg(feature = "quota")]
         let quota_backend_status = quota_runtime.backend_status_snapshot(
             plugin_plans
                 .quota()
                 .and_then(impulse_plugins::CompiledQuota::initialization_error),
         );
+        #[cfg(not(feature = "quota"))]
+        let quota_backend_status = disabled_quota_backend_status();
+        #[cfg(feature = "quota")]
+        let quota_enabled = quota_runtime.enabled;
+        #[cfg(not(feature = "quota"))]
+        let quota_enabled = false;
 
         let entries = runtime_bundle_handle
             .generation_change_history()
@@ -172,7 +192,7 @@ impl Http3Service {
                     &runtime_state,
                     &backend_inventory,
                     &backend_summary,
-                    quota_runtime.enabled,
+                    quota_enabled,
                     &quota_backend_status,
                 ),
                 retained_generation: ControlApiRetainedGenerationPayload::from_record(record),
@@ -206,17 +226,25 @@ impl ControlApiRuntimePayload {
         let backend_inventory = state.snapshot_backend_inventory();
         let backend_summary = backend_inventory.summary();
         let plugin_plans = state.plugin_plans();
+        #[cfg(feature = "quota")]
         let disabled_quota = impulse_policy::quota::QuotaRuntime::disabled();
+        #[cfg(feature = "quota")]
         let quota_runtime = plugin_plans
             .quota()
             .map(impulse_plugins::CompiledQuota::runtime)
             .unwrap_or(&disabled_quota);
+        #[cfg(feature = "quota")]
         let quota_backend_status = quota_runtime.backend_status_snapshot(
             plugin_plans
                 .quota()
                 .and_then(impulse_plugins::CompiledQuota::initialization_error),
         );
+        #[cfg(not(feature = "quota"))]
+        let quota_backend_status = disabled_quota_backend_status();
         let (auth_providers, jwks) = build_auth_and_jwks_payloads(runtime.runtime_config());
+        let latest_generation_preparation = state
+            .runtime_bundle_handle()
+            .and_then(|handle| handle.generation_change_history().into_iter().next());
 
         Self {
             uptime_ms: service_ctx.started_at.elapsed().as_millis() as u64,
@@ -243,16 +271,35 @@ impl ControlApiRuntimePayload {
             plugins: ControlApiPluginRuntimePayload::from_runtime(
                 state.generation().map(|generation| generation.generation()),
                 plugin_plans.as_ref(),
+                latest_generation_preparation.as_ref(),
             ),
-            quota: ControlApiQuotaPayload::from_snapshot(
-                quota_runtime,
-                quota_backend_status.clone(),
-            ),
+            quota: {
+                #[cfg(feature = "quota")]
+                {
+                    ControlApiQuotaPayload::from_snapshot(
+                        quota_runtime,
+                        quota_backend_status.clone(),
+                    )
+                }
+                #[cfg(not(feature = "quota"))]
+                {
+                    ControlApiQuotaPayload::disabled(quota_backend_status.clone())
+                }
+            },
             observability: ControlApiObservabilityPayload::from_runtime_state(
                 &state,
                 &backend_inventory,
                 &backend_summary,
-                quota_runtime.enabled,
+                {
+                    #[cfg(feature = "quota")]
+                    {
+                        quota_runtime.enabled
+                    }
+                    #[cfg(not(feature = "quota"))]
+                    {
+                        false
+                    }
+                },
                 &quota_backend_status,
             ),
             auth: ControlApiAuthPayload {
@@ -352,31 +399,46 @@ impl ControlApiPluginRuntimePayload {
     fn from_runtime(
         runtime_generation: Option<u64>,
         plans: &impulse_plugins::CompiledGenerationPluginPlans,
+        latest_generation_preparation: Option<&GenerationHistoryEntry>,
     ) -> Self {
         let catalog = impulse_plugins::compiled_plugin_catalog();
-        let compiled_availability = PluginKind::ALL
-            .into_iter()
-            .map(|kind| ControlApiCompiledPluginPayload {
-                kind: kind.label(),
-                available: catalog.contains(kind),
-            })
+        let compiled = catalog
+            .available_kinds()
+            .iter()
+            .map(|kind| kind.label())
             .collect();
-        let active_kinds = PluginKind::ALL
-            .into_iter()
-            .filter_map(|kind| {
-                let instances = plans.active_count(kind);
-                (instances > 0).then_some(ControlApiActivePluginPayload {
-                    kind: kind.label(),
-                    instances,
-                })
+        let active = catalog
+            .available_kinds()
+            .iter()
+            .copied()
+            .filter(|kind| plans.active_count(*kind) > 0)
+            .map(PluginKind::label)
+            .collect::<Vec<_>>();
+        let required_but_unavailable = latest_generation_preparation
+            .filter(|entry| {
+                matches!(
+                    entry.status,
+                    GenerationStatus::Rejected | GenerationStatus::Failed
+                )
             })
+            .into_iter()
+            .flat_map(|entry| &entry.rejected_changes)
+            .filter_map(|rejection| rejection.unavailable_plugin_kind())
+            .map(PluginKind::label)
             .collect::<Vec<_>>();
         let generation_aligned = runtime_generation == Some(plans.generation());
-        let active_kinds_available = PluginKind::ALL
-            .into_iter()
+        let active_kinds_available = catalog
+            .available_kinds()
+            .iter()
+            .copied()
             .filter(|kind| plans.active_count(*kind) > 0)
             .all(|kind| catalog.contains(kind));
-        let active_instance_count = active_kinds.iter().map(|active| active.instances).sum();
+        let active_instance_count = catalog
+            .available_kinds()
+            .iter()
+            .copied()
+            .map(|kind| plans.active_count(kind))
+            .sum();
         let reason = if !generation_aligned {
             Some("generation_mismatch")
         } else if !active_kinds_available {
@@ -387,8 +449,9 @@ impl ControlApiPluginRuntimePayload {
 
         Self {
             generation: plans.generation(),
-            compiled_availability,
-            active_kinds,
+            compiled,
+            active,
+            required_but_unavailable,
             health: ControlApiPluginHealthPayload {
                 status: if reason.is_none() {
                     "healthy"
@@ -403,7 +466,32 @@ impl ControlApiPluginRuntimePayload {
     }
 }
 
+#[cfg(not(feature = "quota"))]
+fn disabled_quota_backend_status() -> QuotaBackendStatusSnapshot {
+    QuotaBackendStatusSnapshot {
+        backend_mode: "in_memory".to_string(),
+        availability: "disabled".to_string(),
+        degraded: false,
+        health_reason: None,
+        last_observed_at_unix_ms: None,
+        recent_errors: Vec::new(),
+    }
+}
+
 impl ControlApiQuotaPayload {
+    #[cfg(not(feature = "quota"))]
+    fn disabled(backend_status: QuotaBackendStatusSnapshot) -> Self {
+        Self {
+            enabled: false,
+            enforcement: "enforce",
+            backend_failure_policy: "fail_closed",
+            active_backend: backend_status.backend_mode.clone(),
+            backend_status: ControlApiQuotaBackendStatusPayload::from_snapshot(backend_status),
+            policies: Vec::new(),
+        }
+    }
+
+    #[cfg(feature = "quota")]
     fn from_snapshot(
         runtime: &impulse_policy::quota::QuotaRuntime,
         backend_status: QuotaBackendStatusSnapshot,
@@ -607,6 +695,7 @@ impl ControlApiQuotaBackendErrorPayload {
     }
 }
 
+#[cfg(feature = "quota")]
 impl ControlApiQuotaPolicyPayload {
     fn from_snapshot(snapshot: QuotaPolicyIntrospectionSnapshot) -> Self {
         Self {
@@ -623,6 +712,7 @@ impl ControlApiQuotaPolicyPayload {
     }
 }
 
+#[cfg(feature = "quota")]
 impl ControlApiQuotaSelectorPayload {
     fn from_snapshot(snapshot: QuotaSelectorIntrospectionSnapshot) -> Self {
         Self {
@@ -634,6 +724,7 @@ impl ControlApiQuotaSelectorPayload {
     }
 }
 
+#[cfg(feature = "quota")]
 impl ControlApiQuotaWindowPayload {
     fn from_snapshot(snapshot: QuotaWindowIntrospectionSnapshot) -> Self {
         Self {

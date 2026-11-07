@@ -8,6 +8,28 @@ license.workspace = true
 name = "impulse"
 path = "src/main.rs"
 
+[features]
+default = ["plugins-full"]
+connection-rate-limit = ["impulse-edge/connection-rate-limit"]
+api-key-auth = ["impulse-edge/api-key-auth"]
+jwt-auth = ["impulse-edge/jwt-auth"]
+external-auth = ["impulse-edge/external-auth"]
+scoped-rate-limit = ["impulse-edge/scoped-rate-limit"]
+quota = ["impulse-edge/quota"]
+response-cache = ["impulse-edge/response-cache"]
+response-compression = ["impulse-edge/response-compression"]
+plugins-full = [
+    "connection-rate-limit",
+    "api-key-auth",
+    "jwt-auth",
+    "external-auth",
+    "scoped-rate-limit",
+    "quota",
+    "response-cache",
+    "response-compression",
+]
+plugins-minimal = ["connection-rate-limit"]
+
 [dependencies]
 clap.workspace = true
 log.workspace = true
@@ -15,7 +37,7 @@ tokio.workspace = true
 libc.workspace = true
 
 impulse-config = { path = "../crates/config" }
-impulse-edge = { path = "../crates/edge" }
+impulse-edge = { path = "../crates/edge", default-features = false }
 impulse-utils = { path = "../crates/utils" }
 
 [dev-dependencies]

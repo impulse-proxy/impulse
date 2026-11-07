@@ -8,6 +8,7 @@ use std::{
 use impulse_config::runtime::{ListenerRuntimeConfig, RuntimeConfig};
 use impulse_errors::ProxyError;
 use impulse_http3_ingress::{UdpSocketConfig, bind_udp_socket};
+#[cfg(feature = "quota")]
 use impulse_policy::quota::QuotaRuntime;
 use log::debug;
 
@@ -76,8 +77,11 @@ impl Http3Service {
         let shared_state = Arc::new(Self::build_shared_state(&runtime_config)?);
         shared_state.generation_state().generation_tasks.activate();
         shared_state.shared_services().process_tasks.activate();
+        #[cfg(feature = "jwt-auth")]
         crate::runtime::jwks::register_metrics(&shared_state.shared_services().metrics);
+        #[cfg(feature = "quota")]
         QuotaRuntime::register_metrics(&Arc::clone(&shared_state.shared_services().metrics));
+        #[cfg(feature = "jwt-auth")]
         crate::runtime::jwks::preflight_require_ready(&runtime_config, "startup_preflight")?;
         let listener_config = runtime_config
             .listener_runtime_configs()

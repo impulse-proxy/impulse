@@ -1,18 +1,28 @@
-use std::{
-    collections::HashMap,
-    fmt,
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
-};
+#[cfg(feature = "response-cache")]
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::{collections::HashMap, fmt, sync::Arc};
 
 use impulse_contracts::PluginKind;
 
+#[cfg(any(feature = "external-auth", feature = "quota"))]
+use crate::CompiledAsyncRequestPlugin;
+#[cfg(feature = "response-cache")]
+use crate::CompiledCachePlugin;
+#[cfg(feature = "connection-rate-limit")]
+use crate::CompiledConnectionPlugin;
+#[cfg(any(
+    feature = "api-key-auth",
+    feature = "jwt-auth",
+    feature = "scoped-rate-limit"
+))]
+use crate::CompiledRequestPlugin;
+#[cfg(feature = "response-compression")]
+use crate::CompiledResponsePlugin;
+#[cfg(feature = "scoped-rate-limit")]
+use crate::CompiledScopedRateLimit;
 use crate::{
-    CompiledAsyncRequestPlugin, CompiledCachePlugin, CompiledConnectionPlan,
-    CompiledConnectionPlugin, CompiledPluginPlan, CompiledRequestPlugin, CompiledResponsePlugin,
-    CompiledScopedRateLimit, PluginCatalog, PluginConstructionInputs, UpstreamPluginInputs,
+    CompiledConnectionPlan, CompiledPluginPlan, PluginCatalog, PluginConstructionInputs,
+    UpstreamPluginInputs,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -40,6 +50,7 @@ pub struct CompiledGenerationPluginPlans {
     generation: u64,
     connection: CompiledConnectionPlan,
     upstreams: HashMap<String, Arc<CompiledPluginPlan>>,
+    #[cfg(feature = "response-cache")]
     response_cache_namespace: Arc<AtomicU64>,
 }
 
@@ -65,22 +76,26 @@ impl CompiledGenerationPluginPlans {
     }
 
     #[must_use]
+    #[cfg(feature = "quota")]
     pub fn quota(&self) -> Option<&crate::CompiledQuota> {
         self.upstreams.values().find_map(|plan| {
             plan.async_request_gate()
                 .iter()
                 .find_map(|plugin| match plugin {
                     CompiledAsyncRequestPlugin::Quota(quota) => Some(quota.as_ref()),
+                    #[cfg(feature = "external-auth")]
                     CompiledAsyncRequestPlugin::ExternalAuth(_) => None,
                 })
         })
     }
 
     #[must_use]
+    #[cfg(feature = "response-cache")]
     pub fn response_cache_namespace(&self) -> u64 {
         self.response_cache_namespace.load(Ordering::Acquire)
     }
 
+    #[cfg(feature = "response-cache")]
     pub fn inherit_response_cache_namespace(&self, namespace: u64) {
         self.response_cache_namespace
             .store(namespace, Ordering::Release);
@@ -137,6 +152,16 @@ impl CompiledGenerationPluginPlans {
     }
 }
 
+#[cfg(any(
+    feature = "connection-rate-limit",
+    feature = "api-key-auth",
+    feature = "jwt-auth",
+    feature = "external-auth",
+    feature = "scoped-rate-limit",
+    feature = "quota",
+    feature = "response-cache",
+    feature = "response-compression"
+))]
 fn require_available(
     catalog: &PluginCatalog,
     kind: PluginKind,
@@ -152,12 +177,20 @@ pub fn compile_generation_plugin_plans(
     generation: u64,
     inputs: PluginConstructionInputs,
 ) -> Result<CompiledGenerationPluginPlans, PluginPlanCompileError> {
-    require_available(catalog, PluginKind::ConnectionRateLimit)?;
-    let connection =
-        CompiledConnectionPlan::new(vec![CompiledConnectionPlugin::connection_rate_limit(
-            inputs.connection_rate_limit,
-        )]);
+    #[cfg(feature = "connection-rate-limit")]
+    let connection = match inputs.connection_rate_limit {
+        Some(input) => {
+            require_available(catalog, PluginKind::ConnectionRateLimit)?;
+            CompiledConnectionPlan::new(vec![CompiledConnectionPlugin::connection_rate_limit(
+                input,
+            )])
+        }
+        None => CompiledConnectionPlan::default(),
+    };
+    #[cfg(not(feature = "connection-rate-limit"))]
+    let connection = CompiledConnectionPlan::default();
 
+    #[cfg(feature = "scoped-rate-limit")]
     let scoped_rate_limits = if inputs.scoped_rate_limits.is_empty() {
         None
     } else {
@@ -166,6 +199,7 @@ pub fn compile_generation_plugin_plans(
             inputs.scoped_rate_limits,
         ))))
     };
+    #[cfg(feature = "quota")]
     let quota = match inputs.quota {
         Some(quota) => {
             require_available(catalog, PluginKind::Quota)?;
@@ -174,6 +208,7 @@ pub fn compile_generation_plugin_plans(
         None => None,
     };
 
+    #[cfg(feature = "response-cache")]
     let response_cache_namespace = Arc::new(AtomicU64::new(generation));
     let upstreams = inputs
         .upstreams
@@ -184,8 +219,11 @@ pub fn compile_generation_plugin_plans(
                 catalog,
                 generation,
                 upstream,
+                #[cfg(feature = "scoped-rate-limit")]
                 &scoped_rate_limits,
+                #[cfg(feature = "quota")]
                 &quota,
+                #[cfg(feature = "response-cache")]
                 &response_cache_namespace,
             )
         })
@@ -195,55 +233,67 @@ pub fn compile_generation_plugin_plans(
         generation,
         connection,
         upstreams,
+        #[cfg(feature = "response-cache")]
         response_cache_namespace,
     })
 }
 
 fn compile_upstream_plan(
-    catalog: &PluginCatalog,
+    _catalog: &PluginCatalog,
     generation: u64,
     inputs: UpstreamPluginInputs,
-    scoped_rate_limits: &Option<Arc<CompiledScopedRateLimit>>,
-    quota: &Option<Arc<crate::CompiledQuota>>,
-    response_cache_namespace: &Arc<AtomicU64>,
+    #[cfg(feature = "scoped-rate-limit")] scoped_rate_limits: &Option<Arc<CompiledScopedRateLimit>>,
+    #[cfg(feature = "quota")] quota: &Option<Arc<crate::CompiledQuota>>,
+    #[cfg(feature = "response-cache")] response_cache_namespace: &Arc<AtomicU64>,
 ) -> Result<(String, Arc<CompiledPluginPlan>), PluginPlanCompileError> {
+    #[allow(unused_mut)]
     let mut request_gate = Vec::with_capacity(3);
+    #[cfg(feature = "api-key-auth")]
     if let Some(api_key) = inputs.api_key_auth {
-        require_available(catalog, PluginKind::ApiKeyAuth)?;
+        require_available(_catalog, PluginKind::ApiKeyAuth)?;
         request_gate.push(CompiledRequestPlugin::ApiKeyAuth(api_key));
     }
+    #[cfg(feature = "jwt-auth")]
     if let Some(jwt) = inputs.jwt_auth {
-        require_available(catalog, PluginKind::JwtAuth)?;
+        require_available(_catalog, PluginKind::JwtAuth)?;
         request_gate.push(CompiledRequestPlugin::JwtAuth(Box::new(
             crate::CompiledJwtAuth::new(generation, jwt),
         )));
     }
+    #[cfg(feature = "scoped-rate-limit")]
     if let Some(scoped_rate_limits) = scoped_rate_limits {
         request_gate.push(CompiledRequestPlugin::ScopedRateLimit(Arc::clone(
             scoped_rate_limits,
         )));
     }
 
+    #[allow(unused_mut)]
     let mut async_request_gate = Vec::with_capacity(2);
+    #[cfg(feature = "external-auth")]
     if let Some(external_auth) = inputs.external_auth {
-        require_available(catalog, PluginKind::ExternalAuth)?;
+        require_available(_catalog, PluginKind::ExternalAuth)?;
         async_request_gate.push(CompiledAsyncRequestPlugin::ExternalAuth(external_auth));
     }
+    #[cfg(feature = "quota")]
     if let Some(quota) = quota {
         async_request_gate.push(CompiledAsyncRequestPlugin::Quota(Arc::clone(quota)));
     }
 
+    #[allow(unused_mut)]
     let mut cache_policy = Vec::with_capacity(1);
+    #[cfg(feature = "response-cache")]
     if let Some(cache) = inputs.response_cache {
-        require_available(catalog, PluginKind::ResponseCache)?;
+        require_available(_catalog, PluginKind::ResponseCache)?;
         cache_policy.push(CompiledCachePlugin::ResponseCache(Arc::new(
             crate::CompiledResponseCache::new(cache, Arc::clone(response_cache_namespace)),
         )));
     }
 
+    #[allow(unused_mut)]
     let mut response_policy = Vec::with_capacity(1);
+    #[cfg(feature = "response-compression")]
     if let Some(compression) = inputs.response_compression {
-        require_available(catalog, PluginKind::ResponseCompression)?;
+        require_available(_catalog, PluginKind::ResponseCompression)?;
         response_policy.push(CompiledResponsePlugin::ResponseCompression(
             crate::CompiledResponseCompression::new(compression),
         ));

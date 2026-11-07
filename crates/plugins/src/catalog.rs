@@ -2,14 +2,22 @@ use std::{collections::HashSet, fmt, sync::OnceLock};
 
 use impulse_contracts::PluginKind;
 
-pub const ALL_COMPILED_PLUGIN_KINDS: [PluginKind; 8] = [
+pub const ALL_COMPILED_PLUGIN_KINDS: &[PluginKind] = &[
+    #[cfg(feature = "connection-rate-limit")]
     PluginKind::ConnectionRateLimit,
+    #[cfg(feature = "api-key-auth")]
     PluginKind::ApiKeyAuth,
+    #[cfg(feature = "jwt-auth")]
     PluginKind::JwtAuth,
+    #[cfg(feature = "external-auth")]
     PluginKind::ExternalAuth,
+    #[cfg(feature = "scoped-rate-limit")]
     PluginKind::ScopedRateLimit,
+    #[cfg(feature = "quota")]
     PluginKind::Quota,
+    #[cfg(feature = "response-cache")]
     PluginKind::ResponseCache,
+    #[cfg(feature = "response-compression")]
     PluginKind::ResponseCompression,
 ];
 

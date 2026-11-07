@@ -35,6 +35,7 @@ pub struct RuntimeTransportPolicy {
     pub pin_workers: bool,
     pub udp_recv_buffer_bytes: usize,
     pub udp_send_buffer_bytes: usize,
+    pub connection_rate_limit_enabled: bool,
     pub new_connections_per_sec: u32,
     pub new_connections_burst: u32,
     pub quic_initial_max_data: u64,
@@ -134,14 +135,16 @@ impl RuntimeTransportPolicy {
             "performance.h2_pool_max_idle_per_backend",
             performance.h2_pool_max_idle_per_backend,
         )?;
-        require_nonzero_u32(
-            "performance.new_connections_per_sec",
-            performance.new_connections_per_sec,
-        )?;
-        require_nonzero_u32(
-            "performance.new_connections_burst",
-            performance.new_connections_burst,
-        )?;
+        if performance.connection_rate_limit_enabled {
+            require_nonzero_u32(
+                "performance.new_connections_per_sec",
+                performance.new_connections_per_sec,
+            )?;
+            require_nonzero_u32(
+                "performance.new_connections_burst",
+                performance.new_connections_burst,
+            )?;
+        }
         require_nonzero_usize(
             "performance.max_active_connections",
             performance.max_active_connections,
@@ -215,6 +218,7 @@ impl RuntimeTransportPolicy {
             pin_workers: performance.pin_workers,
             udp_recv_buffer_bytes: performance.udp_recv_buffer_bytes,
             udp_send_buffer_bytes: performance.udp_send_buffer_bytes,
+            connection_rate_limit_enabled: performance.connection_rate_limit_enabled,
             new_connections_per_sec: performance.new_connections_per_sec,
             new_connections_burst: performance.new_connections_burst,
             quic_initial_max_data: performance.quic_initial_max_data,

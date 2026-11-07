@@ -1,9 +1,12 @@
 use std::collections::HashMap;
 
-use impulse_config::{config::SecretProvider, runtime::RuntimeJwtAuth};
+use impulse_config::config::SecretProvider;
+#[cfg(feature = "jwt-auth")]
+use impulse_config::runtime::RuntimeJwtAuth;
 
 use super::{redaction::option_is_present, *};
 
+#[cfg(feature = "jwt-auth")]
 pub(super) fn build_auth_and_jwks_payloads(
     runtime_config: &impulse_config::runtime::RuntimeConfig,
 ) -> (Vec<ControlApiAuthProviderPayload>, ControlApiJwksPayload) {
@@ -47,6 +50,18 @@ pub(super) fn build_auth_and_jwks_payloads(
     };
 
     (auth_providers, jwks)
+}
+
+#[cfg(not(feature = "jwt-auth"))]
+pub(super) fn build_auth_and_jwks_payloads(
+    _runtime_config: &impulse_config::runtime::RuntimeConfig,
+) -> (Vec<ControlApiAuthProviderPayload>, ControlApiJwksPayload) {
+    (
+        Vec::new(),
+        ControlApiJwksPayload {
+            sources: Vec::new(),
+        },
+    )
 }
 
 pub(super) fn build_tls_upstreams(
@@ -140,6 +155,7 @@ pub(super) fn build_secrets_payload(
     }
 }
 
+#[cfg(feature = "jwt-auth")]
 pub(super) fn jwt_provider_payload(
     jwt: &RuntimeJwtAuth,
     jwks_by_source_id: &HashMap<&str, &impulse_policy::jwks::JwtJwksRuntimeSnapshot>,
@@ -199,6 +215,7 @@ pub(super) fn jwt_provider_payload(
     }
 }
 
+#[cfg(feature = "jwt-auth")]
 fn jwt_provider_mode(jwt: &RuntimeJwtAuth) -> &'static str {
     let has_hs256 = !jwt.secret.is_empty();
     let has_static_asymmetric = !jwt.static_keys.is_empty();
@@ -213,6 +230,7 @@ fn jwt_provider_mode(jwt: &RuntimeJwtAuth) -> &'static str {
     }
 }
 
+#[cfg(feature = "jwt-auth")]
 fn jwt_algorithm_name(algorithm: impulse_config::config::JwtAlgorithm) -> &'static str {
     match algorithm {
         impulse_config::config::JwtAlgorithm::Hs256 => "HS256",

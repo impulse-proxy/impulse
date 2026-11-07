@@ -1496,6 +1496,7 @@ dependencies = [
  "hex",
  "http",
  "idna",
+ "impulse-contracts",
  "libc",
  "log",
  "rcgen",

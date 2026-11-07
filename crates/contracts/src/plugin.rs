@@ -227,16 +227,16 @@ impl PluginResponseMetadataView<'_> {
 }
 
 #[derive(Clone, Copy)]
-pub struct PluginCacheView<'a> {
-    pub request: PluginRequestView<'a>,
-    pub response: Option<PluginResponseMetadataView<'a>>,
-    pub representation: Option<&'a str>,
+pub struct PluginCacheView<'request, 'response> {
+    pub request: PluginRequestView<'request>,
+    pub response: Option<PluginResponseMetadataView<'response>>,
+    pub representation: Option<&'request str>,
 }
 
 #[derive(Clone, Copy)]
-pub struct PluginResponseView<'a> {
-    pub request: PluginRequestView<'a>,
-    pub response: PluginResponseMetadataView<'a>,
+pub struct PluginResponseView<'request, 'response> {
+    pub request: PluginRequestView<'request>,
+    pub response: PluginResponseMetadataView<'response>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

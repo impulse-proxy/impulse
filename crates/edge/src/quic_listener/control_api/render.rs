@@ -1,9 +1,11 @@
 use std::collections::HashMap;
 
 use impulse_contracts::{HealthFailureReason, PluginKind};
+use impulse_policy::quota::{QuotaBackendErrorSnapshot, QuotaBackendStatusSnapshot};
+#[cfg(feature = "quota")]
 use impulse_policy::quota::{
-    QuotaBackendErrorSnapshot, QuotaBackendStatusSnapshot, QuotaPolicyIntrospectionSnapshot,
-    QuotaSelectorIntrospectionSnapshot, QuotaWindowIntrospectionSnapshot,
+    QuotaPolicyIntrospectionSnapshot, QuotaSelectorIntrospectionSnapshot,
+    QuotaWindowIntrospectionSnapshot,
 };
 use serde::Serialize;
 
@@ -107,21 +109,10 @@ struct ControlApiAdaptiveAdmissionPayload {
 #[derive(Serialize)]
 struct ControlApiPluginRuntimePayload {
     generation: u64,
-    compiled_availability: Vec<ControlApiCompiledPluginPayload>,
-    active_kinds: Vec<ControlApiActivePluginPayload>,
+    compiled: Vec<&'static str>,
+    active: Vec<&'static str>,
+    required_but_unavailable: Vec<&'static str>,
     health: ControlApiPluginHealthPayload,
-}
-
-#[derive(Serialize)]
-struct ControlApiCompiledPluginPayload {
-    kind: &'static str,
-    available: bool,
-}
-
-#[derive(Serialize)]
-struct ControlApiActivePluginPayload {
-    kind: &'static str,
-    instances: usize,
 }
 
 #[derive(Serialize)]

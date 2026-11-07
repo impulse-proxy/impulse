@@ -5,11 +5,15 @@
 //! Control-plane handlers translate requests and responses without owning
 //! runtime mutation.
 
+use impulse_contracts::PluginKind;
 pub use impulse_observability::{RuntimeOperationOutcomeReason, RuntimeRejectionReason};
 pub use impulse_runtime::GenerationId;
 use serde::{Deserialize, Serialize};
 
 use crate::runtime::policy::{TransitionRejection, TransitionRejectionKind};
+
+const UNAVAILABLE_PLUGIN_OPERATOR_ACTION: &str =
+    "use a binary compiled with the required plugin or disable its configuration";
 
 pub(crate) mod compatibility;
 mod diff;
@@ -290,6 +294,22 @@ impl RejectedChange {
         }
     }
 
+    fn unavailable_plugin(configuration_location: String, plugin_kind: &str) -> Self {
+        let message = format!(
+            "configuration '{configuration_location}' requires plugin kind '{plugin_kind}' which is not compiled into this binary"
+        );
+        Self {
+            reason: RuntimeRejectionReason::InvalidConfig,
+            kind: RejectedChangeKind::InvalidConfiguration,
+            field_path: Some(configuration_location),
+            current_value: None,
+            requested_value: Some(plugin_kind.to_string()),
+            operator_action: UNAVAILABLE_PLUGIN_OPERATOR_ACTION.to_string(),
+            active_generation_changed: false,
+            message,
+        }
+    }
+
     fn resource_preparation_failed(
         field_path: impl Into<String>,
         detail: impl Into<String>,
@@ -316,6 +336,17 @@ impl RejectedChange {
     #[must_use]
     pub fn reason_slug(&self) -> &'static str {
         self.reason.slug()
+    }
+
+    #[must_use]
+    pub(crate) fn unavailable_plugin_kind(&self) -> Option<PluginKind> {
+        if self.operator_action != UNAVAILABLE_PLUGIN_OPERATOR_ACTION {
+            return None;
+        }
+        let requested = self.requested_value.as_deref()?;
+        PluginKind::ALL
+            .into_iter()
+            .find(|kind| kind.label() == requested)
     }
 }
 

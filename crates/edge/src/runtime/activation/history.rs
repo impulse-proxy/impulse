@@ -15,16 +15,28 @@ pub(super) fn record_preview_result(handle: &RuntimeBundleHandle, plan: &ReloadP
 }
 
 pub(super) fn record_activation_result(handle: &RuntimeBundleHandle, result: &ActivationResult) {
-    handle
-        .current_view()
-        .shared_services()
-        .metrics
-        .plugin_observations()
-        .record_activation(if result.succeeded() {
-            impulse_contracts::PluginActivationOutcome::Success
-        } else {
-            impulse_contracts::PluginActivationOutcome::Failure
-        });
+    #[cfg(any(
+        feature = "connection-rate-limit",
+        feature = "api-key-auth",
+        feature = "jwt-auth",
+        feature = "external-auth",
+        feature = "scoped-rate-limit",
+        feature = "quota",
+        feature = "response-cache",
+        feature = "response-compression"
+    ))]
+    {
+        handle
+            .current_view()
+            .shared_services()
+            .metrics
+            .plugin_observations()
+            .record_activation(if result.succeeded() {
+                impulse_contracts::PluginActivationOutcome::Success
+            } else {
+                impulse_contracts::PluginActivationOutcome::Failure
+            });
+    }
     let kind = if result.succeeded() {
         GenerationEventKind::ActivationSucceeded
     } else {

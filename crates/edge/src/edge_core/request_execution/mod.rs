@@ -6,8 +6,11 @@ mod policy;
 mod routing;
 mod types;
 
+#[cfg(feature = "quota")]
 pub(crate) use admission::{QuotaRejectedDecision, execute_compiled_quota_plugin};
-pub(crate) use execution::{EdgeRequestService, execute_compiled_external_auth};
+pub(crate) use execution::EdgeRequestService;
+#[cfg(feature = "external-auth")]
+pub(crate) use execution::execute_compiled_external_auth;
 pub(crate) use policy::ResolvedRequestPolicy;
 pub(crate) use routing::RouteResolutionError;
 #[cfg(test)]
