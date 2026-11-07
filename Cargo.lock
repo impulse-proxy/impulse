@@ -1461,7 +1461,7 @@ dependencies = [
 
 [[package]]
 name = "impulse"
-version = "0.7.0-rc.1"
+version = "0.7.0"
 dependencies = [
  "clap",
  "impulse-config",
@@ -1475,7 +1475,7 @@ dependencies = [
 
 [[package]]
 name = "impulse-bridge"
-version = "0.7.0-rc.1"
+version = "0.7.0"
 dependencies = [
  "bytes",
  "http",
@@ -1491,7 +1491,7 @@ dependencies = [
 
 [[package]]
 name = "impulse-config"
-version = "0.7.0-rc.1"
+version = "0.7.0"
 dependencies = [
  "hex",
  "http",
@@ -1510,14 +1510,14 @@ dependencies = [
 
 [[package]]
 name = "impulse-contracts"
-version = "0.7.0-rc.1"
+version = "0.7.0"
 dependencies = [
  "http",
 ]
 
 [[package]]
 name = "impulse-edge"
-version = "0.7.0-rc.1"
+version = "0.7.0"
 dependencies = [
  "async-trait",
  "base64",
@@ -1571,7 +1571,7 @@ dependencies = [
 
 [[package]]
 name = "impulse-errors"
-version = "0.7.0-rc.1"
+version = "0.7.0"
 dependencies = [
  "http",
  "impulse-contracts",
@@ -1580,7 +1580,7 @@ dependencies = [
 
 [[package]]
 name = "impulse-h3-client"
-version = "0.7.0-rc.1"
+version = "0.7.0"
 dependencies = [
  "clap",
  "quiche",
@@ -1589,7 +1589,7 @@ dependencies = [
 
 [[package]]
 name = "impulse-http3-ingress"
-version = "0.7.0-rc.1"
+version = "0.7.0"
 dependencies = [
  "boring",
  "core_affinity",
@@ -1602,7 +1602,7 @@ dependencies = [
 
 [[package]]
 name = "impulse-lb"
-version = "0.7.0-rc.1"
+version = "0.7.0"
 dependencies = [
  "async-trait",
  "criterion",
@@ -1615,7 +1615,7 @@ dependencies = [
 
 [[package]]
 name = "impulse-observability"
-version = "0.7.0-rc.1"
+version = "0.7.0"
 dependencies = [
  "impulse-contracts",
  "serde",
@@ -1623,7 +1623,7 @@ dependencies = [
 
 [[package]]
 name = "impulse-operations"
-version = "0.7.0-rc.1"
+version = "0.7.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -1647,7 +1647,7 @@ dependencies = [
 
 [[package]]
 name = "impulse-pingora-ingress"
-version = "0.7.0-rc.1"
+version = "0.7.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -1664,7 +1664,7 @@ dependencies = [
 
 [[package]]
 name = "impulse-plugins"
-version = "0.7.0-rc.1"
+version = "0.7.0"
 dependencies = [
  "http",
  "impulse-contracts",
@@ -1674,7 +1674,7 @@ dependencies = [
 
 [[package]]
 name = "impulse-policy"
-version = "0.7.0-rc.1"
+version = "0.7.0"
 dependencies = [
  "base64",
  "boring",
@@ -1701,14 +1701,14 @@ dependencies = [
 
 [[package]]
 name = "impulse-runtime"
-version = "0.7.0-rc.1"
+version = "0.7.0"
 dependencies = [
  "log",
 ]
 
 [[package]]
 name = "impulse-transport"
-version = "0.7.0-rc.1"
+version = "0.7.0"
 dependencies = [
  "bytes",
  "h2",
@@ -1723,7 +1723,7 @@ dependencies = [
 
 [[package]]
 name = "impulse-utils"
-version = "0.7.0-rc.1"
+version = "0.7.0"
 dependencies = [
  "env_logger",
  "libc",
