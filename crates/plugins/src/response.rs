@@ -43,12 +43,15 @@ pub enum ResponsePluginExecution {
 
 /// Executes cache lookup or fill policy using request and response metadata only.
 #[must_use]
-pub fn execute_cache_plugins<'a>(
+pub fn execute_cache_plugins<'request, 'response>(
     plan: &CompiledPluginPlan,
     phase: PluginPhase,
-    cache: PluginCacheView<'a>,
+    cache: PluginCacheView<'request, 'response>,
     mut observe: impl FnMut(PluginExecutionObservation),
-    mut evaluate: impl FnMut(&CompiledCachePlugin, PluginCacheView<'a>) -> CachePluginDecision,
+    mut evaluate: impl FnMut(
+        &CompiledCachePlugin,
+        PluginCacheView<'request, 'response>,
+    ) -> CachePluginDecision,
 ) -> CachePluginExecution {
     let plugins = plan.cache_policy();
     if plugins.is_empty() {
@@ -78,11 +81,14 @@ pub fn execute_cache_plugins<'a>(
 
 /// Executes response policy using metadata only; response bodies and writes stay host-owned.
 #[must_use]
-pub fn execute_response_plugins<'a>(
+pub fn execute_response_plugins<'request, 'response>(
     plan: &CompiledPluginPlan,
-    response: PluginResponseView<'a>,
+    response: PluginResponseView<'request, 'response>,
     mut observe: impl FnMut(PluginExecutionObservation),
-    mut evaluate: impl FnMut(&CompiledResponsePlugin, PluginResponseView<'a>) -> ResponsePluginDecision,
+    mut evaluate: impl FnMut(
+        &CompiledResponsePlugin,
+        PluginResponseView<'request, 'response>,
+    ) -> ResponsePluginDecision,
 ) -> ResponsePluginExecution {
     let plugins = plan.response_policy();
     if plugins.is_empty() {
