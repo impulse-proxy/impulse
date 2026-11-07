@@ -65,6 +65,6 @@ pingora-load-balancing = { version = "=0.9.0", default-features = false }
 pingora-proxy = { version = "=0.9.0", default-features = false, features = ["rustls", "connection_filter", "upstream_modules"] }
 
 [workspace.package]
-version = "0.6.0"
+version = "0.7.0-rc.1"
 edition = "2024"
 license = "Apache-2.0"
