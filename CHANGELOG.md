@@ -5,6 +5,59 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [0.7.0] - 2026-11-07
+
+### Added
+
+- Pingora 0.9 now provides the production HTTP/1.1 and HTTP/2 ingress and upstream transport paths, including connection pooling, HTTP/2 multiplexing, TLS and ALPN, SNI certificate selection, downstream and upstream mTLS, WebSocket upgrades, and CONNECT tunnels.
+- Pingora-backed load balancing for weighted round robin, weighted random, Ketama consistent hashing, and sticky connection IDs, with retry exclusions, generation rotation, and shared selection across HTTP/1.1, HTTP/2, and HTTP/3 ingress.
+- Generation-owned backend discovery and active health services with last-known-good DNS membership, stale-generation rejection, bounded concurrent refresh, TCP and HTTP probes, threshold and cooldown handling, and lifecycle-aware draining.
+- Optional bounded response caching and streaming gzip compression shared across ingress protocols. Caching includes canonical generation-scoped keys, secure bypass rules, stampede locking, eviction and object limits, namespace rotation, and bounded metrics.
+- A compiled plugin runtime for connection limiting, API-key and JWT authentication, external authorization, scoped rate limiting, distributed quota, response caching, and response compression. Plugin plans are immutable, ordered by the host, and pinned to the active runtime generation.
+- Cargo feature groups for full, minimal, and custom plugin builds. Runtime status now distinguishes plugins compiled into the binary from plugins active in the current generation.
+
+### Changed
+
+- HTTP/1.1 and HTTP/2 policy enforcement now shares the same protocol-neutral request execution, routing, admission, retry, response-processing, and terminal-outcome ownership used by HTTP/3.
+- Runtime configuration is compiled into narrow load-balancing, transport, bridge, policy, and plugin inputs during generation preparation instead of exposing complete configuration structures on the request path.
+- The workspace was split into focused contracts, observability, policy, runtime, operations, Pingora-ingress, HTTP/3-ingress, and plugin crates. Protocol ingress implementations are now thin adapters around the shared edge core.
+- Runtime activation now prepares generation-owned plugin, discovery, health, cache, TLS, transport, and listener state before publication, preserving the active generation when preparation fails and coordinating rollback, retirement, drain, and shutdown.
+- Connection rate limiting can be disabled with `performance.connection_rate_limit_enabled`; it remains enabled by default for compatibility.
+- HTTP/3 remains available as an experimental ingress protocol and reports that status at startup and through runtime status.
+- The project license changed from GPLv3 to Apache License 2.0.
+
+### Performance
+
+- Empty plugin phases now bypass request-view construction, mutation allocation, phase iteration, plugin metrics, and asynchronous runner creation.
+- Backend readiness synchronization is event-driven instead of scanning every backend for every selection.
+- Per-source connection admission is sharded and pruned periodically instead of serializing every connection behind a full-map scan.
+- Request-path cloning, lock contention, metrics updates, route lookup, and load-balancing hot paths were reduced; local Criterion benchmarks replace the removed legacy benchmark harness.
+
+### Fixed
+
+- Pingora ingress now enforces external authorization, distributed quota, active-connection limits, configured body deadlines, and exactly-once terminal outcome accounting consistently with HTTP/3.
+- Authenticated routes cannot share cache entries, and responses without a valid origin freshness directive are no longer cached implicitly.
+- Listener replacement binds and verifies a reusable-port replacement before draining the active listener, avoiding preventable reload outages.
+- Cache storage-limit changes are rejected during reload because storage capacity is process-owned; failed reloads leave the active cache and generation unchanged.
+- HTTP/1 upstreams reject trailer-bearing exchanges before partial forwarding when they cannot preserve the exchange contract.
+- Scoped rate limiting fails closed when its bounded identity store is unavailable or full.
+- Control-plane authentication, authorization, identity reconciliation, secret redaction, request-path validation, TLS shutdown, and audit reliability were hardened.
+
+### Removed
+
+- The Hyper bootstrap listener and the legacy Hyper HTTP/1.1 and HTTP/2 upstream clients, pools, migration selectors, and fallback paths.
+- Replaced load-balancing algorithms, DNS and active-health task ownership, duplicate ingress policy orchestration, duplicated runtime state, and cross-layer reach-through exports.
+- The legacy benchmark workspace and scripts, obsolete migration fixtures, and the in-repository MkDocs documentation site.
+
+### Compatibility
+
+- The default `plugins-full` build retains the existing policy feature set. Minimal or custom binaries reject startup and reload when configuration requires a plugin that was not compiled in; a failed reload does not disturb the active generation.
+- `performance.connection_rate_limit_enabled` defaults to `true`, so existing configurations retain connection admission behavior.
+- HTTP/1.1 and HTTP/2 now run exclusively on Pingora. Operators should validate TLS, connection reuse, listener activation, and tunnel behavior in staging before upgrading production traffic.
+- HTTP/3 support is retained but remains experimental until Pingora provides native HTTP/3 ingress support.
+
 ## [0.6.0-beta] - 2026-08-22
 
 ### Added
