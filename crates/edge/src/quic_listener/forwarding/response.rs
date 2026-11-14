@@ -1607,10 +1607,19 @@ impl Http3Service {
                 ResponseChunk::Data(data) => match impulse_http3_ingress::send_response_body(
                     h3, quic, stream_id, &data, false,
                 ) {
+                    Ok(written) if written < data.len() => {
+                        // Partial write: keep only the unsent tail and retry once the
+                        // stream is writable again.
+                        req.set_response_emission_state(ResponseEmissionState::StreamingBody);
+                        req.set_pending_chunk(Some(ResponseChunk::Data(data.slice(written..))));
+                        break;
+                    }
                     Ok(_) => {
                         req.set_response_emission_state(ResponseEmissionState::StreamingBody);
                     }
-                    Err(quiche::h3::Error::StreamBlocked) => {
+                    // `Done` means no bytes could be written yet (flow control); it is
+                    // retryable, like `StreamBlocked`.
+                    Err(quiche::h3::Error::StreamBlocked | quiche::h3::Error::Done) => {
                         req.set_pending_chunk(Some(ResponseChunk::Data(data)));
                         break;
                     }
@@ -1695,7 +1704,7 @@ impl Http3Service {
                             terminal = true;
                             break;
                         }
-                        Err(quiche::h3::Error::StreamBlocked) => {
+                        Err(quiche::h3::Error::StreamBlocked | quiche::h3::Error::Done) => {
                             req.set_pending_chunk(Some(ResponseChunk::End));
                             break;
                         }
