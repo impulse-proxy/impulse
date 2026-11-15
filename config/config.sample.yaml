@@ -70,6 +70,19 @@ upstream:
     route:
       path_prefix: "/api"
 
+    # Optional per-upstream response cache and compression (off by default).
+    # Enabling either requires a build that includes the response-cache /
+    # response-compression plugins (default `plugins-full` does).
+    # cache:
+    #   enabled: true
+    #   max_bytes: 67108864        # total storage; process-owned, cannot change on reload
+    #   max_entries: 10000
+    #   max_object_bytes: 1048576  # must be <= max_bytes
+    #   max_ttl_secs: 300
+    # compression:
+    #   enabled: true
+    #   minimum_size_bytes: 1024
+
     host_policy:
       mode: pass-through   # pass-through | rewrite | upstream
       # host: "api.example.com"  # required when mode: rewrite; rejected for other modes
@@ -122,7 +135,7 @@ upstream:
           interval: 5000
 
 load_balancing:
-    type: "random"   # global fallback: random, consistent-hash, round-robin
+    type: "random"   # global fallback: round-robin, random, consistent-hash, least-connections, latency-aware, sticky-cid
 
 log:
     level: debug
@@ -154,6 +167,7 @@ performance:
     backend_dns_refresh_enabled: false        # periodically refresh hostname-based backend DNS in the control plane
     backend_dns_refresh_interval_ms: 30000   # refresh cadence for hostname-based backends (ms)
     per_backend_inflight_limit: 64
+    connection_rate_limit_enabled: true  # set false to disable per-source new-connection rate limiting (requires the connection-rate-limit plugin build otherwise)
     new_connections_per_sec: 2000   # max new QUIC connections accepted per second (token-bucket refill rate)
     new_connections_burst: 500      # burst capacity above the steady-state rate; must be >= 1
     max_active_connections: 20000   # hard cap on active QUIC connections per worker

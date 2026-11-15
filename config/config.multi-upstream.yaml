@@ -56,7 +56,7 @@ upstream:
   api:
     load_balancing:
       type: consistent-hash
-      hash_on: "header:x-user-id"  # falls back to client IP when header is absent
+      key: "header:x-user-id"  # falls back to client IP when header is absent
 
     route:
       path_prefix: "/api"   # longest-match; takes priority over the web pool's "/"

@@ -601,3 +601,93 @@ fn grpc_timeout_returns_recoverable_proxy_error() {
         "grpc timeout should surface as an HTTP response"
     );
 }
+
+fn large_body_pattern(len: usize) -> Vec<u8> {
+    (0..len).map(|i| (i % 251) as u8).collect()
+}
+
+async fn start_h1_backend_with_large_bodies() -> SocketAddr {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    tokio::spawn(async move {
+        loop {
+            let (stream, _) = match listener.accept().await {
+                Ok(v) => v,
+                Err(_) => break,
+            };
+            let io = TokioIo::new(stream);
+            let service = service_fn(|req: Request<Incoming>| async move {
+                let len = match req.uri().path() {
+                    "/large-100k" => 100 * 1024,
+                    "/large-4m" => 4 * 1024 * 1024,
+                    _ => 5,
+                };
+                let body = Bytes::from(large_body_pattern(len));
+                let mut response: Response<TestBody> = Response::new(Full::new(body).boxed());
+                response
+                    .headers_mut()
+                    .insert(CONTENT_LENGTH, HeaderValue::from(len));
+                Ok::<_, hyper::Error>(response)
+            });
+            tokio::spawn(async move {
+                let _ = hyper::server::conn::http1::Builder::new()
+                    .serve_connection(io, service)
+                    .await;
+            });
+        }
+    });
+
+    addr
+}
+
+/// Regression test for responses that cannot be written to the QUIC stream in a
+/// single `send_body` call. quiche returns a short count and then `Done` once the
+/// stream's flow-control credit is used up. The proxy must retry the unsent tail
+/// instead of aborting the stream or silently dropping bytes.
+#[test]
+fn http3_large_response_bodies_are_delivered_intact() {
+    if !local_listener_bind_available() {
+        return;
+    }
+    let dir = tempdir().expect("failed to create temp dir");
+    let (cert, key) = write_test_certs(&dir);
+    let rt = tokio::runtime::Runtime::new().expect("runtime");
+
+    let backend_addr = rt.block_on(start_h1_backend_with_large_bodies());
+    let config = make_config(0, format!("http://{backend_addr}"), cert, key);
+    let listener = Http3Service::new(config).expect("failed to create listener");
+    let listen_addr = listener.socket.local_addr().unwrap();
+    let _listener_task = ListenerTaskGuard::spawn(&rt, listener);
+
+    for (path, len) in [
+        ("/large-100k", 100 * 1024usize),
+        ("/large-4m", 4 * 1024 * 1024usize),
+    ] {
+        let response = run_h3_client_collect_response(
+            listen_addr,
+            vec![
+                quiche::h3::Header::new(b":method", b"GET"),
+                quiche::h3::Header::new(b":scheme", b"https"),
+                quiche::h3::Header::new(b":authority", b"localhost"),
+                quiche::h3::Header::new(b":path", path.as_bytes()),
+                quiche::h3::Header::new(b"user-agent", b"impulse-large-body-test"),
+            ],
+            true,
+            Duration::from_secs(REQUEST_TIMEOUT_SECS + 20),
+        )
+        .unwrap_or_else(|err| panic!("{path}: request failed: {err}"));
+
+        assert_eq!(response.status, "200", "{path}: unexpected status");
+        assert!(!response.reset, "{path}: stream was reset mid-body");
+        assert_eq!(
+            response.body.len(),
+            len,
+            "{path}: body length mismatch (truncated or short write)"
+        );
+        assert!(
+            response.body == large_body_pattern(len),
+            "{path}: body bytes differ from upstream (dropped or reordered data)"
+        );
+    }
+}

@@ -297,10 +297,5 @@ pub(super) fn validate_upstreams(config: &Config) -> bool {
         }
     }
 
-    if validate_global_upstream_tls && !validate_upstream_tls("upstream_tls", &config.upstream_tls)
-    {
-        return false;
-    }
-
-    true
+    !validate_global_upstream_tls || validate_upstream_tls("upstream_tls", &config.upstream_tls)
 }

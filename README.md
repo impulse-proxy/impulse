@@ -8,7 +8,7 @@ Impulse is not just a proxy binary. It is an operator-facing traffic layer for t
 
 ## Why Impulse
 
-- **Modern edge ingress**: native HTTP/3 over QUIC with a bootstrap HTTP/1.1 and HTTP/2 compatibility path.
+- **Modern edge ingress**: HTTP/1.1 and HTTP/2 run on Pingora in production, with TLS/ALPN, mTLS, WebSocket, and CONNECT support; HTTP/3 over QUIC is experimental.
 - **Clear traffic control**: routing, load balancing, admission, quota, overload protection, retries, hedging, and circuit breaking are explicit runtime concerns.
 - **Operator visibility**: metrics, logs, traces, control API views, audit events, dashboards, alerts, and SLO artifacts ship as one observability package.
 - **Backend compatibility**: adopt modern client ingress without rewriting existing backend services.
@@ -29,6 +29,7 @@ Impulse gives teams one runtime to receive traffic, make explicit decisions, pro
 ![Impulse request lifecycle](assets/image.svg)
 
 - accepts modern client traffic at the edge
+- serves HTTP/1.1 and HTTP/2 over TCP on the Pingora listener, alongside experimental HTTP/3 over QUIC
 - routes requests by host and path
 - evaluates auth, quota, admission, and overload policy separately
 - executes upstream traffic through existing HTTP/1.1 or HTTP/2 backends
@@ -40,19 +41,22 @@ Impulse gives teams one runtime to receive traffic, make explicit decisions, pro
 ### Edge And Routing
 
 - HTTP/3 and QUIC ingress
-- bootstrap HTTP/1.1 and HTTP/2 compatibility ingress
+- production HTTP/1.1 and HTTP/2 ingress on Pingora, with TLS/ALPN, downstream and upstream mTLS, WebSocket upgrades, and CONNECT tunnels
+- experimental HTTP/3 ingress
 - path and host-based routing
 - deterministic route resolution
 
 ### Load Balancing And Backend Management
 
-- random
-- round-robin
-- consistent-hash
+- random and weighted random
+- round-robin and weighted round-robin
+- Ketama consistent hashing
 - least-connections
 - latency-aware
 - sticky-cid
+- generation-owned DNS discovery with last-known-good membership
 - active health checks with automatic removal and recovery
+- pooled upstream connections and HTTP/2 multiplexing
 
 ### Resilience And Policy
 
@@ -61,6 +65,8 @@ Impulse gives teams one runtime to receive traffic, make explicit decisions, pro
 - retries and hedging
 - circuit breaking
 - bounded request and response memory behavior
+- optional response caching and streaming gzip compression
+- compiled plugin runtime for connection limiting, API-key and JWT authentication, external authorization, scoped rate limiting, and quota
 
 ### Observability And Operations
 
@@ -97,6 +103,8 @@ curl --http3-only -k \
   https://proxy.impulse.local:9889/api/health
 ```
 
+HTTP/1.1 and HTTP/2 are served over TCP on the same configured port.
+
 ## Configuration
 
 Impulse uses validated YAML configuration.
@@ -106,6 +114,8 @@ Useful starting points:
 - `config/config.production.yaml`: production-oriented baseline
 - `config/config.development.yaml`: local development profile
 - `config/config.sample.yaml`: broader reference sample
+- `config/config.multi-upstream.yaml`: multiple upstreams and load-balancing examples
+- `config/config.minimal.yaml`: smallest possible configuration; replace the placeholder auth token before use
 
 Minimal example:
 
@@ -147,6 +157,27 @@ Primary code areas:
 - `crates/transport`: upstream connection management
 - `crates/lb`: balancing and backend selection
 - `crates/config`: configuration parsing, normalization, and validation
+- `crates/pingora-ingress` and `crates/http3-ingress`: Pingora HTTP/1.1 and HTTP/2 ingress, and experimental HTTP/3 ingress
+- `crates/plugins` and `crates/policy`: compiled plugins and shared request, quota, authentication, cache, and compression policy
+- `crates/runtime` and `crates/contracts`: runtime lifecycle and shared interfaces
+- `crates/observability` and `crates/operations`: telemetry contracts, control API, audit, and watchdog operations
+- `crates/errors` and `crates/utils`: shared errors and supporting utilities
+- `crates/h3-client`: HTTP/3 command-line client
+- `impulse`: application binary
+
+## Build Variants
+
+Build the full plugin set, a minimal binary, or a custom selection:
+
+```bash
+make build-full
+make build-minimal
+make build-custom PLUGIN_FEATURES="connection-rate-limit,api-key-auth,jwt-auth"
+```
+
+Custom builds can select any combination of `connection-rate-limit`, `api-key-auth`, `jwt-auth`, `external-auth`, `scoped-rate-limit`, `quota`, `response-cache`, and `response-compression`.
+
+Minimal and custom builds reject startup or reload configurations that require a plugin not compiled into the binary. For example, a build without `connection-rate-limit` only starts if the configuration sets `performance.connection_rate_limit_enabled: false`, because it defaults to `true`.
 
 ## Production And Operations
 
@@ -183,3 +214,7 @@ cargo fmt
 cargo clippy --workspace -- -D warnings
 cargo test --workspace
 ```
+
+## License
+
+Impulse is licensed under the [Apache License 2.0](LICENSE.md).
