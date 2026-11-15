@@ -1746,6 +1746,18 @@ impl PingoraRequestService for PingoraEdgeRequestService {
         }
 
         let status = session.response_written().map(|response| response.status);
+        let should_log_access = status.is_some_and(|status| status.as_u16() >= 400)
+            || error.is_some()
+            || matches!(
+                ctx.terminal_classification.as_ref(),
+                Some(PingoraTerminalClassification::Error(_))
+            )
+            || ctx
+                .runtime
+                .startup
+                .log_config
+                .access
+                .should_log_success(ctx.request_id);
         if let Some(selected) = ctx.selected_backend.as_mut() {
             selected.finish_status = status.map(|status| status.as_u16());
         }
@@ -1882,20 +1894,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             }
         }
 
-        let request_failed = status.is_some_and(|status| status.as_u16() >= 400)
-            || error.is_some()
-            || matches!(
-                ctx.terminal_classification.as_ref(),
-                Some(PingoraTerminalClassification::Error(_))
-            );
-        if request_failed
-            || ctx
-                .runtime
-                .startup
-                .log_config
-                .access
-                .should_log_success(ctx.request_id)
-        {
+        if should_log_access {
             log::info!(
                 "request_id={} method={} path={} status={} backend={} upstream={} latency_ms={} retries={} error={}",
                 ctx.request_id,
