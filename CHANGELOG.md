@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-11-15
+
+### Changed
+
+- `performance.worker_threads` now defaults to the number of CPUs available to the data plane (CPU affinity, capped by the cgroup v1/v2 CPU quota) instead of `1`. Set it explicitly to keep the previous behavior.
+- Per-request access logging is now off by default. A new `log.access` block controls it: `mode` is `errors-only` (default), `sampled` or `full`, and `sample_ratio` applies to `sampled`. Deployments that relied on success access log lines must set `mode: full` or `sampled`.
+- Pingora listeners are sharded across data-plane workers, and the control plane runs on its own isolated runtime so it no longer competes with request handling.
+
+### Added
+
+- Startup logs now report each listener's effective data-plane worker count, packet shards per worker, and Pingora listener shards.
+
+### Compatibility
+
+- No config schema removals. Configurations that don't set `worker_threads` or `log.access` pick up the new defaults on upgrade: more workers, and no success access logs.
+
 ## [0.7.1] - 2026-11-15
 
 ### Fixed
