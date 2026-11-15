@@ -630,7 +630,9 @@ impl Http3Service {
             let mut policy_telemetry = ForwardingPolicyTelemetry::default();
             let result: ForwardResult = async {
                 #[cfg(feature = "response-cache")]
-                let cache_miss = if let Some(cache_store) = response_cache_store {
+                let cache_miss = if let Some(cache_store) = response_cache_store
+                    .filter(|_| pending_forward.plugin_plan.response_cache().is_some())
+                {
                     match Self::lookup_h3_response_cache(H3CacheLookupInput {
                         cache_store,
                         metrics: alternate_metrics.as_ref(),

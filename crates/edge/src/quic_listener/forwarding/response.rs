@@ -392,21 +392,25 @@ impl Http3Service {
         let has_response_plugins = !req.plugin_plan.cache_policy().is_empty()
             || !req.plugin_plan.response_policy().is_empty();
         #[cfg(any(feature = "response-cache", feature = "response-compression"))]
-        let mut request_headers = http::HeaderMap::new();
-        #[cfg(any(feature = "response-cache", feature = "response-compression"))]
-        if has_response_plugins {
+        let request_headers = has_response_plugins.then(|| {
+            let mut headers = http::HeaderMap::new();
             for header in pending_forward.original_request_headers() {
                 if let (Ok(name), Ok(value)) = (
                     http::header::HeaderName::from_bytes(header.name()),
                     http::HeaderValue::from_bytes(header.value()),
                 ) {
-                    request_headers.append(name, value);
+                    headers.append(name, value);
                 }
             }
-        }
+            headers
+        });
         #[cfg(any(feature = "response-cache", feature = "response-compression"))]
-        let request_header =
-            |name: &str| request_headers.get(name).map(http::HeaderValue::as_bytes);
+        let request_header = |name: &str| {
+            request_headers
+                .as_ref()
+                .and_then(|headers| headers.get(name))
+                .map(http::HeaderValue::as_bytes)
+        };
         let processed_response = process_response(ResponseProcessingInput {
             #[cfg(any(feature = "response-cache", feature = "response-compression"))]
             metrics,
@@ -437,7 +441,7 @@ impl Http3Service {
             #[cfg(feature = "response-compression")]
             request_method: &req.method,
             #[cfg(feature = "response-compression")]
-            request_headers: has_response_plugins.then_some(&request_headers),
+            request_headers: request_headers.as_ref(),
             #[cfg(feature = "response-cache")]
             cache_fill_enabled: cache_miss.is_some(),
             #[cfg(feature = "response-cache")]
@@ -510,7 +514,9 @@ impl Http3Service {
         }
 
         #[cfg(feature = "response-compression")]
-        if req.pending_forward().is_some() {
+        if req.pending_forward().is_some_and(|pending_forward| {
+            !pending_forward.plugin_plan.response_policy().is_empty()
+        }) {
             metrics
                 .ingress_observations()
                 .record_response_compression_outcome(compression.action);

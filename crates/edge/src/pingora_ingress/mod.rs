@@ -810,10 +810,12 @@ impl PingoraRequestService for PingoraEdgeRequestService {
         };
         let route = execution.route;
         let policy = execution.policy;
-        shared
-            .metrics
-            .policy_observations()
-            .set_brownout_active(state.resilience.brownout.is_active());
+        if !policy.plugin_plan.is_empty() {
+            shared
+                .metrics
+                .policy_observations()
+                .set_brownout_active(state.resilience.brownout.is_active());
+        }
         let tunnel_mode = classify_tunnel(&validated.method, validated.websocket_tunnel);
         ctx.route = Some(route.clone());
         ctx.method = Some(validated.method);
@@ -977,10 +979,12 @@ impl PingoraRequestService for PingoraEdgeRequestService {
                 .policy_observations()
                 .inc_external_auth_allowed();
         }
-        ctx.auth_header_mutations = plugin_mutations
-            .iter()
-            .map(pending_header_mutation)
-            .collect();
+        if !plugin_mutations.is_empty() {
+            ctx.auth_header_mutations = plugin_mutations
+                .iter()
+                .map(pending_header_mutation)
+                .collect();
+        }
 
         if let Some(response) = admission.rejection_response() {
             match admission {
@@ -1430,30 +1434,31 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             &policy.host_policy,
             &policy.forwarded_header_policy,
         );
-        let auth_header_mutations = ctx
-            .auth_header_mutations
-            .iter()
-            .map(|mutation| match mutation {
-                PendingHeaderMutation::Upsert { name, value } => {
-                    impulse_bridge::request::RequestHeaderMutationRef {
-                        name: name.as_slice(),
-                        value: Some(value.as_slice()),
+        let auth_header_mutations = (!ctx.auth_header_mutations.is_empty()).then(|| {
+            ctx.auth_header_mutations
+                .iter()
+                .map(|mutation| match mutation {
+                    PendingHeaderMutation::Upsert { name, value } => {
+                        impulse_bridge::request::RequestHeaderMutationRef {
+                            name: name.as_slice(),
+                            value: Some(value.as_slice()),
+                        }
                     }
-                }
-                PendingHeaderMutation::Remove { name } => {
-                    impulse_bridge::request::RequestHeaderMutationRef {
-                        name: name.as_slice(),
-                        value: None,
+                    PendingHeaderMutation::Remove { name } => {
+                        impulse_bridge::request::RequestHeaderMutationRef {
+                            name: name.as_slice(),
+                            value: None,
+                        }
                     }
-                }
-            })
-            .collect::<Vec<_>>();
+                })
+                .collect::<Vec<_>>()
+        });
         let input = impulse_bridge::request::RequestBuildInput {
             method,
             path,
             authority: ctx.authority.as_deref(),
             headers: &headers,
-            auth_header_mutations: &auth_header_mutations,
+            auth_header_mutations: auth_header_mutations.as_deref().unwrap_or_default(),
             body: BoxBody::new(Full::<Bytes>::new(Bytes::new())),
             body_mode: impulse_bridge::request::RequestBuildInput::<
                 BoxBody<Bytes, Infallible>,
@@ -1496,8 +1501,19 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             .get(http::header::CONTENT_LENGTH)
             .and_then(|value| value.to_str().ok())
             .and_then(|value| value.parse::<usize>().ok());
+        let has_response_plugins = ctx.policy.as_ref().is_some_and(|policy| {
+            !policy.plugin_plan.cache_policy().is_empty()
+                || !policy.plugin_plan.response_policy().is_empty()
+        });
+        if !has_response_plugins {
+            return Ok(());
+        }
         let processed = Self::process_response_head(session, upstream_response, ctx)?;
         #[cfg(feature = "response-compression")]
+        if ctx
+            .policy
+            .as_ref()
+            .is_some_and(|policy| !policy.plugin_plan.response_policy().is_empty())
         {
             ctx.runtime
                 .shared_state

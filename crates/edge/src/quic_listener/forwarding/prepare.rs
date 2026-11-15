@@ -636,9 +636,11 @@ impl Http3Service {
                     route_host_specific,
                     backend_lb: Some(backend_lb.clone()),
                 };
-                metrics
-                    .policy_observations()
-                    .set_brownout_active(resilience.brownout.is_active());
+                if !resolved_policy.plugin_plan.is_empty() {
+                    metrics
+                        .policy_observations()
+                        .set_brownout_active(resilience.brownout.is_active());
+                }
                 let (admission, plugin_mutations) = match outcome {
                     PluginRequestExecutionOutcome::Admitted {
                         admission,
@@ -855,10 +857,14 @@ impl Http3Service {
                     host_policy: resolved_policy.host_policy,
                     forwarded_header_policy: resolved_policy.forwarded_header_policy,
                     plugin_plan: Arc::clone(&resolved_policy.plugin_plan),
-                    auth_header_mutations: plugin_mutations
-                        .iter()
-                        .map(Self::pending_plugin_header_mutation)
-                        .collect(),
+                    auth_header_mutations: if plugin_mutations.is_empty() {
+                        Vec::new()
+                    } else {
+                        plugin_mutations
+                            .iter()
+                            .map(Self::pending_plugin_header_mutation)
+                            .collect()
+                    },
                 });
                 let dispatch_ready = Self::build_dispatch_ready_candidate(
                     intake,
