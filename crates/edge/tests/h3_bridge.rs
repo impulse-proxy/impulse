@@ -2562,6 +2562,7 @@ fn route_queue_global_cap_sheds_excess_requests() {
 
     let backend_addr = rt.block_on(start_h2_backend_with_regression_routes());
     let mut config = make_config(0, backend_addr.to_string(), cert, key);
+    config.performance.worker_threads = 1;
     config.performance.global_inflight_limit = 64;
     config.performance.per_upstream_inflight_limit = 64;
     config.resilience.route_queue.default_cap = 64;
@@ -3085,6 +3086,7 @@ fn stream_cap_rejects_excess_concurrent_streams() {
     // Slow backend so all N+1 streams are in-flight simultaneously.
     let backend_addr = rt.block_on(start_h2_backend_with_regression_routes());
     let mut config = make_config(0, backend_addr.to_string(), cert, key);
+    config.performance.worker_threads = 1;
     // Raise the QUIC transport stream limit above the app-level cap so the N+1th
     // stream reaches the application guard (rather than being dropped at the
     // QUIC layer with StreamLimit).
