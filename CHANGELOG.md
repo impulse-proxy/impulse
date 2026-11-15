@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-11-15
+
+### Fixed
+
+- HTTP/3 response bodies larger than one stream write are no longer truncated or aborted. A partial `send_body` write now retries the unsent tail instead of dropping it, and `Done` (no flow-control capacity yet) is retried instead of failing the stream.
+- `config/config.multi-upstream.yaml` used an unsupported `hash_on` field and failed to parse; it now uses `key`.
+- Resolved the `clippy::needless_bool` lint in upstream validation.
+
+### Changed
+
+- `config/config.sample.yaml` documents `performance.connection_rate_limit_enabled`, per-upstream `cache` and `compression`, and all accepted load-balancing types.
+- README describes the Pingora HTTP/1.1 and HTTP/2 ingress, plugins, build variants, and the Apache-2.0 license.
+- `packaging/deb/make-deb.sh` defaults to the current release version instead of `0.6.0-beta`.
+
 ## [0.7.0] - 2026-11-07
 
 ### Added
