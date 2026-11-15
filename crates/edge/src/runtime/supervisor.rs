@@ -147,7 +147,8 @@ impl RuntimeSupervisor {
         }
 
         if !shutdown.load(Ordering::Relaxed) && !worker_failed {
-            log_listener_startup(runtime_config, &ingress);
+            let runtime = self.runtime.current();
+            log_listener_startup(runtime_config, &ingress, &runtime.startup.log_config);
         }
 
         Ok(RuntimeServiceHandles {
