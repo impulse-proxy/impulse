@@ -259,6 +259,7 @@ pub fn spawn_listener<A>(
     address: String,
     mut service: Service<A>,
     drain: Arc<PingoraDrainState>,
+    socket_shards: usize,
 ) -> PingoraListenerTask
 where
     A: ServerApp + Send + Sync + 'static,
@@ -271,10 +272,16 @@ where
     let task = tokio::spawn(async move {
         #[cfg(unix)]
         service
-            .start_service(Some(service_listen_fds), shutdown_watch, 1)
+            .start_service(
+                Some(service_listen_fds),
+                shutdown_watch,
+                socket_shards.max(1),
+            )
             .await;
         #[cfg(not(unix))]
-        service.start_service(shutdown_watch, 1).await;
+        service
+            .start_service(shutdown_watch, socket_shards.max(1))
+            .await;
     });
     PingoraListenerTask {
         address,

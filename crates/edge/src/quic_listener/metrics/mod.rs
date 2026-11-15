@@ -13,7 +13,7 @@ use log::{debug, error, info};
 use rustls::ServerConfig as RustlsServerConfig;
 
 use super::{
-    Http3Service, runtime_handle,
+    Http3Service, control_plane_runtime_handle,
     runtime_state::{ControlPlaneStartup, MetricsServiceCtx},
 };
 use crate::Metrics;

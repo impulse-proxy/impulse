@@ -235,6 +235,7 @@ fn make_config_with_upstreams(
             level: "info".to_string(),
             file: Default::default(),
             format: LogFormat::Plain,
+            access: Default::default(),
         },
         performance: impulse_config::config::Performance::default(),
         observability: impulse_config::config::Observability::default(),
@@ -2872,6 +2873,7 @@ fn backend_pool_inflight_limit_sheds_excess_requests() {
 
     let backend_addr = rt.block_on(start_h2_backend_with_regression_routes());
     let mut config = make_config(0, backend_addr.to_string(), cert, key);
+    config.performance.worker_threads = 1;
     config.performance.global_inflight_limit = 64;
     config.performance.per_upstream_inflight_limit = 64;
     config.performance.per_backend_inflight_limit = 1;
@@ -3084,6 +3086,7 @@ fn stream_cap_rejects_excess_concurrent_streams() {
     // Slow backend so all N+1 streams are in-flight simultaneously.
     let backend_addr = rt.block_on(start_h2_backend_with_regression_routes());
     let mut config = make_config(0, backend_addr.to_string(), cert, key);
+    config.performance.worker_threads = 1;
     // Raise the QUIC transport stream limit above the app-level cap so the N+1th
     // stream reaches the application guard (rather than being dropped at the
     // QUIC layer with StreamLimit).

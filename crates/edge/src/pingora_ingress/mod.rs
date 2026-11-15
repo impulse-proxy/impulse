@@ -545,13 +545,18 @@ pub fn spawn_pingora_ingress_listener(
         "{}:{}",
         listener.listen.listen.address, listener.listen.listen.port
     );
+    let socket_shards = if listener.performance.reuseport {
+        listener.performance.worker_threads.max(1)
+    } else {
+        1
+    };
     let (service, drain) = pingora_ingress_service_for_listener(
         &Arc::new(ServerConf::default()),
         runtime.as_ref().clone(),
         listener,
     )
     .map_err(|error| format!("Failed to create Pingora listener {address}: {error}"))?;
-    Ok(spawn_listener(address, service, drain))
+    Ok(spawn_listener(address, service, drain, socket_shards))
 }
 
 #[cfg(test)]
@@ -1741,6 +1746,18 @@ impl PingoraRequestService for PingoraEdgeRequestService {
         }
 
         let status = session.response_written().map(|response| response.status);
+        let should_log_access = status.is_some_and(|status| status.as_u16() >= 400)
+            || error.is_some()
+            || matches!(
+                ctx.terminal_classification.as_ref(),
+                Some(PingoraTerminalClassification::Error(_))
+            )
+            || ctx
+                .runtime
+                .startup
+                .log_config
+                .access
+                .should_log_success(ctx.request_id);
         if let Some(selected) = ctx.selected_backend.as_mut() {
             selected.finish_status = status.map(|status| status.as_u16());
         }
@@ -1877,20 +1894,22 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             }
         }
 
-        log::info!(
-            "request_id={} method={} path={} status={} backend={} upstream={} latency_ms={} retries={} error={}",
-            ctx.request_id,
-            ctx.method.as_deref().unwrap_or("-"),
-            ctx.path.as_deref().unwrap_or("-"),
-            status.map_or(0, |status| status.as_u16()),
-            ctx.selected_backend
-                .as_ref()
-                .map_or("-", |selected| selected.address.as_str()),
-            route.route,
-            ctx.started_at.elapsed().as_millis(),
-            ctx.retry_count,
-            error.map_or_else(|| "-".to_string(), ToString::to_string),
-        );
+        if should_log_access {
+            log::info!(
+                "request_id={} method={} path={} status={} backend={} upstream={} latency_ms={} retries={} error={}",
+                ctx.request_id,
+                ctx.method.as_deref().unwrap_or("-"),
+                ctx.path.as_deref().unwrap_or("-"),
+                status.map_or(0, |status| status.as_u16()),
+                ctx.selected_backend
+                    .as_ref()
+                    .map_or("-", |selected| selected.address.as_str()),
+                route.route,
+                ctx.started_at.elapsed().as_millis(),
+                ctx.retry_count,
+                error.map_or_else(|| "-".to_string(), ToString::to_string),
+            );
+        }
         ctx.selected_backend.take();
     }
 }

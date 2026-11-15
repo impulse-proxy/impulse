@@ -6,7 +6,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use impulse_config::runtime::{ListenerRuntimeConfig, RuntimeConfig};
+use impulse_config::{
+    config::{AccessLogMode, Log},
+    runtime::{ListenerRuntimeConfig, RuntimeConfig},
+};
 use log::{error, info};
 
 use crate::runtime::{
@@ -427,6 +430,7 @@ fn join_worker_handle(handle: thread::JoinHandle<Result<(), String>>, worker_fai
 pub(crate) fn log_listener_startup(
     runtime_config: &RuntimeConfig,
     listener_groups: &[IngressServiceHandles],
+    log_config: &Log,
 ) {
     let shard_count = runtime_config.performance.packet_shards_per_worker.max(1);
     info!("Impulse startup phase=begin");
@@ -451,6 +455,20 @@ pub(crate) fn log_listener_startup(
             listener.index,
         );
     }
+    for group in listener_groups {
+        let listener_shards = if group.signature.reuseport {
+            group.signature.worker_count
+        } else {
+            1
+        };
+        info!(
+            "Listener {} effective data_plane_workers={} packet_shards_per_worker={} pingora_listener_shards={}",
+            group.signature.label,
+            group.signature.worker_count,
+            group.signature.shard_count,
+            listener_shards,
+        );
+    }
     info!(
         "Impulse data-plane workers={} packet_shards_per_worker={} reuseport={} pin_workers={}",
         listener_groups
@@ -460,6 +478,15 @@ pub(crate) fn log_listener_startup(
         shard_count,
         runtime_config.performance.reuseport,
         runtime_config.performance.pin_workers
+    );
+    let access_log_mode = match log_config.access.mode {
+        AccessLogMode::ErrorsOnly => "errors_only",
+        AccessLogMode::Sampled => "sampled",
+        AccessLogMode::Full => "full",
+    };
+    info!(
+        "Impulse logging level={} access_log_mode={} access_log_sample_ratio={}",
+        log_config.level, access_log_mode, log_config.access.sample_ratio,
     );
 }
 

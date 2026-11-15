@@ -110,8 +110,10 @@ mod workers;
 pub(crate) use admission::{
     log_jwt_validation_rejection, observe_jwt_validation_failure, validate_jwt_token_for_generation,
 };
-pub(crate) use async_runtime::configure_async_runtime;
-pub(in crate::quic_listener) use async_runtime::{runtime_handle, spawn_async_task};
+pub(crate) use async_runtime::{configure_async_runtime, install_control_plane_runtime};
+pub(in crate::quic_listener) use async_runtime::{
+    control_plane_runtime_handle, runtime_handle, spawn_async_task,
+};
 use connection::maybe_log_quic_connection_error;
 #[cfg(test)]
 pub(crate) use connection::purge_connection_routes;
@@ -124,7 +126,8 @@ pub(crate) use forwarding::{
     BackendCandidate, ForwardingSelectionService, TargetResolutionRequest,
 };
 use forwarding::{
-    ForwardingExecutionCtx, ForwardingSharedCtx, H3RequestHandlingConfig, StreamProgressConfig,
+    ForwardingExecutionCtx, ForwardingSharedCtx, H3RequestHandlingConfig,
+    RequestFinalizationConfig, StreamProgressConfig,
 };
 pub(in crate::quic_listener) use protocol::{can_poll_upstream_result, collect_h3_trailers};
 #[cfg(test)]
@@ -442,10 +445,22 @@ impl Http3Service {
             client_body_idle_timeout: self.client_body_idle_timeout,
             listen_port: self.config.listen.listen.port,
         };
+        let access_log = self
+            .runtime_bundle
+            .as_ref()
+            .map(|runtime| runtime.current_view().startup().log_config.access)
+            .unwrap_or_default();
         let request_config = H3RequestHandlingConfig::new(
-            self.config.observability.routing.enabled,
-            self.config.observability.routing.include_reason,
-            self.backend_total_request_timeout,
+            RequestFinalizationConfig {
+                routing_transparency_enabled: self.config.observability.routing.enabled,
+                routing_transparency_include_reason: self
+                    .config
+                    .observability
+                    .routing
+                    .include_reason,
+                access_log,
+                backend_total_request_timeout: self.backend_total_request_timeout,
+            },
             self.max_request_body_bytes,
             self.request_buffer_global_cap_bytes,
             self.config.observability.tracing.enabled,

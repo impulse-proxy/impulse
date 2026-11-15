@@ -726,6 +726,7 @@ mod tests {
                     path: String::new(),
                 },
                 format: LogFormat::Plain,
+                access: Default::default(),
             },
             performance: Performance::default(),
             observability: Observability::default(),

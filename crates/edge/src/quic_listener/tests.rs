@@ -2128,6 +2128,7 @@ fn make_dispatch_ready_envelope(
         upstream_pool: None,
         routing_transparency_enabled: false,
         routing_transparency_include_reason: false,
+        access_log: Default::default(),
         response_status: None,
         start: context.start,
         total_request_deadline: context.total_request_deadline,

@@ -47,9 +47,13 @@ impl Http3Service {
     }
 
     pub(super) fn log_access(req: &RequestEnvelope, status: u16) {
-        let trace_id = req.trace_id.as_deref().unwrap_or("-");
-        let span_id = req.span_id.as_deref().unwrap_or("-");
-        let latency_ms = req.start.elapsed().as_millis() as u64;
+        let should_log_access = req.error_kind.is_some()
+            || status >= 400
+            || req.access_log.should_log_success(req.request_id);
+        if !should_log_access && !req.routing_transparency_enabled {
+            return;
+        }
+
         if req.routing_transparency_enabled {
             let reason = if req.routing_transparency_include_reason {
                 req.route_reason.as_deref().unwrap_or("-")
@@ -67,6 +71,13 @@ impl Http3Service {
             );
         }
 
+        if !should_log_access {
+            return;
+        }
+
+        let trace_id = req.trace_id.as_deref().unwrap_or("-");
+        let span_id = req.span_id.as_deref().unwrap_or("-");
+        let latency_ms = req.start.elapsed().as_millis() as u64;
         if let Some(span) = req.trace_span.as_ref() {
             span.in_scope(|| match req.error_kind.as_ref() {
                 Some(e) => tracing::warn!(

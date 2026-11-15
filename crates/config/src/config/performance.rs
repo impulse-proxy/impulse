@@ -1,5 +1,67 @@
 use super::*;
 
+#[cfg(target_os = "linux")]
+const CGROUP_V2_CPU_MAX: &str = "/sys/fs/cgroup/cpu.max";
+#[cfg(target_os = "linux")]
+const CGROUP_V1_CPU_QUOTA: &str = "/sys/fs/cgroup/cpu/cpu.cfs_quota_us";
+#[cfg(target_os = "linux")]
+const CGROUP_V1_CPU_PERIOD: &str = "/sys/fs/cgroup/cpu/cpu.cfs_period_us";
+
+pub fn available_data_plane_cpus() -> usize {
+    let affinity_limit = std::thread::available_parallelism()
+        .map(std::num::NonZeroUsize::get)
+        .unwrap_or(1);
+
+    cgroup_cpu_limit()
+        .map_or(affinity_limit, |limit| affinity_limit.min(limit))
+        .max(1)
+}
+
+#[cfg(target_os = "linux")]
+fn cgroup_cpu_limit() -> Option<usize> {
+    cgroup_v2_cpu_limit().or_else(cgroup_v1_cpu_limit)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn cgroup_cpu_limit() -> Option<usize> {
+    None
+}
+
+#[cfg(target_os = "linux")]
+fn cgroup_v2_cpu_limit() -> Option<usize> {
+    let value = std::fs::read_to_string(CGROUP_V2_CPU_MAX).ok()?;
+    let mut fields = value.split_whitespace();
+    let quota = fields.next()?;
+    if quota == "max" {
+        return None;
+    }
+    cpu_quota_limit(quota.parse().ok()?, fields.next()?.parse().ok()?)
+}
+
+#[cfg(target_os = "linux")]
+fn cgroup_v1_cpu_limit() -> Option<usize> {
+    let quota = std::fs::read_to_string(CGROUP_V1_CPU_QUOTA)
+        .ok()?
+        .trim()
+        .parse()
+        .ok()?;
+    let period = std::fs::read_to_string(CGROUP_V1_CPU_PERIOD)
+        .ok()?
+        .trim()
+        .parse()
+        .ok()?;
+    cpu_quota_limit(quota, period)
+}
+
+#[cfg(target_os = "linux")]
+fn cpu_quota_limit(quota: i64, period: i64) -> Option<usize> {
+    if quota <= 0 || period <= 0 {
+        return None;
+    }
+    let limit = quota / period + i64::from(quota % period != 0);
+    usize::try_from(limit).ok()
+}
+
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(default)]
 #[serde(deny_unknown_fields)]
@@ -7,6 +69,7 @@ pub struct Log {
     pub level: String,
     pub file: LogFile,
     pub format: LogFormat,
+    pub access: AccessLog,
 }
 
 impl Default for Log {
@@ -15,8 +78,54 @@ impl Default for Log {
             level: "info".to_string(),
             file: LogFile::default(),
             format: LogFormat::Plain,
+            access: AccessLog::default(),
         }
     }
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, Copy)]
+#[serde(default)]
+#[serde(deny_unknown_fields)]
+pub struct AccessLog {
+    pub mode: AccessLogMode,
+    pub sample_ratio: f64,
+}
+
+impl AccessLog {
+    pub fn should_log_success(self, request_id: u64) -> bool {
+        match self.mode {
+            AccessLogMode::ErrorsOnly => false,
+            AccessLogMode::Full => true,
+            AccessLogMode::Sampled => {
+                if self.sample_ratio <= 0.0 {
+                    return false;
+                }
+                if self.sample_ratio >= 1.0 {
+                    return true;
+                }
+                let sample = request_id.wrapping_mul(0x9e37_79b9_7f4a_7c15);
+                (sample as f64) < self.sample_ratio * (u64::MAX as f64)
+            }
+        }
+    }
+}
+
+impl Default for AccessLog {
+    fn default() -> Self {
+        Self {
+            mode: AccessLogMode::ErrorsOnly,
+            sample_ratio: 0.01,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, Default, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum AccessLogMode {
+    #[default]
+    ErrorsOnly,
+    Sampled,
+    Full,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, Default, PartialEq, Eq)]
@@ -90,7 +199,7 @@ pub struct Performance {
 impl Default for Performance {
     fn default() -> Self {
         Self {
-            worker_threads: 1,
+            worker_threads: available_data_plane_cpus(),
             control_plane_threads: 2,
             packet_shards_per_worker: 1,
             packet_shard_queue_capacity: 2048,

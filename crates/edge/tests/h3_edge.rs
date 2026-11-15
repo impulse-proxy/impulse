@@ -119,6 +119,7 @@ fn make_config(port: u32, cert: String, key: String, backend_address: String) ->
             level: "info".to_string(),
             file: Default::default(),
             format: LogFormat::Plain,
+            access: Default::default(),
         },
         performance: impulse_config::config::Performance::default(),
         observability: impulse_config::config::Observability::default(),
@@ -664,6 +665,7 @@ fn make_config_with_rate_limit(
             level: "error".to_string(),
             file: Default::default(),
             format: LogFormat::Plain,
+            access: Default::default(),
         },
         performance: Performance {
             new_connections_per_sec,

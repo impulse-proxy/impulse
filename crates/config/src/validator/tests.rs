@@ -90,6 +90,7 @@ fn base_config(cert: &str, key: &str) -> Config {
             level: "info".to_string(),
             file: Default::default(),
             format: LogFormat::Plain,
+            access: Default::default(),
         },
         performance: Performance::default(),
         observability: Observability::default(),
@@ -212,7 +213,10 @@ upstream:
     );
 
     let cfg: Config = serde_yaml::from_str(&yaml).expect("parse");
-    assert_eq!(cfg.performance.worker_threads, 1);
+    assert_eq!(
+        cfg.performance.worker_threads,
+        crate::config::available_data_plane_cpus()
+    );
     assert_eq!(cfg.performance.control_plane_threads, 2);
     assert_eq!(cfg.performance.packet_shards_per_worker, 1);
     assert_eq!(cfg.performance.packet_shard_queue_capacity, 2048);

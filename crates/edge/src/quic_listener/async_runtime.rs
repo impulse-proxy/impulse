@@ -21,6 +21,20 @@ pub(crate) fn configure_async_runtime(worker_threads: usize) {
     FALLBACK_RT_THREADS.store(threads, Ordering::Relaxed);
 }
 
+pub(crate) fn install_control_plane_runtime(handle: Handle) {
+    if CONTROL_PLANE_RT.set(handle).is_err() {
+        warn!("control-plane runtime already installed; ignoring replacement");
+    }
+}
+
+pub(in crate::quic_listener) fn control_plane_runtime_handle() -> Option<Handle> {
+    CONTROL_PLANE_RT
+        .get()
+        .cloned()
+        .or_else(|| Handle::try_current().ok())
+        .or_else(|| fallback_runtime().map(|rt| rt.handle().clone()))
+}
+
 pub(in crate::quic_listener) fn runtime_handle() -> Option<Handle> {
     if let Ok(handle) = Handle::try_current() {
         return Some(handle);
@@ -56,3 +70,4 @@ fn fallback_runtime() -> Option<&'static tokio::runtime::Runtime> {
 
 static FALLBACK_RT: OnceLock<Option<tokio::runtime::Runtime>> = OnceLock::new();
 static FALLBACK_RT_THREADS: AtomicUsize = AtomicUsize::new(2);
+static CONTROL_PLANE_RT: OnceLock<Handle> = OnceLock::new();

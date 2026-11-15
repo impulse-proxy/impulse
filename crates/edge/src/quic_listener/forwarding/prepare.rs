@@ -80,12 +80,14 @@ impl DispatchReadyCandidate {
         self,
         routing_transparency_enabled: bool,
         routing_transparency_include_reason: bool,
+        access_log: impulse_config::config::AccessLog,
     ) -> RequestEnvelope {
         RequestEnvelope::from_dispatch_ready_state(
             self.state,
             self.upstream_pool,
             routing_transparency_enabled,
             routing_transparency_include_reason,
+            access_log,
             0,
             None,
         )
@@ -95,6 +97,7 @@ impl DispatchReadyCandidate {
         self,
         routing_transparency_enabled: bool,
         routing_transparency_include_reason: bool,
+        access_log: impulse_config::config::AccessLog,
         auth: AuthStart,
         auth_disposition: ExternalAuthFailureDisposition,
     ) -> RequestEnvelope {
@@ -130,6 +133,7 @@ impl DispatchReadyCandidate {
             self.upstream_pool,
             routing_transparency_enabled,
             routing_transparency_include_reason,
+            access_log,
             0,
             None,
         )
@@ -181,10 +185,11 @@ pub(super) struct RequestRoutingInput<'a> {
 }
 
 /// Request-scoped configuration applied when finalizing the request envelope.
-pub(super) struct RequestFinalizationConfig {
-    pub(super) routing_transparency_enabled: bool,
-    pub(super) routing_transparency_include_reason: bool,
-    pub(super) backend_total_request_timeout: Duration,
+pub(in crate::quic_listener) struct RequestFinalizationConfig {
+    pub(in crate::quic_listener) routing_transparency_enabled: bool,
+    pub(in crate::quic_listener) routing_transparency_include_reason: bool,
+    pub(in crate::quic_listener) access_log: impulse_config::config::AccessLog,
+    pub(in crate::quic_listener) backend_total_request_timeout: Duration,
 }
 
 impl PendingForward {
@@ -920,6 +925,7 @@ impl Http3Service {
         let RequestFinalizationConfig {
             routing_transparency_enabled,
             routing_transparency_include_reason,
+            access_log,
             backend_total_request_timeout,
         } = finalization;
         match pre_auth {
@@ -942,6 +948,7 @@ impl Http3Service {
                     envelope: request.into_dispatch_ready_envelope(
                         routing_transparency_enabled,
                         routing_transparency_include_reason,
+                        access_log,
                     ),
                     should_materialize_forward: true,
                 }))
@@ -1037,6 +1044,7 @@ impl Http3Service {
                     request.request.into_awaiting_auth_envelope(
                         routing_transparency_enabled,
                         routing_transparency_include_reason,
+                        access_log,
                         start,
                         auth_disposition,
                     )
@@ -1044,6 +1052,7 @@ impl Http3Service {
                     request.request.into_dispatch_ready_envelope(
                         routing_transparency_enabled,
                         routing_transparency_include_reason,
+                        access_log,
                     )
                 };
                 Ok(Some(StartedRequestEnvelope {
