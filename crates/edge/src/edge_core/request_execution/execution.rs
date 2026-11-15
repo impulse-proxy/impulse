@@ -116,11 +116,22 @@ impl<'a> EdgeRequestService<'a> {
             .plugin_plans
             .upstream_plan(route.upstream_name.as_ref())
             .ok_or(super::RouteResolutionError::MissingUpstreamPluginPlan)?;
+        let policy = resolve_policy(upstream_policy, Arc::clone(&plugin_plan));
+        if plugin_plan.is_empty() {
+            let admission = evaluate_admission(self.resilience, route.upstream_name.as_ref());
+            return Ok(PluginRequestExecutionState {
+                route,
+                policy,
+                outcome: PluginRequestExecutionOutcome::Admitted {
+                    admission,
+                    mutations: Vec::new(),
+                },
+            });
+        }
         let execution_class = self
             .route_execution_classes
             .get(route.upstream_name.as_ref())
             .ok_or(super::RouteResolutionError::MissingUpstreamPluginPlan)?;
-        let policy = resolve_policy(upstream_policy, Arc::clone(&plugin_plan));
         let (has_synchronous_plugins, has_asynchronous_plugins) = match execution_class {
             RouteExecutionClass::Passthrough
             | RouteExecutionClass::Cache
