@@ -23,36 +23,40 @@ pub enum RouteExecutionClass {
     Cache,
     /// Response compression. This is derived from the response-policy stage
     /// being non-empty, which today can only hold response compression; revisit
-    /// the derivation in [`CompiledPluginPlan::new`] if another response plugin
+    /// this derivation if another response plugin
     /// is added.
     Compression,
     Full,
 }
 
+impl RouteExecutionClass {
+    /// Classify a route once while preparing its runtime generation.
+    pub(crate) const fn compile(
+        has_sync: bool,
+        has_async: bool,
+        has_cache: bool,
+        has_compression: bool,
+    ) -> RouteExecutionClass {
+        match (has_sync, has_async, has_cache, has_compression) {
+            (false, false, false, false) => RouteExecutionClass::Passthrough,
+            (true, false, false, false) => RouteExecutionClass::SynchronousPolicy,
+            (false, true, false, false) => RouteExecutionClass::AsynchronousPolicy,
+            (false, false, true, false) => RouteExecutionClass::Cache,
+            (false, false, false, true) => RouteExecutionClass::Compression,
+            _ => RouteExecutionClass::Full,
+        }
+    }
+}
+
 impl CompiledPluginPlan {
     #[must_use]
-    pub fn new(
+    pub(crate) fn new(
+        execution_class: RouteExecutionClass,
         request_gate: Vec<CompiledRequestPlugin>,
         async_request_gate: Vec<CompiledAsyncRequestPlugin>,
         cache_policy: Vec<CompiledCachePlugin>,
         response_policy: Vec<CompiledResponsePlugin>,
     ) -> Self {
-        let has_sync = !request_gate.is_empty();
-        let has_async = !async_request_gate.is_empty();
-        let has_cache = !cache_policy.is_empty();
-        let has_compression = !response_policy.is_empty();
-        let stage_count = [has_sync, has_async, has_cache, has_compression]
-            .into_iter()
-            .filter(|enabled| *enabled)
-            .count();
-        let execution_class = match (stage_count, has_sync, has_async, has_cache, has_compression) {
-            (0, ..) => RouteExecutionClass::Passthrough,
-            (1, true, _, _, _) => RouteExecutionClass::SynchronousPolicy,
-            (1, _, true, _, _) => RouteExecutionClass::AsynchronousPolicy,
-            (1, _, _, true, _) => RouteExecutionClass::Cache,
-            (1, _, _, _, true) => RouteExecutionClass::Compression,
-            _ => RouteExecutionClass::Full,
-        };
         Self {
             generation: 0,
             execution_class,
@@ -212,7 +216,13 @@ mod tests {
 
     #[test]
     fn empty_plan_is_passthrough() {
-        let plan = CompiledPluginPlan::new(vec![], vec![], vec![], vec![]);
+        let plan = CompiledPluginPlan::new(
+            RouteExecutionClass::Passthrough,
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+        );
         assert_eq!(plan.execution_class(), RouteExecutionClass::Passthrough);
         assert!(plan.is_empty());
         assert_eq!(
@@ -223,23 +233,46 @@ mod tests {
 
     #[test]
     fn single_stage_plans_get_their_own_class() {
-        let sync = CompiledPluginPlan::new(vec![sync_plugin()], vec![], vec![], vec![]);
+        let sync = CompiledPluginPlan::new(
+            RouteExecutionClass::SynchronousPolicy,
+            vec![sync_plugin()],
+            vec![],
+            vec![],
+            vec![],
+        );
         assert_eq!(
             sync.execution_class(),
             RouteExecutionClass::SynchronousPolicy
         );
 
-        let asynchronous = CompiledPluginPlan::new(vec![], vec![async_plugin()], vec![], vec![]);
+        let asynchronous = CompiledPluginPlan::new(
+            RouteExecutionClass::AsynchronousPolicy,
+            vec![],
+            vec![async_plugin()],
+            vec![],
+            vec![],
+        );
         assert_eq!(
             asynchronous.execution_class(),
             RouteExecutionClass::AsynchronousPolicy
         );
 
-        let cache = CompiledPluginPlan::new(vec![], vec![], vec![cache_plugin()], vec![]);
+        let cache = CompiledPluginPlan::new(
+            RouteExecutionClass::Cache,
+            vec![],
+            vec![],
+            vec![cache_plugin()],
+            vec![],
+        );
         assert_eq!(cache.execution_class(), RouteExecutionClass::Cache);
 
-        let compression =
-            CompiledPluginPlan::new(vec![], vec![], vec![], vec![compression_plugin()]);
+        let compression = CompiledPluginPlan::new(
+            RouteExecutionClass::Compression,
+            vec![],
+            vec![],
+            vec![],
+            vec![compression_plugin()],
+        );
         assert_eq!(
             compression.execution_class(),
             RouteExecutionClass::Compression
@@ -248,8 +281,13 @@ mod tests {
 
     #[test]
     fn several_plugins_in_one_stage_keep_the_single_stage_class() {
-        let plan =
-            CompiledPluginPlan::new(vec![sync_plugin(), sync_plugin()], vec![], vec![], vec![]);
+        let plan = CompiledPluginPlan::new(
+            RouteExecutionClass::SynchronousPolicy,
+            vec![sync_plugin(), sync_plugin()],
+            vec![],
+            vec![],
+            vec![],
+        );
         assert_eq!(
             plan.execution_class(),
             RouteExecutionClass::SynchronousPolicy
@@ -258,11 +296,17 @@ mod tests {
 
     #[test]
     fn multiple_stages_are_full() {
-        let sync_and_async =
-            CompiledPluginPlan::new(vec![sync_plugin()], vec![async_plugin()], vec![], vec![]);
+        let sync_and_async = CompiledPluginPlan::new(
+            RouteExecutionClass::Full,
+            vec![sync_plugin()],
+            vec![async_plugin()],
+            vec![],
+            vec![],
+        );
         assert_eq!(sync_and_async.execution_class(), RouteExecutionClass::Full);
 
         let cache_and_compression = CompiledPluginPlan::new(
+            RouteExecutionClass::Full,
             vec![],
             vec![],
             vec![cache_plugin()],
@@ -274,6 +318,7 @@ mod tests {
         );
 
         let everything = CompiledPluginPlan::new(
+            RouteExecutionClass::Full,
             vec![sync_plugin()],
             vec![async_plugin()],
             vec![cache_plugin()],
@@ -284,8 +329,14 @@ mod tests {
 
     #[test]
     fn generation_does_not_change_the_class() {
-        let plan = CompiledPluginPlan::new(vec![], vec![], vec![cache_plugin()], vec![])
-            .with_generation(7);
+        let plan = CompiledPluginPlan::new(
+            RouteExecutionClass::Cache,
+            vec![],
+            vec![],
+            vec![cache_plugin()],
+            vec![],
+        )
+        .with_generation(7);
         assert_eq!(plan.generation(), 7);
         assert_eq!(plan.execution_class(), RouteExecutionClass::Cache);
     }
