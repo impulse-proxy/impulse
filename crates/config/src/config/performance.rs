@@ -58,7 +58,8 @@ fn cpu_quota_limit(quota: i64, period: i64) -> Option<usize> {
     if quota <= 0 || period <= 0 {
         return None;
     }
-    usize::try_from(quota.div_ceil(period)).ok()
+    let limit = quota / period + i64::from(quota % period != 0);
+    usize::try_from(limit).ok()
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
