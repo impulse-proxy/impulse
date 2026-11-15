@@ -708,7 +708,12 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             .inc_downstream_connection_reused();
     }
 
-    fn upstream_connection_established(&self, ctx: &mut Self::Context, reused: bool) {
+    fn upstream_connection_established(
+        &self,
+        ctx: &mut Self::Context,
+        peer: &HttpPeer,
+        reused: bool,
+    ) {
         let metrics = ctx
             .runtime
             .shared_state
@@ -719,6 +724,13 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             metrics.inc_upstream_connection_reused();
         } else {
             metrics.inc_upstream_connection_created();
+        }
+        if pingora_peer_protocol(peer) == PingoraUpstreamProtocol::Http2 {
+            if reused {
+                metrics.inc_h2_stream_reused();
+            } else {
+                metrics.inc_h2_connection_created();
+            }
         }
     }
 
@@ -1383,7 +1395,9 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             .metrics
             .ingress_observations()
             .inc_upstream_connection_rejected();
-        handle_pingora_proxy_failure(ctx, error, pingora_peer_protocol(peer), false, true)
+        let protocol = pingora_peer_protocol(peer);
+        observe_h2_session_error(ctx, error.as_ref(), protocol);
+        handle_pingora_proxy_failure(ctx, error, protocol, false, true)
     }
 
     fn error_while_proxy(
@@ -1400,10 +1414,12 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             .metrics
             .ingress_observations()
             .inc_upstream_connection_closed();
+        let protocol = pingora_peer_protocol(peer);
+        observe_h2_session_error(ctx, error.as_ref(), protocol);
         handle_pingora_proxy_failure(
             ctx,
             error,
-            pingora_peer_protocol(peer),
+            protocol,
             reused,
             session.response_written().is_none(),
         )
@@ -1954,6 +1970,34 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             );
         }
         ctx.selected_backend.take();
+    }
+}
+
+fn observe_h2_session_error(
+    ctx: &PingoraRequestContext,
+    error: &Error,
+    protocol: PingoraUpstreamProtocol,
+) {
+    if protocol != PingoraUpstreamProtocol::Http2 {
+        return;
+    }
+    let Some(error) = error.root_cause().downcast_ref::<h2::Error>() else {
+        return;
+    };
+    let metrics = ctx
+        .runtime
+        .shared_state
+        .shared_services()
+        .metrics
+        .ingress_observations();
+    if error.is_go_away() {
+        metrics.inc_h2_goaway();
+    }
+    if error.is_reset() {
+        metrics.inc_h2_stream_reset();
+        if error.reason() == Some(h2::Reason::REFUSED_STREAM) {
+            metrics.inc_h2_capacity_saturation();
+        }
     }
 }
 

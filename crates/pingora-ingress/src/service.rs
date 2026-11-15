@@ -122,7 +122,12 @@ pub trait PingoraRequestService: Send + Sync + 'static {
 
     fn downstream_connection_reused(&self, context: &mut Self::Context);
 
-    fn upstream_connection_established(&self, context: &mut Self::Context, reused: bool);
+    fn upstream_connection_established(
+        &self,
+        context: &mut Self::Context,
+        peer: &HttpPeer,
+        reused: bool,
+    );
 }
 
 pub struct PingoraIngressAdapter<S> {
@@ -299,14 +304,14 @@ impl<S: PingoraRequestService> ProxyHttp for PingoraIngressAdapter<S> {
         &self,
         _session: &mut Session,
         reused: bool,
-        _peer: &HttpPeer,
+        peer: &HttpPeer,
         #[cfg(unix)] _fd: std::os::unix::io::RawFd,
         #[cfg(windows)] _socket: std::os::windows::io::RawSocket,
         _digest: Option<&Digest>,
         ctx: &mut Self::CTX,
     ) -> Result<()> {
         self.request_service
-            .upstream_connection_established(ctx, reused);
+            .upstream_connection_established(ctx, peer, reused);
         Ok(())
     }
 }

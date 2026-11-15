@@ -126,6 +126,11 @@ impl Metrics {
             upstream_connections_reused_total: AtomicU64::new(0),
             upstream_connections_rejected_total: AtomicU64::new(0),
             upstream_connections_closed_total: AtomicU64::new(0),
+            h2_connections_created_total: AtomicU64::new(0),
+            h2_streams_reused_total: AtomicU64::new(0),
+            h2_capacity_saturation_total: AtomicU64::new(0),
+            h2_stream_resets_total: AtomicU64::new(0),
+            h2_goaway_total: AtomicU64::new(0),
             hedge_triggered: AtomicU64::new(0),
             hedge_won: AtomicU64::new(0),
             hedge_wasted: AtomicU64::new(0),
@@ -454,6 +459,28 @@ impl Metrics {
     pub fn inc_upstream_connection_closed(&self) {
         self.upstream_connections_closed_total
             .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn inc_h2_connection_created(&self) {
+        self.h2_connections_created_total
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn inc_h2_stream_reused(&self) {
+        self.h2_streams_reused_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn inc_h2_capacity_saturation(&self) {
+        self.h2_capacity_saturation_total
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn inc_h2_stream_reset(&self) {
+        self.h2_stream_resets_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn inc_h2_goaway(&self) {
+        self.h2_goaway_total.fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn inc_inflight_wait_admit_global(&self) {

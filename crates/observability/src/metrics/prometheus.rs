@@ -763,6 +763,45 @@ impl Metrics {
         ));
 
         out.push_str(
+            "# HELP impulse_h2_connections_created_total Total HTTP/2 upstream connections created.\n",
+        );
+        out.push_str("# TYPE impulse_h2_connections_created_total counter\n");
+        out.push_str(&format!(
+            "impulse_h2_connections_created_total {}\n",
+            self.h2_connections_created_total.load(Ordering::Relaxed)
+        ));
+        out.push_str(
+            "# HELP impulse_h2_streams_reused_total Total streams opened on reused HTTP/2 upstream connections.\n",
+        );
+        out.push_str("# TYPE impulse_h2_streams_reused_total counter\n");
+        out.push_str(&format!(
+            "impulse_h2_streams_reused_total {}\n",
+            self.h2_streams_reused_total.load(Ordering::Relaxed)
+        ));
+        out.push_str(
+            "# HELP impulse_h2_capacity_saturation_total Total HTTP/2 upstream REFUSED_STREAM capacity signals.\n",
+        );
+        out.push_str("# TYPE impulse_h2_capacity_saturation_total counter\n");
+        out.push_str(&format!(
+            "impulse_h2_capacity_saturation_total {}\n",
+            self.h2_capacity_saturation_total.load(Ordering::Relaxed)
+        ));
+        out.push_str(
+            "# HELP impulse_h2_stream_resets_total Total HTTP/2 upstream stream reset errors.\n",
+        );
+        out.push_str("# TYPE impulse_h2_stream_resets_total counter\n");
+        out.push_str(&format!(
+            "impulse_h2_stream_resets_total {}\n",
+            self.h2_stream_resets_total.load(Ordering::Relaxed)
+        ));
+        out.push_str("# HELP impulse_h2_goaway_total Total HTTP/2 upstream GOAWAY errors.\n");
+        out.push_str("# TYPE impulse_h2_goaway_total counter\n");
+        out.push_str(&format!(
+            "impulse_h2_goaway_total {}\n",
+            self.h2_goaway_total.load(Ordering::Relaxed)
+        ));
+
+        out.push_str(
             "# HELP impulse_runtime_rejections_total Total runtime activation or rollback rejections grouped by canonical operator reason.\n",
         );
         out.push_str("# TYPE impulse_runtime_rejections_total counter\n");

@@ -552,6 +552,26 @@ impl IngressObservationRecorder<'_> {
         self.metrics.inc_upstream_connection_closed();
     }
 
+    pub fn inc_h2_connection_created(self) {
+        self.metrics.inc_h2_connection_created();
+    }
+
+    pub fn inc_h2_stream_reused(self) {
+        self.metrics.inc_h2_stream_reused();
+    }
+
+    pub fn inc_h2_capacity_saturation(self) {
+        self.metrics.inc_h2_capacity_saturation();
+    }
+
+    pub fn inc_h2_stream_reset(self) {
+        self.metrics.inc_h2_stream_reset();
+    }
+
+    pub fn inc_h2_goaway(self) {
+        self.metrics.inc_h2_goaway();
+    }
+
     pub fn inc_scid_rotation(self) {
         self.metrics.inc_scid_rotation();
     }
