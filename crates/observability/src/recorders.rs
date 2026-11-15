@@ -552,6 +552,10 @@ impl IngressObservationRecorder<'_> {
         self.metrics.inc_upstream_connection_closed();
     }
 
+    pub fn record_upstream_tls_handshake(self, resumed: bool) {
+        self.metrics.record_upstream_tls_handshake(resumed);
+    }
+
     pub fn inc_h2_connection_created(self) {
         self.metrics.inc_h2_connection_created();
     }

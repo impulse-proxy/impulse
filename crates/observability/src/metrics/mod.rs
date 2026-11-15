@@ -175,6 +175,8 @@ pub struct Metrics {
     pub upstream_connections_reused_total: AtomicU64,
     pub upstream_connections_rejected_total: AtomicU64,
     pub upstream_connections_closed_total: AtomicU64,
+    pub upstream_tls_handshake_full: AtomicU64,
+    pub upstream_tls_handshake_resumed: AtomicU64,
     pub h2_connections_created_total: AtomicU64,
     pub h2_streams_reused_total: AtomicU64,
     pub h2_capacity_saturation_total: AtomicU64,

@@ -31,11 +31,11 @@ pub use impulse_pingora_ingress::PingoraListenerTask;
 use impulse_pingora_ingress::{
     ConnectionAdmission, PingoraDrainState, PingoraIngressAdapter, PingoraListenerConfig,
     PingoraRequestContext as IngressRequestContext, PingoraRequestService, PingoraUpstreamProtocol,
-    apply_normalized_request_headers, apply_normalized_response_headers, build_response_header,
-    classify_pingora_proxy_error, classify_tunnel, configure_tunnel_peer, configure_tunnel_proxy,
-    create_listener_service, pingora_peer_protocol, spawn_listener, tunnel_cache_flags,
-    tunnel_response_established, write_downstream_response, write_error_response,
-    write_local_response,
+    PingoraUpstreamTlsHandshake, apply_normalized_request_headers,
+    apply_normalized_response_headers, build_response_header, classify_pingora_proxy_error,
+    classify_tunnel, configure_tunnel_peer, configure_tunnel_proxy, create_listener_service,
+    pingora_peer_protocol, spawn_listener, tunnel_cache_flags, tunnel_response_established,
+    write_downstream_response, write_error_response, write_local_response,
 };
 use impulse_plugins::AsyncRequestPluginExecutionGuard;
 #[cfg(feature = "response-cache")]
@@ -718,6 +718,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
         ctx: &mut Self::Context,
         peer: &HttpPeer,
         reused: bool,
+        tls_handshake: Option<PingoraUpstreamTlsHandshake>,
     ) {
         let metrics = ctx
             .runtime
@@ -729,6 +730,12 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             metrics.inc_upstream_connection_reused();
         } else {
             metrics.inc_upstream_connection_created();
+        }
+        if let Some(handshake) = tls_handshake {
+            metrics.record_upstream_tls_handshake(matches!(
+                handshake,
+                PingoraUpstreamTlsHandshake::Resumed
+            ));
         }
         if pingora_peer_protocol(peer) == PingoraUpstreamProtocol::Http2 {
             if reused {

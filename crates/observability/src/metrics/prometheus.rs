@@ -761,6 +761,22 @@ impl Metrics {
             self.upstream_connections_closed_total
                 .load(Ordering::Relaxed)
         ));
+        out.push_str(
+            "# HELP impulse_upstream_tls_handshake_full_total Successful full upstream TLS handshakes observed by Pingora.\n",
+        );
+        out.push_str("# TYPE impulse_upstream_tls_handshake_full_total counter\n");
+        out.push_str(&format!(
+            "impulse_upstream_tls_handshake_full_total {}\n",
+            self.upstream_tls_handshake_full.load(Ordering::Relaxed)
+        ));
+        out.push_str(
+            "# HELP impulse_upstream_tls_handshake_resumed_total Successful resumed upstream TLS handshakes observed by Pingora.\n",
+        );
+        out.push_str("# TYPE impulse_upstream_tls_handshake_resumed_total counter\n");
+        out.push_str(&format!(
+            "impulse_upstream_tls_handshake_resumed_total {}\n",
+            self.upstream_tls_handshake_resumed.load(Ordering::Relaxed)
+        ));
 
         out.push_str(
             "# HELP impulse_h2_connections_created_total Total HTTP/2 upstream connections created.\n",

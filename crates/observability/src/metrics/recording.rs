@@ -126,6 +126,8 @@ impl Metrics {
             upstream_connections_reused_total: AtomicU64::new(0),
             upstream_connections_rejected_total: AtomicU64::new(0),
             upstream_connections_closed_total: AtomicU64::new(0),
+            upstream_tls_handshake_full: AtomicU64::new(0),
+            upstream_tls_handshake_resumed: AtomicU64::new(0),
             h2_connections_created_total: AtomicU64::new(0),
             h2_streams_reused_total: AtomicU64::new(0),
             h2_capacity_saturation_total: AtomicU64::new(0),
@@ -461,6 +463,16 @@ impl Metrics {
     pub fn inc_upstream_connection_closed(&self) {
         self.upstream_connections_closed_total
             .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_upstream_tls_handshake(&self, resumed: bool) {
+        if resumed {
+            self.upstream_tls_handshake_resumed
+                .fetch_add(1, Ordering::Relaxed);
+        } else {
+            self.upstream_tls_handshake_full
+                .fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     pub fn inc_h2_connection_created(&self) {

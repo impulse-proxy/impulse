@@ -7,6 +7,12 @@ use pingora_core::{Error, Result, protocols::Digest, upstreams::peer::HttpPeer};
 use pingora_http::{RequestHeader, ResponseHeader};
 use pingora_proxy::{ProxyHttp, Session};
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PingoraUpstreamTlsHandshake {
+    Full,
+    Resumed,
+}
+
 #[async_trait]
 pub trait PingoraRequestService: Send + Sync + 'static {
     type Context: Send + Sync;
@@ -127,6 +133,7 @@ pub trait PingoraRequestService: Send + Sync + 'static {
         context: &mut Self::Context,
         peer: &HttpPeer,
         reused: bool,
+        tls_handshake: Option<PingoraUpstreamTlsHandshake>,
     );
 }
 
@@ -307,11 +314,19 @@ impl<S: PingoraRequestService> ProxyHttp for PingoraIngressAdapter<S> {
         peer: &HttpPeer,
         #[cfg(unix)] _fd: std::os::unix::io::RawFd,
         #[cfg(windows)] _socket: std::os::windows::io::RawSocket,
-        _digest: Option<&Digest>,
+        digest: Option<&Digest>,
         ctx: &mut Self::CTX,
     ) -> Result<()> {
+        let tls_handshake = if reused {
+            None
+        } else {
+            digest
+                .and_then(|digest| digest.ssl_digest.as_deref())
+                .and_then(|digest| digest.extension.get::<PingoraUpstreamTlsHandshake>())
+                .copied()
+        };
         self.request_service
-            .upstream_connection_established(ctx, peer, reused);
+            .upstream_connection_established(ctx, peer, reused, tls_handshake);
         Ok(())
     }
 }
