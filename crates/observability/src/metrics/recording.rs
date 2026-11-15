@@ -122,6 +122,10 @@ impl Metrics {
             downstream_connections_accepted_total: AtomicU64::new(0),
             downstream_connections_reused_total: AtomicU64::new(0),
             downstream_connections_closed_total: AtomicU64::new(0),
+            upstream_connections_created_total: AtomicU64::new(0),
+            upstream_connections_reused_total: AtomicU64::new(0),
+            upstream_connections_rejected_total: AtomicU64::new(0),
+            upstream_connections_closed_total: AtomicU64::new(0),
             hedge_triggered: AtomicU64::new(0),
             hedge_won: AtomicU64::new(0),
             hedge_wasted: AtomicU64::new(0),
@@ -430,6 +434,26 @@ impl Metrics {
     pub fn add_downstream_connections_closed(&self, count: usize) {
         self.downstream_connections_closed_total
             .fetch_add(count as u64, Ordering::Relaxed);
+    }
+
+    pub fn inc_upstream_connection_created(&self) {
+        self.upstream_connections_created_total
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn inc_upstream_connection_reused(&self) {
+        self.upstream_connections_reused_total
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn inc_upstream_connection_rejected(&self) {
+        self.upstream_connections_rejected_total
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn inc_upstream_connection_closed(&self) {
+        self.upstream_connections_closed_total
+            .fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn inc_inflight_wait_admit_global(&self) {

@@ -536,6 +536,22 @@ impl IngressObservationRecorder<'_> {
         self.metrics.add_downstream_connections_closed(count);
     }
 
+    pub fn inc_upstream_connection_created(self) {
+        self.metrics.inc_upstream_connection_created();
+    }
+
+    pub fn inc_upstream_connection_reused(self) {
+        self.metrics.inc_upstream_connection_reused();
+    }
+
+    pub fn inc_upstream_connection_rejected(self) {
+        self.metrics.inc_upstream_connection_rejected();
+    }
+
+    pub fn inc_upstream_connection_closed(self) {
+        self.metrics.inc_upstream_connection_closed();
+    }
+
     pub fn inc_scid_rotation(self) {
         self.metrics.inc_scid_rotation();
     }

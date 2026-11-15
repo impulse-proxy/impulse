@@ -3,7 +3,7 @@ use std::{any::Any, time::Duration};
 use async_trait::async_trait;
 use bytes::Bytes;
 use pingora_cache::{CacheKey, RespCacheable};
-use pingora_core::{Error, Result, upstreams::peer::HttpPeer};
+use pingora_core::{Error, Result, protocols::Digest, upstreams::peer::HttpPeer};
 use pingora_http::{RequestHeader, ResponseHeader};
 use pingora_proxy::{ProxyHttp, Session};
 
@@ -121,6 +121,8 @@ pub trait PingoraRequestService: Send + Sync + 'static {
     );
 
     fn downstream_connection_reused(&self, context: &mut Self::Context);
+
+    fn upstream_connection_established(&self, context: &mut Self::Context, reused: bool);
 }
 
 pub struct PingoraIngressAdapter<S> {
@@ -291,5 +293,20 @@ impl<S: PingoraRequestService> ProxyHttp for PingoraIngressAdapter<S> {
         _previous_context: Box<dyn Any + Send + Sync>,
     ) {
         self.request_service.downstream_connection_reused(ctx);
+    }
+
+    async fn connected_to_upstream(
+        &self,
+        _session: &mut Session,
+        reused: bool,
+        _peer: &HttpPeer,
+        #[cfg(unix)] _fd: std::os::unix::io::RawFd,
+        #[cfg(windows)] _socket: std::os::windows::io::RawSocket,
+        _digest: Option<&Digest>,
+        ctx: &mut Self::CTX,
+    ) -> Result<()> {
+        self.request_service
+            .upstream_connection_established(ctx, reused);
+        Ok(())
     }
 }

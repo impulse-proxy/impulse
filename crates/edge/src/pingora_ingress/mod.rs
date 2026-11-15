@@ -708,6 +708,20 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             .inc_downstream_connection_reused();
     }
 
+    fn upstream_connection_established(&self, ctx: &mut Self::Context, reused: bool) {
+        let metrics = ctx
+            .runtime
+            .shared_state
+            .shared_services()
+            .metrics
+            .ingress_observations();
+        if reused {
+            metrics.inc_upstream_connection_reused();
+        } else {
+            metrics.inc_upstream_connection_created();
+        }
+    }
+
     async fn request_filter(&self, session: &mut Session, ctx: &mut Self::Context) -> Result<bool> {
         let runtime = Arc::clone(&ctx.runtime);
         let state = runtime.shared_state.generation_state();
@@ -1363,6 +1377,12 @@ impl PingoraRequestService for PingoraEdgeRequestService {
         ctx: &mut Self::Context,
         error: Box<Error>,
     ) -> Box<Error> {
+        ctx.runtime
+            .shared_state
+            .shared_services()
+            .metrics
+            .ingress_observations()
+            .inc_upstream_connection_rejected();
         handle_pingora_proxy_failure(ctx, error, pingora_peer_protocol(peer), false, true)
     }
 
@@ -1374,6 +1394,12 @@ impl PingoraRequestService for PingoraEdgeRequestService {
         ctx: &mut Self::Context,
         reused: bool,
     ) -> Box<Error> {
+        ctx.runtime
+            .shared_state
+            .shared_services()
+            .metrics
+            .ingress_observations()
+            .inc_upstream_connection_closed();
         handle_pingora_proxy_failure(
             ctx,
             error,
