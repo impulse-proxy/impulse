@@ -119,6 +119,9 @@ impl Metrics {
             overload_shed_connection_cap: AtomicU64::new(0),
             active_connections: AtomicU64::new(0),
             connection_cap_rejects: AtomicU64::new(0),
+            downstream_connections_accepted_total: AtomicU64::new(0),
+            downstream_connections_reused_total: AtomicU64::new(0),
+            downstream_connections_closed_total: AtomicU64::new(0),
             hedge_triggered: AtomicU64::new(0),
             hedge_won: AtomicU64::new(0),
             hedge_wasted: AtomicU64::new(0),
@@ -408,6 +411,25 @@ impl Metrics {
 
     pub fn inc_connection_cap_reject(&self) {
         self.connection_cap_rejects.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn inc_downstream_connection_accepted(&self) {
+        self.downstream_connections_accepted_total
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn inc_downstream_connection_reused(&self) {
+        self.downstream_connections_reused_total
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn inc_downstream_connection_closed(&self) {
+        self.add_downstream_connections_closed(1);
+    }
+
+    pub fn add_downstream_connections_closed(&self, count: usize) {
+        self.downstream_connections_closed_total
+            .fetch_add(count as u64, Ordering::Relaxed);
     }
 
     pub fn inc_inflight_wait_admit_global(&self) {

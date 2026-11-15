@@ -698,6 +698,34 @@ impl Metrics {
         ));
 
         out.push_str(
+            "# HELP impulse_downstream_connections_accepted_total Total accepted downstream connections.\n",
+        );
+        out.push_str("# TYPE impulse_downstream_connections_accepted_total counter\n");
+        out.push_str(&format!(
+            "impulse_downstream_connections_accepted_total {}\n",
+            self.downstream_connections_accepted_total
+                .load(Ordering::Relaxed)
+        ));
+        out.push_str(
+            "# HELP impulse_downstream_connections_reused_total Total downstream connection reuse events.\n",
+        );
+        out.push_str("# TYPE impulse_downstream_connections_reused_total counter\n");
+        out.push_str(&format!(
+            "impulse_downstream_connections_reused_total {}\n",
+            self.downstream_connections_reused_total
+                .load(Ordering::Relaxed)
+        ));
+        out.push_str(
+            "# HELP impulse_downstream_connections_closed_total Total closed downstream connections.\n",
+        );
+        out.push_str("# TYPE impulse_downstream_connections_closed_total counter\n");
+        out.push_str(&format!(
+            "impulse_downstream_connections_closed_total {}\n",
+            self.downstream_connections_closed_total
+                .load(Ordering::Relaxed)
+        ));
+
+        out.push_str(
             "# HELP impulse_runtime_rejections_total Total runtime activation or rollback rejections grouped by canonical operator reason.\n",
         );
         out.push_str("# TYPE impulse_runtime_rejections_total counter\n");

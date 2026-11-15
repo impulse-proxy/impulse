@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{any::Any, time::Duration};
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -119,6 +119,8 @@ pub trait PingoraRequestService: Send + Sync + 'static {
         error: Option<&Error>,
         context: &mut Self::Context,
     );
+
+    fn downstream_connection_reused(&self, context: &mut Self::Context);
 }
 
 pub struct PingoraIngressAdapter<S> {
@@ -272,5 +274,22 @@ impl<S: PingoraRequestService> ProxyHttp for PingoraIngressAdapter<S> {
 
     async fn logging(&self, session: &mut Session, error: Option<&Error>, ctx: &mut Self::CTX) {
         self.request_service.logging(session, error, ctx).await;
+    }
+
+    fn persist_connection_context(
+        &self,
+        _session: &Session,
+        _ctx: &Self::CTX,
+    ) -> Option<Box<dyn Any + Send + Sync>> {
+        Some(Box::new(()))
+    }
+
+    fn on_connection_reuse(
+        &self,
+        _session: &mut Session,
+        ctx: &mut Self::CTX,
+        _previous_context: Box<dyn Any + Send + Sync>,
+    ) {
+        self.request_service.downstream_connection_reused(ctx);
     }
 }

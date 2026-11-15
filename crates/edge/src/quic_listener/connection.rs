@@ -145,6 +145,9 @@ pub(super) fn maybe_log_quic_connection_error(
 
 impl Http3Service {
     pub(super) fn clear_connection_registry(&mut self) {
+        self.metrics
+            .ingress_observations()
+            .add_downstream_connections_closed(self.connections.len());
         self.connections.clear();
         self.cid_routes.clear();
         self.peer_routes.clear();
@@ -193,6 +196,9 @@ impl Http3Service {
         &mut self,
         connection: &crate::runtime::connection::quic::QuicConnection,
     ) {
+        self.metrics
+            .ingress_observations()
+            .inc_downstream_connection_closed();
         self.remove_connection_routes(connection);
         self.refresh_active_connection_metric();
     }
@@ -273,6 +279,7 @@ impl Http3Service {
             h3: None,
             h3_config: self.h3_config.clone(),
             streams: HashMap::new(),
+            requests_seen: 0,
             peer_address: peer,
             last_activity: Instant::now(),
             primary_scid: Arc::from(&scid_bytes[..]),
@@ -290,6 +297,9 @@ impl Http3Service {
             "Creating new connection with server SCID: {:02x?}",
             scid_bytes
         );
+        self.metrics
+            .ingress_observations()
+            .inc_downstream_connection_accepted();
         Some((connection, Arc::from(&scid_bytes[..])))
     }
 
@@ -503,11 +513,14 @@ pub(crate) fn sweep_closed_connections<C, F>(
     peer_routes: &mut HashMap<std::net::SocketAddr, Arc<[u8]>>,
     to_remove: Vec<Arc<[u8]>>,
     routes_of: F,
-) where
+) -> usize
+where
     F: Fn(&C) -> ConnectionRoutes,
 {
+    let mut removed = 0;
     for scid in to_remove {
         if let Some(connection) = connections.remove(&scid) {
+            removed += 1;
             let routes = routes_of(&connection);
             purge_connection_routes(
                 cid_routes,
@@ -519,4 +532,5 @@ pub(crate) fn sweep_closed_connections<C, F>(
             );
         }
     }
+    removed
 }

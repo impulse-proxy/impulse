@@ -654,6 +654,12 @@ impl Http3Service {
         loop {
             match h3.poll(&mut connection.quic) {
                 Ok((stream_id, quiche::h3::Event::Headers { list, .. })) => {
+                    if connection.requests_seen > 0 {
+                        metrics
+                            .ingress_observations()
+                            .inc_downstream_connection_reused();
+                    }
+                    connection.requests_seen = connection.requests_seen.saturating_add(1);
                     let request = match validate_request_headers(&list, resilience) {
                         Ok(request) => request,
                         Err((status, body, is_policy)) => {

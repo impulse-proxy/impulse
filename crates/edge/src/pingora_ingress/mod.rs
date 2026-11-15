@@ -507,7 +507,15 @@ impl ServerApp for PingoraConnectionLimitedApp {
                 .inc_connection_cap_reject();
             return None;
         };
-        self.proxy.process_new(stream, shutdown).await
+        let metrics = Arc::clone(&current.shared_state.shared_services().metrics);
+        metrics
+            .ingress_observations()
+            .inc_downstream_connection_accepted();
+        let reused = self.proxy.process_new(stream, shutdown).await;
+        metrics
+            .ingress_observations()
+            .inc_downstream_connection_closed();
+        reused
     }
 
     async fn cleanup(&self) {
@@ -689,6 +697,15 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             },
             REQUEST_ID_COUNTER.fetch_add(1, Ordering::Relaxed),
         )
+    }
+
+    fn downstream_connection_reused(&self, ctx: &mut Self::Context) {
+        ctx.runtime
+            .shared_state
+            .shared_services()
+            .metrics
+            .ingress_observations()
+            .inc_downstream_connection_reused();
     }
 
     async fn request_filter(&self, session: &mut Session, ctx: &mut Self::Context) -> Result<bool> {
