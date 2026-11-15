@@ -1882,7 +1882,17 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             }
         }
 
-        log::info!(
+        let request_log_level = if error.is_some()
+            || matches!(
+                ctx.terminal_classification.as_ref(),
+                Some(PingoraTerminalClassification::Error(_))
+            ) {
+            log::Level::Info
+        } else {
+            log::Level::Debug
+        };
+        log::log!(
+            request_log_level,
             "request_id={} method={} path={} status={} backend={} upstream={} latency_ms={} retries={} error={}",
             ctx.request_id,
             ctx.method.as_deref().unwrap_or("-"),

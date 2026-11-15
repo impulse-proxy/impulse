@@ -83,7 +83,7 @@ impl Http3Service {
                     error = %e,
                     "request completed with error"
                 ),
-                None => tracing::info!(
+                None => tracing::debug!(
                     request_id = req.request_id,
                     trace_id = trace_id,
                     span_id = span_id,
@@ -114,7 +114,7 @@ impl Http3Service {
                 req.retry_count,
                 e,
             ),
-            None => info!(
+            None => debug!(
                 "request_id={} trace_id={} span_id={} method={} path={} status={} backend={} upstream={} latency_ms={} retries={}",
                 req.request_id,
                 trace_id,
