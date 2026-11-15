@@ -2562,7 +2562,6 @@ fn route_queue_global_cap_sheds_excess_requests() {
 
     let backend_addr = rt.block_on(start_h2_backend_with_regression_routes());
     let mut config = make_config(0, backend_addr.to_string(), cert, key);
-    config.performance.worker_threads = 1;
     config.performance.global_inflight_limit = 64;
     config.performance.per_upstream_inflight_limit = 64;
     config.resilience.route_queue.default_cap = 64;
@@ -2874,6 +2873,7 @@ fn backend_pool_inflight_limit_sheds_excess_requests() {
 
     let backend_addr = rt.block_on(start_h2_backend_with_regression_routes());
     let mut config = make_config(0, backend_addr.to_string(), cert, key);
+    config.performance.worker_threads = 1;
     config.performance.global_inflight_limit = 64;
     config.performance.per_upstream_inflight_limit = 64;
     config.performance.per_backend_inflight_limit = 1;
