@@ -491,6 +491,12 @@ impl ServerApp for PingoraConnectionLimitedApp {
     ) -> Option<Stream> {
         let current = self.runtime.current();
         let listener = current.listener_runtime_config(&self.listener_label)?;
+        let metrics = Arc::clone(&current.shared_state.shared_services().metrics);
+        if let Some(ssl) = stream.get_ssl() {
+            metrics
+                .ingress_observations()
+                .record_downstream_tls_handshake(ssl.session_reused());
+        }
         let permit = self.drain.try_acquire_connection(
             listener
                 .policies
@@ -507,7 +513,6 @@ impl ServerApp for PingoraConnectionLimitedApp {
                 .inc_connection_cap_reject();
             return None;
         };
-        let metrics = Arc::clone(&current.shared_state.shared_services().metrics);
         metrics
             .ingress_observations()
             .inc_downstream_connection_accepted();

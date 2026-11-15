@@ -596,6 +596,10 @@ impl IngressObservationRecorder<'_> {
         self.metrics.inc_downstream_tls_handshake_success();
     }
 
+    pub fn record_downstream_tls_handshake(self, resumed: bool) {
+        self.metrics.record_downstream_tls_handshake(resumed);
+    }
+
     pub fn record_downstream_tls_handshake_failure(self, listener: &str, reason: &str) {
         self.metrics
             .record_downstream_tls_handshake_failure(listener, reason);

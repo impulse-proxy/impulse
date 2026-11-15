@@ -203,6 +203,8 @@ impl Metrics {
             health_failure_transport: AtomicU64::new(0),
             health_failure_tls: AtomicU64::new(0),
             downstream_tls_handshake_success: AtomicU64::new(0),
+            downstream_tls_handshake_full: AtomicU64::new(0),
+            downstream_tls_handshake_resumed: AtomicU64::new(0),
             backend_dns_refresh_success: AtomicU64::new(0),
             backend_dns_refresh_failure: AtomicU64::new(0),
             backend_dns_refresh_address_changes: AtomicU64::new(0),
@@ -1309,6 +1311,17 @@ impl Metrics {
     pub fn inc_downstream_tls_handshake_success(&self) {
         self.downstream_tls_handshake_success
             .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_downstream_tls_handshake(&self, resumed: bool) {
+        self.inc_downstream_tls_handshake_success();
+        if resumed {
+            self.downstream_tls_handshake_resumed
+                .fetch_add(1, Ordering::Relaxed);
+        } else {
+            self.downstream_tls_handshake_full
+                .fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     pub fn record_downstream_tls_handshake_failure(&self, listener: &str, reason: &str) {

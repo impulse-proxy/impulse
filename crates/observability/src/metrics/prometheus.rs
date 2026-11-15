@@ -1369,6 +1369,23 @@ impl Metrics {
                 .load(Ordering::Relaxed)
         ));
         out.push_str(
+            "# HELP impulse_downstream_tls_handshake_full_total Successful full downstream TLS handshakes.\n",
+        );
+        out.push_str("# TYPE impulse_downstream_tls_handshake_full_total counter\n");
+        out.push_str(&format!(
+            "impulse_downstream_tls_handshake_full_total {}\n",
+            self.downstream_tls_handshake_full.load(Ordering::Relaxed)
+        ));
+        out.push_str(
+            "# HELP impulse_downstream_tls_handshake_resumed_total Successful resumed downstream TLS handshakes.\n",
+        );
+        out.push_str("# TYPE impulse_downstream_tls_handshake_resumed_total counter\n");
+        out.push_str(&format!(
+            "impulse_downstream_tls_handshake_resumed_total {}\n",
+            self.downstream_tls_handshake_resumed
+                .load(Ordering::Relaxed)
+        ));
+        out.push_str(
             "# HELP impulse_downstream_tls_handshake_failure_total Downstream TLS handshake failures grouped by listener and reason.\n",
         );
         out.push_str("# TYPE impulse_downstream_tls_handshake_failure_total counter\n");

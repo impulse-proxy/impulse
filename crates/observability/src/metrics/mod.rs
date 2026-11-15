@@ -251,6 +251,8 @@ pub struct Metrics {
     pub health_failure_transport: AtomicU64,
     pub health_failure_tls: AtomicU64,
     pub downstream_tls_handshake_success: AtomicU64,
+    pub downstream_tls_handshake_full: AtomicU64,
+    pub downstream_tls_handshake_resumed: AtomicU64,
     pub backend_dns_refresh_success: AtomicU64,
     pub backend_dns_refresh_failure: AtomicU64,
     pub backend_dns_refresh_address_changes: AtomicU64,
