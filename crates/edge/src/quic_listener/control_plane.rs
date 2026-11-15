@@ -10,8 +10,8 @@ use log::error;
 use super::{
     Http3Service,
     control_api::service::ControlApiEndpointService,
+    control_plane_runtime_handle,
     metrics::service::MetricsEndpointService,
-    runtime_handle,
     runtime_state::{ControlPlaneStartup, WatchdogServiceCtx},
 };
 use crate::runtime::{
@@ -78,7 +78,7 @@ impl Http3Service {
             QuotaRuntime::register_metrics(&runtime.metrics());
             let task_registry = runtime.generation_tasks();
             spawn_pingora_discovery_refresh(
-                runtime_handle(),
+                control_plane_runtime_handle(),
                 runtime.runtime_config(),
                 runtime.transport_pool(),
                 runtime.backend_dns_resolver(),
@@ -91,10 +91,10 @@ impl Http3Service {
             crate::runtime::jwks::spawn_refresh(
                 &runtime.plugin_plans(),
                 Arc::clone(&task_registry),
-                runtime_handle(),
+                control_plane_runtime_handle(),
             );
             spawn_pingora_health_service(
-                runtime_handle(),
+                control_plane_runtime_handle(),
                 PingoraHealthServiceInput {
                     generation: pingora_load_balancing.generation(),
                     transport_pool: runtime.transport_pool(),
@@ -137,7 +137,7 @@ impl Http3Service {
             return;
         }
 
-        let handle = match runtime_handle() {
+        let handle = match control_plane_runtime_handle() {
             Some(handle) => handle,
             None => {
                 error!("Watchdog disabled: no Tokio runtime available");

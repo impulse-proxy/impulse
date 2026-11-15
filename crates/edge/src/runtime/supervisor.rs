@@ -68,6 +68,10 @@ impl RuntimeSupervisor {
         crate::quic_listener::configure_async_runtime(worker_threads);
     }
 
+    pub fn install_control_plane_runtime(handle: tokio::runtime::Handle) {
+        crate::quic_listener::install_control_plane_runtime(handle);
+    }
+
     pub fn start(
         config_path: String,
         log_config: Log,

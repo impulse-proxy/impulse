@@ -41,7 +41,7 @@ impl MetricsEndpointService {
             return Ok(());
         }
 
-        let handle = match runtime_handle() {
+        let handle = match control_plane_runtime_handle() {
             Some(handle) => handle,
             None => {
                 let msg = "metrics endpoint disabled (no Tokio runtime available)".to_string();

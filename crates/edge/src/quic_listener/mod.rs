@@ -110,8 +110,10 @@ mod workers;
 pub(crate) use admission::{
     log_jwt_validation_rejection, observe_jwt_validation_failure, validate_jwt_token_for_generation,
 };
-pub(crate) use async_runtime::configure_async_runtime;
-pub(in crate::quic_listener) use async_runtime::{runtime_handle, spawn_async_task};
+pub(crate) use async_runtime::{configure_async_runtime, install_control_plane_runtime};
+pub(in crate::quic_listener) use async_runtime::{
+    control_plane_runtime_handle, runtime_handle, spawn_async_task,
+};
 use connection::maybe_log_quic_connection_error;
 #[cfg(test)]
 pub(crate) use connection::purge_connection_routes;

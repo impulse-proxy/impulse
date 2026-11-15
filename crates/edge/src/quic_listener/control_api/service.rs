@@ -92,7 +92,7 @@ impl ControlApiEndpointService {
             return Ok(());
         }
 
-        let handle = match runtime_handle() {
+        let handle = match control_plane_runtime_handle() {
             Some(handle) => handle,
             None => {
                 let msg = "control API disabled (no Tokio runtime available)".to_string();

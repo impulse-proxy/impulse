@@ -119,6 +119,8 @@ pub(crate) fn main_entry() {
         }
     };
 
+    RuntimeSupervisor::install_control_plane_runtime(runtime.handle().clone());
+
     runtime.block_on(run(
         runtime_config,
         config_yaml.log.clone(),
