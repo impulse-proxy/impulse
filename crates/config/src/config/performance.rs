@@ -1,5 +1,66 @@
 use super::*;
 
+#[cfg(target_os = "linux")]
+const CGROUP_V2_CPU_MAX: &str = "/sys/fs/cgroup/cpu.max";
+#[cfg(target_os = "linux")]
+const CGROUP_V1_CPU_QUOTA: &str = "/sys/fs/cgroup/cpu/cpu.cfs_quota_us";
+#[cfg(target_os = "linux")]
+const CGROUP_V1_CPU_PERIOD: &str = "/sys/fs/cgroup/cpu/cpu.cfs_period_us";
+
+pub fn available_data_plane_cpus() -> usize {
+    let affinity_limit = std::thread::available_parallelism()
+        .map(std::num::NonZeroUsize::get)
+        .unwrap_or(1);
+
+    cgroup_cpu_limit()
+        .map_or(affinity_limit, |limit| affinity_limit.min(limit))
+        .max(1)
+}
+
+#[cfg(target_os = "linux")]
+fn cgroup_cpu_limit() -> Option<usize> {
+    cgroup_v2_cpu_limit().or_else(cgroup_v1_cpu_limit)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn cgroup_cpu_limit() -> Option<usize> {
+    None
+}
+
+#[cfg(target_os = "linux")]
+fn cgroup_v2_cpu_limit() -> Option<usize> {
+    let value = std::fs::read_to_string(CGROUP_V2_CPU_MAX).ok()?;
+    let mut fields = value.split_whitespace();
+    let quota = fields.next()?;
+    if quota == "max" {
+        return None;
+    }
+    cpu_quota_limit(quota.parse().ok()?, fields.next()?.parse().ok()?)
+}
+
+#[cfg(target_os = "linux")]
+fn cgroup_v1_cpu_limit() -> Option<usize> {
+    let quota = std::fs::read_to_string(CGROUP_V1_CPU_QUOTA)
+        .ok()?
+        .trim()
+        .parse()
+        .ok()?;
+    let period = std::fs::read_to_string(CGROUP_V1_CPU_PERIOD)
+        .ok()?
+        .trim()
+        .parse()
+        .ok()?;
+    cpu_quota_limit(quota, period)
+}
+
+#[cfg(target_os = "linux")]
+fn cpu_quota_limit(quota: i64, period: i64) -> Option<usize> {
+    if quota <= 0 || period <= 0 {
+        return None;
+    }
+    usize::try_from(quota.div_ceil(period)).ok()
+}
+
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(default)]
 #[serde(deny_unknown_fields)]
@@ -90,7 +151,7 @@ pub struct Performance {
 impl Default for Performance {
     fn default() -> Self {
         Self {
-            worker_threads: 1,
+            worker_threads: available_data_plane_cpus(),
             control_plane_threads: 2,
             packet_shards_per_worker: 1,
             packet_shard_queue_capacity: 2048,
