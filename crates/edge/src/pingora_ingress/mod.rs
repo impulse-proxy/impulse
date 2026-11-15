@@ -42,6 +42,8 @@ use impulse_plugins::AsyncRequestPluginExecutionGuard;
 use impulse_plugins::CachePluginFillDecision;
 #[cfg(feature = "response-cache")]
 use impulse_plugins::ResponseCacheKeyParts;
+#[cfg(any(feature = "response-cache", feature = "response-compression"))]
+use impulse_plugins::RouteExecutionClass;
 #[cfg(feature = "external-auth")]
 use impulse_plugins::{AsyncRequestPluginDecision, CompiledAsyncRequestPlugin};
 #[cfg(feature = "response-cache")]
@@ -1807,53 +1809,62 @@ impl PingoraRequestService for PingoraEdgeRequestService {
                 backend_index: Some(selected.index),
             });
         let metrics = &ctx.runtime.shared_state.shared_services().metrics;
+        #[cfg(any(feature = "response-cache", feature = "response-compression"))]
+        let passthrough = ctx.policy.as_ref().is_some_and(|policy| {
+            policy.plugin_plan.execution_class() == RouteExecutionClass::Passthrough
+        });
         #[cfg(feature = "response-cache")]
-        match session.cache.phase() {
-            CachePhase::Hit | CachePhase::Revalidated => {
-                metrics
-                    .ingress_observations()
-                    .record_response_cache_outcome(ResponseCacheOutcome::Hit);
+        if !passthrough {
+            match session.cache.phase() {
+                CachePhase::Hit | CachePhase::Revalidated => {
+                    metrics
+                        .ingress_observations()
+                        .record_response_cache_outcome(ResponseCacheOutcome::Hit);
+                }
+                CachePhase::Miss => {
+                    metrics
+                        .ingress_observations()
+                        .record_response_cache_outcome(ResponseCacheOutcome::Miss);
+                }
+                CachePhase::Expired => {
+                    metrics
+                        .ingress_observations()
+                        .record_response_cache_outcome(ResponseCacheOutcome::Expiry);
+                    metrics
+                        .ingress_observations()
+                        .record_response_cache_outcome(ResponseCacheOutcome::Miss);
+                }
+                CachePhase::Stale | CachePhase::StaleUpdating => {
+                    metrics
+                        .ingress_observations()
+                        .record_response_cache_outcome(ResponseCacheOutcome::Expiry);
+                    metrics
+                        .ingress_observations()
+                        .record_response_cache_outcome(ResponseCacheOutcome::Hit);
+                }
+                CachePhase::Bypass if !ctx.response_cache_bypass_recorded => {
+                    metrics
+                        .ingress_observations()
+                        .record_response_cache_outcome(ResponseCacheOutcome::Bypass);
+                }
+                CachePhase::Disabled(_)
+                | CachePhase::Uninit
+                | CachePhase::CacheKey
+                | CachePhase::Bypass
+                | CachePhase::RevalidatedNoCache(_) => {}
             }
-            CachePhase::Miss => {
-                metrics
-                    .ingress_observations()
-                    .record_response_cache_outcome(ResponseCacheOutcome::Miss);
-            }
-            CachePhase::Expired => {
-                metrics
-                    .ingress_observations()
-                    .record_response_cache_outcome(ResponseCacheOutcome::Expiry);
-                metrics
-                    .ingress_observations()
-                    .record_response_cache_outcome(ResponseCacheOutcome::Miss);
-            }
-            CachePhase::Stale | CachePhase::StaleUpdating => {
-                metrics
-                    .ingress_observations()
-                    .record_response_cache_outcome(ResponseCacheOutcome::Expiry);
-                metrics
-                    .ingress_observations()
-                    .record_response_cache_outcome(ResponseCacheOutcome::Hit);
-            }
-            CachePhase::Bypass if !ctx.response_cache_bypass_recorded => {
-                metrics
-                    .ingress_observations()
-                    .record_response_cache_outcome(ResponseCacheOutcome::Bypass);
-            }
-            CachePhase::Disabled(_)
-            | CachePhase::Uninit
-            | CachePhase::CacheKey
-            | CachePhase::Bypass
-            | CachePhase::RevalidatedNoCache(_) => {}
         }
         #[cfg(feature = "response-cache")]
-        if session.cache.lock_duration().is_some() {
+        if !passthrough && session.cache.lock_duration().is_some() {
             metrics
                 .ingress_observations()
                 .record_response_cache_outcome(ResponseCacheOutcome::LockWait);
         }
         #[cfg(feature = "response-compression")]
-        if let Some(("gzip", input, output, _duration)) = session.upstream_compression.get_info() {
+        if !passthrough
+            && let Some(("gzip", input, output, _duration)) =
+                session.upstream_compression.get_info()
+        {
             metrics
                 .ingress_observations()
                 .add_response_compression_bytes(input, output);
