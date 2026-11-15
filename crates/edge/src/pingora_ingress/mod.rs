@@ -545,13 +545,18 @@ pub fn spawn_pingora_ingress_listener(
         "{}:{}",
         listener.listen.listen.address, listener.listen.listen.port
     );
+    let socket_shards = if listener.performance.reuseport {
+        listener.performance.worker_threads.max(1)
+    } else {
+        1
+    };
     let (service, drain) = pingora_ingress_service_for_listener(
         &Arc::new(ServerConf::default()),
         runtime.as_ref().clone(),
         listener,
     )
     .map_err(|error| format!("Failed to create Pingora listener {address}: {error}"))?;
-    Ok(spawn_listener(address, service, drain))
+    Ok(spawn_listener(address, service, drain, socket_shards))
 }
 
 #[cfg(test)]
