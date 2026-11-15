@@ -905,7 +905,10 @@ impl PingoraRequestService for PingoraEdgeRequestService {
                     "Pingora ingress request filter did not validate a path",
                 )
             })?;
-            let started_at = Instant::now();
+            let started_at = shared
+                .metrics
+                .detailed_plugin_timing_enabled()
+                .then(Instant::now);
             let decision = execute_compiled_external_auth(
                 crate::runtime::connection::auth::ExternalAuthRequest {
                     method,
@@ -934,7 +937,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
                         }
                         AsyncRequestPluginDecision::Reject(_) => PluginExecutionOutcome::Fail,
                     },
-                    async_duration: Some(started_at.elapsed()),
+                    async_duration: started_at.map(|started_at| started_at.elapsed()),
                 });
             match decision {
                 AsyncRequestPluginDecision::Continue => {}

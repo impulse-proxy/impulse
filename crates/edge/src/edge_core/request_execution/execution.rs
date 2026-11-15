@@ -223,6 +223,7 @@ impl<'a> EdgeRequestService<'a> {
                 async_guard,
                 &plugin_plan,
                 plugin_request,
+                self.metrics.detailed_plugin_timing_enabled(),
                 |observation| {
                     #[cfg(feature = "external-auth")]
                     let external_auth_deferred = observation.kind == PluginKind::ExternalAuth
@@ -278,7 +279,10 @@ impl<'a> EdgeRequestService<'a> {
                             .iter()
                             .any(|plugin| matches!(plugin, CompiledAsyncRequestPlugin::Quota(_)))
                     {
-                        let started_at = Instant::now();
+                        let started_at = self
+                            .metrics
+                            .detailed_plugin_timing_enabled()
+                            .then(Instant::now);
                         let decision = super::execute_compiled_quota_plugin(
                             &plugin_plan,
                             plugin_request,
@@ -299,7 +303,7 @@ impl<'a> EdgeRequestService<'a> {
                                         }
                                     },
                                 ),
-                                async_duration: Some(started_at.elapsed()),
+                                async_duration: started_at.map(|started_at| started_at.elapsed()),
                             },
                         );
                         if let Some(decision) = decision {

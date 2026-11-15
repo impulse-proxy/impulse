@@ -33,9 +33,10 @@ use crate::{
 #[cfg(feature = "quota")]
 fn execute_deferred_quota_plugin(
     pending_forward: &PendingForward,
+    measure_duration: bool,
 ) -> Option<(
     Option<crate::edge_core::request_execution::QuotaRejectedDecision>,
-    Duration,
+    Option<Duration>,
 )> {
     if !pending_forward
         .plugin_plan
@@ -71,7 +72,7 @@ fn execute_deferred_quota_plugin(
         ingress_protocol: impulse_contracts::IngressProtocol::Http3,
     };
 
-    let started_at = Instant::now();
+    let started_at = measure_duration.then(Instant::now);
     let decision = crate::quic_listener::admission::block_on_admission_future(
         crate::edge_core::request_execution::execute_compiled_quota_plugin(
             &pending_forward.plugin_plan,
@@ -79,7 +80,7 @@ fn execute_deferred_quota_plugin(
             &[],
         ),
     )?;
-    Some((decision, started_at.elapsed()))
+    Some((decision, started_at.map(|started_at| started_at.elapsed())))
 }
 
 impl Http3Service {
@@ -143,8 +144,10 @@ impl Http3Service {
         };
 
         #[cfg(feature = "quota")]
-        if let Some((decision, duration)) = execute_deferred_quota_plugin(pending_forward.as_ref())
-        {
+        if let Some((decision, duration)) = execute_deferred_quota_plugin(
+            pending_forward.as_ref(),
+            metrics.detailed_plugin_timing_enabled(),
+        ) {
             metrics
                 .plugin_observations()
                 .record_execution(PluginExecutionObservation {
@@ -160,7 +163,7 @@ impl Http3Service {
                             }
                         },
                     ),
-                    async_duration: Some(duration),
+                    async_duration: duration,
                 });
 
             if let Some(decision) = decision {

@@ -227,7 +227,11 @@ impl RuntimeBuilder {
         let mut route_labels = config.upstreams.keys().cloned().collect::<Vec<_>>();
         route_labels.push("unrouted".to_string());
         let routing_index = Arc::new(RouteIndex::from_runtime_upstreams(&config.upstreams));
-        let metrics = Arc::new(crate::Metrics::new(worker_slots, route_labels));
+        let metrics = Arc::new(crate::Metrics::new_with_detailed_plugin_timing(
+            worker_slots,
+            route_labels,
+            config.observability.metrics.detailed_plugin_timing,
+        ));
         // Process-scoped: reuse the active generation's DNS resolver on reload so
         // its cache is preserved; only startup creates a fresh one.
         let backend_dns_resolver = carried

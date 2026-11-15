@@ -21,6 +21,8 @@ pub struct MetricsEndpoint {
     pub allow_non_loopback: bool,
     pub port: u16,
     pub path: String,
+    /// Measure per-plugin execution durations for detailed timing metrics.
+    pub detailed_plugin_timing: bool,
     pub max_connections: usize,
     pub connection_timeout_ms: u64,
 }
@@ -34,6 +36,7 @@ impl Default for MetricsEndpoint {
             allow_non_loopback: false,
             port: 9901,
             path: "/metrics".to_string(),
+            detailed_plugin_timing: false,
             max_connections: 512,
             connection_timeout_ms: 30_000,
         }

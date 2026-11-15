@@ -146,6 +146,7 @@ pub async fn execute_async_request_plugins<'a, Evaluate, Evaluation>(
     guard: &mut AsyncRequestPluginExecutionGuard,
     plan: &'a CompiledPluginPlan,
     request: PluginRequestView<'a>,
+    measure_duration: bool,
     mut observe: impl FnMut(PluginExecutionObservation),
     mut evaluate: Evaluate,
 ) -> AsyncRequestPluginExecution
@@ -166,13 +167,13 @@ where
 
     let mut mutations = Vec::new();
     for plugin in plugins {
-        let started_at = Instant::now();
+        let started_at = measure_duration.then(Instant::now);
         let decision = evaluate(plugin, request).await;
         observe(PluginExecutionObservation {
             kind: plugin.kind(),
             phase: PluginPhase::AsyncRequestGate,
             outcome: async_request_decision_outcome(&decision),
-            async_duration: Some(started_at.elapsed()),
+            async_duration: started_at.map(|started_at| started_at.elapsed()),
         });
         match decision {
             AsyncRequestPluginDecision::Continue => {}

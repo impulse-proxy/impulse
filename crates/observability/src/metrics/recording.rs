@@ -37,6 +37,17 @@ impl Metrics {
     where
         I: IntoIterator<Item = String>,
     {
+        Self::new_with_detailed_plugin_timing(worker_slots, route_labels, false)
+    }
+
+    pub fn new_with_detailed_plugin_timing<I>(
+        worker_slots: usize,
+        route_labels: I,
+        detailed_plugin_timing: bool,
+    ) -> Self
+    where
+        I: IntoIterator<Item = String>,
+    {
         let route_latency_sample_every = env::var(ROUTE_LATENCY_SAMPLE_EVERY_ENV)
             .ok()
             .and_then(|raw| raw.trim().parse::<u64>().ok())
@@ -86,6 +97,7 @@ impl Metrics {
         route_render_order.sort_by(|(_, left), (_, right)| left.cmp(right));
 
         Self {
+            detailed_plugin_timing,
             requests_total: AtomicU64::new(0),
             requests_success: AtomicU64::new(0),
             requests_failure: AtomicU64::new(0),
@@ -1020,7 +1032,9 @@ impl Metrics {
         self.plugin_executions[observation.kind.index()][observation.phase.index()]
             [observation.outcome.index()]
         .fetch_add(1, Ordering::Relaxed);
-        if let Some(duration) = observation.async_duration {
+        if self.detailed_plugin_timing
+            && let Some(duration) = observation.async_duration
+        {
             let duration_ns = u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX);
             self.plugin_async_duration_ns[observation.kind.index()]
                 .fetch_add(duration_ns, Ordering::Relaxed);
@@ -1031,6 +1045,11 @@ impl Metrics {
 
     pub fn record_plugin_activation(&self, outcome: PluginActivationOutcome) {
         self.plugin_activation_outcomes[outcome.index()].fetch_add(1, Ordering::Relaxed);
+    }
+
+    #[must_use]
+    pub const fn detailed_plugin_timing_enabled(&self) -> bool {
+        self.detailed_plugin_timing
     }
 
     pub fn set_active_plugin_count(&self, kind: PluginKind, count: usize) {

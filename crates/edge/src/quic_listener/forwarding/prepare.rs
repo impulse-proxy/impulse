@@ -971,7 +971,7 @@ impl Http3Service {
                 let auth_disposition =
                     ExternalAuthTaskConfig::from_external_auth(&external_auth).disposition;
                 let pending_forward = Arc::clone(&request.request.state.pending_forward);
-                let auth_started_at = Instant::now();
+                let auth_started_at = metrics.detailed_plugin_timing_enabled().then(Instant::now);
                 let auth_start = match start_external_auth_task(pending_forward, external_auth) {
                     Ok(start) => Some(start),
                     Err(err) => {

@@ -190,6 +190,7 @@ observability:
         allow_non_loopback: false # explicit opt-in; metrics are unauthenticated plaintext HTTP
         port: 9901
         path: "/metrics"
+        detailed_plugin_timing: false # enable per-plugin duration metrics; adds a clock read around async plugins
         max_connections: 512
         connection_timeout_ms: 30000
     control_api:

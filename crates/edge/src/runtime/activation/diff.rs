@@ -347,7 +347,7 @@ fn summarize_observability_control_plane(bundle: &RuntimeBundle) -> String {
     let observability = &bundle.runtime_config.observability;
     let performance = &bundle.runtime_config.performance;
     format!(
-        "log(level={},format={:?},file_enabled={},file_path={});control_api(enabled={},bind={}:{},path={});metrics(enabled={},bind={}:{},path={});tracing(enabled={},service={},otlp={:?},ratio={});control_plane_threads={}",
+        "log(level={},format={:?},file_enabled={},file_path={});control_api(enabled={},bind={}:{},path={});metrics(enabled={},bind={}:{},path={},detailed_plugin_timing={});tracing(enabled={},service={},otlp={:?},ratio={});control_plane_threads={}",
         startup.log_config.level,
         startup.log_config.format,
         startup.log_config.file.enabled,
@@ -360,6 +360,7 @@ fn summarize_observability_control_plane(bundle: &RuntimeBundle) -> String {
         observability.metrics.address,
         observability.metrics.port,
         observability.metrics.path,
+        observability.metrics.detailed_plugin_timing,
         observability.tracing.enabled,
         observability.tracing.service_name,
         observability.tracing.otlp_endpoint,
