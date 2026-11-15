@@ -75,6 +75,7 @@ impl H3RequestHandlingConfig {
     pub(in crate::quic_listener) fn new(
         routing_transparency_enabled: bool,
         routing_transparency_include_reason: bool,
+        access_log: impulse_config::config::AccessLog,
         backend_total_request_timeout: Duration,
         max_request_body_bytes: usize,
         request_buffer_global_cap_bytes: usize,
@@ -85,6 +86,7 @@ impl H3RequestHandlingConfig {
             request_finalization: RequestFinalizationConfig {
                 routing_transparency_enabled,
                 routing_transparency_include_reason,
+                access_log,
                 backend_total_request_timeout,
             },
             max_request_body_bytes,

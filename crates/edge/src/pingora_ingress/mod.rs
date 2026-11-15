@@ -1882,30 +1882,35 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             }
         }
 
-        let request_log_level = if error.is_some()
+        let request_failed = status.is_some_and(|status| status.as_u16() >= 400)
+            || error.is_some()
             || matches!(
                 ctx.terminal_classification.as_ref(),
                 Some(PingoraTerminalClassification::Error(_))
-            ) {
-            log::Level::Info
-        } else {
-            log::Level::Debug
-        };
-        log::log!(
-            request_log_level,
-            "request_id={} method={} path={} status={} backend={} upstream={} latency_ms={} retries={} error={}",
-            ctx.request_id,
-            ctx.method.as_deref().unwrap_or("-"),
-            ctx.path.as_deref().unwrap_or("-"),
-            status.map_or(0, |status| status.as_u16()),
-            ctx.selected_backend
-                .as_ref()
-                .map_or("-", |selected| selected.address.as_str()),
-            route.route,
-            ctx.started_at.elapsed().as_millis(),
-            ctx.retry_count,
-            error.map_or_else(|| "-".to_string(), ToString::to_string),
-        );
+            );
+        if request_failed
+            || ctx
+                .runtime
+                .startup
+                .log_config
+                .access
+                .should_log_success(ctx.request_id)
+        {
+            log::info!(
+                "request_id={} method={} path={} status={} backend={} upstream={} latency_ms={} retries={} error={}",
+                ctx.request_id,
+                ctx.method.as_deref().unwrap_or("-"),
+                ctx.path.as_deref().unwrap_or("-"),
+                status.map_or(0, |status| status.as_u16()),
+                ctx.selected_backend
+                    .as_ref()
+                    .map_or("-", |selected| selected.address.as_str()),
+                route.route,
+                ctx.started_at.elapsed().as_millis(),
+                ctx.retry_count,
+                error.map_or_else(|| "-".to_string(), ToString::to_string),
+            );
+        }
         ctx.selected_backend.take();
     }
 }

@@ -96,6 +96,11 @@ pub(super) fn validate_global_config(config: &Config) -> bool {
         return false;
     }
 
+    if !(0.0..=1.0).contains(&config.log.access.sample_ratio) {
+        validation_error!("log.access.sample_ratio must be between 0.0 and 1.0");
+        return false;
+    }
+
     if let Some(ref lb) = config.load_balancing
         && !VALID_LB_TYPES
             .iter()

@@ -632,6 +632,7 @@ impl Http3Service {
         let routing_transparency_enabled = request_finalization.routing_transparency_enabled;
         let routing_transparency_include_reason =
             request_finalization.routing_transparency_include_reason;
+        let access_log = request_finalization.access_log;
         let backend_total_request_timeout = request_finalization.backend_total_request_timeout;
         let tracing_enabled = request_config.tracing_enabled;
         let max_request_body_bytes = request_config.max_request_body_bytes;
@@ -771,6 +772,7 @@ impl Http3Service {
                         RequestFinalizationConfig {
                             routing_transparency_enabled,
                             routing_transparency_include_reason,
+                            access_log,
                             backend_total_request_timeout,
                         },
                     )? {

@@ -90,6 +90,7 @@ fn base_config(cert: &str, key: &str) -> Config {
             level: "info".to_string(),
             file: Default::default(),
             format: LogFormat::Plain,
+            access: Default::default(),
         },
         performance: Performance::default(),
         observability: Observability::default(),

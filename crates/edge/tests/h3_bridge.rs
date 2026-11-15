@@ -235,6 +235,7 @@ fn make_config_with_upstreams(
             level: "info".to_string(),
             file: Default::default(),
             format: LogFormat::Plain,
+            access: Default::default(),
         },
         performance: impulse_config::config::Performance::default(),
         observability: impulse_config::config::Observability::default(),

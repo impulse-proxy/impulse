@@ -68,6 +68,7 @@ pub struct Log {
     pub level: String,
     pub file: LogFile,
     pub format: LogFormat,
+    pub access: AccessLog,
 }
 
 impl Default for Log {
@@ -76,8 +77,54 @@ impl Default for Log {
             level: "info".to_string(),
             file: LogFile::default(),
             format: LogFormat::Plain,
+            access: AccessLog::default(),
         }
     }
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, Copy)]
+#[serde(default)]
+#[serde(deny_unknown_fields)]
+pub struct AccessLog {
+    pub mode: AccessLogMode,
+    pub sample_ratio: f64,
+}
+
+impl AccessLog {
+    pub fn should_log_success(self, request_id: u64) -> bool {
+        match self.mode {
+            AccessLogMode::ErrorsOnly => false,
+            AccessLogMode::Full => true,
+            AccessLogMode::Sampled => {
+                if self.sample_ratio <= 0.0 {
+                    return false;
+                }
+                if self.sample_ratio >= 1.0 {
+                    return true;
+                }
+                let sample = request_id.wrapping_mul(0x9e37_79b9_7f4a_7c15);
+                (sample as f64) < self.sample_ratio * (u64::MAX as f64)
+            }
+        }
+    }
+}
+
+impl Default for AccessLog {
+    fn default() -> Self {
+        Self {
+            mode: AccessLogMode::ErrorsOnly,
+            sample_ratio: 0.01,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, Default, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum AccessLogMode {
+    #[default]
+    ErrorsOnly,
+    Sampled,
+    Full,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, Default, PartialEq, Eq)]

@@ -6,7 +6,7 @@ use std::{
 };
 
 use bytes::Bytes;
-use impulse_config::config::{ForwardedHeaderPolicy, UpstreamHostPolicy};
+use impulse_config::config::{AccessLog, ForwardedHeaderPolicy, UpstreamHostPolicy};
 use impulse_lb::upstream_pool::UpstreamPool;
 use impulse_plugins::CompiledPluginPlan;
 use tokio::sync::{mpsc, oneshot};
@@ -55,6 +55,7 @@ pub struct RequestEnvelope {
     pub upstream_pool: Option<Arc<RwLock<UpstreamPool>>>,
     pub routing_transparency_enabled: bool,
     pub routing_transparency_include_reason: bool,
+    pub access_log: AccessLog,
     pub response_status: Option<u16>,
     pub start: Instant,
     pub total_request_deadline: Instant,
@@ -100,6 +101,7 @@ impl RequestEnvelope {
         upstream_pool: Arc<RwLock<UpstreamPool>>,
         routing_transparency_enabled: bool,
         routing_transparency_include_reason: bool,
+        access_log: AccessLog,
         retry_count: u8,
         error_kind: Option<&'static str>,
     ) -> Self {
@@ -131,6 +133,7 @@ impl RequestEnvelope {
             upstream_pool: Some(upstream_pool),
             routing_transparency_enabled,
             routing_transparency_include_reason,
+            access_log,
             response_status: None,
             start: context.start,
             total_request_deadline: context.total_request_deadline,
@@ -151,6 +154,7 @@ impl RequestEnvelope {
         upstream_pool: Arc<RwLock<UpstreamPool>>,
         routing_transparency_enabled: bool,
         routing_transparency_include_reason: bool,
+        access_log: AccessLog,
         retry_count: u8,
         error_kind: Option<&'static str>,
     ) -> Self {
@@ -187,6 +191,7 @@ impl RequestEnvelope {
             upstream_pool: Some(upstream_pool),
             routing_transparency_enabled,
             routing_transparency_include_reason,
+            access_log,
             response_status: None,
             start: context.start,
             total_request_deadline: context.total_request_deadline,
@@ -1134,6 +1139,7 @@ mod tests {
             upstream_pool: None,
             routing_transparency_enabled: false,
             routing_transparency_include_reason: false,
+            access_log: Default::default(),
             response_status: None,
             start,
             total_request_deadline: context.total_request_deadline,
@@ -1277,6 +1283,7 @@ mod tests {
             upstream_pool: None,
             routing_transparency_enabled: false,
             routing_transparency_include_reason: false,
+            access_log: Default::default(),
             response_status: None,
             start,
             total_request_deadline: start,

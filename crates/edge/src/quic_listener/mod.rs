@@ -444,9 +444,15 @@ impl Http3Service {
             client_body_idle_timeout: self.client_body_idle_timeout,
             listen_port: self.config.listen.listen.port,
         };
+        let access_log = self
+            .runtime_bundle
+            .as_ref()
+            .map(|runtime| runtime.current_view().startup().log_config.access)
+            .unwrap_or_default();
         let request_config = H3RequestHandlingConfig::new(
             self.config.observability.routing.enabled,
             self.config.observability.routing.include_reason,
+            access_log,
             self.backend_total_request_timeout,
             self.max_request_body_bytes,
             self.request_buffer_global_cap_bytes,

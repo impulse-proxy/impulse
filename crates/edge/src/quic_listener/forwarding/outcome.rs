@@ -67,6 +67,13 @@ impl Http3Service {
             );
         }
 
+        if req.error_kind.is_none()
+            && status < 400
+            && !req.access_log.should_log_success(req.request_id)
+        {
+            return;
+        }
+
         if let Some(span) = req.trace_span.as_ref() {
             span.in_scope(|| match req.error_kind.as_ref() {
                 Some(e) => tracing::warn!(
@@ -83,7 +90,7 @@ impl Http3Service {
                     error = %e,
                     "request completed with error"
                 ),
-                None => tracing::debug!(
+                None => tracing::info!(
                     request_id = req.request_id,
                     trace_id = trace_id,
                     span_id = span_id,
@@ -114,7 +121,7 @@ impl Http3Service {
                 req.retry_count,
                 e,
             ),
-            None => debug!(
+            None => info!(
                 "request_id={} trace_id={} span_id={} method={} path={} status={} backend={} upstream={} latency_ms={} retries={}",
                 req.request_id,
                 trace_id,
