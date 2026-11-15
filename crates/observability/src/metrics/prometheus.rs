@@ -698,6 +698,186 @@ impl Metrics {
         ));
 
         out.push_str(
+            "# HELP impulse_downstream_connections_accepted_total Total accepted downstream connections.\n",
+        );
+        out.push_str("# TYPE impulse_downstream_connections_accepted_total counter\n");
+        out.push_str(&format!(
+            "impulse_downstream_connections_accepted_total {}\n",
+            self.downstream_connections_accepted_total
+                .load(Ordering::Relaxed)
+        ));
+        out.push_str(
+            "# HELP impulse_downstream_connections_reused_total Total downstream connection reuse events.\n",
+        );
+        out.push_str("# TYPE impulse_downstream_connections_reused_total counter\n");
+        out.push_str(&format!(
+            "impulse_downstream_connections_reused_total {}\n",
+            self.downstream_connections_reused_total
+                .load(Ordering::Relaxed)
+        ));
+        out.push_str(
+            "# HELP impulse_downstream_connections_closed_total Total closed downstream connections.\n",
+        );
+        out.push_str("# TYPE impulse_downstream_connections_closed_total counter\n");
+        out.push_str(&format!(
+            "impulse_downstream_connections_closed_total {}\n",
+            self.downstream_connections_closed_total
+                .load(Ordering::Relaxed)
+        ));
+        let downstream_connections_accepted = self
+            .downstream_connections_accepted_total
+            .load(Ordering::Relaxed);
+        let downstream_connections_reused = self
+            .downstream_connections_reused_total
+            .load(Ordering::Relaxed);
+        out.push_str(
+            "# HELP impulse_downstream_connection_reuse_ratio Fraction of downstream requests served on reused connections.\n",
+        );
+        out.push_str("# TYPE impulse_downstream_connection_reuse_ratio gauge\n");
+        out.push_str(&format!(
+            "impulse_downstream_connection_reuse_ratio {}\n",
+            observed_ratio(
+                downstream_connections_reused,
+                downstream_connections_accepted.saturating_add(downstream_connections_reused),
+            )
+        ));
+
+        out.push_str(
+            "# HELP impulse_upstream_connections_created_total Total upstream connections created by Pingora.\n",
+        );
+        out.push_str("# TYPE impulse_upstream_connections_created_total counter\n");
+        out.push_str(&format!(
+            "impulse_upstream_connections_created_total {}\n",
+            self.upstream_connections_created_total
+                .load(Ordering::Relaxed)
+        ));
+        out.push_str(
+            "# HELP impulse_upstream_connections_reused_total Total upstream connections reused by Pingora.\n",
+        );
+        out.push_str("# TYPE impulse_upstream_connections_reused_total counter\n");
+        out.push_str(&format!(
+            "impulse_upstream_connections_reused_total {}\n",
+            self.upstream_connections_reused_total
+                .load(Ordering::Relaxed)
+        ));
+        out.push_str(
+            "# HELP impulse_upstream_connections_rejected_total Total upstream connection attempts rejected by Pingora.\n",
+        );
+        out.push_str("# TYPE impulse_upstream_connections_rejected_total counter\n");
+        out.push_str(&format!(
+            "impulse_upstream_connections_rejected_total {}\n",
+            self.upstream_connections_rejected_total
+                .load(Ordering::Relaxed)
+        ));
+        out.push_str(
+            "# HELP impulse_upstream_connections_closed_total Total upstream connections closed after Pingora proxy errors.\n",
+        );
+        out.push_str("# TYPE impulse_upstream_connections_closed_total counter\n");
+        out.push_str(&format!(
+            "impulse_upstream_connections_closed_total {}\n",
+            self.upstream_connections_closed_total
+                .load(Ordering::Relaxed)
+        ));
+        let upstream_connections_created = self
+            .upstream_connections_created_total
+            .load(Ordering::Relaxed);
+        let upstream_connections_reused = self
+            .upstream_connections_reused_total
+            .load(Ordering::Relaxed);
+        out.push_str(
+            "# HELP impulse_upstream_connection_reuse_ratio Fraction of upstream requests served on reused connections.\n",
+        );
+        out.push_str("# TYPE impulse_upstream_connection_reuse_ratio gauge\n");
+        out.push_str(&format!(
+            "impulse_upstream_connection_reuse_ratio {}\n",
+            observed_ratio(
+                upstream_connections_reused,
+                upstream_connections_created.saturating_add(upstream_connections_reused),
+            )
+        ));
+        out.push_str(
+            "# HELP impulse_upstream_tls_handshake_full_total Successful full upstream TLS handshakes observed by Pingora.\n",
+        );
+        out.push_str("# TYPE impulse_upstream_tls_handshake_full_total counter\n");
+        out.push_str(&format!(
+            "impulse_upstream_tls_handshake_full_total {}\n",
+            self.upstream_tls_handshake_full.load(Ordering::Relaxed)
+        ));
+        out.push_str(
+            "# HELP impulse_upstream_tls_handshake_resumed_total Successful resumed upstream TLS handshakes observed by Pingora.\n",
+        );
+        out.push_str("# TYPE impulse_upstream_tls_handshake_resumed_total counter\n");
+        out.push_str(&format!(
+            "impulse_upstream_tls_handshake_resumed_total {}\n",
+            self.upstream_tls_handshake_resumed.load(Ordering::Relaxed)
+        ));
+        let upstream_tls_full = self.upstream_tls_handshake_full.load(Ordering::Relaxed);
+        let upstream_tls_resumed = self.upstream_tls_handshake_resumed.load(Ordering::Relaxed);
+        out.push_str(
+            "# HELP impulse_upstream_tls_resumption_ratio Fraction of observed upstream TLS handshakes resumed.\n",
+        );
+        out.push_str("# TYPE impulse_upstream_tls_resumption_ratio gauge\n");
+        out.push_str(&format!(
+            "impulse_upstream_tls_resumption_ratio {}\n",
+            observed_ratio(
+                upstream_tls_resumed,
+                upstream_tls_full.saturating_add(upstream_tls_resumed),
+            )
+        ));
+
+        out.push_str(
+            "# HELP impulse_h2_connections_created_total Total HTTP/2 upstream connections created.\n",
+        );
+        out.push_str("# TYPE impulse_h2_connections_created_total counter\n");
+        out.push_str(&format!(
+            "impulse_h2_connections_created_total {}\n",
+            self.h2_connections_created_total.load(Ordering::Relaxed)
+        ));
+        out.push_str(
+            "# HELP impulse_h2_streams_reused_total Total streams opened on reused HTTP/2 upstream connections.\n",
+        );
+        out.push_str("# TYPE impulse_h2_streams_reused_total counter\n");
+        out.push_str(&format!(
+            "impulse_h2_streams_reused_total {}\n",
+            self.h2_streams_reused_total.load(Ordering::Relaxed)
+        ));
+        let h2_connections_created = self.h2_connections_created_total.load(Ordering::Relaxed);
+        let h2_streams_reused = self.h2_streams_reused_total.load(Ordering::Relaxed);
+        out.push_str(
+            "# HELP impulse_http2_session_reuse_ratio Fraction of HTTP/2 upstream streams opened on reused sessions.\n",
+        );
+        out.push_str("# TYPE impulse_http2_session_reuse_ratio gauge\n");
+        out.push_str(&format!(
+            "impulse_http2_session_reuse_ratio {}\n",
+            observed_ratio(
+                h2_streams_reused,
+                h2_connections_created.saturating_add(h2_streams_reused),
+            )
+        ));
+        out.push_str(
+            "# HELP impulse_h2_capacity_saturation_total Total HTTP/2 upstream REFUSED_STREAM capacity signals.\n",
+        );
+        out.push_str("# TYPE impulse_h2_capacity_saturation_total counter\n");
+        out.push_str(&format!(
+            "impulse_h2_capacity_saturation_total {}\n",
+            self.h2_capacity_saturation_total.load(Ordering::Relaxed)
+        ));
+        out.push_str(
+            "# HELP impulse_h2_stream_resets_total Total HTTP/2 upstream stream reset errors.\n",
+        );
+        out.push_str("# TYPE impulse_h2_stream_resets_total counter\n");
+        out.push_str(&format!(
+            "impulse_h2_stream_resets_total {}\n",
+            self.h2_stream_resets_total.load(Ordering::Relaxed)
+        ));
+        out.push_str("# HELP impulse_h2_goaway_total Total HTTP/2 upstream GOAWAY errors.\n");
+        out.push_str("# TYPE impulse_h2_goaway_total counter\n");
+        out.push_str(&format!(
+            "impulse_h2_goaway_total {}\n",
+            self.h2_goaway_total.load(Ordering::Relaxed)
+        ));
+
+        out.push_str(
             "# HELP impulse_runtime_rejections_total Total runtime activation or rollback rejections grouped by canonical operator reason.\n",
         );
         out.push_str("# TYPE impulse_runtime_rejections_total counter\n");
@@ -1265,6 +1445,38 @@ impl Metrics {
                 .load(Ordering::Relaxed)
         ));
         out.push_str(
+            "# HELP impulse_downstream_tls_handshake_full_total Successful full downstream TLS handshakes.\n",
+        );
+        out.push_str("# TYPE impulse_downstream_tls_handshake_full_total counter\n");
+        out.push_str(&format!(
+            "impulse_downstream_tls_handshake_full_total {}\n",
+            self.downstream_tls_handshake_full.load(Ordering::Relaxed)
+        ));
+        out.push_str(
+            "# HELP impulse_downstream_tls_handshake_resumed_total Successful resumed downstream TLS handshakes.\n",
+        );
+        out.push_str("# TYPE impulse_downstream_tls_handshake_resumed_total counter\n");
+        out.push_str(&format!(
+            "impulse_downstream_tls_handshake_resumed_total {}\n",
+            self.downstream_tls_handshake_resumed
+                .load(Ordering::Relaxed)
+        ));
+        let downstream_tls_full = self.downstream_tls_handshake_full.load(Ordering::Relaxed);
+        let downstream_tls_resumed = self
+            .downstream_tls_handshake_resumed
+            .load(Ordering::Relaxed);
+        out.push_str(
+            "# HELP impulse_downstream_tls_resumption_ratio Fraction of successful downstream TLS handshakes resumed.\n",
+        );
+        out.push_str("# TYPE impulse_downstream_tls_resumption_ratio gauge\n");
+        out.push_str(&format!(
+            "impulse_downstream_tls_resumption_ratio {}\n",
+            observed_ratio(
+                downstream_tls_resumed,
+                downstream_tls_full.saturating_add(downstream_tls_resumed),
+            )
+        ));
+        out.push_str(
             "# HELP impulse_downstream_tls_handshake_failure_total Downstream TLS handshake failures grouped by listener and reason.\n",
         );
         out.push_str("# TYPE impulse_downstream_tls_handshake_failure_total counter\n");
@@ -1513,6 +1725,14 @@ impl Metrics {
         self.append_cached_route_worker_metrics_families(&mut out);
 
         out
+    }
+}
+
+fn observed_ratio(numerator: u64, denominator: u64) -> f64 {
+    if denominator == 0 {
+        0.0
+    } else {
+        numerator as f64 / denominator as f64
     }
 }
 

@@ -119,6 +119,20 @@ impl Metrics {
             overload_shed_connection_cap: AtomicU64::new(0),
             active_connections: AtomicU64::new(0),
             connection_cap_rejects: AtomicU64::new(0),
+            downstream_connections_accepted_total: AtomicU64::new(0),
+            downstream_connections_reused_total: AtomicU64::new(0),
+            downstream_connections_closed_total: AtomicU64::new(0),
+            upstream_connections_created_total: AtomicU64::new(0),
+            upstream_connections_reused_total: AtomicU64::new(0),
+            upstream_connections_rejected_total: AtomicU64::new(0),
+            upstream_connections_closed_total: AtomicU64::new(0),
+            upstream_tls_handshake_full: AtomicU64::new(0),
+            upstream_tls_handshake_resumed: AtomicU64::new(0),
+            h2_connections_created_total: AtomicU64::new(0),
+            h2_streams_reused_total: AtomicU64::new(0),
+            h2_capacity_saturation_total: AtomicU64::new(0),
+            h2_stream_resets_total: AtomicU64::new(0),
+            h2_goaway_total: AtomicU64::new(0),
             hedge_triggered: AtomicU64::new(0),
             hedge_won: AtomicU64::new(0),
             hedge_wasted: AtomicU64::new(0),
@@ -191,6 +205,8 @@ impl Metrics {
             health_failure_transport: AtomicU64::new(0),
             health_failure_tls: AtomicU64::new(0),
             downstream_tls_handshake_success: AtomicU64::new(0),
+            downstream_tls_handshake_full: AtomicU64::new(0),
+            downstream_tls_handshake_resumed: AtomicU64::new(0),
             backend_dns_refresh_success: AtomicU64::new(0),
             backend_dns_refresh_failure: AtomicU64::new(0),
             backend_dns_refresh_address_changes: AtomicU64::new(0),
@@ -408,6 +424,77 @@ impl Metrics {
 
     pub fn inc_connection_cap_reject(&self) {
         self.connection_cap_rejects.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn inc_downstream_connection_accepted(&self) {
+        self.downstream_connections_accepted_total
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn inc_downstream_connection_reused(&self) {
+        self.downstream_connections_reused_total
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn inc_downstream_connection_closed(&self) {
+        self.add_downstream_connections_closed(1);
+    }
+
+    pub fn add_downstream_connections_closed(&self, count: usize) {
+        self.downstream_connections_closed_total
+            .fetch_add(count as u64, Ordering::Relaxed);
+    }
+
+    pub fn inc_upstream_connection_created(&self) {
+        self.upstream_connections_created_total
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn inc_upstream_connection_reused(&self) {
+        self.upstream_connections_reused_total
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn inc_upstream_connection_rejected(&self) {
+        self.upstream_connections_rejected_total
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn inc_upstream_connection_closed(&self) {
+        self.upstream_connections_closed_total
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_upstream_tls_handshake(&self, resumed: bool) {
+        if resumed {
+            self.upstream_tls_handshake_resumed
+                .fetch_add(1, Ordering::Relaxed);
+        } else {
+            self.upstream_tls_handshake_full
+                .fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    pub fn inc_h2_connection_created(&self) {
+        self.h2_connections_created_total
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn inc_h2_stream_reused(&self) {
+        self.h2_streams_reused_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn inc_h2_capacity_saturation(&self) {
+        self.h2_capacity_saturation_total
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn inc_h2_stream_reset(&self) {
+        self.h2_stream_resets_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn inc_h2_goaway(&self) {
+        self.h2_goaway_total.fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn inc_inflight_wait_admit_global(&self) {
@@ -1236,6 +1323,17 @@ impl Metrics {
     pub fn inc_downstream_tls_handshake_success(&self) {
         self.downstream_tls_handshake_success
             .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_downstream_tls_handshake(&self, resumed: bool) {
+        self.inc_downstream_tls_handshake_success();
+        if resumed {
+            self.downstream_tls_handshake_resumed
+                .fetch_add(1, Ordering::Relaxed);
+        } else {
+            self.downstream_tls_handshake_full
+                .fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     pub fn record_downstream_tls_handshake_failure(&self, listener: &str, reason: &str) {

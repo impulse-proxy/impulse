@@ -10,6 +10,7 @@ pub struct QuicConnection<S> {
     pub h3: Option<quiche::h3::Connection>,
     pub h3_config: Arc<quiche::h3::Config>,
     pub streams: HashMap<u64, S>,
+    pub requests_seen: u64,
     pub peer_address: SocketAddr,
     pub last_activity: Instant,
     pub primary_scid: Arc<[u8]>,

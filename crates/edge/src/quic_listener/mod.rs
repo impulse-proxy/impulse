@@ -614,7 +614,7 @@ impl Http3Service {
             );
         }
 
-        sweep_closed_connections(
+        let closed_connections = sweep_closed_connections(
             &mut self.connections,
             &mut self.cid_routes,
             &mut self.cid_radix,
@@ -622,6 +622,9 @@ impl Http3Service {
             to_remove,
             |c| ConnectionRoutes::from(c),
         );
+        self.metrics
+            .ingress_observations()
+            .add_downstream_connections_closed(closed_connections);
         self.refresh_active_connection_metric();
     }
 

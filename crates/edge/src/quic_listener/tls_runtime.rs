@@ -1115,7 +1115,7 @@ impl Http3Service {
 
         self.metrics
             .ingress_observations()
-            .inc_downstream_tls_handshake_success();
+            .record_downstream_tls_handshake(connection.quic.is_resumed());
         self.metrics
             .ingress_observations()
             .record_downstream_tls_cert_selection(&listener_label, selection);

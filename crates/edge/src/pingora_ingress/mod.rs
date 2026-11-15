@@ -31,11 +31,11 @@ pub use impulse_pingora_ingress::PingoraListenerTask;
 use impulse_pingora_ingress::{
     ConnectionAdmission, PingoraDrainState, PingoraIngressAdapter, PingoraListenerConfig,
     PingoraRequestContext as IngressRequestContext, PingoraRequestService, PingoraUpstreamProtocol,
-    apply_normalized_request_headers, apply_normalized_response_headers, build_response_header,
-    classify_pingora_proxy_error, classify_tunnel, configure_tunnel_peer, configure_tunnel_proxy,
-    create_listener_service, pingora_peer_protocol, spawn_listener, tunnel_cache_flags,
-    tunnel_response_established, write_downstream_response, write_error_response,
-    write_local_response,
+    PingoraUpstreamTlsHandshake, apply_normalized_request_headers,
+    apply_normalized_response_headers, build_response_header, classify_pingora_proxy_error,
+    classify_tunnel, configure_tunnel_peer, configure_tunnel_proxy, create_listener_service,
+    pingora_peer_protocol, spawn_listener, tunnel_cache_flags, tunnel_response_established,
+    write_downstream_response, write_error_response, write_local_response,
 };
 use impulse_plugins::AsyncRequestPluginExecutionGuard;
 #[cfg(feature = "response-cache")]
@@ -491,6 +491,7 @@ impl ServerApp for PingoraConnectionLimitedApp {
     ) -> Option<Stream> {
         let current = self.runtime.current();
         let listener = current.listener_runtime_config(&self.listener_label)?;
+        let metrics = Arc::clone(&current.shared_state.shared_services().metrics);
         let permit = self.drain.try_acquire_connection(
             listener
                 .policies
@@ -507,7 +508,14 @@ impl ServerApp for PingoraConnectionLimitedApp {
                 .inc_connection_cap_reject();
             return None;
         };
-        self.proxy.process_new(stream, shutdown).await
+        metrics
+            .ingress_observations()
+            .inc_downstream_connection_accepted();
+        let reused = self.proxy.process_new(stream, shutdown).await;
+        metrics
+            .ingress_observations()
+            .inc_downstream_connection_closed();
+        reused
     }
 
     async fn cleanup(&self) {
@@ -689,6 +697,48 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             },
             REQUEST_ID_COUNTER.fetch_add(1, Ordering::Relaxed),
         )
+    }
+
+    fn downstream_connection_reused(&self, ctx: &mut Self::Context) {
+        ctx.runtime
+            .shared_state
+            .shared_services()
+            .metrics
+            .ingress_observations()
+            .inc_downstream_connection_reused();
+    }
+
+    fn upstream_connection_established(
+        &self,
+        ctx: &mut Self::Context,
+        peer: &HttpPeer,
+        reused: bool,
+        tls_handshake: Option<PingoraUpstreamTlsHandshake>,
+    ) {
+        let metrics = ctx
+            .runtime
+            .shared_state
+            .shared_services()
+            .metrics
+            .ingress_observations();
+        if reused {
+            metrics.inc_upstream_connection_reused();
+        } else {
+            metrics.inc_upstream_connection_created();
+        }
+        if let Some(handshake) = tls_handshake {
+            metrics.record_upstream_tls_handshake(matches!(
+                handshake,
+                PingoraUpstreamTlsHandshake::Resumed
+            ));
+        }
+        if pingora_peer_protocol(peer) == PingoraUpstreamProtocol::Http2 {
+            if reused {
+                metrics.inc_h2_stream_reused();
+            } else {
+                metrics.inc_h2_connection_created();
+            }
+        }
     }
 
     async fn request_filter(&self, session: &mut Session, ctx: &mut Self::Context) -> Result<bool> {
@@ -1346,7 +1396,15 @@ impl PingoraRequestService for PingoraEdgeRequestService {
         ctx: &mut Self::Context,
         error: Box<Error>,
     ) -> Box<Error> {
-        handle_pingora_proxy_failure(ctx, error, pingora_peer_protocol(peer), false, true)
+        ctx.runtime
+            .shared_state
+            .shared_services()
+            .metrics
+            .ingress_observations()
+            .inc_upstream_connection_rejected();
+        let protocol = pingora_peer_protocol(peer);
+        observe_h2_session_error(ctx, error.as_ref(), protocol);
+        handle_pingora_proxy_failure(ctx, error, protocol, false, true)
     }
 
     fn error_while_proxy(
@@ -1357,10 +1415,18 @@ impl PingoraRequestService for PingoraEdgeRequestService {
         ctx: &mut Self::Context,
         reused: bool,
     ) -> Box<Error> {
+        ctx.runtime
+            .shared_state
+            .shared_services()
+            .metrics
+            .ingress_observations()
+            .inc_upstream_connection_closed();
+        let protocol = pingora_peer_protocol(peer);
+        observe_h2_session_error(ctx, error.as_ref(), protocol);
         handle_pingora_proxy_failure(
             ctx,
             error,
-            pingora_peer_protocol(peer),
+            protocol,
             reused,
             session.response_written().is_none(),
         )
@@ -1911,6 +1977,34 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             );
         }
         ctx.selected_backend.take();
+    }
+}
+
+fn observe_h2_session_error(
+    ctx: &PingoraRequestContext,
+    error: &Error,
+    protocol: PingoraUpstreamProtocol,
+) {
+    if protocol != PingoraUpstreamProtocol::Http2 {
+        return;
+    }
+    let Some(error) = error.root_cause().downcast_ref::<h2::Error>() else {
+        return;
+    };
+    let metrics = ctx
+        .runtime
+        .shared_state
+        .shared_services()
+        .metrics
+        .ingress_observations();
+    if error.is_go_away() {
+        metrics.inc_h2_goaway();
+    }
+    if error.is_reset() {
+        metrics.inc_h2_stream_reset();
+        if error.reason() == Some(h2::Reason::REFUSED_STREAM) {
+            metrics.inc_h2_capacity_saturation();
+        }
     }
 }
 

@@ -1,11 +1,17 @@
-use std::time::Duration;
+use std::{any::Any, time::Duration};
 
 use async_trait::async_trait;
 use bytes::Bytes;
 use pingora_cache::{CacheKey, RespCacheable};
-use pingora_core::{Error, Result, upstreams::peer::HttpPeer};
+use pingora_core::{Error, Result, protocols::Digest, upstreams::peer::HttpPeer};
 use pingora_http::{RequestHeader, ResponseHeader};
 use pingora_proxy::{ProxyHttp, Session};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PingoraUpstreamTlsHandshake {
+    Full,
+    Resumed,
+}
 
 #[async_trait]
 pub trait PingoraRequestService: Send + Sync + 'static {
@@ -118,6 +124,16 @@ pub trait PingoraRequestService: Send + Sync + 'static {
         session: &mut Session,
         error: Option<&Error>,
         context: &mut Self::Context,
+    );
+
+    fn downstream_connection_reused(&self, context: &mut Self::Context);
+
+    fn upstream_connection_established(
+        &self,
+        context: &mut Self::Context,
+        peer: &HttpPeer,
+        reused: bool,
+        tls_handshake: Option<PingoraUpstreamTlsHandshake>,
     );
 }
 
@@ -272,5 +288,45 @@ impl<S: PingoraRequestService> ProxyHttp for PingoraIngressAdapter<S> {
 
     async fn logging(&self, session: &mut Session, error: Option<&Error>, ctx: &mut Self::CTX) {
         self.request_service.logging(session, error, ctx).await;
+    }
+
+    fn persist_connection_context(
+        &self,
+        _session: &Session,
+        _ctx: &Self::CTX,
+    ) -> Option<Box<dyn Any + Send + Sync>> {
+        Some(Box::new(()))
+    }
+
+    fn on_connection_reuse(
+        &self,
+        _session: &mut Session,
+        ctx: &mut Self::CTX,
+        _previous_context: Box<dyn Any + Send + Sync>,
+    ) {
+        self.request_service.downstream_connection_reused(ctx);
+    }
+
+    async fn connected_to_upstream(
+        &self,
+        _session: &mut Session,
+        reused: bool,
+        peer: &HttpPeer,
+        #[cfg(unix)] _fd: std::os::unix::io::RawFd,
+        #[cfg(windows)] _socket: std::os::windows::io::RawSocket,
+        digest: Option<&Digest>,
+        ctx: &mut Self::CTX,
+    ) -> Result<()> {
+        let tls_handshake = if reused {
+            None
+        } else {
+            digest
+                .and_then(|digest| digest.ssl_digest.as_deref())
+                .and_then(|digest| digest.extension.get::<PingoraUpstreamTlsHandshake>())
+                .copied()
+        };
+        self.request_service
+            .upstream_connection_established(ctx, peer, reused, tls_handshake);
+        Ok(())
     }
 }

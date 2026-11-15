@@ -53,6 +53,7 @@ http-body-util.workspace = true
 hyper = { workspace = true, features = ["client", "http1", "http2", "server"] }
 hyper-util = { workspace = true, features = ["client-legacy", "http1", "http2", "tokio"] }
 hyper-rustls.workspace = true
+h2 = "0.4"
 tokio.workspace = true
 rand.workspace = true
 sha2 = "0.10"
