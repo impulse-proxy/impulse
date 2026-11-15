@@ -15,13 +15,15 @@ use impulse_lb::pingora_backend::PingoraLoadBalancingRuntimeState;
 
 #[cfg(feature = "external-auth")]
 pub(crate) use self::auth::execute_external_auth_request;
-pub(in crate::quic_listener) use self::outcome::{
-    backend_failure_reason_for_proxy_error, rejection_reason_for_status, terminalize_stream,
-};
-use self::prepare::RequestFinalizationConfig;
 #[cfg(test)]
 pub(in crate::quic_listener) use self::resolve::{
     TargetResolutionRequest as TestTargetResolutionRequest, selectors_for_test as test_selectors,
+};
+pub(in crate::quic_listener) use self::{
+    outcome::{
+        backend_failure_reason_for_proxy_error, rejection_reason_for_status, terminalize_stream,
+    },
+    prepare::RequestFinalizationConfig,
 };
 pub(crate) use self::{
     resolve::TargetResolutionRequest,
@@ -73,22 +75,14 @@ pub(in crate::quic_listener) struct H3RequestHandlingConfig {
 
 impl H3RequestHandlingConfig {
     pub(in crate::quic_listener) fn new(
-        routing_transparency_enabled: bool,
-        routing_transparency_include_reason: bool,
-        access_log: impulse_config::config::AccessLog,
-        backend_total_request_timeout: Duration,
+        request_finalization: RequestFinalizationConfig,
         max_request_body_bytes: usize,
         request_buffer_global_cap_bytes: usize,
         tracing_enabled: bool,
         max_streams_per_connection: usize,
     ) -> Self {
         Self {
-            request_finalization: RequestFinalizationConfig {
-                routing_transparency_enabled,
-                routing_transparency_include_reason,
-                access_log,
-                backend_total_request_timeout,
-            },
+            request_finalization,
             max_request_body_bytes,
             request_buffer_global_cap_bytes,
             tracing_enabled,

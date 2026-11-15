@@ -185,11 +185,11 @@ pub(super) struct RequestRoutingInput<'a> {
 }
 
 /// Request-scoped configuration applied when finalizing the request envelope.
-pub(super) struct RequestFinalizationConfig {
-    pub(super) routing_transparency_enabled: bool,
-    pub(super) routing_transparency_include_reason: bool,
-    pub(super) access_log: impulse_config::config::AccessLog,
-    pub(super) backend_total_request_timeout: Duration,
+pub(in crate::quic_listener) struct RequestFinalizationConfig {
+    pub(in crate::quic_listener) routing_transparency_enabled: bool,
+    pub(in crate::quic_listener) routing_transparency_include_reason: bool,
+    pub(in crate::quic_listener) access_log: impulse_config::config::AccessLog,
+    pub(in crate::quic_listener) backend_total_request_timeout: Duration,
 }
 
 impl PendingForward {

@@ -126,7 +126,8 @@ pub(crate) use forwarding::{
     BackendCandidate, ForwardingSelectionService, TargetResolutionRequest,
 };
 use forwarding::{
-    ForwardingExecutionCtx, ForwardingSharedCtx, H3RequestHandlingConfig, StreamProgressConfig,
+    ForwardingExecutionCtx, ForwardingSharedCtx, H3RequestHandlingConfig,
+    RequestFinalizationConfig, StreamProgressConfig,
 };
 pub(in crate::quic_listener) use protocol::{can_poll_upstream_result, collect_h3_trailers};
 #[cfg(test)]
@@ -450,10 +451,16 @@ impl Http3Service {
             .map(|runtime| runtime.current_view().startup().log_config.access)
             .unwrap_or_default();
         let request_config = H3RequestHandlingConfig::new(
-            self.config.observability.routing.enabled,
-            self.config.observability.routing.include_reason,
-            access_log,
-            self.backend_total_request_timeout,
+            RequestFinalizationConfig {
+                routing_transparency_enabled: self.config.observability.routing.enabled,
+                routing_transparency_include_reason: self
+                    .config
+                    .observability
+                    .routing
+                    .include_reason,
+                access_log,
+                backend_total_request_timeout: self.backend_total_request_timeout,
+            },
             self.max_request_body_bytes,
             self.request_buffer_global_cap_bytes,
             self.config.observability.tracing.enabled,
