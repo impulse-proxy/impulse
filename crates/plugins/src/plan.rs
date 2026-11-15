@@ -6,10 +6,23 @@ use crate::{
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct CompiledPluginPlan {
     generation: u64,
+    execution_class: RouteExecutionClass,
     request_gate: Box<[CompiledRequestPlugin]>,
     async_request_gate: Box<[CompiledAsyncRequestPlugin]>,
     cache_policy: Box<[CompiledCachePlugin]>,
     response_policy: Box<[CompiledResponsePlugin]>,
+}
+
+/// Immutable fast-path classification for one compiled route plan.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum RouteExecutionClass {
+    #[default]
+    Passthrough,
+    SynchronousPolicy,
+    AsynchronousPolicy,
+    Cache,
+    Compression,
+    Full,
 }
 
 impl CompiledPluginPlan {
@@ -20,8 +33,25 @@ impl CompiledPluginPlan {
         cache_policy: Vec<CompiledCachePlugin>,
         response_policy: Vec<CompiledResponsePlugin>,
     ) -> Self {
+        let has_sync = !request_gate.is_empty();
+        let has_async = !async_request_gate.is_empty();
+        let has_cache = !cache_policy.is_empty();
+        let has_compression = !response_policy.is_empty();
+        let stage_count = [has_sync, has_async, has_cache, has_compression]
+            .into_iter()
+            .filter(|enabled| *enabled)
+            .count();
+        let execution_class = match (stage_count, has_sync, has_async, has_cache, has_compression) {
+            (0, ..) => RouteExecutionClass::Passthrough,
+            (1, true, _, _, _) => RouteExecutionClass::SynchronousPolicy,
+            (1, _, true, _, _) => RouteExecutionClass::AsynchronousPolicy,
+            (1, _, _, true, _) => RouteExecutionClass::Cache,
+            (1, _, _, _, true) => RouteExecutionClass::Compression,
+            _ => RouteExecutionClass::Full,
+        };
         Self {
             generation: 0,
+            execution_class,
             request_gate: request_gate.into_boxed_slice(),
             async_request_gate: async_request_gate.into_boxed_slice(),
             cache_policy: cache_policy.into_boxed_slice(),
@@ -37,6 +67,11 @@ impl CompiledPluginPlan {
     #[must_use]
     pub const fn generation(&self) -> u64 {
         self.generation
+    }
+
+    #[must_use]
+    pub const fn execution_class(&self) -> RouteExecutionClass {
+        self.execution_class
     }
 
     #[must_use]

@@ -114,8 +114,18 @@ impl<'a> EdgeRequestService<'a> {
             .upstream_plan(route.upstream_name.as_ref())
             .ok_or(super::RouteResolutionError::MissingUpstreamPluginPlan)?;
         let policy = resolve_policy(upstream_policy, Arc::clone(&plugin_plan));
-        let has_synchronous_plugins = !plugin_plan.request_gate().is_empty();
-        let has_asynchronous_plugins = !plugin_plan.async_request_gate().is_empty();
+        let (has_synchronous_plugins, has_asynchronous_plugins) =
+            match plugin_plan.execution_class() {
+                impulse_plugins::RouteExecutionClass::Passthrough
+                | impulse_plugins::RouteExecutionClass::Cache
+                | impulse_plugins::RouteExecutionClass::Compression => (false, false),
+                impulse_plugins::RouteExecutionClass::SynchronousPolicy => (true, false),
+                impulse_plugins::RouteExecutionClass::AsynchronousPolicy => (false, true),
+                impulse_plugins::RouteExecutionClass::Full => (
+                    !plugin_plan.request_gate().is_empty(),
+                    !plugin_plan.async_request_gate().is_empty(),
+                ),
+            };
         if !has_synchronous_plugins && !has_asynchronous_plugins {
             let admission = evaluate_admission(self.resilience, route.upstream_name.as_ref());
             return Ok(PluginRequestExecutionState {
