@@ -124,7 +124,7 @@ impl<'a> EdgeRequestService<'a> {
                 policy,
                 outcome: PluginRequestExecutionOutcome::Admitted {
                     admission,
-                    mutations: Vec::new(),
+                    mutations: None,
                 },
             });
         }
@@ -150,7 +150,7 @@ impl<'a> EdgeRequestService<'a> {
                 policy,
                 outcome: PluginRequestExecutionOutcome::Admitted {
                     admission,
-                    mutations: Vec::new(),
+                    mutations: None,
                 },
             });
         }
@@ -215,7 +215,7 @@ impl<'a> EdgeRequestService<'a> {
                 }
             }
         } else {
-            Vec::new()
+            None
         };
 
         if has_asynchronous_plugins {
@@ -271,7 +271,11 @@ impl<'a> EdgeRequestService<'a> {
                 AsyncRequestPluginExecution::Continue {
                     mutations: async_mutations,
                 } => {
-                    mutations.extend(async_mutations);
+                    if let Some(async_mutations) = async_mutations {
+                        mutations
+                            .get_or_insert_with(Vec::new)
+                            .extend(async_mutations);
+                    }
                     #[cfg(feature = "quota")]
                     if input.ingress_protocol != IngressProtocol::Http3
                         && plugin_plan
@@ -286,7 +290,7 @@ impl<'a> EdgeRequestService<'a> {
                         let decision = super::execute_compiled_quota_plugin(
                             &plugin_plan,
                             plugin_request,
-                            &mutations,
+                            mutations.as_deref().unwrap_or_default(),
                         )
                         .await;
                         self.metrics.plugin_observations().record_execution(

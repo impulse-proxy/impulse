@@ -1427,7 +1427,7 @@ mod tests {
     #[test]
     fn pending_forward_request_headers_apply_auth_mutations() {
         let pending_forward = PendingForward {
-            auth_header_mutations: vec![
+            auth_header_mutations: Some(vec![
                 PendingHeaderMutation::Upsert {
                     name: b"x-user-id".to_vec(),
                     value: b"fresh".to_vec(),
@@ -1435,7 +1435,7 @@ mod tests {
                 PendingHeaderMutation::Remove {
                     name: b"x-remove-me".to_vec(),
                 },
-            ],
+            ]),
             ..sample_pending_forward(vec![
                 quiche::h3::Header::new(b":method", b"GET"),
                 quiche::h3::Header::new(b"x-user-id", b"stale"),

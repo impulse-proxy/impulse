@@ -789,10 +789,14 @@ impl RequestEnvelope {
         let state = match self.take_awaiting_auth_state() {
             Some(state) => {
                 let mut state = state;
-                crate::runtime::connection::auth::merge_auth_request_mutations(
-                    &mut Arc::make_mut(&mut state.pending_forward).auth_header_mutations,
-                    mutations,
-                );
+                let mut mutations = mutations.into_iter();
+                if let Some(first) = mutations.next() {
+                    let pending = Arc::make_mut(&mut state.pending_forward);
+                    crate::runtime::connection::auth::merge_auth_request_mutations(
+                        pending.auth_header_mutations.get_or_insert_with(Vec::new),
+                        std::iter::once(first).chain(mutations),
+                    );
+                }
                 state
             }
             None => {
@@ -1007,7 +1011,7 @@ pub struct PendingForward {
     pub host_policy: UpstreamHostPolicy,
     pub forwarded_header_policy: ForwardedHeaderPolicy,
     pub plugin_plan: Arc<CompiledPluginPlan>,
-    pub(crate) auth_header_mutations: Vec<PendingHeaderMutation>,
+    pub(crate) auth_header_mutations: Option<Vec<PendingHeaderMutation>>,
 }
 
 #[cfg(test)]
@@ -1037,7 +1041,7 @@ impl PendingForward {
             host_policy: UpstreamHostPolicy::default(),
             forwarded_header_policy: ForwardedHeaderPolicy::default(),
             plugin_plan: Arc::new(CompiledPluginPlan::default()),
-            auth_header_mutations: Vec::new(),
+            auth_header_mutations: None,
         }
     }
 }

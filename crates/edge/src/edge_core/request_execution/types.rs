@@ -40,7 +40,7 @@ pub(crate) struct PluginRequestExecutionState<Route> {
 pub(crate) enum PluginRequestExecutionOutcome {
     Admitted {
         admission: RequestDecision,
-        mutations: Vec<PluginHeaderMutation>,
+        mutations: Option<Vec<PluginHeaderMutation>>,
     },
     Rejected {
         rejection: PluginRejection,

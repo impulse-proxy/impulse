@@ -32,7 +32,7 @@ pub enum AsyncRequestPluginDecision {
 #[derive(Debug, Eq, PartialEq)]
 pub enum AsyncRequestPluginExecution {
     Continue {
-        mutations: Vec<PluginHeaderMutation>,
+        mutations: Option<Vec<PluginHeaderMutation>>,
     },
     Reject(PluginRejection),
     AlreadyExecuted,
@@ -50,7 +50,7 @@ pub enum SynchronousRequestPluginDecision {
 #[derive(Debug, Eq, PartialEq)]
 pub enum SynchronousRequestPluginExecution {
     Continue {
-        mutations: Vec<PluginHeaderMutation>,
+        mutations: Option<Vec<PluginHeaderMutation>>,
     },
     Reject(PluginRejection),
 }
@@ -72,12 +72,10 @@ pub fn execute_synchronous_request_plugins<'a>(
 ) -> SynchronousRequestPluginExecution {
     let plugins = plan.request_gate();
     if plugins.is_empty() {
-        return SynchronousRequestPluginExecution::Continue {
-            mutations: Vec::new(),
-        };
+        return SynchronousRequestPluginExecution::Continue { mutations: None };
     }
 
-    let mut mutations = Vec::new();
+    let mut mutations = None;
     for plugin in plugins {
         let decision = match plugin {
             #[cfg(feature = "api-key-auth")]
@@ -126,7 +124,11 @@ pub fn execute_synchronous_request_plugins<'a>(
         match decision {
             SynchronousRequestPluginDecision::Continue => {}
             SynchronousRequestPluginDecision::Mutate(plugin_mutations) => {
-                mutations.extend(plugin_mutations);
+                if !plugin_mutations.is_empty() {
+                    mutations
+                        .get_or_insert_with(Vec::new)
+                        .extend(plugin_mutations);
+                }
             }
             SynchronousRequestPluginDecision::Reject(rejection) => {
                 return SynchronousRequestPluginExecution::Reject(rejection);
@@ -156,16 +158,14 @@ where
 {
     let plugins = plan.async_request_gate();
     if plugins.is_empty() {
-        return AsyncRequestPluginExecution::Continue {
-            mutations: Vec::new(),
-        };
+        return AsyncRequestPluginExecution::Continue { mutations: None };
     }
     if guard.started {
         return AsyncRequestPluginExecution::AlreadyExecuted;
     }
     guard.started = true;
 
-    let mut mutations = Vec::new();
+    let mut mutations = None;
     for plugin in plugins {
         let started_at = measure_duration.then(Instant::now);
         let decision = evaluate(plugin, request).await;
@@ -178,7 +178,11 @@ where
         match decision {
             AsyncRequestPluginDecision::Continue => {}
             AsyncRequestPluginDecision::Mutate(plugin_mutations) => {
-                mutations.extend(plugin_mutations);
+                if !plugin_mutations.is_empty() {
+                    mutations
+                        .get_or_insert_with(Vec::new)
+                        .extend(plugin_mutations);
+                }
             }
             AsyncRequestPluginDecision::Reject(rejection) => {
                 return AsyncRequestPluginExecution::Reject(rejection);

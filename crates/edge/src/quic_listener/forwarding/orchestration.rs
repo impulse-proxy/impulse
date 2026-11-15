@@ -49,7 +49,10 @@ fn execute_deferred_quota_plugin(
     let mut effective_headers = pending_forward.headers.as_ref().clone();
     crate::runtime::connection::auth::apply_auth_request_mutations(
         &mut effective_headers,
-        &pending_forward.auth_header_mutations,
+        pending_forward
+            .auth_header_mutations
+            .as_deref()
+            .unwrap_or_default(),
     );
     let header_lookup = |name: &str| {
         effective_headers

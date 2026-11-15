@@ -119,7 +119,7 @@ pub(crate) struct PingoraEdgeRequestState {
     pub(crate) runtime: Arc<RuntimeBundle>,
     pub(crate) route: Option<ResolvedRouteTarget>,
     pub(crate) policy: Option<ResolvedRequestPolicy>,
-    auth_header_mutations: Vec<PendingHeaderMutation>,
+    auth_header_mutations: Option<Vec<PendingHeaderMutation>>,
     pub(crate) completion: RequestCompletion,
     terminal_classification: Option<PingoraTerminalClassification>,
     response_processing: Option<ResponseProcessingResult>,
@@ -675,7 +675,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
                 runtime,
                 route: None,
                 policy: None,
-                auth_header_mutations: Vec::new(),
+                auth_header_mutations: None,
                 completion: RequestCompletion::default(),
                 terminal_classification: None,
                 response_processing: None,
@@ -942,7 +942,11 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             match decision {
                 AsyncRequestPluginDecision::Continue => {}
                 AsyncRequestPluginDecision::Mutate(mutations) => {
-                    plugin_mutations.extend(mutations);
+                    if !mutations.is_empty() {
+                        plugin_mutations
+                            .get_or_insert_with(Vec::new)
+                            .extend(mutations);
+                    }
                 }
                 AsyncRequestPluginDecision::Reject(rejection) => {
                     let external_auth_timed_out = rejection.reason()
@@ -982,11 +986,13 @@ impl PingoraRequestService for PingoraEdgeRequestService {
                 .policy_observations()
                 .inc_external_auth_allowed();
         }
-        if !plugin_mutations.is_empty() {
-            ctx.auth_header_mutations = plugin_mutations
-                .iter()
-                .map(pending_header_mutation)
-                .collect();
+        if let Some(plugin_mutations) = plugin_mutations {
+            ctx.auth_header_mutations = Some(
+                plugin_mutations
+                    .iter()
+                    .map(pending_header_mutation)
+                    .collect(),
+            );
         }
 
         if let Some(response) = admission.rejection_response() {
@@ -1437,8 +1443,8 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             &policy.host_policy,
             &policy.forwarded_header_policy,
         );
-        let auth_header_mutations = (!ctx.auth_header_mutations.is_empty()).then(|| {
-            ctx.auth_header_mutations
+        let auth_header_mutations = ctx.auth_header_mutations.as_ref().map(|mutations| {
+            mutations
                 .iter()
                 .map(|mutation| match mutation {
                     PendingHeaderMutation::Upsert { name, value } => {
