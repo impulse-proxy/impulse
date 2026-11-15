@@ -754,6 +754,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             &state.routing_index,
             &state.upstream_policies,
             &state.plugin_plans,
+            &state.route_execution_classes,
             &state.resilience,
             &shared.metrics,
         );

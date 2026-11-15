@@ -535,6 +535,7 @@ impl Http3Service {
             shared_ctx.routing_index,
             shared_ctx.upstream_policies,
             shared_ctx.plugin_plans,
+            shared_ctx.route_execution_classes,
             resilience,
             metrics,
         );

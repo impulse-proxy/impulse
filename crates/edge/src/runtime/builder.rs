@@ -87,6 +87,13 @@ impl RuntimeBuilder {
                 ProxyError::Transport(format!("failed to compile runtime plugin plans: {error}"))
             })?,
         );
+        let route_execution_classes = Arc::new(
+            plugin_plans
+                .upstreams()
+                .iter()
+                .map(|(upstream, plan)| (upstream.clone(), plan.execution_class()))
+                .collect(),
+        );
         let transport_policy = &config.policies.transport;
         let timeout_policy = &config.policies.timeouts;
         let worker_threads = transport_policy.worker_threads.max(1);
@@ -403,6 +410,7 @@ impl RuntimeBuilder {
                         .collect(),
                 ),
                 plugin_plans,
+                route_execution_classes,
                 pingora_load_balancing,
                 upstream_inflight,
                 global_inflight: Arc::new(Semaphore::new(global_inflight_limit)),

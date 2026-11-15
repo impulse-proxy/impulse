@@ -405,6 +405,11 @@ impl Http3Service {
                 .shared_state()
                 .generation_state()
                 .plugin_plans,
+            route_execution_classes: &self
+                .runtime_state
+                .shared_state()
+                .generation_state()
+                .route_execution_classes,
             pingora_load_balancing: self
                 .runtime_state
                 .shared_state()
@@ -534,6 +539,11 @@ impl Http3Service {
                 .shared_state()
                 .generation_state()
                 .plugin_plans,
+            route_execution_classes: &self
+                .runtime_state
+                .shared_state()
+                .generation_state()
+                .route_execution_classes,
             pingora_load_balancing: self
                 .runtime_state
                 .shared_state()
