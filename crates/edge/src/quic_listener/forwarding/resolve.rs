@@ -637,7 +637,7 @@ mod tests {
         let route = Http3Service::resolve_route_target(&request, &context, &routing_index)
             .expect("resolved route");
 
-        assert_eq!(route.upstream_name, "method_host");
+        assert_eq!(route.upstream_name.as_ref(), "method_host");
         assert!(route.route_host_specific);
         assert_eq!(route.route_path_len, "/api".len());
         assert_eq!(
@@ -742,7 +742,7 @@ mod tests {
         })
         .expect("resolved target");
 
-        assert_eq!(resolved.upstream_name, "websocket_connect");
+        assert_eq!(resolved.upstream_name.as_ref(), "websocket_connect");
         assert_eq!(resolved.backend_addr, "http://127.0.0.1:7002");
     }
 

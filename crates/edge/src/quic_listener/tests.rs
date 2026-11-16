@@ -1148,7 +1148,7 @@ fn resolve_backend_prefers_method_specific_route() {
         &metrics,
     )
     .expect("GET resolve");
-    assert_eq!(resolved.route.upstream_name, "all_methods");
+    assert_eq!(resolved.route.upstream_name.as_ref(), "all_methods");
 
     let request =
         super::forwarding::TestTargetResolutionRequest::new("POST", "/api/items", None, None, None);
@@ -1160,7 +1160,7 @@ fn resolve_backend_prefers_method_specific_route() {
         &metrics,
     )
     .expect("POST resolve");
-    assert_eq!(resolved.route.upstream_name, "post_only");
+    assert_eq!(resolved.route.upstream_name.as_ref(), "post_only");
     assert_eq!(resolved.backend.backend_addr, "127.0.0.1:7010");
 }
 
