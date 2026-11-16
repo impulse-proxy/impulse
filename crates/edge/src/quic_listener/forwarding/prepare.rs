@@ -504,7 +504,6 @@ impl Http3Service {
         let metrics = shared_ctx.metrics.as_ref();
         let resilience = shared_ctx.resilience;
         let resolution_context = ResolutionContext::new(
-            shared_ctx.upstream_pools,
             shared_ctx.pingora_load_balancing,
             shared_ctx.generation,
             metrics,

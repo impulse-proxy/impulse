@@ -640,7 +640,6 @@ impl Http3Service {
         shared_ctx: &ForwardingSharedCtx<'_>,
     ) -> Result<(), quiche::h3::Error> {
         let metrics = shared_ctx.metrics.as_ref();
-        let routing_index = shared_ctx.routing_index;
         let overload_retry_after_seconds = shared_ctx.resilience.shed_retry_after_seconds;
         let route_target = Self::request_outcome_route_target(req);
         let backend_target = Self::request_outcome_backend_target(req);
@@ -670,19 +669,7 @@ impl Http3Service {
             }
         };
 
-        let resolved_route = routing_index.lookup_with_decision_for_method(
-            &req.path,
-            req.authority.as_deref(),
-            Some(&req.method),
-        );
-        let upstream_pool = req.upstream_pool.as_ref().cloned().or_else(|| {
-            resolved_route.and_then(|route| {
-                shared_ctx
-                    .pingora_load_balancing
-                    .upstream_pool_by_id(route.upstream_id)
-                    .cloned()
-            })
-        });
+        let upstream_pool = req.upstream_pool.clone();
 
         match result {
             Ok(_) => {
@@ -1549,7 +1536,6 @@ impl Http3Service {
     ) -> bool {
         let metrics = shared_ctx.metrics.as_ref();
         let resilience = shared_ctx.resilience;
-        let routing_index = shared_ctx.routing_index;
         let mut terminal = false;
         loop {
             let chunk = match req.take_pending_chunk() {
@@ -1771,18 +1757,8 @@ impl Http3Service {
                             quic, stream_id, 0x102, // H3_INTERNAL_ERROR
                         );
                     }
-                    let resolved_route = routing_index.lookup_with_decision_for_method(
-                        &req.path,
-                        req.authority.as_deref(),
-                        Some(&req.method),
-                    );
-                    let upstream_name = resolved_route
-                        .and_then(|route| shared_ctx.identities.upstream_name(route.upstream_id));
-                    let upstream_pool = resolved_route.and_then(|route| {
-                        shared_ctx
-                            .pingora_load_balancing
-                            .upstream_pool_by_id(route.upstream_id)
-                    });
+                    let upstream_name = req.upstream_name.as_deref();
+                    let upstream_pool = req.upstream_pool.as_ref();
                     if let (Some(addr), Some(idx), Some(classified)) = (
                         req.backend_addr.as_deref(),
                         req.backend_index,

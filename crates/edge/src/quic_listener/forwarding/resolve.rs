@@ -52,7 +52,6 @@ pub(in crate::quic_listener) struct ResolutionContext<'a> {
 
 impl<'a> ResolutionContext<'a> {
     pub(in crate::quic_listener) fn new(
-        _upstream_pools: &'a HashMap<String, Arc<RwLock<UpstreamPool>>>,
         _pingora_load_balancing: &'a PingoraLoadBalancingRuntimeState<RuntimeBackendTlsPolicy>,
         generation: u64,
         metrics: &'a Metrics,
@@ -496,23 +495,19 @@ impl Http3Service {
     #[cfg(test)]
     pub(in crate::quic_listener) fn resolve_backend_request_for_test(
         request: &TargetResolutionRequest<'_>,
-        upstream_pools: &HashMap<String, Arc<RwLock<UpstreamPool>>>,
+        _upstream_pools: &HashMap<String, Arc<RwLock<UpstreamPool>>>,
         routing_index: &RouteIndex,
         selectors: &PingoraLoadBalancingRuntimeState<RuntimeBackendTlsPolicy>,
         metrics: &Metrics,
     ) -> Result<TargetResolution, ProxyError> {
-        let context =
-            ResolutionContext::new(upstream_pools, selectors, selectors.generation(), metrics);
+        let context = ResolutionContext::new(selectors, selectors.generation(), metrics);
         Self::resolve_backend_internal(request, &context, routing_index, true)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        collections::HashMap,
-        sync::{Arc, RwLock},
-    };
+    use std::collections::HashMap;
 
     use impulse_config::{
         config::{
@@ -591,21 +586,6 @@ mod tests {
         .expect("runtime config")
     }
 
-    fn upstream_pools(runtime: &RuntimeConfig) -> HashMap<String, Arc<RwLock<UpstreamPool>>> {
-        runtime
-            .upstreams
-            .iter()
-            .map(|(name, upstream)| {
-                (
-                    name.clone(),
-                    Arc::new(RwLock::new(
-                        upstream_pool_from_runtime(upstream).expect("pool"),
-                    )),
-                )
-            })
-            .collect()
-    }
-
     #[test]
     fn resolve_route_target_prefers_method_specific_host_route_in_overlapping_scenarios() {
         let runtime = runtime_config(HashMap::from([
@@ -633,10 +613,9 @@ mod tests {
             ),
         ]));
         let routing_index = RouteIndex::from_runtime_upstreams(&runtime.upstreams);
-        let pools = upstream_pools(&runtime);
         let selectors = selectors_for_test(&runtime);
         let metrics = Metrics::new(1, vec!["route".to_string()]);
-        let context = ResolutionContext::new(&pools, &selectors, selectors.generation(), &metrics);
+        let context = ResolutionContext::new(&selectors, selectors.generation(), &metrics);
         let request = TargetResolutionRequest::new(
             "POST",
             "/api/orders",
@@ -669,10 +648,9 @@ mod tests {
             ),
         )]));
         let routing_index = RouteIndex::from_runtime_upstreams(&runtime.upstreams);
-        let pools = upstream_pools(&runtime);
         let selectors = selectors_for_test(&runtime);
         let metrics = Metrics::new(1, vec!["route".to_string()]);
-        let context = ResolutionContext::new(&pools, &selectors, selectors.generation(), &metrics);
+        let context = ResolutionContext::new(&selectors, selectors.generation(), &metrics);
 
         let request = TargetResolutionRequest::new(
             "GET",
@@ -724,10 +702,9 @@ mod tests {
             true,
         );
         let routing_index = RouteIndex::from_runtime_upstreams(&runtime.upstreams);
-        let pools = upstream_pools(&runtime);
         let selectors = selectors_for_test(&runtime);
         let metrics = Metrics::new(1, vec!["route".to_string()]);
-        let context = ResolutionContext::new(&pools, &selectors, selectors.generation(), &metrics);
+        let context = ResolutionContext::new(&selectors, selectors.generation(), &metrics);
         let request = TargetResolutionRequest::new(
             "CONNECT",
             "/chat/socket",

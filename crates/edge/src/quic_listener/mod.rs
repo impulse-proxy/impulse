@@ -71,7 +71,7 @@ use crate::{
         SCID_ROTATION_PACKET_THRESHOLD, scid_rotation_interval,
     },
     resilience::runtime::RuntimeResilience,
-    routing::{decision::RouteDecisionReason, index::RouteIndex},
+    routing::decision::RouteDecisionReason,
     runtime::{
         connection::{
             quic::{QuicConnection, QuicConnectionErrorSnapshot},
@@ -393,18 +393,6 @@ impl Http3Service {
             metrics: Arc::clone(&self.metrics),
             runtime_generation: self.runtime_state.shared_state().generation_state(),
             resilience: &self.resilience,
-            routing_index: &self.routing_index,
-            identities: &self
-                .runtime_state
-                .shared_state()
-                .generation_state()
-                .identities,
-            upstream_pools: self
-                .runtime_state
-                .shared_state()
-                .generation_state()
-                .pingora_load_balancing
-                .upstream_pools(),
             pingora_load_balancing: self
                 .runtime_state
                 .shared_state()
@@ -522,18 +510,6 @@ impl Http3Service {
             metrics: Arc::clone(&self.metrics),
             runtime_generation: self.runtime_state.shared_state().generation_state(),
             resilience: &self.resilience,
-            routing_index: &self.routing_index,
-            identities: &self
-                .runtime_state
-                .shared_state()
-                .generation_state()
-                .identities,
-            upstream_pools: self
-                .runtime_state
-                .shared_state()
-                .generation_state()
-                .pingora_load_balancing
-                .upstream_pools(),
             pingora_load_balancing: self
                 .runtime_state
                 .shared_state()
