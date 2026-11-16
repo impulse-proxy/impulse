@@ -441,6 +441,8 @@ mod tests {
         time::Duration,
     };
 
+    use impulse_contracts::RouteId;
+
     use super::*;
     use crate::quota::{
         QuotaCompositeKey, QuotaIdentityLabels, QuotaPolicyRuntime, QuotaSelectorDimensions,

@@ -548,6 +548,8 @@ fn classify_redis_error(error: &RedisError) -> QuotaCounterBackendErrorKind {
 mod tests {
     use std::{collections::HashSet, time::Duration};
 
+    use impulse_contracts::RouteId;
+
     use super::*;
     use crate::quota::{
         QuotaCompositeKey, QuotaIdentityLabels, QuotaPolicyRuntime, QuotaSelectorDimensions,
