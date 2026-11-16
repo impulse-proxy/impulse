@@ -36,14 +36,12 @@ use crate::runtime::cache::BoundedPingoraMemoryCache;
 // Shared forwarding dependencies passed through extracted submodules.
 pub(in crate::quic_listener) struct ForwardingSharedCtx<'a> {
     pub(in crate::quic_listener) metrics: Arc<Metrics>,
+    pub(in crate::quic_listener) runtime_generation:
+        &'a crate::runtime::generation::RuntimeGenerationState,
     pub(in crate::quic_listener) resilience: &'a RuntimeResilience,
     pub(in crate::quic_listener) routing_index: &'a RouteIndex,
     pub(in crate::quic_listener) identities: &'a crate::runtime::generation::RuntimeIdentities,
     pub(in crate::quic_listener) upstream_pools: &'a HashMap<String, Arc<RwLock<UpstreamPool>>>,
-    pub(in crate::quic_listener) upstream_policies: &'a [RuntimeUpstreamPolicy],
-    pub(in crate::quic_listener) plugin_plans: &'a impulse_plugins::CompiledGenerationPluginPlans,
-    pub(in crate::quic_listener) route_execution_classes:
-        &'a [impulse_plugins::RouteExecutionClass],
     pub(in crate::quic_listener) pingora_load_balancing:
         &'a PingoraLoadBalancingRuntimeState<RuntimeBackendTlsPolicy>,
     pub(in crate::quic_listener) generation: u64,

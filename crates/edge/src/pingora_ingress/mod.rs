@@ -310,16 +310,19 @@ impl PingoraEdgeRequestService {
         let authority = ctx.authority.clone();
         let retry_backend = ctx.retry_backend.take();
         let state = ctx.runtime.shared_state.generation_state();
-        let pool = state
-            .pingora_load_balancing
-            .upstream_pool_by_id(upstream_id)
-            .cloned()
-            .ok_or_else(|| {
-                Error::explain(
-                    InternalError,
-                    format!("Pingora ingress upstream pool is missing: {upstream_name}"),
-                )
-            })?;
+        let route_runtime = state.route_runtime(upstream_id).ok_or_else(|| {
+            ctx.runtime
+                .shared_state
+                .shared_services()
+                .metrics
+                .runtime_observations()
+                .inc_pingora_lb_selector_failure();
+            Error::explain(
+                InternalError,
+                format!("Pingora route runtime is missing: {upstream_name}"),
+            )
+        })?;
+        let pool = Arc::clone(route_runtime.upstream_pool);
         let (backend_id, backend_addr, backend_index) = if let Some((backend_id, index)) =
             retry_backend
         {
@@ -357,37 +360,17 @@ impl PingoraEdgeRequestService {
                 None,
                 Some(&header_lookup),
             );
-            let selector = state
-                .pingora_load_balancing
-                .selector_by_id(upstream_id)
-                .ok_or_else(|| {
-                    ctx.runtime
-                        .shared_state
-                        .shared_services()
-                        .metrics
-                        .runtime_observations()
-                        .inc_pingora_lb_selector_failure();
-                    Error::explain(
-                        InternalError,
-                        format!("Pingora ingress selector is missing: {upstream_name}"),
-                    )
-                })?;
             let selected = ForwardingSelectionService::select_backend(
                 &selection_request,
                 &pool,
-                selector,
+                route_runtime.selector,
                 ctx.runtime.generation,
                 true,
                 ctx.runtime.shared_state.shared_services().metrics.as_ref(),
             )
             .map_err(|error| Error::because(InternalError, "backend selection failed", error))?;
+            route_runtime.retry_policy.mark_primary(route_id);
             ctx.lb_key = Some(selected.lb_key);
-            ctx.runtime
-                .shared_state
-                .generation_state()
-                .resilience
-                .retry_budget
-                .mark_primary(route_id);
             (
                 selected.backend_id,
                 selected.backend_addr,
@@ -816,15 +799,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
         let request_headers = &request.headers;
         let plugin_header_lookup =
             |name: &str| request_headers.get(name).map(http::HeaderValue::as_bytes);
-        let request_service = EdgeRequestService::new(
-            &state.routing_index,
-            &state.identities,
-            &state.upstream_policies,
-            &state.plugin_plans,
-            &state.route_execution_classes,
-            &state.resilience,
-            &shared.metrics,
-        );
+        let request_service = EdgeRequestService::new(state, &shared.metrics);
         let execution = match request_service
             .execute_ingress_plugins(
                 PluginRequestExecutionInput {
@@ -2096,16 +2071,15 @@ fn handle_pingora_proxy_failure(
         error.set_retry(false);
         return error;
     };
-    let selector = ctx
+    let route_runtime = ctx
         .runtime
         .shared_state
         .generation_state()
-        .pingora_load_balancing
-        .selector_by_id(route.upstream_id);
+        .route_runtime(route.upstream_id);
     let metrics = ctx.runtime.shared_state.shared_services().metrics.as_ref();
-    let selection = match selector {
-        Some(selector) => Some(ForwardingSelectionService::select_backend_excluding(
-            selector,
+    let selection = match route_runtime.as_ref() {
+        Some(route_runtime) => Some(ForwardingSelectionService::select_backend_excluding(
+            route_runtime.selector,
             &selected.pool,
             BackendSelectionInput::new(
                 ctx.runtime.generation,
@@ -2147,11 +2121,14 @@ fn handle_pingora_proxy_failure(
         &proxy_error,
         ctx.retry_count,
         route.route_id,
-        &ctx.runtime
-            .shared_state
-            .generation_state()
-            .resilience
-            .retry_budget,
+        route_runtime.as_ref().map_or(
+            &ctx.runtime
+                .shared_state
+                .generation_state()
+                .resilience
+                .retry_budget,
+            |route_runtime| route_runtime.retry_policy,
+        ),
         retry_backend.is_some(),
         alternate_failure,
     );

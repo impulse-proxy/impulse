@@ -1,11 +1,8 @@
+use std::task::{Context, Poll, Waker};
 #[cfg(feature = "quota")]
 use std::time::Instant;
 #[cfg(feature = "jwt-auth")]
 use std::time::SystemTime;
-use std::{
-    sync::Arc,
-    task::{Context, Poll, Waker},
-};
 
 use impulse_config::runtime::RuntimeUpstreamPolicy;
 #[cfg(any(feature = "external-auth", feature = "quota"))]
@@ -21,9 +18,8 @@ use impulse_plugins::CompiledAsyncRequestPlugin;
 use impulse_plugins::CompiledRequestPlugin;
 use impulse_plugins::{
     AsyncRequestPluginDecision, AsyncRequestPluginExecution, AsyncRequestPluginExecutionGuard,
-    CompiledGenerationPluginPlans, RouteExecutionClass, SynchronousRequestPluginDecision,
-    SynchronousRequestPluginExecution, execute_async_request_plugins,
-    execute_synchronous_request_plugins,
+    RouteExecutionClass, SynchronousRequestPluginDecision, SynchronousRequestPluginExecution,
+    execute_async_request_plugins, execute_synchronous_request_plugins,
 };
 
 use super::{
@@ -31,38 +27,17 @@ use super::{
     PluginTerminalObservation, admission::evaluate_admission, policy::resolve_policy,
     routing::resolve_route,
 };
-use crate::{
-    Metrics, resilience::runtime::RuntimeResilience, routing::index::RouteIndex,
-    runtime::generation::RuntimeIdentities,
-};
+use crate::{Metrics, runtime::generation::RuntimeGenerationState};
 
 /// Borrowed protocol-neutral request executor for one runtime generation.
 pub(crate) struct EdgeRequestService<'a> {
-    routing_index: &'a RouteIndex,
-    identities: &'a RuntimeIdentities,
-    upstream_policies: &'a [RuntimeUpstreamPolicy],
-    plugin_plans: &'a CompiledGenerationPluginPlans,
-    route_execution_classes: &'a [RouteExecutionClass],
-    resilience: &'a RuntimeResilience,
+    generation: &'a RuntimeGenerationState,
     metrics: &'a Metrics,
 }
 impl<'a> EdgeRequestService<'a> {
-    pub(crate) fn new(
-        routing_index: &'a RouteIndex,
-        identities: &'a RuntimeIdentities,
-        upstream_policies: &'a [RuntimeUpstreamPolicy],
-        plugin_plans: &'a CompiledGenerationPluginPlans,
-        route_execution_classes: &'a [RouteExecutionClass],
-        resilience: &'a RuntimeResilience,
-        metrics: &'a Metrics,
-    ) -> Self {
+    pub(crate) fn new(generation: &'a RuntimeGenerationState, metrics: &'a Metrics) -> Self {
         Self {
-            routing_index,
-            identities,
-            upstream_policies,
-            plugin_plans,
-            route_execution_classes,
-            resilience,
+            generation,
             metrics,
         }
     }
@@ -108,23 +83,30 @@ impl<'a> EdgeRequestService<'a> {
     {
         let request = input.request;
         let route = resolve_route(
-            self.routing_index,
-            self.identities,
+            &self.generation.routing_index,
+            &self.generation.identities,
             request.method,
             request.path,
             request.authority,
         )?;
+        let route_runtime = self
+            .generation
+            .route_runtime(route.upstream_id)
+            .ok_or(super::RouteResolutionError::MissingUpstreamPolicy)?;
         let upstream_policy = self
+            .generation
             .upstream_policies
             .get(route.upstream_id.get() as usize)
             .ok_or(super::RouteResolutionError::MissingUpstreamPolicy)?;
-        let plugin_plan = self
+        let plugin_plan_handle = self
+            .generation
             .plugin_plans
             .upstream_plan(route.upstream_id)
             .ok_or(super::RouteResolutionError::MissingUpstreamPluginPlan)?;
-        let policy = resolve_policy(upstream_policy, Arc::clone(&plugin_plan));
+        let plugin_plan = route_runtime.plugin_plan;
+        let policy = resolve_policy(upstream_policy, plugin_plan_handle);
         if plugin_plan.is_empty() {
-            let admission = evaluate_admission(self.resilience, route.route_id);
+            let admission = evaluate_admission(&self.generation.resilience, route.route_id);
             return Ok(PluginRequestExecutionState {
                 route,
                 policy,
@@ -134,10 +116,7 @@ impl<'a> EdgeRequestService<'a> {
                 },
             });
         }
-        let execution_class = self
-            .route_execution_classes
-            .get(route.upstream_id.get() as usize)
-            .ok_or(super::RouteResolutionError::MissingUpstreamPluginPlan)?;
+        let execution_class = plugin_plan.execution_class();
         let (has_synchronous_plugins, has_asynchronous_plugins) = match execution_class {
             RouteExecutionClass::Passthrough
             | RouteExecutionClass::Cache
@@ -150,7 +129,7 @@ impl<'a> EdgeRequestService<'a> {
             ),
         };
         if !has_synchronous_plugins && !has_asynchronous_plugins {
-            let admission = evaluate_admission(self.resilience, route.route_id);
+            let admission = evaluate_admission(&self.generation.resilience, route.route_id);
             return Ok(PluginRequestExecutionState {
                 route,
                 policy,
@@ -192,7 +171,7 @@ impl<'a> EdgeRequestService<'a> {
 
         let mut mutations = if has_synchronous_plugins {
             match execute_synchronous_request_plugins(
-                &plugin_plan,
+                plugin_plan,
                 plugin_request,
                 |observation| {
                     self.metrics
@@ -228,9 +207,9 @@ impl<'a> EdgeRequestService<'a> {
         if has_asynchronous_plugins {
             match execute_async_request_plugins(
                 async_guard,
-                &plugin_plan,
+                plugin_plan,
                 plugin_request,
-                self.metrics.detailed_plugin_timing_enabled(),
+                route_runtime.observation_flags.detailed_plugin_timing,
                 |observation| {
                     #[cfg(feature = "external-auth")]
                     let external_auth_deferred = observation.kind == PluginKind::ExternalAuth
@@ -291,11 +270,12 @@ impl<'a> EdgeRequestService<'a> {
                             .any(|plugin| matches!(plugin, CompiledAsyncRequestPlugin::Quota(_)))
                     {
                         let started_at = self
-                            .metrics
-                            .detailed_plugin_timing_enabled()
+                            .generation
+                            .observation_flags
+                            .detailed_plugin_timing
                             .then(Instant::now);
                         let decision = super::execute_compiled_quota_plugin(
-                            &plugin_plan,
+                            plugin_plan,
                             plugin_request,
                             mutations.as_deref().unwrap_or_default(),
                         )
@@ -357,7 +337,7 @@ impl<'a> EdgeRequestService<'a> {
             }
         }
 
-        let admission = evaluate_admission(self.resilience, route.route_id);
+        let admission = evaluate_admission(&self.generation.resilience, route.route_id);
         Ok(PluginRequestExecutionState {
             route,
             policy,

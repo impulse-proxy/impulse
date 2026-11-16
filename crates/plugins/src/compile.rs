@@ -78,6 +78,11 @@ impl CompiledGenerationPluginPlans {
     }
 
     #[must_use]
+    pub fn upstream_plan_ref(&self, upstream_id: UpstreamId) -> Option<&Arc<CompiledPluginPlan>> {
+        self.upstreams.get(upstream_id.get() as usize)
+    }
+
+    #[must_use]
     #[cfg(feature = "quota")]
     pub fn quota(&self) -> Option<&crate::CompiledQuota> {
         self.upstreams.iter().find_map(|plan| {

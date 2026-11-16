@@ -533,15 +533,7 @@ impl Http3Service {
                 .find(|header| header.name().eq_ignore_ascii_case(name.as_bytes()))
                 .map(|header| header.value())
         };
-        let request_service = EdgeRequestService::new(
-            shared_ctx.routing_index,
-            shared_ctx.identities,
-            shared_ctx.upstream_policies,
-            shared_ctx.plugin_plans,
-            shared_ctx.route_execution_classes,
-            resilience,
-            metrics,
-        );
+        let request_service = EdgeRequestService::new(shared_ctx.runtime_generation, metrics);
         let body_replayable = intake.state.request_mode.bodyless_mode();
         let Some(execution) =
             request_service.execute_ingress_plugins_ready(PluginRequestExecutionInput {

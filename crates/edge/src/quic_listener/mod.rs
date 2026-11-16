@@ -28,12 +28,12 @@ use impulse_bridge::response::{
     ResponseBodyMode, ResponseNormalizationProtocol, ResponseProtocolConstraints,
     normalize_response_trailers,
 };
+#[cfg(test)]
+use impulse_config::runtime::RuntimeUpstreamPolicy;
 use impulse_config::{
     backend_endpoint::{BackendEndpoint, BackendScheme},
     config::{ClientAuth, ControlApi as ControlApiConfig},
-    runtime::{
-        ListenerRuntimeConfig, RuntimeListenerTls, RuntimeTlsIdentity, RuntimeUpstreamPolicy,
-    },
+    runtime::{ListenerRuntimeConfig, RuntimeListenerTls, RuntimeTlsIdentity},
 };
 use impulse_errors::{PoolError, ProxyError};
 use impulse_lb::upstream_pool::UpstreamPool;
@@ -391,6 +391,7 @@ impl Http3Service {
 
         let shared_ctx = ForwardingSharedCtx {
             metrics: Arc::clone(&self.metrics),
+            runtime_generation: self.runtime_state.shared_state().generation_state(),
             resilience: &self.resilience,
             routing_index: &self.routing_index,
             identities: &self
@@ -404,17 +405,6 @@ impl Http3Service {
                 .generation_state()
                 .pingora_load_balancing
                 .upstream_pools(),
-            upstream_policies: self.upstream_policies.as_ref(),
-            plugin_plans: &self
-                .runtime_state
-                .shared_state()
-                .generation_state()
-                .plugin_plans,
-            route_execution_classes: &self
-                .runtime_state
-                .shared_state()
-                .generation_state()
-                .route_execution_classes,
             pingora_load_balancing: self
                 .runtime_state
                 .shared_state()
@@ -530,6 +520,7 @@ impl Http3Service {
         let mut to_remove = Vec::new();
         let shared_ctx = ForwardingSharedCtx {
             metrics: Arc::clone(&self.metrics),
+            runtime_generation: self.runtime_state.shared_state().generation_state(),
             resilience: &self.resilience,
             routing_index: &self.routing_index,
             identities: &self
@@ -543,17 +534,6 @@ impl Http3Service {
                 .generation_state()
                 .pingora_load_balancing
                 .upstream_pools(),
-            upstream_policies: self.upstream_policies.as_ref(),
-            plugin_plans: &self
-                .runtime_state
-                .shared_state()
-                .generation_state()
-                .plugin_plans,
-            route_execution_classes: &self
-                .runtime_state
-                .shared_state()
-                .generation_state()
-                .route_execution_classes,
             pingora_load_balancing: self
                 .runtime_state
                 .shared_state()

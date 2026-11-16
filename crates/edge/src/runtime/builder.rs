@@ -28,7 +28,7 @@ use crate::{
         },
         generation::{
             CarriedProcessSharedServices, RuntimeGenerationState, RuntimeIdentities,
-            RuntimeSharedServices,
+            RuntimeObservationFlags, RuntimeSharedServices,
         },
         shared_state::SharedRuntimeState,
         subsystem_mapping::{
@@ -461,6 +461,10 @@ impl RuntimeBuilder {
                 backend_endpoints_by_id: Arc::from(backend_endpoints_by_id),
                 backend_health_checks: Arc::new(backend_health_checks),
                 upstream_policies,
+                transport_policy: config.policies.transport.clone(),
+                observation_flags: RuntimeObservationFlags {
+                    detailed_plugin_timing: config.observability.metrics.detailed_plugin_timing,
+                },
                 plugin_plans,
                 route_execution_classes,
                 pingora_load_balancing,
