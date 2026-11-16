@@ -1,16 +1,46 @@
 use crate::{
-    edge_core::request_execution::ResolvedRouteTarget, routing::index::RouteIndex,
-    runtime::generation::RuntimeIdentities,
+    edge_core::request_execution::ResolvedRouteTarget,
+    routing::index::RouteIndex,
+    runtime::generation::{RuntimeGenerationState, RuntimeIdentities},
 };
 
-/// Resolves a validated HTTP method, path, and authority through the existing route index.
+/// Resolves a route match and pins it to the runtime compiled for its generation.
 pub(crate) fn resolve_route(
+    generation: &RuntimeGenerationState,
+    method: &str,
+    path: &str,
+    authority: Option<&str>,
+) -> Result<ResolvedRouteTarget, RouteResolutionError> {
+    let matched = resolve_route_match(
+        &generation.routing_index,
+        &generation.identities,
+        method,
+        path,
+        authority,
+    )?;
+    let runtime = generation
+        .route_runtime(matched.upstream_id)
+        .cloned()
+        .ok_or(RouteResolutionError::MissingRouteRuntime)?;
+    Ok(ResolvedRouteTarget {
+        route_id: matched.route_id,
+        upstream_id: matched.upstream_id,
+        upstream_name: matched.upstream_name,
+        matched_path_len: matched.matched_path_len,
+        host_specific: matched.host_specific,
+        reason: matched.reason,
+        runtime,
+    })
+}
+
+/// Resolves route-match metadata without generation-owned execution state.
+pub(crate) fn resolve_route_match(
     routing_index: &RouteIndex,
     identities: &RuntimeIdentities,
     method: &str,
     path: &str,
     authority: Option<&str>,
-) -> Result<ResolvedRouteTarget, RouteResolutionError> {
+) -> Result<ResolvedRouteMatch, RouteResolutionError> {
     if method.is_empty() || path.is_empty() {
         return Err(RouteResolutionError::EmptyMethodOrPath);
     }
@@ -19,7 +49,7 @@ pub(crate) fn resolve_route(
         .lookup_with_decision_for_method(path, authority, Some(method))
         .ok_or(RouteResolutionError::NoRoute)?;
 
-    Ok(ResolvedRouteTarget {
+    Ok(ResolvedRouteMatch {
         route_id: route.route_id,
         upstream_id: route.upstream_id,
         upstream_name: identities
@@ -27,9 +57,21 @@ pub(crate) fn resolve_route(
             .ok_or(RouteResolutionError::MissingUpstreamDisplayName)?,
         matched_path_len: route.matched_path_len,
         host_specific: route.host_specific,
+        #[cfg(test)]
         method_specific: route.method_specific,
         reason: route.reason,
     })
+}
+
+pub(crate) struct ResolvedRouteMatch {
+    pub(crate) route_id: impulse_contracts::RouteId,
+    pub(crate) upstream_id: impulse_contracts::UpstreamId,
+    pub(crate) upstream_name: std::sync::Arc<str>,
+    pub(crate) matched_path_len: usize,
+    pub(crate) host_specific: bool,
+    #[cfg(test)]
+    pub(crate) method_specific: bool,
+    pub(crate) reason: crate::routing::decision::RouteDecisionReason,
 }
 
 /// Route-lookup failures that ingress adapters map to their existing responses.
@@ -38,8 +80,8 @@ pub(crate) enum RouteResolutionError {
     EmptyMethodOrPath,
     NoRoute,
     MissingUpstreamPolicy,
-    MissingUpstreamPluginPlan,
     MissingUpstreamDisplayName,
+    MissingRouteRuntime,
 }
 
 #[cfg(test)]
@@ -90,7 +132,7 @@ mod tests {
         let expected = index
             .lookup_with_decision_for_method("/v1/messages", Some("api.example.com"), Some("POST"))
             .expect("indexed route");
-        let resolved = resolve_route(
+        let resolved = resolve_route_match(
             &index,
             &identities,
             "POST",
@@ -111,13 +153,13 @@ mod tests {
         let index = RouteIndex::from_upstreams(&HashMap::new());
         let identities = RuntimeIdentities::for_upstream_names([]);
 
-        assert_eq!(
-            resolve_route(&index, &identities, "GET", "/missing", None),
+        assert!(matches!(
+            resolve_route_match(&index, &identities, "GET", "/missing", None),
             Err(RouteResolutionError::NoRoute)
-        );
-        assert_eq!(
-            resolve_route(&index, &identities, "", "/missing", None),
+        ));
+        assert!(matches!(
+            resolve_route_match(&index, &identities, "", "/missing", None),
             Err(RouteResolutionError::EmptyMethodOrPath)
-        );
+        ));
     }
 }

@@ -83,28 +83,18 @@ impl<'a> EdgeRequestService<'a> {
     {
         let request = input.request;
         let route = resolve_route(
-            &self.generation.routing_index,
-            &self.generation.identities,
+            self.generation,
             request.method,
             request.path,
             request.authority,
         )?;
-        let route_runtime = self
-            .generation
-            .route_runtime(route.upstream_id)
-            .ok_or(super::RouteResolutionError::MissingUpstreamPolicy)?;
         let upstream_policy = self
             .generation
             .upstream_policies
             .get(route.upstream_id.get() as usize)
             .ok_or(super::RouteResolutionError::MissingUpstreamPolicy)?;
-        let plugin_plan_handle = self
-            .generation
-            .plugin_plans
-            .upstream_plan(route.upstream_id)
-            .ok_or(super::RouteResolutionError::MissingUpstreamPluginPlan)?;
-        let plugin_plan = route_runtime.plugin_plan.as_ref();
-        let policy = resolve_policy(upstream_policy, plugin_plan_handle);
+        let plugin_plan = route.runtime.plugin_plan.as_ref();
+        let policy = resolve_policy(upstream_policy, route.runtime.plugin_plan.clone());
         if plugin_plan.is_empty() {
             let admission = evaluate_admission(&self.generation.resilience, route.route_id);
             return Ok(PluginRequestExecutionState {
@@ -209,7 +199,7 @@ impl<'a> EdgeRequestService<'a> {
                 async_guard,
                 plugin_plan,
                 plugin_request,
-                route_runtime.observation_flags.detailed_plugin_timing,
+                route.runtime.observation_flags.detailed_plugin_timing,
                 |observation| {
                     #[cfg(feature = "external-auth")]
                     let external_auth_deferred = observation.kind == PluginKind::ExternalAuth

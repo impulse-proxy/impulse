@@ -6,7 +6,7 @@ use impulse_contracts::{
 };
 
 use super::policy::ResolvedRequestPolicy;
-use crate::routing::decision::RouteDecisionReason;
+use crate::{routing::decision::RouteDecisionReason, runtime::generation::RouteRuntime};
 
 pub(crate) type RequestHeaderLookup<'a> = dyn Fn(&str) -> Option<String> + Sync + 'a;
 
@@ -78,13 +78,13 @@ impl PluginTerminalObservation {
 }
 
 /// The route selected by the shared routing service before backend selection.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone)]
 pub(crate) struct ResolvedRouteTarget {
     pub(crate) route_id: RouteId,
     pub(crate) upstream_id: UpstreamId,
     pub(crate) upstream_name: Arc<str>,
     pub(crate) matched_path_len: usize,
     pub(crate) host_specific: bool,
-    pub(crate) method_specific: bool,
     pub(crate) reason: RouteDecisionReason,
+    pub(crate) runtime: RouteRuntime,
 }

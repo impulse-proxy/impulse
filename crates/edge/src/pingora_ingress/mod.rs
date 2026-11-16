@@ -294,7 +294,7 @@ impl PingoraEdgeRequestService {
         })?;
         let route_id = route.route_id;
         let upstream_id = route.upstream_id;
-        let upstream_name = Arc::clone(&route.upstream_name);
+        let route_runtime = route.runtime.clone();
         let method = ctx.method.clone().ok_or_else(|| {
             Error::explain(
                 InternalError,
@@ -310,18 +310,6 @@ impl PingoraEdgeRequestService {
         let authority = ctx.authority.clone();
         let retry_backend = ctx.retry_backend.take();
         let state = ctx.runtime.shared_state.generation_state();
-        let route_runtime = state.route_runtime(upstream_id).ok_or_else(|| {
-            ctx.runtime
-                .shared_state
-                .shared_services()
-                .metrics
-                .runtime_observations()
-                .inc_pingora_lb_selector_failure();
-            Error::explain(
-                InternalError,
-                format!("Pingora route runtime is missing: {upstream_name}"),
-            )
-        })?;
         let pool = Arc::clone(&route_runtime.upstream_pool);
         let (backend_id, backend_addr, backend_index) = if let Some((backend_id, index)) =
             retry_backend
@@ -837,8 +825,8 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             Err(
                 RouteResolutionError::NoRoute
                 | RouteResolutionError::MissingUpstreamPolicy
-                | RouteResolutionError::MissingUpstreamPluginPlan
-                | RouteResolutionError::MissingUpstreamDisplayName,
+                | RouteResolutionError::MissingUpstreamDisplayName
+                | RouteResolutionError::MissingRouteRuntime,
             ) => {
                 write_local_response(
                     session,
@@ -2071,34 +2059,22 @@ fn handle_pingora_proxy_failure(
         error.set_retry(false);
         return error;
     };
-    let route_runtime = ctx
-        .runtime
-        .shared_state
-        .generation_state()
-        .route_runtime(route.upstream_id);
+    let route_runtime = route.runtime.clone();
     let metrics = ctx.runtime.shared_state.shared_services().metrics.as_ref();
-    let selection = match route_runtime.as_ref() {
-        Some(route_runtime) => Some(ForwardingSelectionService::select_backend_excluding(
-            &route_runtime.selector,
-            &selected.pool,
-            BackendSelectionInput::new(
-                ctx.runtime.generation,
-                ctx.lb_key.as_deref().unwrap_or_default(),
-                &[selected.id],
-                false,
-            ),
-            metrics,
-        )),
-        None => {
-            metrics
-                .runtime_observations()
-                .inc_pingora_lb_selector_failure();
-            None
-        }
-    };
+    let selection = ForwardingSelectionService::select_backend_excluding(
+        &route_runtime.selector,
+        &selected.pool,
+        BackendSelectionInput::new(
+            ctx.runtime.generation,
+            ctx.lb_key.as_deref().unwrap_or_default(),
+            &[selected.id],
+            false,
+        ),
+        metrics,
+    );
     let (retry_backend, alternate_failure) = match selection {
-        Some(Ok(Some(BackendCandidate { id, index, .. }))) => (Some((id, index)), None),
-        Some(Ok(None)) => match selected.pool.read() {
+        Ok(Some(BackendCandidate { id, index, .. })) => (Some((id, index)), None),
+        Ok(None) => match selected.pool.read() {
             Ok(pool) if pool.membership_summary().healthy_backends == 0 => {
                 (None, Some(AlternateBackendFailureReason::NoHealthyBackends))
             }
@@ -2108,7 +2084,7 @@ fn handle_pingora_proxy_failure(
             ),
             Err(_) => (None, Some(AlternateBackendFailureReason::PoolUnavailable)),
         },
-        Some(Err(_)) | None => (None, Some(AlternateBackendFailureReason::PoolUnavailable)),
+        Err(_) => (None, Some(AlternateBackendFailureReason::PoolUnavailable)),
     };
     let retry = RetryCoordinator::new(
         ctx.method.as_deref().is_some_and(is_idempotent_method),
@@ -2121,14 +2097,7 @@ fn handle_pingora_proxy_failure(
         &proxy_error,
         ctx.retry_count,
         route.route_id,
-        route_runtime.as_ref().map_or(
-            &ctx.runtime
-                .shared_state
-                .generation_state()
-                .resilience
-                .retry_budget,
-            |route_runtime| route_runtime.retry_policy.as_ref(),
-        ),
+        route_runtime.retry_policy.as_ref(),
         retry_backend.is_some(),
         alternate_failure,
     );

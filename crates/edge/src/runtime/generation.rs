@@ -216,6 +216,7 @@ pub(crate) struct RuntimeObservationFlags {
 }
 
 /// Immutable route state compiled with and owned by one runtime generation.
+#[derive(Clone)]
 pub(crate) struct RouteRuntime {
     pub(crate) plugin_plan: Arc<CompiledPluginPlan>,
     pub(crate) selector: Arc<GenerationSelector<RuntimeBackendTlsPolicy>>,
