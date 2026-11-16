@@ -988,10 +988,11 @@ fn test_routing_context(lb_type: &str) -> TestRoutingContext {
     let runtime = runtime_config_with_upstreams(upstreams);
     let selectors = super::forwarding::test_selectors(&runtime);
     let routing_index = super::RouteIndex::from_runtime_upstreams(&runtime.upstreams);
-    let pool =
-        super::upstream_pool_from_runtime(runtime.upstreams.get("api_pool").expect("upstream"))
-            .expect("pool");
-    let pool = Arc::new(RwLock::new(pool));
+    let pool = Arc::clone(
+        selectors
+            .upstream_pool("api_pool")
+            .expect("api_pool runtime pool"),
+    );
     let mut upstream_pools = HashMap::new();
     upstream_pools.insert("api_pool".to_string(), Arc::clone(&pool));
     let mut upstream_policies = HashMap::new();
