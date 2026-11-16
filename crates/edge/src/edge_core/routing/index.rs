@@ -95,8 +95,7 @@ impl RouteIndex {
         for route_source in routes {
             let path_prefix = route_source.path_prefix.as_deref();
             let upstream_idx = route_ids.len();
-            let identity =
-                u32::try_from(upstream_idx).expect("route index exceeds compact identity");
+            let identity = u32::try_from(upstream_idx).unwrap_or(u32::MAX);
             route_ids.push(RouteId::new(identity));
             upstream_ids.push(UpstreamId::new(identity));
             #[cfg(test)]

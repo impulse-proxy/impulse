@@ -419,9 +419,7 @@ pub(crate) fn observe_request_outcome(
 ) -> RequestOutcomeClassification {
     observe_request_outcome_with_runtime_ids(
         metrics,
-        None,
-        None,
-        None,
+        (None, None, None),
         route_target,
         backend_target,
         elapsed,
@@ -432,15 +430,18 @@ pub(crate) fn observe_request_outcome(
 
 fn observe_request_outcome_with_runtime_ids(
     metrics: &Metrics,
-    route_id: Option<impulse_contracts::RouteId>,
-    upstream_id: Option<impulse_contracts::UpstreamId>,
-    backend_id: Option<impulse_contracts::BackendId>,
+    runtime_ids: (
+        Option<impulse_contracts::RouteId>,
+        Option<impulse_contracts::UpstreamId>,
+        Option<impulse_contracts::BackendId>,
+    ),
     route_target: RouteOutcomeTarget<'_>,
     backend_target: Option<BackendOutcomeTarget<'_>>,
     elapsed: Duration,
     status: Option<StatusCode>,
     decision: RequestOutcomeClassification,
 ) -> RequestOutcomeClassification {
+    let (route_id, upstream_id, backend_id) = runtime_ids;
     if matches!(decision.route_outcome, CanonicalRouteOutcome::Success) {
         metrics.request_observations().inc_success();
     }
@@ -739,9 +740,11 @@ pub(crate) fn observe_terminal_request_outcome(
     let status = infer_terminal_status(state);
     observe_request_outcome_with_runtime_ids(
         metrics,
-        terminal_route_id(state),
-        terminal_upstream_id(state),
-        terminal_backend_id(state),
+        (
+            terminal_route_id(state),
+            terminal_upstream_id(state),
+            terminal_backend_id(state),
+        ),
         terminal_route_target(state),
         terminal_backend_target(state),
         terminal_elapsed(state),

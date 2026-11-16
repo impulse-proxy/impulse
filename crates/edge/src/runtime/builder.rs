@@ -105,11 +105,14 @@ impl RuntimeBuilder {
                     config
                         .upstreams
                         .get(name)
-                        .expect("interned upstream must exist in runtime config")
-                        .policy
-                        .clone()
+                        .map(|upstream| upstream.policy.clone())
+                        .ok_or_else(|| {
+                            ProxyError::Transport(format!(
+                                "interned upstream '{name}' is missing from runtime config"
+                            ))
+                        })
                 })
-                .collect::<Vec<_>>(),
+                .collect::<Result<Vec<_>, _>>()?,
         );
         let transport_policy = &config.policies.transport;
         let timeout_policy = &config.policies.timeouts;
@@ -179,10 +182,11 @@ impl RuntimeBuilder {
         let mut backend_endpoints_by_id = Vec::new();
         let mut backend_health_checks = HashMap::new();
         for upstream_name in identities.upstream_names() {
-            let upstream = config
-                .upstreams
-                .get(upstream_name)
-                .expect("interned upstream must exist in runtime config");
+            let upstream = config.upstreams.get(upstream_name).ok_or_else(|| {
+                ProxyError::Transport(format!(
+                    "interned upstream '{upstream_name}' is missing from runtime config"
+                ))
+            })?;
             for backend in &upstream.backends {
                 let endpoint = backend.endpoint.canonical.clone();
                 let origin = backend.endpoint.origin.clone();
@@ -296,9 +300,11 @@ impl RuntimeBuilder {
                 )
         }));
         for (name, runtime_upstream) in &config.upstreams {
-            let upstream_id = identities
-                .upstream_id(name)
-                .expect("runtime upstream must have an interned identity");
+            let upstream_id = identities.upstream_id(name).ok_or_else(|| {
+                ProxyError::Transport(format!(
+                    "runtime upstream '{name}' has no interned identity"
+                ))
+            })?;
             let upstream_pool = upstream_pool_from_runtime(runtime_upstream).map_err(|err| {
                 ProxyError::Transport(format!(
                     "failed to create upstream pool '{}': {}",

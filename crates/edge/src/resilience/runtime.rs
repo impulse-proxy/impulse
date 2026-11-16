@@ -55,7 +55,7 @@ impl RuntimeResilience {
             .map(|(index, name)| {
                 (
                     name.as_str(),
-                    RouteId::new(u32::try_from(index).expect("standalone route identity overflow")),
+                    RouteId::new(u32::try_from(index).unwrap_or(u32::MAX)),
                 )
             })
             .collect::<std::collections::HashMap<_, _>>();
