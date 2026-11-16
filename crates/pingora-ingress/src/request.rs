@@ -3,7 +3,7 @@ use std::{
     time::Instant,
 };
 
-use impulse_contracts::{RequestId, TunnelMode};
+use impulse_contracts::{BackendId, RequestId, TunnelMode};
 use pingora_core::Result;
 use pingora_http::RequestHeader;
 
@@ -25,7 +25,7 @@ pub struct PingoraRequestContext<T> {
     pub response_content_length: Option<usize>,
     pub request_body_replayable: bool,
     pub retry_count: u8,
-    pub retry_backend: Option<(String, usize)>,
+    pub retry_backend: Option<(BackendId, usize)>,
     pub lb_key: Option<String>,
     pub request_id: RequestId,
 }

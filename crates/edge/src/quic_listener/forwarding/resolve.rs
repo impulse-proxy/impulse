@@ -44,7 +44,6 @@ impl<'a> TargetResolutionRequest<'a> {
 
 #[derive(Clone, Copy)]
 pub(in crate::quic_listener) struct ResolutionContext<'a> {
-    pub(in crate::quic_listener) upstream_pools: &'a HashMap<String, Arc<RwLock<UpstreamPool>>>,
     pingora_load_balancing: &'a PingoraLoadBalancingRuntimeState<RuntimeBackendTlsPolicy>,
     generation: u64,
     metrics: &'a Metrics,
@@ -52,13 +51,12 @@ pub(in crate::quic_listener) struct ResolutionContext<'a> {
 
 impl<'a> ResolutionContext<'a> {
     pub(in crate::quic_listener) fn new(
-        upstream_pools: &'a HashMap<String, Arc<RwLock<UpstreamPool>>>,
+        _upstream_pools: &'a HashMap<String, Arc<RwLock<UpstreamPool>>>,
         pingora_load_balancing: &'a PingoraLoadBalancingRuntimeState<RuntimeBackendTlsPolicy>,
         generation: u64,
         metrics: &'a Metrics,
     ) -> Self {
         Self {
-            upstream_pools,
             pingora_load_balancing,
             generation,
             metrics,
@@ -71,6 +69,8 @@ pub(in crate::quic_listener) fn selectors_for_test(
     runtime: &impulse_config::runtime::RuntimeConfig,
 ) -> PingoraLoadBalancingRuntimeState<RuntimeBackendTlsPolicy> {
     let generation = 1;
+    let identities = crate::runtime::generation::RuntimeIdentities::prepare(runtime)
+        .expect("runtime identities");
     let health_registry = Arc::new(
         impulse_lb::pingora_backend::HealthRegistry::with_equivalence(|backend| {
             let mut hasher = DefaultHasher::new();
@@ -92,6 +92,9 @@ pub(in crate::quic_listener) fn selectors_for_test(
         })
         .collect();
     let views = runtime.upstreams.iter().map(move |(name, upstream)| {
+        let upstream_id = identities
+            .upstream_id(name)
+            .expect("test upstream identity");
         let tls_identity = upstream.backend_tls_policy().clone();
         let backend_inputs = load_balancing_backend_inputs(upstream);
         let view = impulse_lb::pingora_backend::GenerationBackendView::new(
@@ -109,6 +112,9 @@ pub(in crate::quic_listener) fn selectors_for_test(
                 );
                 impulse_lb::pingora_backend::map_validated_backend(
                     backend,
+                    identities
+                        .backend_id_at(upstream_id, backend.index())
+                        .expect("test backend identity"),
                     address,
                     tls_identity.clone(),
                 )
@@ -140,7 +146,9 @@ impl<'a> ResolutionObservation<'a> {
 }
 
 pub(in crate::quic_listener) struct RouteResolution {
-    pub(in crate::quic_listener) upstream_name: String,
+    pub(in crate::quic_listener) route_id: impulse_contracts::RouteId,
+    pub(in crate::quic_listener) upstream_id: impulse_contracts::UpstreamId,
+    pub(in crate::quic_listener) upstream_name: Arc<str>,
     pub(in crate::quic_listener) upstream_pool: Arc<RwLock<UpstreamPool>>,
     pub(in crate::quic_listener) route_path_len: usize,
     pub(in crate::quic_listener) route_host_specific: bool,
@@ -148,6 +156,7 @@ pub(in crate::quic_listener) struct RouteResolution {
 }
 
 pub(crate) struct BackendSelection {
+    pub(crate) backend_id: impulse_contracts::BackendId,
     pub(crate) backend_addr: String,
     pub(crate) backend_index: usize,
     pub(in crate::quic_listener) backend_lb: String,
@@ -160,11 +169,14 @@ pub(in crate::quic_listener) struct TargetResolution {
 }
 
 pub(super) struct ForwardTargetResolution {
-    pub(super) upstream_name: String,
+    pub(super) route_id: impulse_contracts::RouteId,
+    pub(super) upstream_id: impulse_contracts::UpstreamId,
+    pub(super) upstream_name: Arc<str>,
     pub(super) upstream_pool: Arc<RwLock<UpstreamPool>>,
     pub(super) route_path_len: usize,
     pub(super) route_host_specific: bool,
     pub(super) route_reason: String,
+    pub(super) backend_id: impulse_contracts::BackendId,
     pub(super) backend_addr: String,
     pub(super) backend_index: usize,
     pub(super) backend_lb: String,
@@ -265,6 +277,9 @@ impl Http3Service {
             RouteResolutionError::MissingUpstreamPluginPlan => {
                 ProxyError::Transport(format!("upstream plugin plan not found for {path}"))
             }
+            RouteResolutionError::MissingUpstreamDisplayName => {
+                ProxyError::Transport(format!("upstream display name not found for {path}"))
+            }
         }
     }
 
@@ -319,6 +334,8 @@ impl Http3Service {
             }
         };
         let RouteResolution {
+            route_id,
+            upstream_id,
             upstream_name,
             upstream_pool,
             route_path_len,
@@ -326,6 +343,7 @@ impl Http3Service {
             route_reason,
         } = route;
         let BackendSelection {
+            backend_id,
             backend_addr,
             backend_index,
             backend_lb,
@@ -333,11 +351,14 @@ impl Http3Service {
         } = backend;
 
         Ok(ForwardTargetResolution {
+            route_id,
+            upstream_id,
             upstream_name,
             upstream_pool,
             route_path_len,
             route_host_specific,
             route_reason: format!("{route_reason:?}"),
+            backend_id,
             backend_addr,
             backend_index,
             backend_lb,
@@ -352,8 +373,12 @@ impl Http3Service {
         context: &ResolutionContext<'_>,
         routing_index: &RouteIndex,
     ) -> Result<RouteResolution, ProxyError> {
+        let identities = crate::runtime::generation::RuntimeIdentities::for_upstream_names(
+            routing_index.upstream_names.iter().cloned(),
+        );
         let route_target = resolve_route(
             routing_index,
+            &identities,
             request.method,
             request.path,
             request.authority,
@@ -366,13 +391,15 @@ impl Http3Service {
         route_target: ResolvedRouteTarget,
         context: &ResolutionContext<'_>,
     ) -> Result<RouteResolution, ProxyError> {
-        let upstream_name = route_target.upstream_name.to_string();
+        let upstream_name = route_target.upstream_name;
         let upstream_pool = context
-            .upstream_pools
-            .get(route_target.upstream_name.as_ref())
+            .pingora_load_balancing
+            .upstream_pool_by_id(route_target.upstream_id)
             .ok_or_else(|| ProxyError::Transport(format!("pool not found: {upstream_name}")))?
             .clone();
         Ok(RouteResolution {
+            route_id: route_target.route_id,
+            upstream_id: route_target.upstream_id,
             upstream_name,
             upstream_pool,
             route_path_len: route_target.matched_path_len,
@@ -423,7 +450,7 @@ impl Http3Service {
     ) -> Result<TargetResolution, ProxyError> {
         let selector = context
             .pingora_load_balancing
-            .selector(&route.upstream_name)
+            .selector_by_id(route.upstream_id)
             .ok_or_else(|| {
                 context
                     .metrics
@@ -610,7 +637,7 @@ mod tests {
         let route = Http3Service::resolve_route_target(&request, &context, &routing_index)
             .expect("resolved route");
 
-        assert_eq!(route.upstream_name, "method_host");
+        assert_eq!(route.upstream_name.as_ref(), "method_host");
         assert!(route.route_host_specific);
         assert_eq!(route.route_path_len, "/api".len());
         assert_eq!(
@@ -699,6 +726,9 @@ mod tests {
         );
         let route = resolve_route(
             &routing_index,
+            &crate::runtime::generation::RuntimeIdentities::for_upstream_names(
+                routing_index.upstream_names.iter().cloned(),
+            ),
             request.method,
             request.path,
             request.authority,
@@ -712,7 +742,7 @@ mod tests {
         })
         .expect("resolved target");
 
-        assert_eq!(resolved.upstream_name, "websocket_connect");
+        assert_eq!(resolved.upstream_name.as_ref(), "websocket_connect");
         assert_eq!(resolved.backend_addr, "http://127.0.0.1:7002");
     }
 

@@ -3,15 +3,16 @@ use super::*;
 pub async fn evaluate_admission_quota(
     runtime: &QuotaRuntime,
     backend: &dyn DistributedQuotaCounterBackend,
+    route_id: RouteId,
     context: &QuotaIdentityContext<'_>,
 ) -> QuotaDecision {
     if !runtime.enabled {
         return QuotaDecision::NotApplied;
     }
 
-    let Some(route) = context.route else {
+    if context.route.is_none() {
         return QuotaDecision::NotApplied;
-    };
+    }
 
     let mut outcome = QuotaDecision::NotApplied;
     let mut shadow_denial: Option<QuotaDecision> = None;
@@ -19,7 +20,7 @@ pub async fn evaluate_admission_quota(
     for policy in runtime
         .policies
         .iter()
-        .filter(|policy| policy.applies_to_route(route))
+        .filter(|policy| policy.applies_to_route(route_id))
     {
         match evaluate_quota_policy(runtime, backend, context, policy).await {
             decision @ (QuotaDecision::Denied(_) | QuotaDecision::FailedClosed(_)) => {

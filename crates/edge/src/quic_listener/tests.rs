@@ -988,10 +988,11 @@ fn test_routing_context(lb_type: &str) -> TestRoutingContext {
     let runtime = runtime_config_with_upstreams(upstreams);
     let selectors = super::forwarding::test_selectors(&runtime);
     let routing_index = super::RouteIndex::from_runtime_upstreams(&runtime.upstreams);
-    let pool =
-        super::upstream_pool_from_runtime(runtime.upstreams.get("api_pool").expect("upstream"))
-            .expect("pool");
-    let pool = Arc::new(RwLock::new(pool));
+    let pool = Arc::clone(
+        selectors
+            .upstream_pool("api_pool")
+            .expect("api_pool runtime pool"),
+    );
     let mut upstream_pools = HashMap::new();
     upstream_pools.insert("api_pool".to_string(), Arc::clone(&pool));
     let mut upstream_policies = HashMap::new();
@@ -1148,7 +1149,7 @@ fn resolve_backend_prefers_method_specific_route() {
         &metrics,
     )
     .expect("GET resolve");
-    assert_eq!(resolved.route.upstream_name, "all_methods");
+    assert_eq!(resolved.route.upstream_name.as_ref(), "all_methods");
 
     let request =
         super::forwarding::TestTargetResolutionRequest::new("POST", "/api/items", None, None, None);
@@ -1160,7 +1161,7 @@ fn resolve_backend_prefers_method_specific_route() {
         &metrics,
     )
     .expect("POST resolve");
-    assert_eq!(resolved.route.upstream_name, "post_only");
+    assert_eq!(resolved.route.upstream_name.as_ref(), "post_only");
     assert_eq!(resolved.backend.backend_addr, "127.0.0.1:7010");
 }
 
@@ -2044,6 +2045,9 @@ fn make_request_context(start: Instant, method: &str) -> RequestContext {
 
 fn make_routing_snapshot() -> RoutingSnapshot {
     RoutingSnapshot {
+        route_id: impulse_contracts::RouteId::new(0),
+        upstream_id: impulse_contracts::UpstreamId::new(0),
+        backend_id: impulse_contracts::BackendId::new(0),
         backend_addr: "http://127.0.0.1:8080".into(),
         backend_index: 0,
         upstream_name: "api".into(),
@@ -2092,7 +2096,7 @@ fn make_test_permits() -> AdmissionPermits {
         .try_acquire()
         .expect("adaptive permit");
     let route_queue = Arc::new(RouteQueueLimiter::new(100, 1000, Default::default()))
-        .try_acquire("test")
+        .try_acquire(impulse_contracts::RouteId::new(0))
         .expect("route permit");
     AdmissionPermits {
         global,
@@ -2214,7 +2218,9 @@ fn abort_stream_receiving_request_releases_permits() {
     let global_permit = global_sem.clone().try_acquire_owned().unwrap();
     let upstream_permit = upstream_sem.clone().try_acquire_owned().unwrap();
     let adaptive_permit = adaptive.try_acquire().unwrap();
-    let route_permit = route_limiter.try_acquire("test").unwrap();
+    let route_permit = route_limiter
+        .try_acquire(impulse_contracts::RouteId::new(0))
+        .unwrap();
 
     let mut req = make_admitted_envelope(
         Instant::now(),
@@ -2276,6 +2282,9 @@ fn abort_stream_waiting_for_auth_clears_async_auth_state() {
             completion: req.completion.clone(),
         },
         routing: RoutingSnapshot {
+            route_id: impulse_contracts::RouteId::new(0),
+            upstream_id: impulse_contracts::UpstreamId::new(0),
+            backend_id: impulse_contracts::BackendId::new(0),
             backend_addr: "http://127.0.0.1:8080".into(),
             backend_index: 0,
             upstream_name: "api".into(),
@@ -2433,7 +2442,9 @@ fn abort_stream_upstream_error_releases_all_resources() {
             global: global_permit,
             upstream: upstream_permit,
             adaptive: adaptive.try_acquire().unwrap(),
-            route_queue: route_limiter.try_acquire("test").unwrap(),
+            route_queue: route_limiter
+                .try_acquire(impulse_contracts::RouteId::new(0))
+                .unwrap(),
         },
     );
     req.transition_admitted_to_awaiting_upstream(None, oneshot::channel().1)
@@ -2492,7 +2503,9 @@ fn abort_stream_is_idempotent() {
             global: permit,
             upstream: upstream_sem.try_acquire_owned().unwrap(),
             adaptive: adaptive.try_acquire().unwrap(),
-            route_queue: route_limiter.try_acquire("test").unwrap(),
+            route_queue: route_limiter
+                .try_acquire(impulse_contracts::RouteId::new(0))
+                .unwrap(),
         },
     );
 

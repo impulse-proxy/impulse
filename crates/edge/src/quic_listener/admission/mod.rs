@@ -1,5 +1,4 @@
 use std::{
-    collections::HashMap,
     future::Future,
     sync::{Arc, RwLock},
     time::{Duration, Instant, SystemTime},
@@ -158,11 +157,10 @@ pub(super) fn execute_forwarding_post_auth_admission(
     pending_forward: &PendingForward,
     upstream_pool: Option<&Arc<RwLock<UpstreamPool>>>,
     backend_index: Option<usize>,
-    upstream_inflight: &HashMap<String, Arc<Semaphore>>,
+    upstream_inflight: &[Arc<Semaphore>],
     global_inflight: Arc<Semaphore>,
     inflight_acquire_wait: Duration,
 ) -> PostAuthAdmissionExecution {
-    let upstream_name = pending_forward.upstream_name.as_ref();
     let adaptive_permit = match evaluate_adaptive_admission(
         &resilience.adaptive_admission,
         resilience.shed_retry_after_seconds,
@@ -175,7 +173,7 @@ pub(super) fn execute_forwarding_post_auth_admission(
         }
     };
 
-    let route_queue_permit = match resilience.route_queue.try_acquire(upstream_name) {
+    let route_queue_permit = match resilience.route_queue.try_acquire(pending_forward.route_id) {
         Ok(permit) => permit,
         Err(rejection) => {
             return PostAuthAdmissionExecution::Rejected(PostAuthAdmissionRejection::Overloaded(
@@ -197,33 +195,35 @@ pub(super) fn execute_forwarding_post_auth_admission(
             }
         };
 
-    let (upstream_permit, waited_for_upstream_permit) =
-        match upstream_inflight.get(upstream_name).cloned() {
-            Some(semaphore) => {
-                match try_acquire_owned_with_micro_wait(semaphore, inflight_acquire_wait) {
-                    Ok(value) => value,
-                    Err(_) => {
-                        return PostAuthAdmissionExecution::Rejected(
-                            PostAuthAdmissionRejection::Overloaded(overloaded(
-                                OverloadDecisionReason::UpstreamInflight,
-                                resilience.shed_retry_after_seconds,
-                            )),
-                        );
-                    }
+    let (upstream_permit, waited_for_upstream_permit) = match upstream_inflight
+        .get(pending_forward.upstream_id.get() as usize)
+        .cloned()
+    {
+        Some(semaphore) => {
+            match try_acquire_owned_with_micro_wait(semaphore, inflight_acquire_wait) {
+                Ok(value) => value,
+                Err(_) => {
+                    return PostAuthAdmissionExecution::Rejected(
+                        PostAuthAdmissionRejection::Overloaded(overloaded(
+                            OverloadDecisionReason::UpstreamInflight,
+                            resilience.shed_retry_after_seconds,
+                        )),
+                    );
                 }
             }
-            None => {
-                return PostAuthAdmissionExecution::Rejected(PostAuthAdmissionRejection::Failed(
-                    PostAuthAdmissionFailure {
-                        status: StatusCode::SERVICE_UNAVAILABLE,
-                        body: b"upstream admission limiter unavailable\n",
-                        overload_reason: Some(OverloadDecisionReason::UpstreamInflight),
-                        route_outcome: Some(RouteOutcome::OverloadShed),
-                        observe_adaptive_overload: true,
-                    },
-                ));
-            }
-        };
+        }
+        None => {
+            return PostAuthAdmissionExecution::Rejected(PostAuthAdmissionRejection::Failed(
+                PostAuthAdmissionFailure {
+                    status: StatusCode::SERVICE_UNAVAILABLE,
+                    body: b"upstream admission limiter unavailable\n",
+                    overload_reason: Some(OverloadDecisionReason::UpstreamInflight),
+                    route_outcome: Some(RouteOutcome::OverloadShed),
+                    observe_adaptive_overload: true,
+                },
+            ));
+        }
+    };
 
     let backend_index = backend_index.unwrap_or(pending_forward.backend_index);
     let Some(upstream_pool) = upstream_pool.cloned() else {
@@ -449,8 +449,8 @@ mod tests {
         ))
     }
 
-    fn test_upstream_inflight() -> HashMap<String, Arc<Semaphore>> {
-        HashMap::from([(String::from("api"), Arc::new(Semaphore::new(1)))])
+    fn test_upstream_inflight() -> Vec<Arc<Semaphore>> {
+        vec![Arc::new(Semaphore::new(1))]
     }
 
     fn test_runtime_config_with_jwks_auth(jwt: JwtAuth) -> RuntimeConfig {
@@ -577,10 +577,12 @@ mod tests {
 
         #[test]
         fn brownout_policy_sheds_non_core_routes_and_preserves_core_routes() {
-            let brownout = BrownoutController::new(true, 50, 25, vec![String::from("core")]);
+            let core_route = impulse_contracts::RouteId::new(0);
+            let brownout = BrownoutController::new(true, 50, 25, vec![core_route]);
 
-            let core = evaluate_brownout_admission(&brownout, 90, "core", 9);
-            let non_core = evaluate_brownout_admission(&brownout, 90, "payments", 9);
+            let core = evaluate_brownout_admission(&brownout, 90, core_route, 9);
+            let non_core =
+                evaluate_brownout_admission(&brownout, 90, impulse_contracts::RouteId::new(1), 9);
 
             assert_eq!(core, AdmissionPolicyDecision::AdmitReady);
             assert_eq!(
@@ -640,7 +642,7 @@ mod tests {
             pending_forward: &PendingForward,
             upstream_pool: Option<&Arc<RwLock<UpstreamPool>>>,
             backend_index: Option<usize>,
-            upstream_inflight: &HashMap<String, Arc<Semaphore>>,
+            upstream_inflight: &[Arc<Semaphore>],
             global_inflight: Arc<Semaphore>,
         ) -> PostAuthAdmissionExecution {
             execute_forwarding_post_auth_admission(
@@ -751,7 +753,7 @@ mod tests {
             let _route_held = route_cap
                 .route_queue
                 .clone()
-                .try_acquire("api")
+                .try_acquire(impulse_contracts::RouteId::new(0))
                 .expect("route permit");
             let pending_forward = test_pending_forward_for_api(vec![]);
             let route_result = execute_post_auth_for_api(
@@ -782,7 +784,7 @@ mod tests {
             let _global_route_held = global_cap
                 .route_queue
                 .clone()
-                .try_acquire("other")
+                .try_acquire(impulse_contracts::RouteId::new(1))
                 .expect("global route permit");
             let global_result = execute_post_auth_for_api(
                 &global_cap,
@@ -833,7 +835,7 @@ mod tests {
             let resilience = test_runtime_resilience(|_| {}, 8);
             let upstream_inflight = test_upstream_inflight();
             let _upstream_held = upstream_inflight
-                .get("api")
+                .first()
                 .expect("api semaphore")
                 .clone()
                 .try_acquire_owned()
@@ -867,7 +869,7 @@ mod tests {
                 &pending_forward,
                 Some(&test_upstream_pool()),
                 Some(0),
-                &HashMap::new(),
+                &[],
                 Arc::new(Semaphore::new(1)),
             );
 

@@ -13,7 +13,7 @@ use std::{
 };
 
 #[cfg(feature = "scoped-rate-limit")]
-use impulse_contracts::PluginRequestView;
+use impulse_contracts::{PluginRequestView, RouteId};
 #[cfg(feature = "scoped-rate-limit")]
 use impulse_policy::{
     RequestKeySpec, ScopedRateLimitIdentity, ScopedRateLimitKeyExtraction,
@@ -271,7 +271,7 @@ impl ScopedRateLimitRuntime {
         );
 
         for rule in &self.rules {
-            if !rule.applies_to(request.upstream_name) {
+            if !rule.applies_to(request.runtime_route_id) {
                 continue;
             }
             let key = match rule.identity_key(&identity) {
@@ -300,7 +300,7 @@ impl ScopedRateLimitRuntime {
 struct ScopedRateLimitRule {
     scope: ScopedRateLimitScopeInput,
     key: Option<RequestKeySpec>,
-    route_allowlist: HashSet<String>,
+    route_allowlist: HashSet<RouteId>,
     idle_ttl: Duration,
     retry_after_seconds: u32,
     store: ScopedIdentityStore,
@@ -319,8 +319,8 @@ impl ScopedRateLimitRule {
         }
     }
 
-    fn applies_to(&self, route: &str) -> bool {
-        self.route_allowlist.is_empty() || self.route_allowlist.contains(route)
+    fn applies_to(&self, route: RouteId) -> bool {
+        self.route_allowlist.is_empty() || self.route_allowlist.contains(&route)
     }
 
     fn identity_key(&self, context: &ScopedRateLimitIdentity<'_>) -> ScopedRateLimitKeyExtraction {

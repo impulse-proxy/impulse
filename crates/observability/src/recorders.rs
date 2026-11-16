@@ -4,9 +4,9 @@ use std::{
 };
 
 use impulse_contracts::{
-    HealthFailureReason, HedgeOutcomeTelemetryReason, HedgeTriggerTelemetryReason,
+    BackendId, HealthFailureReason, HedgeOutcomeTelemetryReason, HedgeTriggerTelemetryReason,
     PluginActivationOutcome, PluginExecutionObservation, PluginKind, RetryAttemptTelemetryReason,
-    RetryPolicyDenialReason,
+    RetryPolicyDenialReason, RouteId, UpstreamId,
 };
 
 use crate::{
@@ -126,6 +126,10 @@ impl RequestObservationRecorder<'_> {
         self.metrics.record_route(route, latency, outcome);
     }
 
+    pub fn record_route_id(self, route: RouteId, latency: Duration, outcome: RouteOutcome) {
+        self.metrics.record_route_id(route, latency, outcome);
+    }
+
     pub fn record_request_result(
         self,
         upstream: &str,
@@ -136,6 +140,18 @@ impl RequestObservationRecorder<'_> {
     ) {
         self.metrics
             .record_request_result(upstream, backend, status, outcome, latency);
+    }
+
+    pub fn record_request_result_ids(
+        self,
+        upstream: UpstreamId,
+        backend: Option<BackendId>,
+        status: Option<u16>,
+        outcome: RouteOutcome,
+        latency: Duration,
+    ) {
+        self.metrics
+            .record_request_result_ids(upstream, backend, status, outcome, latency);
     }
 }
 

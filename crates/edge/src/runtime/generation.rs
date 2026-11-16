@@ -8,6 +8,8 @@ use impulse_config::{
         RuntimeUpstreamPolicy,
     },
 };
+use impulse_contracts::{BackendId, ListenerId, RouteId, UpstreamId};
+use impulse_errors::ProxyError;
 use impulse_lb::pingora_backend::SharedPingoraLoadBalancingRuntimeState;
 use impulse_operations::watchdog::WatchdogCoordinator;
 use impulse_plugins::{CompiledGenerationPluginPlans, RouteExecutionClass};
@@ -25,6 +27,189 @@ use crate::{
         tls::store::ListenerTlsReloadStore,
     },
 };
+
+#[derive(Clone, Debug)]
+pub struct RuntimeIdentities {
+    route_ids: HashMap<Arc<str>, RouteId>,
+    upstream_ids: HashMap<Arc<str>, UpstreamId>,
+    upstream_names: Box<[Arc<str>]>,
+    backend_ids: HashMap<UpstreamId, HashMap<Arc<str>, BackendId>>,
+    backend_ids_by_upstream: Box<[Box<[BackendId]>]>,
+    backend_names: Box<[(UpstreamId, Arc<str>)]>,
+    listener_ids: HashMap<Arc<str>, ListenerId>,
+    listener_names: Box<[Arc<str>]>,
+}
+
+impl RuntimeIdentities {
+    pub(crate) fn prepare(config: &RuntimeConfig) -> Result<Self, ProxyError> {
+        let mut upstreams = config.upstreams.iter().collect::<Vec<_>>();
+        upstreams.sort_unstable_by_key(|(name, _)| name.as_str());
+
+        let mut route_ids = HashMap::with_capacity(upstreams.len());
+        let mut upstream_ids = HashMap::with_capacity(upstreams.len());
+        let mut upstream_names = Vec::with_capacity(upstreams.len());
+        let mut backend_ids = HashMap::with_capacity(upstreams.len());
+        let mut backend_ids_by_upstream = Vec::with_capacity(upstreams.len());
+        let mut backend_names = Vec::new();
+
+        for (index, (name, upstream)) in upstreams.into_iter().enumerate() {
+            let value = compact_identity_value(index, "route and upstream")?;
+            let route_id = RouteId::new(value);
+            let upstream_id = UpstreamId::new(value);
+            let name: Arc<str> = Arc::from(name.as_str());
+            route_ids.insert(Arc::clone(&name), route_id);
+            upstream_ids.insert(Arc::clone(&name), upstream_id);
+            upstream_names.push(name);
+
+            let mut ids = HashMap::with_capacity(upstream.backends.len());
+            let mut indexed_ids = Vec::with_capacity(upstream.backends.len());
+            for backend in &upstream.backends {
+                let backend_id =
+                    BackendId::new(compact_identity_value(backend_names.len(), "backend")?);
+                let name: Arc<str> = Arc::from(backend.backend.id.as_str());
+                ids.insert(Arc::clone(&name), backend_id);
+                indexed_ids.push(backend_id);
+                backend_names.push((upstream_id, name));
+            }
+            backend_ids.insert(upstream_id, ids);
+            backend_ids_by_upstream.push(indexed_ids.into_boxed_slice());
+        }
+
+        let mut listener_ids = HashMap::with_capacity(config.listeners.len());
+        let mut listener_names = Vec::with_capacity(config.listeners.len());
+        for (index, listener) in config.listeners.iter().enumerate() {
+            let listener_id = ListenerId::new(compact_identity_value(index, "listener")?);
+            let name: Arc<str> = Arc::from(format!(
+                "{}:{}",
+                listener.listen.address, listener.listen.port
+            ));
+            listener_ids.insert(Arc::clone(&name), listener_id);
+            listener_names.push(name);
+        }
+
+        Ok(Self {
+            route_ids,
+            upstream_ids,
+            upstream_names: upstream_names.into_boxed_slice(),
+            backend_ids,
+            backend_ids_by_upstream: backend_ids_by_upstream.into_boxed_slice(),
+            backend_names: backend_names.into_boxed_slice(),
+            listener_ids,
+            listener_names: listener_names.into_boxed_slice(),
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_upstream_names(names: impl IntoIterator<Item = String>) -> Self {
+        let mut names = names.into_iter().collect::<Vec<_>>();
+        names.sort_unstable();
+        let mut route_ids = HashMap::with_capacity(names.len());
+        let mut upstream_ids = HashMap::with_capacity(names.len());
+        let mut upstream_names = Vec::with_capacity(names.len());
+        for (index, name) in names.into_iter().enumerate() {
+            let identity = u32::try_from(index).expect("test identity must fit in u32");
+            let name: Arc<str> = Arc::from(name);
+            route_ids.insert(Arc::clone(&name), RouteId::new(identity));
+            upstream_ids.insert(Arc::clone(&name), UpstreamId::new(identity));
+            upstream_names.push(name);
+        }
+        Self {
+            route_ids,
+            upstream_ids,
+            upstream_names: upstream_names.into_boxed_slice(),
+            backend_ids: HashMap::new(),
+            backend_ids_by_upstream: Box::new([]),
+            backend_names: Box::new([]),
+            listener_ids: HashMap::new(),
+            listener_names: Box::new([]),
+        }
+    }
+
+    #[must_use]
+    pub fn route_id(&self, name: &str) -> Option<RouteId> {
+        self.route_ids.get(name).copied()
+    }
+
+    #[must_use]
+    pub fn route_name(&self, id: RouteId) -> Option<&str> {
+        self.upstream_name(UpstreamId::new(id.get()))
+    }
+
+    #[must_use]
+    pub fn upstream_id(&self, name: &str) -> Option<UpstreamId> {
+        self.upstream_ids.get(name).copied()
+    }
+
+    #[must_use]
+    pub fn upstream_name(&self, id: UpstreamId) -> Option<&str> {
+        self.upstream_names
+            .get(id.get() as usize)
+            .map(|name| name.as_ref())
+    }
+
+    #[must_use]
+    pub fn upstream_display_name(&self, id: UpstreamId) -> Option<Arc<str>> {
+        self.upstream_names.get(id.get() as usize).map(Arc::clone)
+    }
+
+    pub fn upstream_names(&self) -> impl ExactSizeIterator<Item = &str> {
+        self.upstream_names.iter().map(|name| name.as_ref())
+    }
+
+    #[must_use]
+    pub fn backend_id(&self, upstream: UpstreamId, name: &str) -> Option<BackendId> {
+        self.backend_ids.get(&upstream)?.get(name).copied()
+    }
+
+    fn backend_ids(&self, upstream: UpstreamId) -> Option<&[BackendId]> {
+        self.backend_ids_by_upstream
+            .get(upstream.get() as usize)
+            .map(|ids| ids.as_ref())
+    }
+
+    #[must_use]
+    pub fn backend_id_at(&self, upstream: UpstreamId, index: usize) -> Option<BackendId> {
+        self.backend_ids(upstream)?.get(index).copied()
+    }
+
+    #[must_use]
+    pub fn backend_name(&self, id: BackendId) -> Option<&str> {
+        self.backend_names
+            .get(id.get() as usize)
+            .map(|(_, name)| name.as_ref())
+    }
+
+    pub fn backend_names(&self) -> impl ExactSizeIterator<Item = &str> {
+        self.backend_names.iter().map(|(_, name)| name.as_ref())
+    }
+
+    #[must_use]
+    pub fn backend_upstream(&self, id: BackendId) -> Option<UpstreamId> {
+        self.backend_names
+            .get(id.get() as usize)
+            .map(|(upstream, _)| *upstream)
+    }
+
+    #[must_use]
+    pub fn listener_id(&self, name: &str) -> Option<ListenerId> {
+        self.listener_ids.get(name).copied()
+    }
+
+    #[must_use]
+    pub fn listener_name(&self, id: ListenerId) -> Option<&str> {
+        self.listener_names
+            .get(id.get() as usize)
+            .map(|name| name.as_ref())
+    }
+}
+
+fn compact_identity_value(index: usize, kind: &str) -> Result<u32, ProxyError> {
+    u32::try_from(index).map_err(|_| {
+        ProxyError::Transport(format!(
+            "runtime generation contains too many {kind} identities"
+        ))
+    })
+}
 
 /// Startup-owned runtime state.
 ///
@@ -127,22 +312,26 @@ impl OwnedRuntimeState for RuntimeSharedServices {
 /// keeps a clone alive until it drains).
 #[derive(Clone)]
 pub struct RuntimeGenerationState {
+    /// Compact route, upstream, backend, and listener identities for this generation.
+    pub identities: Arc<RuntimeIdentities>,
     /// Per-listener runtime config, keyed by listener label.
     pub listener_runtime_configs: Arc<HashMap<String, ListenerRuntimeConfig>>,
-    /// Resolved backend endpoints, keyed by backend id.
+    /// Resolved backend endpoints, keyed by configured backend address.
     pub backend_endpoints: Arc<HashMap<String, BackendEndpoint>>,
+    /// Backend endpoints indexed by compact backend identity for request execution.
+    pub backend_endpoints_by_id: Arc<[BackendEndpoint]>,
     /// Backend health-check definitions, keyed by backend id.
     pub backend_health_checks: Arc<HashMap<String, RuntimeBackendHealthCheck>>,
-    /// Upstream policies, keyed by upstream name.
-    pub upstream_policies: Arc<HashMap<String, RuntimeUpstreamPolicy>>,
+    /// Upstream policies indexed by compact upstream identity.
+    pub upstream_policies: Arc<[RuntimeUpstreamPolicy]>,
     /// Immutable connection and per-upstream plugin plans compiled for this generation.
     pub plugin_plans: Arc<CompiledGenerationPluginPlans>,
     /// Precompiled route execution classes owned by this runtime generation.
-    pub route_execution_classes: Arc<HashMap<String, RouteExecutionClass>>,
+    pub route_execution_classes: Arc<[RouteExecutionClass]>,
     /// Backend membership, readiness, discovery, and selectors for this generation.
     pub pingora_load_balancing: SharedPingoraLoadBalancingRuntimeState<RuntimeBackendTlsPolicy>,
     /// Per-upstream inflight semaphores.
-    pub upstream_inflight: HashMap<String, Arc<Semaphore>>,
+    pub upstream_inflight: Arc<[Arc<Semaphore>]>,
     /// Global inflight semaphore.
     pub global_inflight: Arc<Semaphore>,
     /// Routing index for this generation.

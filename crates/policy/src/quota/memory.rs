@@ -441,6 +441,8 @@ mod tests {
         time::Duration,
     };
 
+    use impulse_contracts::RouteId;
+
     use super::*;
     use crate::quota::{
         QuotaCompositeKey, QuotaIdentityLabels, QuotaPolicyRuntime, QuotaSelectorDimensions,
@@ -451,6 +453,7 @@ mod tests {
         let policy = QuotaPolicyRuntime {
             name: "tenant-quota".to_string(),
             route_allowlist: HashSet::from(["api".to_string()]),
+            route_ids: HashSet::from([RouteId::new(0)]),
             selector: QuotaSelectorMatcher {
                 route: true,
                 tenant: None,
@@ -720,6 +723,7 @@ mod tests {
         let policy = QuotaPolicyRuntime {
             name: "tenant-quota".to_string(),
             route_allowlist: HashSet::from(["api".to_string()]),
+            route_ids: HashSet::from([RouteId::new(0)]),
             selector: QuotaSelectorMatcher {
                 route: true,
                 tenant: None,

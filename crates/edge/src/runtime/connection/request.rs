@@ -47,7 +47,7 @@ pub struct RequestEnvelope {
     /// Resolved backend address and index (for health marking on response).
     pub backend_addr: Option<String>,
     pub backend_index: Option<usize>,
-    pub upstream_name: Option<String>,
+    pub upstream_name: Option<Arc<str>>,
     pub route_reason: Option<String>,
     pub route_path_len: Option<usize>,
     pub route_host_specific: Option<bool>,
@@ -995,10 +995,13 @@ pub struct PendingForward {
     pub path: Arc<str>,
     pub authority: Option<Arc<str>>,
     pub headers: Arc<Vec<quiche::h3::Header>>,
+    pub route_id: impulse_contracts::RouteId,
+    pub upstream_id: impulse_contracts::UpstreamId,
     pub upstream_name: Arc<str>,
     pub route_reason: Arc<str>,
     pub route_path_len: usize,
     pub route_host_specific: bool,
+    pub backend_id: impulse_contracts::BackendId,
     pub backend_addr: Arc<str>,
     pub backend_index: usize,
     pub backend_lb: Option<Arc<str>>,
@@ -1025,10 +1028,13 @@ impl PendingForward {
             path: Arc::<str>::from("/v1/chat"),
             authority: Some(Arc::<str>::from("api.example.com")),
             headers: Arc::new(headers),
+            route_id: impulse_contracts::RouteId::new(0),
+            upstream_id: impulse_contracts::UpstreamId::new(0),
             upstream_name: Arc::<str>::from("api"),
             route_reason: Arc::<str>::from("path_prefix"),
             route_path_len: 8,
             route_host_specific: true,
+            backend_id: impulse_contracts::BackendId::new(0),
             backend_addr: Arc::<str>::from("backend.internal:443"),
             backend_index: 0,
             backend_lb: None,
@@ -1080,6 +1086,9 @@ mod tests {
 
     fn make_routing_snapshot() -> crate::runtime::connection::stream::RoutingSnapshot {
         crate::runtime::connection::stream::RoutingSnapshot {
+            route_id: impulse_contracts::RouteId::new(0),
+            upstream_id: impulse_contracts::UpstreamId::new(0),
+            backend_id: impulse_contracts::BackendId::new(0),
             backend_addr: "http://127.0.0.1:8080".into(),
             backend_index: 0,
             upstream_name: "api".into(),
@@ -1179,7 +1188,7 @@ mod tests {
                         .expect("upstream permit"),
                     adaptive: adaptive.try_acquire().expect("adaptive permit"),
                     route_queue: route_limiter
-                        .try_acquire("test")
+                        .try_acquire(impulse_contracts::RouteId::new(0))
                         .expect("route queue permit"),
                 },
             }),
@@ -1217,7 +1226,11 @@ mod tests {
         assert_eq!(metrics.requests_failure.load(Ordering::Relaxed), 1);
         assert_eq!(global_sem.available_permits(), 1);
         assert_eq!(upstream_sem.available_permits(), 1);
-        assert!(route_limiter.try_acquire("test").is_ok());
+        assert!(
+            route_limiter
+                .try_acquire(impulse_contracts::RouteId::new(0))
+                .is_ok()
+        );
 
         let second_phase = req.transition_to_terminal_with_cleanup(
             TerminalReason::Cancelled(CancellationReason::ClientReset),
@@ -1261,7 +1274,11 @@ mod tests {
         assert_eq!(metrics.requests_failure.load(Ordering::Relaxed), 0);
         assert_eq!(global_sem.available_permits(), 1);
         assert_eq!(upstream_sem.available_permits(), 1);
-        assert!(route_limiter.try_acquire("test").is_ok());
+        assert!(
+            route_limiter
+                .try_acquire(impulse_contracts::RouteId::new(0))
+                .is_ok()
+        );
     }
 
     #[test]

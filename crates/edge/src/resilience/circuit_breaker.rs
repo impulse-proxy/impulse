@@ -4,6 +4,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+use impulse_contracts::BackendId;
+
 #[derive(Default)]
 struct BreakerState {
     consecutive_failures: u32,
@@ -18,7 +20,7 @@ pub struct CircuitBreakers {
     failure_threshold: u32,
     open_for: Duration,
     half_open_max_probes: u32,
-    states: Mutex<HashMap<String, BreakerState>>,
+    states: Mutex<HashMap<BackendId, BreakerState>>,
 }
 
 impl CircuitBreakers {
@@ -37,7 +39,7 @@ impl CircuitBreakers {
         }
     }
 
-    pub fn allow_request(&self, backend: &str) -> Option<CircuitBreakerPermit<'_>> {
+    pub fn allow_request(&self, backend: BackendId) -> Option<CircuitBreakerPermit<'_>> {
         if !self.enabled {
             return Some(CircuitBreakerPermit::new(self, backend, None));
         }
@@ -46,7 +48,7 @@ impl CircuitBreakers {
             Ok(guard) => guard,
             Err(_) => return Some(CircuitBreakerPermit::new(self, backend, None)),
         };
-        let state = states.entry(backend.to_string()).or_default();
+        let state = states.entry(backend).or_default();
 
         if let Some(until) = state.open_until {
             if now < until {
@@ -72,7 +74,7 @@ impl CircuitBreakers {
         Some(CircuitBreakerPermit::new(self, backend, probe_generation))
     }
 
-    fn record_success(&self, backend: &str, probe_generation: Option<u64>) {
+    fn record_success(&self, backend: BackendId, probe_generation: Option<u64>) {
         if !self.enabled {
             return;
         }
@@ -80,7 +82,7 @@ impl CircuitBreakers {
             Ok(guard) => guard,
             Err(_) => return,
         };
-        let state = states.entry(backend.to_string()).or_default();
+        let state = states.entry(backend).or_default();
         if let Some(generation) = probe_generation {
             if !state.half_open || state.half_open_generation != generation {
                 return;
@@ -97,7 +99,7 @@ impl CircuitBreakers {
         state.half_open_inflight = 0;
     }
 
-    fn record_failure(&self, backend: &str, probe_generation: Option<u64>) {
+    fn record_failure(&self, backend: BackendId, probe_generation: Option<u64>) {
         if !self.enabled {
             return;
         }
@@ -106,7 +108,7 @@ impl CircuitBreakers {
             Ok(guard) => guard,
             Err(_) => return,
         };
-        let state = states.entry(backend.to_string()).or_default();
+        let state = states.entry(backend).or_default();
 
         if let Some(generation) = probe_generation {
             if !state.half_open || state.half_open_generation != generation {
@@ -129,12 +131,12 @@ impl CircuitBreakers {
         }
     }
 
-    fn release_half_open_probe(&self, backend: &str, generation: u64) {
+    fn release_half_open_probe(&self, backend: BackendId, generation: u64) {
         let mut states = match self.states.lock() {
             Ok(guard) => guard,
             Err(_) => return,
         };
-        let Some(state) = states.get_mut(backend) else {
+        let Some(state) = states.get_mut(&backend) else {
             return;
         };
         if state.half_open
@@ -149,16 +151,20 @@ impl CircuitBreakers {
 #[must_use = "the circuit-breaker permit must be held until the request outcome is known"]
 pub struct CircuitBreakerPermit<'a> {
     breakers: &'a CircuitBreakers,
-    backend: String,
+    backend: BackendId,
     probe_generation: Option<u64>,
     resolved: bool,
 }
 
 impl<'a> CircuitBreakerPermit<'a> {
-    fn new(breakers: &'a CircuitBreakers, backend: &str, probe_generation: Option<u64>) -> Self {
+    fn new(
+        breakers: &'a CircuitBreakers,
+        backend: BackendId,
+        probe_generation: Option<u64>,
+    ) -> Self {
         Self {
             breakers,
-            backend: backend.to_string(),
+            backend,
             probe_generation,
             resolved: false,
         }
@@ -166,13 +172,13 @@ impl<'a> CircuitBreakerPermit<'a> {
 
     pub fn record_success(mut self) {
         self.breakers
-            .record_success(&self.backend, self.probe_generation);
+            .record_success(self.backend, self.probe_generation);
         self.resolved = true;
     }
 
     pub fn record_failure(mut self) {
         self.breakers
-            .record_failure(&self.backend, self.probe_generation);
+            .record_failure(self.backend, self.probe_generation);
         self.resolved = true;
     }
 }
@@ -184,7 +190,7 @@ impl Drop for CircuitBreakerPermit<'_> {
         }
         if let Some(generation) = self.probe_generation {
             self.breakers
-                .release_half_open_probe(&self.backend, generation);
+                .release_half_open_probe(self.backend, generation);
         }
     }
 }
@@ -200,8 +206,9 @@ mod tests {
     #[tokio::test]
     async fn cancelled_half_open_probe_releases_its_slot() {
         let breakers = Arc::new(CircuitBreakers::new(true, 1, Duration::ZERO, 1));
+        let backend = BackendId::new(0);
         breakers
-            .allow_request("backend")
+            .allow_request(backend)
             .expect("closed breaker request")
             .record_failure();
 
@@ -209,13 +216,13 @@ mod tests {
         let (probe_started_tx, probe_started_rx) = oneshot::channel();
         let probe_task = tokio::spawn(async move {
             let _probe_permit = task_breakers
-                .allow_request("backend")
+                .allow_request(backend)
                 .expect("first half-open probe");
             probe_started_tx.send(()).expect("signal probe start");
             std::future::pending::<()>().await;
         });
         probe_started_rx.await.expect("probe start");
-        assert!(breakers.allow_request("backend").is_none());
+        assert!(breakers.allow_request(backend).is_none());
 
         probe_task.abort();
         assert!(
@@ -225,6 +232,6 @@ mod tests {
                 .is_cancelled()
         );
 
-        assert!(breakers.allow_request("backend").is_some());
+        assert!(breakers.allow_request(backend).is_some());
     }
 }

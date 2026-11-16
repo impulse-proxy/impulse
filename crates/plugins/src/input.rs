@@ -1,5 +1,7 @@
 use std::time::Duration;
 
+use impulse_contracts::RouteId;
+
 #[derive(Clone, Eq, PartialEq)]
 pub struct PluginConstructionInputs {
     pub connection_rate_limit: Option<ConnectionRateLimitInput>,
@@ -128,7 +130,7 @@ pub struct ScopedRateLimitInput {
     pub requests_per_second: u32,
     pub burst: u32,
     pub key: Option<String>,
-    pub route_allowlist: Box<[String]>,
+    pub route_allowlist: Box<[RouteId]>,
     pub idle_ttl: Duration,
 }
 
@@ -197,6 +199,7 @@ pub struct QuotaWindowInput {
 pub struct QuotaPolicyInput {
     pub name: String,
     pub route_allowlist: Box<[String]>,
+    pub route_ids: Box<[RouteId]>,
     pub selector: QuotaSelectorInput,
     pub burst: Option<QuotaWindowInput>,
     pub sustained: Option<QuotaWindowInput>,

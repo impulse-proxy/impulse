@@ -30,6 +30,8 @@ use impulse_config::{
     config::{JwksStartupBehavior, JwtAlgorithm},
     runtime::{RuntimeAuthPolicy, RuntimeJwtAuth, RuntimeJwtVerificationKey},
 };
+#[cfg(any(feature = "quota", feature = "scoped-rate-limit"))]
+use impulse_contracts::RouteId;
 use impulse_lb::{
     BackendHealthInput, BackendInput, BackendWeight, LoadBalancingStrategy, RequestKeyInput,
     upstream_pool::UpstreamPool,
@@ -66,6 +68,8 @@ use impulse_transport::{
     UpstreamConnectionLimitsInput, UpstreamEndpointInput, UpstreamProtocol, UpstreamTimeoutInput,
     UpstreamTlsInput, UpstreamTransportInput,
 };
+
+use crate::runtime::generation::RuntimeIdentities;
 
 #[cfg(feature = "jwt-auth")]
 pub(crate) fn jwt_allowed_algorithms(jwt: &RuntimeJwtAuth) -> JwtAllowedAlgorithms {
@@ -238,7 +242,10 @@ fn plugin_request_key(input: &RuntimeRequestKeySpec) -> PluginRequestKeyInput {
 }
 
 #[cfg(feature = "quota")]
-fn plugin_quota_input(policy: &RuntimeQuotaPolicySet) -> Option<QuotaInput> {
+fn plugin_quota_input(
+    policy: &RuntimeQuotaPolicySet,
+    identities: &RuntimeIdentities,
+) -> Option<QuotaInput> {
     policy.enabled.then(|| QuotaInput {
         enforcement: match policy.enforcement {
             RuntimeQuotaEnforcementMode::Shadow => QuotaEnforcementInput::Shadow,
@@ -281,6 +288,12 @@ fn plugin_quota_input(policy: &RuntimeQuotaPolicySet) -> Option<QuotaInput> {
             .map(|policy| QuotaPolicyInput {
                 name: policy.name.clone(),
                 route_allowlist: policy.route_allowlist.clone().into_boxed_slice(),
+                route_ids: policy
+                    .route_allowlist
+                    .iter()
+                    .map(|route| identities.route_id(route).unwrap_or(RouteId::new(u32::MAX)))
+                    .collect::<Vec<_>>()
+                    .into_boxed_slice(),
                 selector: QuotaSelectorInput {
                     route: policy.selector.route,
                     tenant: policy.selector.tenant.as_ref().map(plugin_request_key),
@@ -301,7 +314,10 @@ fn plugin_quota_input(policy: &RuntimeQuotaPolicySet) -> Option<QuotaInput> {
     })
 }
 
-pub(crate) fn plugin_construction_inputs(config: &RuntimeConfig) -> PluginConstructionInputs {
+pub(crate) fn plugin_construction_inputs(
+    config: &RuntimeConfig,
+    _identities: &RuntimeIdentities,
+) -> PluginConstructionInputs {
     let mut upstreams = config
         .upstreams
         .iter()
@@ -439,7 +455,16 @@ pub(crate) fn plugin_construction_inputs(config: &RuntimeConfig) -> PluginConstr
                         requests_per_second: policy.requests_per_sec,
                         burst: policy.burst,
                         key: policy.key.clone(),
-                        route_allowlist: policy.route_allowlist.clone().into_boxed_slice(),
+                        route_allowlist: policy
+                            .route_allowlist
+                            .iter()
+                            .map(|route| {
+                                _identities
+                                    .route_id(route)
+                                    .unwrap_or(RouteId::new(u32::MAX))
+                            })
+                            .collect::<Vec<_>>()
+                            .into_boxed_slice(),
                         idle_ttl: policy.idle_ttl,
                     })
                     .collect::<Vec<_>>()
@@ -453,7 +478,7 @@ pub(crate) fn plugin_construction_inputs(config: &RuntimeConfig) -> PluginConstr
         quota: {
             #[cfg(feature = "quota")]
             {
-                plugin_quota_input(&config.policies.rate_limits.quota)
+                plugin_quota_input(&config.policies.rate_limits.quota, _identities)
             }
             #[cfg(not(feature = "quota"))]
             {

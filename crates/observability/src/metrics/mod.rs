@@ -10,9 +10,9 @@ use std::{
 };
 
 use impulse_contracts::{
-    HealthFailureReason, HedgeOutcomeTelemetryReason, HedgeTriggerTelemetryReason,
+    BackendId, HealthFailureReason, HedgeOutcomeTelemetryReason, HedgeTriggerTelemetryReason,
     PluginActivationOutcome, PluginExecutionObservation, PluginExecutionOutcome, PluginKind,
-    PluginPhase, RetryAttemptTelemetryReason, RetryPolicyDenialReason,
+    PluginPhase, RetryAttemptTelemetryReason, RetryPolicyDenialReason, RouteId, UpstreamId,
 };
 
 use crate::{
@@ -268,6 +268,8 @@ pub struct Metrics {
     route_latency_sample_every: u64,
     route_latency_sample_counter: AtomicU64,
     route_render_order: Vec<(usize, String)>,
+    runtime_route_labels: Box<[String]>,
+    runtime_backend_labels: Box<[String]>,
     route_label_to_id: HashMap<String, usize>,
     route_stats: Vec<RouteStatsAtomic>,
     unrouted_route_id: usize,

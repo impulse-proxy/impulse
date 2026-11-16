@@ -62,7 +62,13 @@ impl CompiledQuota {
             Some(request.peer_address),
             Some(&header_lookup),
         );
-        evaluate_admission_quota(&self.runtime, self.backend.as_ref(), &context).await
+        evaluate_admission_quota(
+            &self.runtime,
+            self.backend.as_ref(),
+            request.runtime_route_id,
+            &context,
+        )
+        .await
     }
 
     pub fn runtime(&self) -> &QuotaRuntime {
@@ -122,6 +128,7 @@ fn quota_policy(input: &QuotaPolicyInput) -> QuotaPolicyRuntime {
             .iter()
             .cloned()
             .collect::<HashSet<_>>(),
+        route_ids: input.route_ids.iter().copied().collect(),
         selector: quota_selector(&input.selector),
         burst: input.burst.as_ref().map(quota_window),
         sustained: input.sustained.as_ref().map(quota_window),

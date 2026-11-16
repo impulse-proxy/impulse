@@ -9,6 +9,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use impulse_contracts::{BackendId, UpstreamId};
 #[cfg(test)]
 use pingora_load_balancing::discovery::Static as StaticDiscovery;
 pub use pingora_load_balancing::{
@@ -27,6 +28,7 @@ use crate::{
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BackendSelectionResult<P> {
+    runtime_id: BackendId,
     backend_id: String,
     address: SocketAddr,
     index: usize,
@@ -36,6 +38,7 @@ pub struct BackendSelectionResult<P> {
 
 impl<P> BackendSelectionResult<P> {
     pub fn new(
+        runtime_id: BackendId,
         backend_id: impl Into<String>,
         address: SocketAddr,
         index: usize,
@@ -43,12 +46,17 @@ impl<P> BackendSelectionResult<P> {
         connection_policy: P,
     ) -> Self {
         Self {
+            runtime_id,
             backend_id: backend_id.into(),
             address,
             index,
             generation,
             connection_policy,
         }
+    }
+
+    pub fn runtime_id(&self) -> BackendId {
+        self.runtime_id
     }
 
     pub fn backend_id(&self) -> &str {
@@ -100,6 +108,7 @@ where
     let identity = backend.ext.get::<PingoraBackendIdentity<T>>()?;
 
     Some(BackendSelectionResult::new(
+        identity.runtime_id(),
         identity.backend_id(),
         address,
         identity.index(),
@@ -111,7 +120,7 @@ where
 fn candidate_is_available<T>(
     backend: &PingoraBackend,
     healthy: bool,
-    excluded_backend_indices: &[usize],
+    excluded_backend_ids: &[BackendId],
 ) -> bool
 where
     T: Clone + Send + Sync + 'static,
@@ -120,12 +129,12 @@ where
         && backend
             .ext
             .get::<PingoraBackendIdentity<T>>()
-            .is_some_and(|identity| !excluded_backend_indices.contains(&identity.index()))
+            .is_some_and(|identity| !excluded_backend_ids.contains(&identity.runtime_id()))
 }
 
 fn first_available_backend<T>(
     backends: &pingora_load_balancing::Backends,
-    excluded_backend_indices: &[usize],
+    excluded_backend_ids: &[BackendId],
 ) -> Option<PingoraBackend>
 where
     T: Clone + Send + Sync + 'static,
@@ -134,7 +143,7 @@ where
         .get_backend()
         .iter()
         .find(|backend| {
-            candidate_is_available::<T>(backend, backends.ready(backend), excluded_backend_indices)
+            candidate_is_available::<T>(backend, backends.ready(backend), excluded_backend_ids)
         })
         .cloned()
 }
@@ -156,10 +165,10 @@ where
     fn select_excluding(
         &self,
         cid_key: &str,
-        excluded_backend_indices: &[usize],
+        excluded_backend_ids: &[BackendId],
     ) -> Option<BackendSelectionResult<T>> {
         self.selector
-            .select_excluding(cid_key.as_bytes(), excluded_backend_indices)
+            .select_excluding(cid_key.as_bytes(), excluded_backend_ids)
     }
 
     fn synchronize_readiness(&self, is_healthy: impl FnMut(usize) -> bool) -> Result<(), String> {
@@ -190,6 +199,7 @@ where
         let GenerationBackendView {
             generation,
             upstream_name,
+            backend_ids: _,
             view,
             discovery: _,
         } = view;
@@ -205,7 +215,7 @@ where
     fn select_excluding(
         &self,
         key: &[u8],
-        excluded_backend_indices: &[usize],
+        excluded_backend_ids: &[BackendId],
     ) -> Option<BackendSelectionResult<T>> {
         let selected = self
             .selector
@@ -213,11 +223,11 @@ where
                 key,
                 self.selector.backends().get_backend().len(),
                 |backend, healthy| {
-                    candidate_is_available::<T>(backend, healthy, excluded_backend_indices)
+                    candidate_is_available::<T>(backend, healthy, excluded_backend_ids)
                 },
             )
             .or_else(|| {
-                first_available_backend::<T>(self.selector.backends(), excluded_backend_indices)
+                first_available_backend::<T>(self.selector.backends(), excluded_backend_ids)
             })?;
         selection_result(selected, self.generation)
     }
@@ -250,6 +260,7 @@ where
         let GenerationBackendView {
             generation,
             upstream_name,
+            backend_ids: _,
             view,
             discovery: _,
         } = view;
@@ -264,7 +275,7 @@ where
 
     fn select_excluding(
         &self,
-        excluded_backend_indices: &[usize],
+        excluded_backend_ids: &[BackendId],
     ) -> Option<BackendSelectionResult<T>> {
         let selected = self
             .selector
@@ -272,11 +283,11 @@ where
                 b"",
                 self.selector.backends().get_backend().len(),
                 |backend, healthy| {
-                    candidate_is_available::<T>(backend, healthy, excluded_backend_indices)
+                    candidate_is_available::<T>(backend, healthy, excluded_backend_ids)
                 },
             )
             .or_else(|| {
-                first_available_backend::<T>(self.selector.backends(), excluded_backend_indices)
+                first_available_backend::<T>(self.selector.backends(), excluded_backend_ids)
             })?;
         selection_result(selected, self.generation)
     }
@@ -309,6 +320,7 @@ where
         let GenerationBackendView {
             generation,
             upstream_name,
+            backend_ids: _,
             view,
             discovery: _,
         } = view;
@@ -323,7 +335,7 @@ where
 
     fn select_excluding(
         &self,
-        excluded_backend_indices: &[usize],
+        excluded_backend_ids: &[BackendId],
     ) -> Option<BackendSelectionResult<T>> {
         let selected = self
             .selector
@@ -331,11 +343,11 @@ where
                 b"",
                 self.selector.backends().get_backend().len(),
                 |backend, healthy| {
-                    candidate_is_available::<T>(backend, healthy, excluded_backend_indices)
+                    candidate_is_available::<T>(backend, healthy, excluded_backend_ids)
                 },
             )
             .or_else(|| {
-                first_available_backend::<T>(self.selector.backends(), excluded_backend_indices)
+                first_available_backend::<T>(self.selector.backends(), excluded_backend_ids)
             })?;
         selection_result(selected, self.generation)
     }
@@ -356,6 +368,7 @@ where
 pub struct GenerationBackendView {
     generation: u64,
     upstream_name: String,
+    backend_ids: Box<[BackendId]>,
     view: BackendView,
     discovery: Option<ImpulseServiceDiscovery>,
 }
@@ -398,7 +411,33 @@ where
         }
     }
 
-    fn new(strategy: LoadBalancingStrategy, view: GenerationBackendView) -> Result<Self, String> {
+    fn new(
+        strategy: LoadBalancingStrategy,
+        mut view: GenerationBackendView,
+    ) -> Result<Self, String> {
+        let mut backend_ids = vec![None; view.view.get_backend().len()];
+        for backend in view.view.get_backend().iter() {
+            let identity = backend
+                .ext
+                .get::<PingoraBackendIdentity<T>>()
+                .ok_or_else(|| {
+                    format!("Pingora backend '{}' has no Impulse identity", backend.addr)
+                })?;
+            let slot = backend_ids.get_mut(identity.index()).ok_or_else(|| {
+                format!("Pingora backend '{}' has an invalid index", backend.addr)
+            })?;
+            *slot = Some(identity.runtime_id());
+        }
+        view.backend_ids = backend_ids
+            .into_iter()
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| {
+                format!(
+                    "upstream '{}' has incomplete backend identities",
+                    view.upstream_name
+                )
+            })?
+            .into_boxed_slice();
         let kind = match strategy {
             LoadBalancingStrategy::RoundRobin => GenerationSelectorKind::WeightedRoundRobin(
                 GenerationWeightedRoundRobin::from_backend_view(view),
@@ -450,6 +489,16 @@ where
         )
     }
 
+    pub fn custom_backend_runtime_id(&self, index: usize) -> Option<BackendId> {
+        match &self.kind {
+            GenerationSelectorKind::CustomLeastConnections(view)
+            | GenerationSelectorKind::CustomLatencyAware(view) => {
+                view.backend_ids.get(index).copied()
+            }
+            _ => None,
+        }
+    }
+
     pub fn synchronize_readiness(
         &self,
         is_healthy: impl FnMut(usize) -> bool,
@@ -475,20 +524,20 @@ where
     pub fn select_excluding(
         &self,
         key: &str,
-        excluded_backend_indices: &[usize],
+        excluded_backend_ids: &[BackendId],
     ) -> Option<BackendSelectionResult<T>> {
         match &self.kind {
             GenerationSelectorKind::WeightedRoundRobin(selector) => {
-                selector.select_excluding(excluded_backend_indices)
+                selector.select_excluding(excluded_backend_ids)
             }
             GenerationSelectorKind::WeightedRandom(selector) => {
-                selector.select_excluding(excluded_backend_indices)
+                selector.select_excluding(excluded_backend_ids)
             }
             GenerationSelectorKind::Ketama(selector) => {
-                selector.select_excluding(key.as_bytes(), excluded_backend_indices)
+                selector.select_excluding(key.as_bytes(), excluded_backend_ids)
             }
             GenerationSelectorKind::StickyCid(selector) => {
-                selector.select_excluding(key, excluded_backend_indices)
+                selector.select_excluding(key, excluded_backend_ids)
             }
             GenerationSelectorKind::CustomLeastConnections(_)
             | GenerationSelectorKind::CustomLatencyAware(_) => None,
@@ -550,7 +599,9 @@ impl PingoraDiscoveryUpdate {
 pub struct PingoraLoadBalancingRuntimeState<T> {
     generation: u64,
     upstream_pools: HashMap<String, Arc<RwLock<UpstreamPool>>>,
+    upstream_pools_by_id: Box<[Arc<RwLock<UpstreamPool>>]>,
     selectors: HashMap<String, Arc<GenerationSelector<T>>>,
+    selectors_by_id: Box<[Arc<GenerationSelector<T>>]>,
     discoveries: HashMap<String, ImpulseServiceDiscovery>,
     backend_readiness: RwLock<HashMap<String, bool>>,
     health_registry: Arc<HealthRegistry>,
@@ -620,10 +671,25 @@ where
             ));
         }
 
+        let mut upstream_names = upstream_pools.keys().collect::<Vec<_>>();
+        upstream_names.sort_unstable();
+        let upstream_pools_by_id = upstream_names
+            .iter()
+            .map(|name| Arc::clone(&upstream_pools[*name]))
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+        let selectors_by_id = upstream_names
+            .iter()
+            .map(|name| Arc::clone(&selectors[*name]))
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+
         Ok(Self {
             generation,
             upstream_pools,
+            upstream_pools_by_id,
             selectors,
+            selectors_by_id,
             discoveries,
             backend_readiness: RwLock::new(HashMap::new()),
             health_registry,
@@ -638,8 +704,19 @@ where
         self.selectors.get(upstream_name)
     }
 
+    pub fn selector_by_id(&self, upstream_id: UpstreamId) -> Option<&Arc<GenerationSelector<T>>> {
+        self.selectors_by_id.get(upstream_id.get() as usize)
+    }
+
     pub fn upstream_pool(&self, upstream_name: &str) -> Option<&Arc<RwLock<UpstreamPool>>> {
         self.upstream_pools.get(upstream_name)
+    }
+
+    pub fn upstream_pool_by_id(
+        &self,
+        upstream_id: UpstreamId,
+    ) -> Option<&Arc<RwLock<UpstreamPool>>> {
+        self.upstream_pools_by_id.get(upstream_id.get() as usize)
     }
 
     pub fn upstream_pools(&self) -> &HashMap<String, Arc<RwLock<UpstreamPool>>> {
@@ -744,6 +821,7 @@ impl GenerationBackendView {
         Ok(Self {
             generation,
             upstream_name,
+            backend_ids: Box::new([]),
             view,
             discovery: Some(discovery),
         })
@@ -770,6 +848,7 @@ impl GenerationBackendView {
 
 #[derive(Clone)]
 pub struct PingoraBackendIdentity<T> {
+    runtime_id: BackendId,
     backend_id: String,
     configured_address: String,
     index: usize,
@@ -777,6 +856,10 @@ pub struct PingoraBackendIdentity<T> {
 }
 
 impl<T> PingoraBackendIdentity<T> {
+    pub fn runtime_id(&self) -> BackendId {
+        self.runtime_id
+    }
+
     pub fn backend_id(&self) -> &str {
         &self.backend_id
     }
@@ -796,6 +879,7 @@ impl<T> PingoraBackendIdentity<T> {
 
 pub fn map_validated_backend<T>(
     backend: &BackendInput,
+    runtime_id: BackendId,
     address: SocketAddr,
     tls_identity: T,
 ) -> Result<PingoraBackend, String>
@@ -813,6 +897,7 @@ where
     )
     .map_err(|error| format!("failed to map backend '{}': {error}", backend.backend_id()))?;
     mapped.ext.insert(PingoraBackendIdentity {
+        runtime_id,
         backend_id: backend.backend_id().to_string(),
         configured_address: backend.configured_address().to_string(),
         index: backend.index(),
@@ -861,7 +946,14 @@ mod tests {
             generation,
             "api",
             &backend_inputs,
-            |backend| map_validated_backend(backend, SocketAddr::from(([0, 0, 0, 0], 8080)), ()),
+            |backend| {
+                map_validated_backend(
+                    backend,
+                    BackendId::new(backend.index() as u32),
+                    SocketAddr::from(([0, 0, 0, 0], 8080)),
+                    (),
+                )
+            },
             health_registry(),
         )
         .expect("hostname backend view")
@@ -917,7 +1009,7 @@ mod tests {
                     health_check: None,
                 };
                 let input = crate::test_support::backend_input(index, &backend);
-                map_validated_backend(&input, address, ())
+                map_validated_backend(&input, BackendId::new(input.index() as u32), address, ())
             })
             .collect::<Result<BTreeSet<_>, _>>()
             .expect("map test backends");
@@ -933,6 +1025,7 @@ mod tests {
         GenerationBackendView {
             generation: GENERATION,
             upstream_name: "api".to_string(),
+            backend_ids: Box::new([]),
             view,
             discovery: None,
         }
@@ -962,8 +1055,13 @@ mod tests {
         };
 
         let input = crate::test_support::backend_input(0, &backend);
-        let mapped = map_validated_backend(&input, SocketAddr::from(([127, 0, 0, 1], 8000)), ())
-            .expect("map backend");
+        let mapped = map_validated_backend(
+            &input,
+            BackendId::new(input.index() as u32),
+            SocketAddr::from(([127, 0, 0, 1], 8000)),
+            (),
+        )
+        .expect("map backend");
 
         assert_eq!(mapped.weight, 3);
     }
@@ -1005,7 +1103,7 @@ mod tests {
             for key in ["request-a", "request-b", "request-c"] {
                 assert_eq!(
                     selector
-                        .select_excluding(key, &[0])
+                        .select_excluding(key, &[BackendId::new(0)])
                         .expect("alternate selection")
                         .index(),
                     1

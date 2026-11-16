@@ -1,8 +1,8 @@
 #[cfg(feature = "response-cache")]
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::{collections::HashMap, fmt, sync::Arc};
+use std::{fmt, sync::Arc};
 
-use impulse_contracts::PluginKind;
+use impulse_contracts::{PluginKind, UpstreamId};
 
 #[cfg(any(feature = "external-auth", feature = "quota"))]
 use crate::CompiledAsyncRequestPlugin;
@@ -49,7 +49,7 @@ impl std::error::Error for PluginPlanCompileError {}
 pub struct CompiledGenerationPluginPlans {
     generation: u64,
     connection: CompiledConnectionPlan,
-    upstreams: HashMap<String, Arc<CompiledPluginPlan>>,
+    upstreams: Box<[Arc<CompiledPluginPlan>]>,
     #[cfg(feature = "response-cache")]
     response_cache_namespace: Arc<AtomicU64>,
 }
@@ -66,19 +66,21 @@ impl CompiledGenerationPluginPlans {
     }
 
     #[must_use]
-    pub fn upstreams(&self) -> &HashMap<String, Arc<CompiledPluginPlan>> {
+    pub fn upstreams(&self) -> &[Arc<CompiledPluginPlan>] {
         &self.upstreams
     }
 
     #[must_use]
-    pub fn upstream_plan(&self, upstream_name: &str) -> Option<Arc<CompiledPluginPlan>> {
-        self.upstreams.get(upstream_name).map(Arc::clone)
+    pub fn upstream_plan(&self, upstream_id: UpstreamId) -> Option<Arc<CompiledPluginPlan>> {
+        self.upstreams
+            .get(upstream_id.get() as usize)
+            .map(Arc::clone)
     }
 
     #[must_use]
     #[cfg(feature = "quota")]
     pub fn quota(&self) -> Option<&crate::CompiledQuota> {
-        self.upstreams.values().find_map(|plan| {
+        self.upstreams.iter().find_map(|plan| {
             plan.async_request_gate()
                 .iter()
                 .find_map(|plugin| match plugin {
@@ -104,7 +106,7 @@ impl CompiledGenerationPluginPlans {
     #[must_use]
     pub fn active_count(&self, kind: PluginKind) -> usize {
         if matches!(kind, PluginKind::ScopedRateLimit | PluginKind::Quota) {
-            return if self.upstreams.values().any(|plan| {
+            return if self.upstreams.iter().any(|plan| {
                 plan.request_gate()
                     .iter()
                     .any(|plugin| plugin.kind() == kind)
@@ -126,7 +128,7 @@ impl CompiledGenerationPluginPlans {
             .count()
             + self
                 .upstreams
-                .values()
+                .iter()
                 .map(|plan| {
                     plan.request_gate()
                         .iter()
@@ -210,7 +212,7 @@ pub fn compile_generation_plugin_plans(
 
     #[cfg(feature = "response-cache")]
     let response_cache_namespace = Arc::new(AtomicU64::new(generation));
-    let upstreams = inputs
+    let mut upstreams = inputs
         .upstreams
         .into_vec()
         .into_iter()
@@ -227,7 +229,13 @@ pub fn compile_generation_plugin_plans(
                 &response_cache_namespace,
             )
         })
-        .collect::<Result<HashMap<_, _>, _>>()?;
+        .collect::<Result<Vec<_>, _>>()?;
+    upstreams.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
+    let upstreams = upstreams
+        .into_iter()
+        .map(|(_, plan)| plan)
+        .collect::<Vec<_>>()
+        .into_boxed_slice();
 
     Ok(CompiledGenerationPluginPlans {
         generation,

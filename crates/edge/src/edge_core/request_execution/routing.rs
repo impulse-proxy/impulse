@@ -1,10 +1,12 @@
-use std::sync::Arc;
-
-use crate::{edge_core::request_execution::ResolvedRouteTarget, routing::index::RouteIndex};
+use crate::{
+    edge_core::request_execution::ResolvedRouteTarget, routing::index::RouteIndex,
+    runtime::generation::RuntimeIdentities,
+};
 
 /// Resolves a validated HTTP method, path, and authority through the existing route index.
 pub(crate) fn resolve_route(
     routing_index: &RouteIndex,
+    identities: &RuntimeIdentities,
     method: &str,
     path: &str,
     authority: Option<&str>,
@@ -18,7 +20,11 @@ pub(crate) fn resolve_route(
         .ok_or(RouteResolutionError::NoRoute)?;
 
     Ok(ResolvedRouteTarget {
-        upstream_name: Arc::from(route.upstream),
+        route_id: route.route_id,
+        upstream_id: route.upstream_id,
+        upstream_name: identities
+            .upstream_display_name(route.upstream_id)
+            .ok_or(RouteResolutionError::MissingUpstreamDisplayName)?,
         matched_path_len: route.matched_path_len,
         host_specific: route.host_specific,
         method_specific: route.method_specific,
@@ -33,6 +39,7 @@ pub(crate) enum RouteResolutionError {
     NoRoute,
     MissingUpstreamPolicy,
     MissingUpstreamPluginPlan,
+    MissingUpstreamDisplayName,
 }
 
 #[cfg(test)]
@@ -78,14 +85,21 @@ mod tests {
             upstream("/v1", Some("api.example.com"), Some("POST")),
         );
         let index = RouteIndex::from_upstreams(&upstreams);
+        let identities = RuntimeIdentities::for_upstream_names(upstreams.keys().cloned());
 
         let expected = index
             .lookup_with_decision_for_method("/v1/messages", Some("api.example.com"), Some("POST"))
             .expect("indexed route");
-        let resolved = resolve_route(&index, "POST", "/v1/messages", Some("api.example.com"))
-            .expect("shared route");
+        let resolved = resolve_route(
+            &index,
+            &identities,
+            "POST",
+            "/v1/messages",
+            Some("api.example.com"),
+        )
+        .expect("shared route");
 
-        assert_eq!(resolved.upstream_name.as_ref(), expected.upstream);
+        assert_eq!(resolved.upstream_id, expected.upstream_id);
         assert_eq!(resolved.matched_path_len, expected.matched_path_len);
         assert_eq!(resolved.host_specific, expected.host_specific);
         assert_eq!(resolved.method_specific, expected.method_specific);
@@ -95,13 +109,14 @@ mod tests {
     #[test]
     fn shared_route_service_preserves_index_miss_contract() {
         let index = RouteIndex::from_upstreams(&HashMap::new());
+        let identities = RuntimeIdentities::for_upstream_names([]);
 
         assert_eq!(
-            resolve_route(&index, "GET", "/missing", None),
+            resolve_route(&index, &identities, "GET", "/missing", None),
             Err(RouteResolutionError::NoRoute)
         );
         assert_eq!(
-            resolve_route(&index, "", "/missing", None),
+            resolve_route(&index, &identities, "", "/missing", None),
             Err(RouteResolutionError::EmptyMethodOrPath)
         );
     }

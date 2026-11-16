@@ -1,13 +1,17 @@
 use std::{collections::HashSet, sync::Arc, time::Duration};
 
 use impulse_config::{config::Resilience as ResilienceConfig, runtime::RuntimeAdmissionPolicy};
+use impulse_contracts::RouteId;
 use impulse_policy::{AdaptiveAdmission, BrownoutController};
 
-use crate::resilience::{
-    circuit_breaker::CircuitBreakers,
-    connect::{connect_authority_port, normalize_connect_authority},
-    retry_budget::RetryBudget,
-    route_queue::RouteQueueLimiter,
+use crate::{
+    resilience::{
+        circuit_breaker::CircuitBreakers,
+        connect::{connect_authority_port, normalize_connect_authority},
+        retry_budget::RetryBudget,
+        route_queue::RouteQueueLimiter,
+    },
+    runtime::generation::RuntimeIdentities,
 };
 
 pub struct RuntimeResilience {
@@ -30,11 +34,31 @@ pub struct RuntimeResilience {
     denied_path_prefixes: Vec<String>,
     connect_allowed_ports: HashSet<u16>,
     connect_allowed_authorities: HashSet<String>,
-    route_allowlist: HashSet<String>,
+    route_allowlist: HashSet<RouteId>,
 }
 
 impl RuntimeResilience {
     pub fn from_config(config: &ResilienceConfig, global_limit: usize) -> Self {
+        let mut route_names = config
+            .route_queue
+            .caps
+            .keys()
+            .chain(config.retry_budget.per_route_ratio_percent.keys())
+            .chain(config.brownout.core_routes.iter())
+            .chain(config.hedging.route_allowlist.iter())
+            .collect::<Vec<_>>();
+        route_names.sort_unstable();
+        route_names.dedup();
+        let route_ids = route_names
+            .into_iter()
+            .enumerate()
+            .map(|(index, name)| {
+                (
+                    name.as_str(),
+                    RouteId::new(u32::try_from(index).unwrap_or(u32::MAX)),
+                )
+            })
+            .collect::<std::collections::HashMap<_, _>>();
         let adaptive = &config.adaptive_admission;
         let admission = Arc::new(AdaptiveAdmission::new(
             adaptive.enabled,
@@ -50,7 +74,12 @@ impl RuntimeResilience {
         let route_queue = Arc::new(RouteQueueLimiter::new(
             config.route_queue.default_cap,
             config.route_queue.global_cap,
-            config.route_queue.caps.clone(),
+            config
+                .route_queue
+                .caps
+                .iter()
+                .map(|(name, cap)| (route_ids[name.as_str()], *cap))
+                .collect(),
         ));
         let cb = &config.circuit_breaker;
         let circuit_breakers = Arc::new(CircuitBreakers::new(
@@ -62,13 +91,23 @@ impl RuntimeResilience {
         let retry_budget = Arc::new(RetryBudget::new(
             config.retry_budget.enabled,
             config.retry_budget.ratio_percent,
-            config.retry_budget.per_route_ratio_percent.clone(),
+            config
+                .retry_budget
+                .per_route_ratio_percent
+                .iter()
+                .map(|(name, ratio)| (route_ids[name.as_str()], *ratio))
+                .collect(),
         ));
         let brownout = Arc::new(BrownoutController::new(
             config.brownout.enabled,
             config.brownout.trigger_inflight_percent,
             config.brownout.recover_inflight_percent,
-            config.brownout.core_routes.clone(),
+            config
+                .brownout
+                .core_routes
+                .iter()
+                .map(|name| route_ids[name.as_str()])
+                .collect(),
         ));
         let hedge_safe_methods = config
             .hedging
@@ -92,7 +131,7 @@ impl RuntimeResilience {
             .hedging
             .route_allowlist
             .iter()
-            .cloned()
+            .map(|name| route_ids[name.as_str()])
             .collect::<HashSet<_>>();
         let connect_allowed_ports = config
             .protocol
@@ -131,7 +170,10 @@ impl RuntimeResilience {
         }
     }
 
-    pub fn from_policies(admission_policy: &RuntimeAdmissionPolicy) -> Self {
+    pub fn from_policies(
+        admission_policy: &RuntimeAdmissionPolicy,
+        identities: &RuntimeIdentities,
+    ) -> Self {
         let adaptive = &admission_policy.adaptive_admission;
         let admission = Arc::new(AdaptiveAdmission::new(
             adaptive.enabled,
@@ -148,7 +190,12 @@ impl RuntimeResilience {
         let route_queue = Arc::new(RouteQueueLimiter::new(
             admission_policy.route_queue.default_cap,
             admission_policy.route_queue.global_cap,
-            admission_policy.route_queue.caps.clone(),
+            admission_policy
+                .route_queue
+                .caps
+                .iter()
+                .filter_map(|(name, cap)| identities.route_id(name).map(|id| (id, *cap)))
+                .collect(),
         ));
         let circuit_breakers = Arc::new(CircuitBreakers::new(
             admission_policy.circuit_breaker.enabled,
@@ -162,13 +209,20 @@ impl RuntimeResilience {
             admission_policy
                 .retry_budget
                 .per_route_ratio_percent
-                .clone(),
+                .iter()
+                .filter_map(|(name, ratio)| identities.route_id(name).map(|id| (id, *ratio)))
+                .collect(),
         ));
         let brownout = Arc::new(BrownoutController::new(
             admission_policy.brownout.enabled,
             admission_policy.brownout.trigger_inflight_percent,
             admission_policy.brownout.recover_inflight_percent,
-            admission_policy.brownout.core_routes.clone(),
+            admission_policy
+                .brownout
+                .core_routes
+                .iter()
+                .filter_map(|name| identities.route_id(name))
+                .collect(),
         ));
         let hedge_safe_methods = admission_policy
             .hedging
@@ -194,7 +248,7 @@ impl RuntimeResilience {
             .hedging
             .route_allowlist
             .iter()
-            .cloned()
+            .map(|name| identities.route_id(name).unwrap_or(RouteId::new(u32::MAX)))
             .collect::<HashSet<_>>();
         let connect_allowed_ports = admission_policy
             .protocol
@@ -235,11 +289,11 @@ impl RuntimeResilience {
         }
     }
 
-    pub fn hedging_route_enabled_for(&self, route: &str) -> bool {
+    pub fn hedging_route_enabled_for(&self, route: RouteId) -> bool {
         if !self.hedging_enabled || self.brownout.is_active() {
             return false;
         }
-        self.route_allowlist.is_empty() || self.route_allowlist.contains(route)
+        self.route_allowlist.is_empty() || self.route_allowlist.contains(&route)
     }
 
     pub fn hedging_method_allowed(&self, method: &str) -> bool {
@@ -247,7 +301,7 @@ impl RuntimeResilience {
             .contains(&method.to_ascii_uppercase())
     }
 
-    pub fn hedging_allowed_for(&self, method: &str, route: &str, bodyless: bool) -> bool {
+    pub fn hedging_allowed_for(&self, method: &str, route: RouteId, bodyless: bool) -> bool {
         self.hedging_route_enabled_for(route) && bodyless && self.hedging_method_allowed(method)
     }
 

@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use impulse_contracts::BackendId;
 use impulse_runtime::GenerationId;
 
 /// Validated backend data required by load-balancing implementations.
@@ -169,7 +170,7 @@ pub enum RequestKeyInput {
 pub struct BackendSelectionInput<'a> {
     generation: GenerationId,
     request_key: &'a str,
-    excluded_backend_indices: &'a [usize],
+    excluded_backend_ids: &'a [BackendId],
     begin_request: bool,
 }
 
@@ -178,13 +179,13 @@ impl<'a> BackendSelectionInput<'a> {
     pub const fn new(
         generation: GenerationId,
         request_key: &'a str,
-        excluded_backend_indices: &'a [usize],
+        excluded_backend_ids: &'a [BackendId],
         begin_request: bool,
     ) -> Self {
         Self {
             generation,
             request_key,
-            excluded_backend_indices,
+            excluded_backend_ids,
             begin_request,
         }
     }
@@ -200,8 +201,8 @@ impl<'a> BackendSelectionInput<'a> {
     }
 
     #[must_use]
-    pub const fn excluded_backend_indices(self) -> &'a [usize] {
-        self.excluded_backend_indices
+    pub const fn excluded_backend_ids(self) -> &'a [BackendId] {
+        self.excluded_backend_ids
     }
 
     #[must_use]

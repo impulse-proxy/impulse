@@ -56,6 +56,14 @@ impl QuotaPolicyRuntime {
         Self {
             name: value.name.clone(),
             route_allowlist: value.route_allowlist.iter().cloned().collect(),
+            route_ids: value
+                .route_allowlist
+                .iter()
+                .enumerate()
+                .map(|(index, _)| {
+                    RouteId::new(u32::try_from(index).expect("test route identity must fit in u32"))
+                })
+                .collect(),
             selector: QuotaSelectorMatcher::from_runtime(&value.selector),
             burst: value.burst.as_ref().map(QuotaWindowPolicy::from_runtime),
             sustained: value
@@ -76,6 +84,16 @@ impl QuotaPolicyRuntime {
                 .filter(|route| !route.is_empty())
                 .map(ToOwned::to_owned)
                 .collect(),
+            route_ids: value
+                .route_allowlist
+                .iter()
+                .map(|route| route.trim())
+                .filter(|route| !route.is_empty())
+                .enumerate()
+                .map(|(index, _)| {
+                    RouteId::new(u32::try_from(index).expect("test route identity must fit in u32"))
+                })
+                .collect(),
             selector: QuotaSelectorMatcher::from_raw(&value.selector),
             burst: value.burst.as_ref().map(QuotaWindowPolicy::from_raw),
             sustained: value.sustained.as_ref().map(QuotaWindowPolicy::from_raw),
@@ -95,8 +113,8 @@ impl QuotaPolicyRuntime {
         }
     }
 
-    pub(super) fn applies_to_route(&self, route: &str) -> bool {
-        self.route_allowlist.is_empty() || self.route_allowlist.contains(route)
+    pub(super) fn applies_to_route(&self, route: RouteId) -> bool {
+        self.route_ids.is_empty() || self.route_ids.contains(&route)
     }
 }
 

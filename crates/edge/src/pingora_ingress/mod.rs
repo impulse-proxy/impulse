@@ -149,6 +149,7 @@ impl Drop for PingoraEdgeRequestState {
 }
 
 struct PingoraSelectedBackend {
+    id: impulse_contracts::BackendId,
     address: String,
     pool: Arc<RwLock<UpstreamPool>>,
     index: usize,
@@ -222,6 +223,7 @@ impl PingoraEdgeRequestService {
             Some(PluginRequestView {
                 request_id: ctx.request_id,
                 generation: policy.plugin_plan.generation(),
+                runtime_route_id: route.route_id,
                 route_id: Some(route.upstream_name.as_ref()),
                 upstream_name: route.upstream_name.as_ref(),
                 method,
@@ -284,16 +286,15 @@ impl PingoraEdgeRequestService {
         session: &Session,
         ctx: &mut PingoraRequestContext,
     ) -> Result<PingoraSelectedBackend> {
-        let upstream_name = ctx
-            .route
-            .as_ref()
-            .map(|route| Arc::clone(&route.upstream_name))
-            .ok_or_else(|| {
-                Error::explain(
-                    InternalError,
-                    "Pingora ingress request filter did not resolve a route",
-                )
-            })?;
+        let route = ctx.route.as_ref().ok_or_else(|| {
+            Error::explain(
+                InternalError,
+                "Pingora ingress request filter did not resolve a route",
+            )
+        })?;
+        let route_id = route.route_id;
+        let upstream_id = route.upstream_id;
+        let upstream_name = Arc::clone(&route.upstream_name);
         let method = ctx.method.clone().ok_or_else(|| {
             Error::explain(
                 InternalError,
@@ -311,7 +312,7 @@ impl PingoraEdgeRequestService {
         let state = ctx.runtime.shared_state.generation_state();
         let pool = state
             .pingora_load_balancing
-            .upstream_pool(upstream_name.as_ref())
+            .upstream_pool_by_id(upstream_id)
             .cloned()
             .ok_or_else(|| {
                 Error::explain(
@@ -319,11 +320,13 @@ impl PingoraEdgeRequestService {
                     format!("Pingora ingress upstream pool is missing: {upstream_name}"),
                 )
             })?;
-        let (backend_addr, backend_index) = if let Some((address, index)) = retry_backend {
+        let (backend_id, backend_addr, backend_index) = if let Some((backend_id, index)) =
+            retry_backend
+        {
             let pool = pool.read().map_err(|_| {
                 Error::explain(InternalError, "Pingora ingress upstream pool lock poisoned")
             })?;
-            if pool.backend_address(index) != Some(address.as_str())
+            if state.identities.backend_id_at(upstream_id, index) != Some(backend_id)
                 || !pool.begin_request_if_healthy(index)
             {
                 return Error::e_explain(
@@ -331,7 +334,13 @@ impl PingoraEdgeRequestService {
                     "Pingora ingress retry backend is no longer available",
                 );
             }
-            (address, index)
+            let address = pool.backend_address(index).ok_or_else(|| {
+                Error::explain(
+                    InternalError,
+                    "Pingora ingress retry backend has no configured address",
+                )
+            })?;
+            (backend_id, address.to_string(), index)
         } else {
             let request = session.req_header();
             let header_lookup = |name: &str| {
@@ -350,7 +359,7 @@ impl PingoraEdgeRequestService {
             );
             let selector = state
                 .pingora_load_balancing
-                .selector(upstream_name.as_ref())
+                .selector_by_id(upstream_id)
                 .ok_or_else(|| {
                     ctx.runtime
                         .shared_state
@@ -378,10 +387,15 @@ impl PingoraEdgeRequestService {
                 .generation_state()
                 .resilience
                 .retry_budget
-                .mark_primary(upstream_name.as_ref());
-            (selected.backend_addr, selected.backend_index)
+                .mark_primary(route_id);
+            (
+                selected.backend_id,
+                selected.backend_addr,
+                selected.backend_index,
+            )
         };
         Ok(PingoraSelectedBackend {
+            id: backend_id,
             address: backend_addr,
             pool,
             index: backend_index,
@@ -804,6 +818,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             |name: &str| request_headers.get(name).map(http::HeaderValue::as_bytes);
         let request_service = EdgeRequestService::new(
             &state.routing_index,
+            &state.identities,
             &state.upstream_policies,
             &state.plugin_plans,
             &state.route_execution_classes,
@@ -847,7 +862,8 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             Err(
                 RouteResolutionError::NoRoute
                 | RouteResolutionError::MissingUpstreamPolicy
-                | RouteResolutionError::MissingUpstreamPluginPlan,
+                | RouteResolutionError::MissingUpstreamPluginPlan
+                | RouteResolutionError::MissingUpstreamDisplayName,
             ) => {
                 write_local_response(
                     session,
@@ -1173,6 +1189,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             plugin_request: PluginRequestView {
                 request_id: ctx.request_id,
                 generation: policy.plugin_plan.generation(),
+                runtime_route_id: route.route_id,
                 route_id: Some(route.upstream_name.as_ref()),
                 upstream_name: route.upstream_name.as_ref(),
                 method,
@@ -1482,8 +1499,8 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             .runtime
             .shared_state
             .generation_state()
-            .backend_endpoints
-            .get(&selected.address)
+            .backend_endpoints_by_id
+            .get(selected.id.get() as usize)
             .ok_or_else(|| {
                 Error::explain(
                     InternalError,
@@ -2075,17 +2092,16 @@ fn handle_pingora_proxy_failure(
         error.set_retry(false);
         return error;
     };
-    let route_name = ctx
-        .route
-        .as_ref()
-        .map(|route| route.upstream_name.as_ref())
-        .unwrap_or("unrouted");
+    let Some(route) = ctx.route.as_ref() else {
+        error.set_retry(false);
+        return error;
+    };
     let selector = ctx
         .runtime
         .shared_state
         .generation_state()
         .pingora_load_balancing
-        .selector(route_name);
+        .selector_by_id(route.upstream_id);
     let metrics = ctx.runtime.shared_state.shared_services().metrics.as_ref();
     let selection = match selector {
         Some(selector) => Some(ForwardingSelectionService::select_backend_excluding(
@@ -2094,7 +2110,7 @@ fn handle_pingora_proxy_failure(
             BackendSelectionInput::new(
                 ctx.runtime.generation,
                 ctx.lb_key.as_deref().unwrap_or_default(),
-                &[selected.index],
+                &[selected.id],
                 false,
             ),
             metrics,
@@ -2107,7 +2123,7 @@ fn handle_pingora_proxy_failure(
         }
     };
     let (retry_backend, alternate_failure) = match selection {
-        Some(Ok(Some(BackendCandidate { address, index }))) => (Some((address, index)), None),
+        Some(Ok(Some(BackendCandidate { id, index, .. }))) => (Some((id, index)), None),
         Some(Ok(None)) => match selected.pool.read() {
             Ok(pool) if pool.membership_summary().healthy_backends == 0 => {
                 (None, Some(AlternateBackendFailureReason::NoHealthyBackends))
@@ -2130,7 +2146,7 @@ fn handle_pingora_proxy_failure(
     let decision = retry.retry_after_error(
         &proxy_error,
         ctx.retry_count,
-        route_name,
+        route.route_id,
         &ctx.runtime
             .shared_state
             .generation_state()

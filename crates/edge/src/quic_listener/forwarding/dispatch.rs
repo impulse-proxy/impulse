@@ -1,7 +1,7 @@
 use std::convert::Infallible;
 
 use impulse_config::runtime::RuntimeBackendTlsPolicy;
-use impulse_contracts::{AlternateBackendFailureReason, HedgeOutcomeTelemetryReason};
+use impulse_contracts::{AlternateBackendFailureReason, BackendId, HedgeOutcomeTelemetryReason};
 #[cfg(feature = "response-cache")]
 use impulse_contracts::{IngressProtocol, PluginRequestView};
 use impulse_errors::{HedgePolicyDecision, RetryPolicyDecision, is_idempotent_method};
@@ -30,6 +30,7 @@ pub(in crate::quic_listener) type UpstreamRequest = Request<BoxBody<Bytes, Infal
 #[derive(Clone, Debug)]
 enum ResolvedAlternateBackend {
     Selected {
+        id: impulse_contracts::BackendId,
         address: String,
     },
     Unavailable {
@@ -51,11 +52,13 @@ impl ResolvedAlternateBackend {
 }
 
 struct AlternateBodylessCandidate {
+    backend_id: impulse_contracts::BackendId,
     backend: String,
     request: UpstreamRequest,
 }
 
 struct WebsocketTunnelForwardInput {
+    backend_id: impulse_contracts::BackendId,
     backend: Arc<str>,
     endpoint: BackendEndpoint,
     pending_forward: Arc<PendingForward>,
@@ -98,12 +101,13 @@ impl Drop for H3CacheMiss {
 
 struct RetryExecutionCtx<'a> {
     request_id: u64,
+    route_id: impulse_contracts::RouteId,
     route_name: &'a str,
     policy: RetryCoordinator,
     policy_telemetry: &'a mut ForwardingPolicyTelemetry,
     retry_budget: &'a crate::resilience::retry_budget::RetryBudget,
     alternate_backend: Option<&'a ResolvedAlternateBackend>,
-    backend_endpoints: &'a HashMap<String, BackendEndpoint>,
+    backend_endpoints: &'a [BackendEndpoint],
     pending_forward: &'a PendingForward,
     circuit_breakers: &'a crate::resilience::circuit_breaker::CircuitBreakers,
     executor: &'a UpstreamRequestExecutor,
@@ -154,6 +158,7 @@ impl Http3Service {
             plugin_request: PluginRequestView {
                 request_id: pending_forward.request_id,
                 generation: pending_forward.plugin_plan.generation(),
+                runtime_route_id: pending_forward.route_id,
                 route_id: Some(pending_forward.upstream_name.as_ref()),
                 upstream_name: pending_forward.upstream_name.as_ref(),
                 method: pending_forward.method.as_ref(),
@@ -280,13 +285,17 @@ impl Http3Service {
     }
 
     async fn send_upstream_request(
+        backend_id: impulse_contracts::BackendId,
         backend: &str,
         request: UpstreamRequest,
         circuit_breakers: &crate::resilience::circuit_breaker::CircuitBreakers,
         executor: &UpstreamRequestExecutor,
     ) -> Result<UpstreamExchangeResponse, ProxyError> {
-        let breaker_permit =
-            ForwardingSelectionService::allow_backend_request(circuit_breakers, backend)?;
+        let breaker_permit = ForwardingSelectionService::allow_backend_request(
+            circuit_breakers,
+            backend_id,
+            backend,
+        )?;
 
         let request = Self::into_upstream_exchange_request(request)?;
         let send_result = executor.execute(backend, request).await;
@@ -342,15 +351,21 @@ impl Http3Service {
         executor: &UpstreamRequestExecutor,
     ) -> ForwardResult {
         let WebsocketTunnelForwardInput {
+            backend_id,
             backend,
             endpoint,
             pending_forward,
             mut body_rx,
         } = input;
         let request = pending_forward.build_http1_websocket_tunnel_request(&endpoint)?;
-        let response =
-            Self::send_upstream_request(backend.as_ref(), request, circuit_breakers, executor)
-                .await?;
+        let response = Self::send_upstream_request(
+            backend_id,
+            backend.as_ref(),
+            request,
+            circuit_breakers,
+            executor,
+        )
+        .await?;
 
         let upstream_status = response.head.status;
         if upstream_status != StatusCode::SWITCHING_PROTOCOLS {
@@ -432,17 +447,17 @@ impl Http3Service {
         selector: &GenerationSelector<RuntimeBackendTlsPolicy>,
         generation: u64,
         lb_key: &str,
-        primary_index: usize,
+        primary_backend_id: BackendId,
         metrics: &Metrics,
     ) -> ResolvedAlternateBackend {
         match ForwardingSelectionService::select_backend_excluding(
             selector,
             upstream_pool,
-            BackendSelectionInput::new(generation, lb_key, &[primary_index], false),
+            BackendSelectionInput::new(generation, lb_key, &[primary_backend_id], false),
             metrics,
         ) {
-            Ok(Some(BackendCandidate { address, .. })) => {
-                ResolvedAlternateBackend::Selected { address }
+            Ok(Some(BackendCandidate { id, address, .. })) => {
+                ResolvedAlternateBackend::Selected { id, address }
             }
             Ok(None) => {
                 let reason = match upstream_pool.read() {
@@ -462,14 +477,15 @@ impl Http3Service {
 
     fn build_alternate_bodyless_candidate(
         alternate_backend: Option<&ResolvedAlternateBackend>,
-        backend_endpoints: &HashMap<String, BackendEndpoint>,
+        backend_endpoints: &[BackendEndpoint],
         pending_forward: &PendingForward,
     ) -> Option<AlternateBodylessCandidate> {
         match alternate_backend? {
-            ResolvedAlternateBackend::Selected { address } => {
-                let endpoint = backend_endpoints.get(address)?;
+            ResolvedAlternateBackend::Selected { id, address } => {
+                let endpoint = backend_endpoints.get(id.get() as usize)?;
                 let request = pending_forward.build_bodyless_request(endpoint).ok()?;
                 Some(AlternateBodylessCandidate {
+                    backend_id: *id,
                     backend: address.clone(),
                     request,
                 })
@@ -484,6 +500,7 @@ impl Http3Service {
     ) -> Result<UpstreamExchangeResponse, ProxyError> {
         let RetryExecutionCtx {
             request_id,
+            route_id,
             route_name,
             policy,
             policy_telemetry,
@@ -499,7 +516,7 @@ impl Http3Service {
         let retry_decision = policy.retry_after_error(
             &primary_err,
             policy_telemetry.retry.count,
-            route_name,
+            route_id,
             retry_budget,
             alternate_backend_available,
             alternate_backend_failure,
@@ -527,6 +544,7 @@ impl Http3Service {
         };
 
         let Some(AlternateBodylessCandidate {
+            backend_id: retry_backend_id,
             backend: retry_backend,
             request: retry_request,
         }) = Self::build_alternate_bodyless_candidate(
@@ -547,6 +565,7 @@ impl Http3Service {
             retry_backend
         );
         Self::send_upstream_request(
+            retry_backend_id,
             retry_backend.as_str(),
             retry_request,
             circuit_breakers,
@@ -573,7 +592,7 @@ impl Http3Service {
         let alternate_pool = req.upstream_pool.clone();
         let alternate_selector = shared_ctx
             .pingora_load_balancing
-            .selector(pending_forward.upstream_name.as_ref())
+            .selector_by_id(pending_forward.upstream_id)
             .cloned();
         let alternate_generation = shared_ctx.generation;
         let alternate_metrics = Arc::clone(&shared_ctx.metrics);
@@ -586,8 +605,7 @@ impl Http3Service {
         let request_id = req.request_id;
         let method_idempotent = is_idempotent_method(&req.method);
         let hedge_method_allowed = resilience.hedging_method_allowed(&req.method);
-        let hedge_configured =
-            resilience.hedging_route_enabled_for(pending_forward.upstream_name.as_ref());
+        let hedge_configured = resilience.hedging_route_enabled_for(pending_forward.route_id);
         let hedge_tunnel_request = req.tunnel_mode.is_tunnel();
         let needs_alternate_before_primary =
             hedge_configured && hedge_method_allowed && bodyless_mode && !hedge_tunnel_request;
@@ -614,7 +632,7 @@ impl Http3Service {
                         selector,
                         alternate_generation,
                         pending_forward.lb_key.as_ref(),
-                        pending_forward.backend_index,
+                        pending_forward.backend_id,
                         alternate_metrics.as_ref(),
                     )
                 })
@@ -623,6 +641,8 @@ impl Http3Service {
                 .then(resolve_alternate)
                 .flatten();
             let route_name = pending_forward.upstream_name.as_ref();
+            let route_id = pending_forward.route_id;
+            let primary_backend_id = pending_forward.backend_id;
             let primary_backend = pending_forward.backend_addr.as_ref();
             let circuit_breakers = circuit_breakers.as_ref();
             let retry_budget = retry_budget.as_ref();
@@ -651,7 +671,7 @@ impl Http3Service {
                 };
                 #[cfg(not(feature = "response-cache"))]
                 let cache_miss = None;
-                retry_budget.mark_primary(route_name);
+                retry_budget.mark_primary(route_id);
 
                 let h1_websocket = impulse_http3_ingress::requires_h1_websocket_adaptation(
                     tunnel_mode,
@@ -665,6 +685,7 @@ impl Http3Service {
                     };
                     Self::forward_http1_websocket_tunnel(
                         WebsocketTunnelForwardInput {
+                            backend_id: primary_backend_id,
                             backend: Arc::clone(&pending_forward.backend_addr),
                             endpoint: backend_endpoint.clone(),
                             pending_forward: Arc::clone(&pending_forward),
@@ -694,12 +715,14 @@ impl Http3Service {
                             );
 
                             if let Some(AlternateBodylessCandidate {
+                                backend_id: hedge_backend_id,
                                 backend: hedge_backend,
                                 request: hedge_request,
                             }) = hedge_candidate
                             {
                                 let primary_started = Instant::now();
                                 let primary_fut = Self::send_upstream_request(
+                                    primary_backend_id,
                                     primary_backend,
                                     request,
                                     circuit_breakers,
@@ -716,11 +739,12 @@ impl Http3Service {
                                     result?
                                 } else {
                                     match policy.hedge_after_delay(
-                                        retry_budget.allow_retry(route_name).is_ok(),
+                                        retry_budget.allow_retry(route_id).is_ok(),
                                     ) {
                                         HedgePolicyDecision::Hedge { reason } => {
                                             policy_telemetry.hedge.record_trigger(reason);
                                             let hedge_fut = Self::send_upstream_request(
+                                                hedge_backend_id,
                                                 hedge_backend.as_str(),
                                                 hedge_request,
                                                 circuit_breakers,
@@ -787,6 +811,7 @@ impl Http3Service {
                                 }
                             } else {
                                 Self::send_upstream_request(
+                                    primary_backend_id,
                                     primary_backend,
                                     request,
                                     circuit_breakers,
@@ -804,6 +829,7 @@ impl Http3Service {
                                 denial
                             );
                             match Self::send_upstream_request(
+                                primary_backend_id,
                                 primary_backend,
                                 request,
                                 circuit_breakers,
@@ -819,6 +845,7 @@ impl Http3Service {
                                         primary_err,
                                         RetryExecutionCtx {
                                             request_id,
+                                            route_id,
                                             route_name,
                                             policy,
                                             policy_telemetry: &mut policy_telemetry,
@@ -843,6 +870,7 @@ impl Http3Service {
                                 reason
                             );
                             match Self::send_upstream_request(
+                                primary_backend_id,
                                 primary_backend,
                                 request,
                                 circuit_breakers,
@@ -858,6 +886,7 @@ impl Http3Service {
                                         primary_err,
                                         RetryExecutionCtx {
                                             request_id,
+                                            route_id,
                                             route_name,
                                             policy,
                                             policy_telemetry: &mut policy_telemetry,

@@ -26,7 +26,10 @@ use crate::{
             lifecycle::BackendLifecycleCoordinator, resolution::RuntimeBackendResolution,
             store::RuntimeBackendResolutionStore,
         },
-        generation::{CarriedProcessSharedServices, RuntimeGenerationState, RuntimeSharedServices},
+        generation::{
+            CarriedProcessSharedServices, RuntimeGenerationState, RuntimeIdentities,
+            RuntimeSharedServices,
+        },
         shared_state::SharedRuntimeState,
         subsystem_mapping::{
             load_balancing_backend_inputs, load_balancing_strategy_input,
@@ -77,22 +80,39 @@ impl RuntimeBuilder {
         listener_tls_store: Arc<ListenerTlsReloadStore>,
     ) -> Result<SharedRuntimeState, ProxyError> {
         validate_plugin_availability(config)?;
+        let identities = Arc::new(RuntimeIdentities::prepare(config)?);
         let plugin_plans = Arc::new(
             compile_generation_plugin_plans(
                 compiled_plugin_catalog(),
                 generation,
-                plugin_construction_inputs(config),
+                plugin_construction_inputs(config, &identities),
             )
             .map_err(|error| {
                 ProxyError::Transport(format!("failed to compile runtime plugin plans: {error}"))
             })?,
         );
-        let route_execution_classes = Arc::new(
+        let route_execution_classes = Arc::from(
             plugin_plans
                 .upstreams()
                 .iter()
-                .map(|(upstream, plan)| (upstream.clone(), plan.execution_class()))
-                .collect(),
+                .map(|plan| plan.execution_class())
+                .collect::<Vec<_>>(),
+        );
+        let upstream_policies = Arc::from(
+            identities
+                .upstream_names()
+                .map(|name| {
+                    config
+                        .upstreams
+                        .get(name)
+                        .map(|upstream| upstream.policy.clone())
+                        .ok_or_else(|| {
+                            ProxyError::Transport(format!(
+                                "interned upstream '{name}' is missing from runtime config"
+                            ))
+                        })
+                })
+                .collect::<Result<Vec<_>, _>>()?,
         );
         let transport_policy = &config.policies.transport;
         let timeout_policy = &config.policies.timeouts;
@@ -159,14 +179,20 @@ impl RuntimeBuilder {
         let mut backend_resolutions = Vec::new();
         let mut seen_backend_origins: HashMap<String, (String, String)> = HashMap::new();
         let mut backend_endpoints = HashMap::new();
+        let mut backend_endpoints_by_id = Vec::new();
         let mut backend_health_checks = HashMap::new();
-        for (upstream_name, upstream) in &config.upstreams {
+        for upstream_name in identities.upstream_names() {
+            let upstream = config.upstreams.get(upstream_name).ok_or_else(|| {
+                ProxyError::Transport(format!(
+                    "interned upstream '{upstream_name}' is missing from runtime config"
+                ))
+            })?;
             for backend in &upstream.backends {
                 let endpoint = backend.endpoint.canonical.clone();
                 let origin = backend.endpoint.origin.clone();
                 if let Some((existing_upstream, existing_backend)) = seen_backend_origins.insert(
                     origin.clone(),
-                    (upstream_name.clone(), backend.backend.id.clone()),
+                    (upstream_name.to_string(), backend.backend.id.clone()),
                 ) {
                     return Err(ProxyError::Transport(format!(
                         "duplicate backend address '{}' detected while building upstream transport pool: upstream '{}' backend '{}' conflicts with upstream '{}' backend '{}'",
@@ -217,19 +243,24 @@ impl RuntimeBuilder {
                     upstream.backend_tls_policy().ca_dir,
                     authority_kind
                 );
-                backend_endpoints.insert(backend.backend.address.clone(), endpoint);
+                backend_endpoints.insert(backend.backend.address.clone(), endpoint.clone());
+                backend_endpoints_by_id.push(endpoint);
                 if let Some(health_check) = backend.health_check.clone() {
                     backend_health_checks.insert(backend.backend.address.clone(), health_check);
                 }
             }
         }
 
-        let mut route_labels = config.upstreams.keys().cloned().collect::<Vec<_>>();
+        let mut route_labels = identities
+            .upstream_names()
+            .map(str::to_string)
+            .collect::<Vec<_>>();
         route_labels.push("unrouted".to_string());
         let routing_index = Arc::new(RouteIndex::from_runtime_upstreams(&config.upstreams));
-        let metrics = Arc::new(crate::Metrics::new_with_detailed_plugin_timing(
+        let metrics = Arc::new(crate::Metrics::new_with_runtime_labels(
             worker_slots,
             route_labels,
+            identities.backend_names().map(str::to_string),
             config.observability.metrics.detailed_plugin_timing,
         ));
         // Process-scoped: reuse the active generation's DNS resolver on reload so
@@ -248,7 +279,12 @@ impl RuntimeBuilder {
             backend_dns_resolver.clone(),
         )?;
         let mut upstream_pools = HashMap::new();
-        let mut upstream_inflight = HashMap::new();
+        let upstream_inflight = Arc::from(
+            identities
+                .upstream_names()
+                .map(|_| Arc::new(Semaphore::new(per_upstream_limit)))
+                .collect::<Vec<_>>(),
+        );
         let mut pingora_selectors = Vec::with_capacity(config.upstreams.len());
         let pingora_health_registry = Arc::new(HealthRegistry::with_equivalence(|backend| {
             backend
@@ -264,6 +300,11 @@ impl RuntimeBuilder {
                 )
         }));
         for (name, runtime_upstream) in &config.upstreams {
+            let upstream_id = identities.upstream_id(name).ok_or_else(|| {
+                ProxyError::Transport(format!(
+                    "runtime upstream '{name}' has no interned identity"
+                ))
+            })?;
             let upstream_pool = upstream_pool_from_runtime(runtime_upstream).map_err(|err| {
                 ProxyError::Transport(format!(
                     "failed to create upstream pool '{}': {}",
@@ -271,7 +312,6 @@ impl RuntimeBuilder {
                 ))
             })?;
             upstream_pools.insert(name.clone(), Arc::new(RwLock::new(upstream_pool)));
-            upstream_inflight.insert(name.clone(), Arc::new(Semaphore::new(per_upstream_limit)));
 
             let tls_identity = runtime_upstream.backend_tls_policy().clone();
             let backend_inputs = load_balancing_backend_inputs(runtime_upstream);
@@ -289,7 +329,16 @@ impl RuntimeBuilder {
                             .unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED)),
                         endpoint.authority_port,
                     );
-                    let mut mapped = map_validated_backend(backend, address, tls_identity.clone())?;
+                    let backend_id = identities
+                        .backend_id_at(upstream_id, backend.index())
+                        .ok_or_else(|| {
+                            format!(
+                                "missing runtime identity for backend '{}'",
+                                backend.backend_id()
+                            )
+                        })?;
+                    let mut mapped =
+                        map_validated_backend(backend, backend_id, address, tls_identity.clone())?;
                     let health_identity = transport_pool
                         .pingora_backend_health_identity(backend.configured_address())
                         .ok_or_else(|| {
@@ -378,7 +427,10 @@ impl RuntimeBuilder {
             global_route_cap_limit,
             Duration::from_millis(tuned_high_latency),
         );
-        let resilience = Arc::new(RuntimeResilience::from_policies(&effective_admission));
+        let resilience = Arc::new(RuntimeResilience::from_policies(
+            &effective_admission,
+            &identities,
+        ));
         // Process-scoped: reuse the active generation's watchdog on reload so an
         // in-flight restart/drain is not silently reset; only startup creates one.
         let watchdog = match &carried {
@@ -403,16 +455,12 @@ impl RuntimeBuilder {
                 process_tasks,
             },
             RuntimeGenerationState {
+                identities,
                 listener_runtime_configs: Arc::new(listener_runtime_configs),
                 backend_endpoints: Arc::new(backend_endpoints),
+                backend_endpoints_by_id: Arc::from(backend_endpoints_by_id),
                 backend_health_checks: Arc::new(backend_health_checks),
-                upstream_policies: Arc::new(
-                    config
-                        .upstreams
-                        .iter()
-                        .map(|(name, upstream)| (name.clone(), upstream.policy.clone()))
-                        .collect(),
-                ),
+                upstream_policies,
                 plugin_plans,
                 route_execution_classes,
                 pingora_load_balancing,

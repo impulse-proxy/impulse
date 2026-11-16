@@ -1,11 +1,11 @@
 #[cfg(feature = "quota")]
 use http::StatusCode;
-#[cfg(not(feature = "quota"))]
-use impulse_contracts::RequestDecision;
 #[cfg(feature = "quota")]
 use impulse_contracts::{
-    BoundedRejectionResponse, PluginRejection, PluginRequestView, RequestDecision,
+    BoundedRejectionResponse, PluginRejection, PluginRequestView, RequestDecision, RouteId,
 };
+#[cfg(not(feature = "quota"))]
+use impulse_contracts::{RequestDecision, RouteId};
 #[cfg(feature = "quota")]
 use impulse_plugins::{CompiledAsyncRequestPlugin, CompiledPluginPlan};
 use impulse_policy::evaluate_brownout_admission;
@@ -105,7 +105,10 @@ fn quota_response_body(reason: QuotaDenyReason) -> &'static [u8] {
 }
 
 /// Evaluates admission for a resolved request using the active resilience state.
-pub(super) fn evaluate_admission(resilience: &RuntimeResilience, route: &str) -> RequestDecision {
+pub(super) fn evaluate_admission(
+    resilience: &RuntimeResilience,
+    route: RouteId,
+) -> RequestDecision {
     let brownout = evaluate_core_overload_admission(resilience, route);
     if brownout != RequestDecision::AdmitReady {
         return brownout;
@@ -116,7 +119,7 @@ pub(super) fn evaluate_admission(resilience: &RuntimeResilience, route: &str) ->
 
 pub(super) fn evaluate_core_overload_admission(
     resilience: &RuntimeResilience,
-    route: &str,
+    route: RouteId,
 ) -> RequestDecision {
     evaluate_brownout_admission(
         &resilience.brownout,

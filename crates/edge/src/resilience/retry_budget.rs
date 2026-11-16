@@ -6,22 +6,22 @@ use std::{
     },
 };
 
-use impulse_contracts::RetryPolicyDenialReason;
+use impulse_contracts::{RetryPolicyDenialReason, RouteId};
 
 pub struct RetryBudget {
     enabled: bool,
     global_ratio_percent: u8,
-    per_route_ratio_percent: HashMap<String, u8>,
+    per_route_ratio_percent: HashMap<RouteId, u8>,
     global_primary: AtomicU64,
     global_retries: AtomicU64,
-    route_stats: Mutex<HashMap<String, (u64, u64)>>,
+    route_stats: Mutex<HashMap<RouteId, (u64, u64)>>,
 }
 
 impl RetryBudget {
     pub fn new(
         enabled: bool,
         global_ratio_percent: u8,
-        per_route_ratio_percent: HashMap<String, u8>,
+        per_route_ratio_percent: HashMap<RouteId, u8>,
     ) -> Self {
         Self {
             enabled,
@@ -33,21 +33,21 @@ impl RetryBudget {
         }
     }
 
-    pub fn mark_primary(&self, route: &str) {
+    pub fn mark_primary(&self, route: RouteId) {
         self.global_primary.fetch_add(1, Ordering::Relaxed);
         let mut stats = self.lock_route_stats();
-        let entry = stats.entry(route.to_string()).or_insert((0, 0));
+        let entry = stats.entry(route).or_insert((0, 0));
         entry.0 = entry.0.saturating_add(1);
     }
 
-    pub fn allow_retry(&self, route: &str) -> Result<(), RetryPolicyDenialReason> {
+    pub fn allow_retry(&self, route: RouteId) -> Result<(), RetryPolicyDenialReason> {
         if !self.enabled {
             return Ok(());
         }
 
         let route_ratio = self
             .per_route_ratio_percent
-            .get(route)
+            .get(&route)
             .copied()
             .unwrap_or(self.global_ratio_percent);
 
@@ -65,7 +65,7 @@ impl RetryBudget {
 
         let mut route_allowed = true;
         let mut stats = self.lock_route_stats();
-        let entry = stats.entry(route.to_string()).or_insert((0, 0));
+        let entry = stats.entry(route).or_insert((0, 0));
         let route_limit = ((entry.0 * route_ratio as u64) / 100).saturating_add(1);
         if entry.1 >= route_limit {
             route_allowed = false;
@@ -81,7 +81,7 @@ impl RetryBudget {
         Ok(())
     }
 
-    fn lock_route_stats(&self) -> MutexGuard<'_, HashMap<String, (u64, u64)>> {
+    fn lock_route_stats(&self) -> MutexGuard<'_, HashMap<RouteId, (u64, u64)>> {
         match self.route_stats.lock() {
             Ok(stats) => stats,
             Err(poisoned) => {
@@ -100,17 +100,18 @@ mod tests {
         thread,
     };
 
-    use impulse_contracts::RetryPolicyDenialReason;
+    use impulse_contracts::{RetryPolicyDenialReason, RouteId};
 
     use super::RetryBudget;
 
     #[test]
     fn allow_retry_denial_does_not_consume_retry_budget_counters() {
         let budget = RetryBudget::new(true, 100, HashMap::new());
+        let api = RouteId::new(0);
 
-        assert_eq!(budget.allow_retry("api"), Ok(()));
+        assert_eq!(budget.allow_retry(api), Ok(()));
         assert_eq!(
-            budget.allow_retry("api"),
+            budget.allow_retry(api),
             Err(RetryPolicyDenialReason::BudgetDenied)
         );
         assert_eq!(
@@ -126,14 +127,14 @@ mod tests {
             1
         );
         assert_eq!(
-            budget.route_stats.lock().expect("route stats").get("api"),
+            budget.route_stats.lock().expect("route stats").get(&api),
             Some(&(0, 1))
         );
 
-        budget.mark_primary("api");
-        assert_eq!(budget.allow_retry("api"), Ok(()));
+        budget.mark_primary(api);
+        assert_eq!(budget.allow_retry(api), Ok(()));
         assert_eq!(
-            budget.allow_retry("api"),
+            budget.allow_retry(api),
             Err(RetryPolicyDenialReason::BudgetDenied)
         );
         assert_eq!(
@@ -149,27 +150,25 @@ mod tests {
             2
         );
         assert_eq!(
-            budget.route_stats.lock().expect("route stats").get("api"),
+            budget.route_stats.lock().expect("route stats").get(&api),
             Some(&(1, 2))
         );
     }
 
     #[test]
     fn route_specific_budget_denial_leaves_other_routes_retryable() {
-        let budget = RetryBudget::new(
-            true,
-            100,
-            HashMap::from([(String::from("api"), 0), (String::from("other"), 100)]),
-        );
-        budget.mark_primary("api");
-        budget.mark_primary("other");
+        let api = RouteId::new(0);
+        let other = RouteId::new(1);
+        let budget = RetryBudget::new(true, 100, HashMap::from([(api, 0), (other, 100)]));
+        budget.mark_primary(api);
+        budget.mark_primary(other);
 
-        assert_eq!(budget.allow_retry("api"), Ok(()));
+        assert_eq!(budget.allow_retry(api), Ok(()));
         assert_eq!(
-            budget.allow_retry("api"),
+            budget.allow_retry(api),
             Err(RetryPolicyDenialReason::BudgetDenied)
         );
-        assert_eq!(budget.allow_retry("other"), Ok(()));
+        assert_eq!(budget.allow_retry(other), Ok(()));
         assert_eq!(
             budget
                 .global_retries
@@ -177,25 +176,27 @@ mod tests {
             2
         );
         assert_eq!(
-            budget.route_stats.lock().expect("route stats").get("api"),
+            budget.route_stats.lock().expect("route stats").get(&api),
             Some(&(1, 1))
         );
         assert_eq!(
-            budget.route_stats.lock().expect("route stats").get("other"),
+            budget.route_stats.lock().expect("route stats").get(&other),
             Some(&(1, 1))
         );
     }
 
     #[test]
     fn route_override_does_not_reduce_global_retry_budget() {
-        let budget = RetryBudget::new(true, 100, HashMap::from([(String::from("strict"), 0)]));
-        budget.mark_primary("strict");
-        budget.mark_primary("other");
+        let strict = RouteId::new(0);
+        let other = RouteId::new(1);
+        let budget = RetryBudget::new(true, 100, HashMap::from([(strict, 0)]));
+        budget.mark_primary(strict);
+        budget.mark_primary(other);
 
-        assert_eq!(budget.allow_retry("other"), Ok(()));
-        assert_eq!(budget.allow_retry("strict"), Ok(()));
+        assert_eq!(budget.allow_retry(other), Ok(()));
+        assert_eq!(budget.allow_retry(strict), Ok(()));
         assert_eq!(
-            budget.allow_retry("strict"),
+            budget.allow_retry(strict),
             Err(RetryPolicyDenialReason::BudgetDenied)
         );
     }
@@ -212,7 +213,9 @@ mod tests {
                 let barrier = Arc::clone(&barrier);
                 thread::spawn(move || {
                     barrier.wait();
-                    budget.allow_retry(&format!("route-{attempt}"))
+                    budget.allow_retry(RouteId::new(
+                        u32::try_from(attempt).expect("test route identity"),
+                    ))
                 })
             })
             .collect::<Vec<_>>();
@@ -229,11 +232,8 @@ mod tests {
 
     #[test]
     fn poisoned_route_stats_lock_does_not_disable_route_budget() {
-        let budget = Arc::new(RetryBudget::new(
-            true,
-            100,
-            HashMap::from([(String::from("strict"), 0)]),
-        ));
+        let strict = RouteId::new(0);
+        let budget = Arc::new(RetryBudget::new(true, 100, HashMap::from([(strict, 0)])));
         let poisoner = Arc::clone(&budget);
 
         assert!(
@@ -245,10 +245,10 @@ mod tests {
             .is_err()
         );
 
-        budget.mark_primary("strict");
-        assert_eq!(budget.allow_retry("strict"), Ok(()));
+        budget.mark_primary(strict);
+        assert_eq!(budget.allow_retry(strict), Ok(()));
         assert_eq!(
-            budget.allow_retry("strict"),
+            budget.allow_retry(strict),
             Err(RetryPolicyDenialReason::BudgetDenied)
         );
         assert_eq!(
@@ -256,7 +256,7 @@ mod tests {
                 .route_stats
                 .lock()
                 .expect("route stats poison should be cleared")
-                .get("strict"),
+                .get(&strict),
             Some(&(1, 1))
         );
     }

@@ -177,7 +177,7 @@ use std::net::SocketAddr;
 
 use http::{HeaderName, HeaderValue, StatusCode};
 
-use crate::{AuthChallengeKind, IngressProtocol, RequestId};
+use crate::{AuthChallengeKind, IngressProtocol, RequestId, RouteId};
 
 pub type PluginHeaderLookup<'a> = dyn Fn(&str) -> Option<&'a [u8]> + Sync + 'a;
 
@@ -192,6 +192,7 @@ pub struct PluginConnectionView<'a> {
 pub struct PluginRequestView<'a> {
     pub request_id: RequestId,
     pub generation: u64,
+    pub runtime_route_id: RouteId,
     pub route_id: Option<&'a str>,
     pub upstream_name: &'a str,
     pub method: &'a str,

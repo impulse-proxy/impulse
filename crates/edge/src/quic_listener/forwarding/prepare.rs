@@ -535,6 +535,7 @@ impl Http3Service {
         };
         let request_service = EdgeRequestService::new(
             shared_ctx.routing_index,
+            shared_ctx.identities,
             shared_ctx.upstream_policies,
             shared_ctx.plugin_plans,
             shared_ctx.route_execution_classes,
@@ -616,11 +617,14 @@ impl Http3Service {
             Ok(PluginRequestExecutionState {
                 route:
                     ForwardTargetResolution {
+                        route_id,
+                        upstream_id,
                         upstream_name,
                         upstream_pool,
                         route_path_len,
                         route_host_specific,
                         route_reason,
+                        backend_id,
                         backend_addr,
                         backend_index,
                         backend_lb,
@@ -630,6 +634,9 @@ impl Http3Service {
                 outcome,
             }) => {
                 let routing = RoutingSnapshot {
+                    route_id,
+                    upstream_id,
+                    backend_id,
                     backend_addr: backend_addr.clone(),
                     backend_index,
                     upstream_name: upstream_name.clone(),
@@ -828,10 +835,13 @@ impl Http3Service {
                     path: Arc::<str>::from(path),
                     authority: authority.map(Arc::<str>::from),
                     headers: Arc::new(headers.to_vec()),
-                    upstream_name: Arc::<str>::from(upstream_name.as_str()),
+                    route_id,
+                    upstream_id,
+                    upstream_name: Arc::clone(&upstream_name),
                     route_reason: Arc::<str>::from(route_reason.as_str()),
                     route_path_len,
                     route_host_specific,
+                    backend_id,
                     backend_addr: Arc::<str>::from(backend_addr.as_str()),
                     backend_index,
                     backend_lb: Some(Arc::<str>::from(backend_lb.as_str())),

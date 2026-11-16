@@ -63,6 +63,7 @@ fn execute_deferred_quota_plugin(
     let request = impulse_contracts::PluginRequestView {
         request_id: pending_forward.request_id,
         generation: pending_forward.plugin_plan.generation(),
+        runtime_route_id: pending_forward.route_id,
         route_id: Some(pending_forward.upstream_name.as_ref()),
         upstream_name: pending_forward.upstream_name.as_ref(),
         method: pending_forward.method.as_ref(),
@@ -376,7 +377,7 @@ impl Http3Service {
 
         let Some(backend_endpoint) = exec_ctx
             .backend_endpoints
-            .get(pending_forward.backend_addr.as_ref())
+            .get(pending_forward.backend_id.get() as usize)
             .cloned()
         else {
             let _ = observe_proxy_error_outcome(
@@ -844,8 +845,9 @@ impl Http3Service {
                                 if req.request_mode().bodyless_mode() && read > 0 {
                                     reject_body_for_bodyless = Some((
                                         req.upstream_name
-                                            .clone()
-                                            .unwrap_or_else(|| "unrouted".to_string()),
+                                            .as_deref()
+                                            .unwrap_or("unrouted")
+                                            .to_string(),
                                         req.start.elapsed(),
                                     ));
                                 }
@@ -875,8 +877,9 @@ impl Http3Service {
                                         }) => {
                                             payload_too_large = Some((
                                                 req.upstream_name
-                                                    .clone()
-                                                    .unwrap_or_else(|| "unrouted".to_string()),
+                                                    .as_deref()
+                                                    .unwrap_or("unrouted")
+                                                    .to_string(),
                                                 req.start.elapsed(),
                                             ));
                                         }
@@ -897,10 +900,9 @@ impl Http3Service {
                                                     if err == RequestBufferError::BodySize {
                                                         payload_too_large = Some((
                                                             req.upstream_name
-                                                                .clone()
-                                                                .unwrap_or_else(|| {
-                                                                    "unrouted".to_string()
-                                                                }),
+                                                                .as_deref()
+                                                                .unwrap_or("unrouted")
+                                                                .to_string(),
                                                             req.start.elapsed(),
                                                         ));
                                                     } else {

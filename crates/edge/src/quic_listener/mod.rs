@@ -393,6 +393,11 @@ impl Http3Service {
             metrics: Arc::clone(&self.metrics),
             resilience: &self.resilience,
             routing_index: &self.routing_index,
+            identities: &self
+                .runtime_state
+                .shared_state()
+                .generation_state()
+                .identities,
             upstream_pools: self
                 .runtime_state
                 .shared_state()
@@ -431,7 +436,7 @@ impl Http3Service {
                     .runtime_state
                     .shared_state()
                     .generation_state()
-                    .backend_endpoints,
+                    .backend_endpoints_by_id,
             ),
             upstream_inflight: &self.upstream_inflight,
             global_inflight: Arc::clone(&self.global_inflight),
@@ -527,6 +532,11 @@ impl Http3Service {
             metrics: Arc::clone(&self.metrics),
             resilience: &self.resilience,
             routing_index: &self.routing_index,
+            identities: &self
+                .runtime_state
+                .shared_state()
+                .generation_state()
+                .identities,
             upstream_pools: self
                 .runtime_state
                 .shared_state()
@@ -565,7 +575,7 @@ impl Http3Service {
                     .runtime_state
                     .shared_state()
                     .generation_state()
-                    .backend_endpoints,
+                    .backend_endpoints_by_id,
             ),
             upstream_inflight: &self.upstream_inflight,
             global_inflight: Arc::clone(&self.global_inflight),
