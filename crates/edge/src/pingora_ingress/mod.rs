@@ -812,12 +812,12 @@ impl PingoraRequestService for PingoraEdgeRequestService {
         };
         let route = execution.route;
         let policy = execution.policy;
-        if !policy.plugin_plan.is_empty() {
-            shared
-                .metrics
-                .policy_observations()
-                .set_brownout_active(state.resilience.brownout.is_active());
-        }
+        // Brownout is route-independent resilience state; keep the gauge current
+        // even on routes without plugins (single atomic store).
+        shared
+            .metrics
+            .policy_observations()
+            .set_brownout_active(state.resilience.brownout.is_active());
         let tunnel_mode = classify_tunnel(&validated.method, validated.websocket_tunnel);
         ctx.route = Some(route.clone());
         ctx.method = Some(validated.method);

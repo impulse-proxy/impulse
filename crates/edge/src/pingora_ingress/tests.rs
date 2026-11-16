@@ -612,7 +612,7 @@ fn passthrough_and_full_route_execution_preserve_response_behavior() {
     }
 
     let mut harness = ProtocolParityHarness::new();
-    let backend_addr = harness.start_h1_backend(|_request| async move {
+    let backend_handler = |_request: hyper::Request<hyper::body::Incoming>| async move {
         Ok::<_, std::convert::Infallible>(
             hyper::Response::builder()
                 .status(http::StatusCode::CREATED)
@@ -624,10 +624,25 @@ fn passthrough_and_full_route_execution_preserve_response_behavior() {
                 )))
                 .expect("backend response"),
         )
-    });
-    let backend = vec![make_backend("backend-a", backend_addr.to_string())];
-    let passthrough = make_upstream("/plain", backend.clone(), None, "round-robin");
-    let mut full = make_upstream("/full", backend, None, "round-robin");
+    };
+    // Each upstream needs its own backend address; the validator rejects sharing one.
+    let plain_backend_addr = harness.start_h1_backend(backend_handler);
+    let full_backend_addr = harness.start_h1_backend(backend_handler);
+    let passthrough = make_upstream(
+        "/plain",
+        vec![make_backend(
+            "backend-plain",
+            plain_backend_addr.to_string(),
+        )],
+        None,
+        "round-robin",
+    );
+    let mut full = make_upstream(
+        "/full",
+        vec![make_backend("backend-full", full_backend_addr.to_string())],
+        None,
+        "round-robin",
+    );
     full.auth = RouteAuth {
         api_key: Some(ApiKeyAuth {
             header_name: "x-api-key".to_string(),
@@ -673,10 +688,11 @@ fn passthrough_and_full_route_execution_preserve_response_behavior() {
         Some(&RouteExecutionClass::Full)
     );
 
+    // `content-length` is intentionally not compared: HTTP/3 response normalization
+    // strips it by design, so it legitimately differs between Pingora and HTTP/3.
     let selected_response_headers = [
         "cache-control",
         "content-encoding",
-        "content-length",
         "content-type",
         "vary",
         "x-parity",

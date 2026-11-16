@@ -638,11 +638,11 @@ impl Http3Service {
                     route_host_specific,
                     backend_lb: Some(backend_lb.clone()),
                 };
-                if !resolved_policy.plugin_plan.is_empty() {
-                    metrics
-                        .policy_observations()
-                        .set_brownout_active(resilience.brownout.is_active());
-                }
+                // Brownout is route-independent resilience state; keep the gauge
+                // current even on routes without plugins (single atomic store).
+                metrics
+                    .policy_observations()
+                    .set_brownout_active(resilience.brownout.is_active());
                 let (admission, plugin_mutations) = match outcome {
                     PluginRequestExecutionOutcome::Admitted {
                         admission,
