@@ -28,6 +28,7 @@ use impulse_config::{
         RuntimeQuotaWindow as ConfigRuntimeQuotaWindow, RuntimeRequestKeySpec,
     },
 };
+use impulse_contracts::RouteId;
 use impulse_observability::{
     Metrics, QuotaBackendHealthReason, QuotaPolicyDecision, QuotaPolicyReason,
 };
@@ -305,6 +306,7 @@ pub struct QuotaWindowPolicy {
 pub struct QuotaPolicyRuntime {
     pub name: String,
     pub route_allowlist: HashSet<String>,
+    pub route_ids: HashSet<RouteId>,
     pub selector: QuotaSelectorMatcher,
     pub burst: Option<QuotaWindowPolicy>,
     pub sustained: Option<QuotaWindowPolicy>,
@@ -509,6 +511,7 @@ mod tests {
         QuotaPolicyRuntime {
             name: "tenant-quota".to_string(),
             route_allowlist: HashSet::new(),
+            route_ids: HashSet::new(),
             selector: QuotaSelectorMatcher {
                 route: true,
                 tenant,
@@ -869,14 +872,15 @@ mod tests {
         for attempt in 1..=2 {
             assert!(
                 matches!(
-                    evaluate_admission_quota(&runtime, &backend, &context).await,
+                    evaluate_admission_quota(&runtime, &backend, RouteId::new(0), &context).await,
                     QuotaDecision::Allowed(_)
                 ),
                 "request {attempt} is within both contracts",
             );
         }
 
-        let decision = evaluate_admission_quota(&runtime, &backend, &context).await;
+        let decision =
+            evaluate_admission_quota(&runtime, &backend, RouteId::new(0), &context).await;
         let QuotaDecision::Denied(denial) = decision else {
             panic!("third request must be denied by the narrow policy, got {decision:?}");
         };
@@ -905,7 +909,8 @@ mod tests {
             HashMap::new(),
         );
 
-        let decision = evaluate_admission_quota(&runtime, &backend, &context).await;
+        let decision =
+            evaluate_admission_quota(&runtime, &backend, RouteId::new(0), &context).await;
         let QuotaDecision::Denied(denial) = decision else {
             panic!("missing tenant identity must not be admitted, got {decision:?}");
         };
@@ -935,13 +940,14 @@ mod tests {
         );
 
         assert!(matches!(
-            evaluate_admission_quota(&runtime, &backend, &context).await,
+            evaluate_admission_quota(&runtime, &backend, RouteId::new(0), &context).await,
             QuotaDecision::Allowed(_)
         ));
 
         // Second request exhausts the narrow policy, but shadow mode reports a
         // would-deny rather than a denial.
-        let decision = evaluate_admission_quota(&runtime, &backend, &context).await;
+        let decision =
+            evaluate_admission_quota(&runtime, &backend, RouteId::new(0), &context).await;
         let QuotaDecision::ShadowDenied(denial) = decision else {
             panic!("shadow mode must report a would-deny, got {decision:?}");
         };
@@ -985,6 +991,7 @@ mod tests {
         let policy = QuotaPolicyRuntime {
             name: "tenant-quota".to_string(),
             route_allowlist: HashSet::from(["api".to_string()]),
+            route_ids: HashSet::from([RouteId::new(0)]),
             selector: QuotaSelectorMatcher {
                 route: true,
                 tenant: Some(QuotaSelectorKeySpec::Header("x-tenant-id".to_string())),
@@ -1126,6 +1133,7 @@ mod tests {
         let policy = QuotaPolicyRuntime {
             name: "tenant-quota".to_string(),
             route_allowlist: HashSet::new(),
+            route_ids: HashSet::new(),
             selector: QuotaSelectorMatcher {
                 route: true,
                 tenant: Some(QuotaSelectorKeySpec::Header("x-tenant-id".to_string())),
@@ -1308,6 +1316,7 @@ mod tests {
         let policy = QuotaPolicyRuntime {
             name: "tenant-quota".to_string(),
             route_allowlist: HashSet::new(),
+            route_ids: HashSet::new(),
             selector: QuotaSelectorMatcher {
                 route: true,
                 tenant: Some(
@@ -1395,6 +1404,7 @@ mod tests {
         let policy = QuotaPolicyRuntime {
             name: "tenant-quota".to_string(),
             route_allowlist: HashSet::from(["payments".to_string()]),
+            route_ids: HashSet::from([RouteId::new(0)]),
             selector: QuotaSelectorMatcher {
                 route: true,
                 tenant: Some(QuotaSelectorKeySpec::Header("x-tenant-id".to_string())),
@@ -1408,8 +1418,8 @@ mod tests {
             sustained: None,
         };
 
-        assert!(policy.applies_to_route("payments"));
-        assert!(!policy.applies_to_route("api"));
+        assert!(policy.applies_to_route(RouteId::new(0)));
+        assert!(!policy.applies_to_route(RouteId::new(1)));
 
         let context = identity_context_with_headers(
             Some("payments"),
@@ -1509,6 +1519,7 @@ mod tests {
         let policy = QuotaPolicyRuntime {
             name: "tenant-quota".to_string(),
             route_allowlist: HashSet::from(["api".to_string()]),
+            route_ids: HashSet::from([RouteId::new(0)]),
             selector: QuotaSelectorMatcher {
                 route: true,
                 tenant: Some(QuotaSelectorKeySpec::Header("x-tenant-id".to_string())),

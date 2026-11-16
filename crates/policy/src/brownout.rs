@@ -4,13 +4,13 @@ use std::{
 };
 
 use http::StatusCode;
-use impulse_contracts::{OverloadDecision, OverloadDecisionReason, RequestDecision};
+use impulse_contracts::{OverloadDecision, OverloadDecisionReason, RequestDecision, RouteId};
 
 pub struct BrownoutController {
     enabled: bool,
     trigger_inflight_percent: u8,
     recover_inflight_percent: u8,
-    core_routes: HashSet<String>,
+    core_routes: HashSet<RouteId>,
     active: AtomicBool,
 }
 
@@ -19,7 +19,7 @@ impl BrownoutController {
         enabled: bool,
         trigger_inflight_percent: u8,
         recover_inflight_percent: u8,
-        core_routes: Vec<String>,
+        core_routes: Vec<RouteId>,
     ) -> Self {
         Self {
             enabled,
@@ -50,18 +50,18 @@ impl BrownoutController {
         self.active.load(Ordering::Relaxed)
     }
 
-    pub fn route_allowed(&self, route: &str) -> bool {
+    pub fn route_allowed(&self, route: RouteId) -> bool {
         if !self.enabled || !self.is_active() {
             return true;
         }
-        self.core_routes.contains(route)
+        self.core_routes.contains(&route)
     }
 }
 
 pub fn evaluate_brownout_admission(
     brownout: &BrownoutController,
     inflight_percent: u8,
-    route: &str,
+    route: RouteId,
     retry_after_seconds: u32,
 ) -> RequestDecision {
     brownout.observe_admission_pressure(inflight_percent);

@@ -223,6 +223,7 @@ impl PingoraEdgeRequestService {
             Some(PluginRequestView {
                 request_id: ctx.request_id,
                 generation: policy.plugin_plan.generation(),
+                runtime_route_id: route.route_id,
                 route_id: Some(route.upstream_name.as_ref()),
                 upstream_name: route.upstream_name.as_ref(),
                 method,
@@ -291,6 +292,7 @@ impl PingoraEdgeRequestService {
                 "Pingora ingress request filter did not resolve a route",
             )
         })?;
+        let route_id = route.route_id;
         let upstream_id = route.upstream_id;
         let upstream_name = Arc::clone(&route.upstream_name);
         let method = ctx.method.clone().ok_or_else(|| {
@@ -385,7 +387,7 @@ impl PingoraEdgeRequestService {
                 .generation_state()
                 .resilience
                 .retry_budget
-                .mark_primary(upstream_name.as_ref());
+                .mark_primary(route_id);
             (
                 selected.backend_id,
                 selected.backend_addr,
@@ -1185,6 +1187,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             plugin_request: PluginRequestView {
                 request_id: ctx.request_id,
                 generation: policy.plugin_plan.generation(),
+                runtime_route_id: route.route_id,
                 route_id: Some(route.upstream_name.as_ref()),
                 upstream_name: route.upstream_name.as_ref(),
                 method,
@@ -2087,13 +2090,16 @@ fn handle_pingora_proxy_failure(
         error.set_retry(false);
         return error;
     };
-    let selector = ctx.route.as_ref().and_then(|route| {
-        ctx.runtime
-            .shared_state
-            .generation_state()
-            .pingora_load_balancing
-            .selector_by_id(route.upstream_id)
-    });
+    let Some(route) = ctx.route.as_ref() else {
+        error.set_retry(false);
+        return error;
+    };
+    let selector = ctx
+        .runtime
+        .shared_state
+        .generation_state()
+        .pingora_load_balancing
+        .selector_by_id(route.upstream_id);
     let metrics = ctx.runtime.shared_state.shared_services().metrics.as_ref();
     let selection = match selector {
         Some(selector) => Some(ForwardingSelectionService::select_backend_excluding(
@@ -2138,7 +2144,7 @@ fn handle_pingora_proxy_failure(
     let decision = retry.retry_after_error(
         &proxy_error,
         ctx.retry_count,
-        route_name,
+        route.route_id,
         &ctx.runtime
             .shared_state
             .generation_state()

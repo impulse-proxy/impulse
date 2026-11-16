@@ -1,6 +1,6 @@
 use std::fmt;
 
-use impulse_contracts::UpstreamId;
+use impulse_contracts::{RouteId, UpstreamId};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RoutePreference {
@@ -27,6 +27,7 @@ pub enum RouteDecisionReason {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RouteDecision<'a> {
+    pub route_id: RouteId,
     pub upstream_id: UpstreamId,
     /// Name of the upstream selected by route matching; auth/policy stays attached to that upstream.
     pub upstream: &'a str,

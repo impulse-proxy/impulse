@@ -146,6 +146,7 @@ impl<'a> ResolutionObservation<'a> {
 }
 
 pub(in crate::quic_listener) struct RouteResolution {
+    pub(in crate::quic_listener) route_id: impulse_contracts::RouteId,
     pub(in crate::quic_listener) upstream_id: impulse_contracts::UpstreamId,
     pub(in crate::quic_listener) upstream_name: String,
     pub(in crate::quic_listener) upstream_pool: Arc<RwLock<UpstreamPool>>,
@@ -168,6 +169,7 @@ pub(in crate::quic_listener) struct TargetResolution {
 }
 
 pub(super) struct ForwardTargetResolution {
+    pub(super) route_id: impulse_contracts::RouteId,
     pub(super) upstream_id: impulse_contracts::UpstreamId,
     pub(super) upstream_name: String,
     pub(super) upstream_pool: Arc<RwLock<UpstreamPool>>,
@@ -329,6 +331,7 @@ impl Http3Service {
             }
         };
         let RouteResolution {
+            route_id,
             upstream_id,
             upstream_name,
             upstream_pool,
@@ -345,6 +348,7 @@ impl Http3Service {
         } = backend;
 
         Ok(ForwardTargetResolution {
+            route_id,
             upstream_id,
             upstream_name,
             upstream_pool,
@@ -387,6 +391,7 @@ impl Http3Service {
             .ok_or_else(|| ProxyError::Transport(format!("pool not found: {upstream_name}")))?
             .clone();
         Ok(RouteResolution {
+            route_id: route_target.route_id,
             upstream_id: route_target.upstream_id,
             upstream_name,
             upstream_pool,

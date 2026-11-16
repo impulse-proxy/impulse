@@ -995,6 +995,7 @@ pub struct PendingForward {
     pub path: Arc<str>,
     pub authority: Option<Arc<str>>,
     pub headers: Arc<Vec<quiche::h3::Header>>,
+    pub route_id: impulse_contracts::RouteId,
     pub upstream_id: impulse_contracts::UpstreamId,
     pub upstream_name: Arc<str>,
     pub route_reason: Arc<str>,
@@ -1027,6 +1028,7 @@ impl PendingForward {
             path: Arc::<str>::from("/v1/chat"),
             authority: Some(Arc::<str>::from("api.example.com")),
             headers: Arc::new(headers),
+            route_id: impulse_contracts::RouteId::new(0),
             upstream_id: impulse_contracts::UpstreamId::new(0),
             upstream_name: Arc::<str>::from("api"),
             route_reason: Arc::<str>::from("path_prefix"),
@@ -1183,7 +1185,7 @@ mod tests {
                         .expect("upstream permit"),
                     adaptive: adaptive.try_acquire().expect("adaptive permit"),
                     route_queue: route_limiter
-                        .try_acquire("test")
+                        .try_acquire(impulse_contracts::RouteId::new(0))
                         .expect("route queue permit"),
                 },
             }),
@@ -1221,7 +1223,11 @@ mod tests {
         assert_eq!(metrics.requests_failure.load(Ordering::Relaxed), 1);
         assert_eq!(global_sem.available_permits(), 1);
         assert_eq!(upstream_sem.available_permits(), 1);
-        assert!(route_limiter.try_acquire("test").is_ok());
+        assert!(
+            route_limiter
+                .try_acquire(impulse_contracts::RouteId::new(0))
+                .is_ok()
+        );
 
         let second_phase = req.transition_to_terminal_with_cleanup(
             TerminalReason::Cancelled(CancellationReason::ClientReset),
@@ -1265,7 +1271,11 @@ mod tests {
         assert_eq!(metrics.requests_failure.load(Ordering::Relaxed), 0);
         assert_eq!(global_sem.available_permits(), 1);
         assert_eq!(upstream_sem.available_permits(), 1);
-        assert!(route_limiter.try_acquire("test").is_ok());
+        assert!(
+            route_limiter
+                .try_acquire(impulse_contracts::RouteId::new(0))
+                .is_ok()
+        );
     }
 
     #[test]

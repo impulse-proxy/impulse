@@ -30,9 +30,11 @@ fn runtime_resilience_honors_adaptive_max_limit_override() {
 #[test]
 fn route_queue_cap_enforced() {
     let limiter = Arc::new(RouteQueueLimiter::new(1, 10, HashMap::new()));
-    let _p1 = limiter.try_acquire("api").expect("first permit");
+    let _p1 = limiter
+        .try_acquire(impulse_contracts::RouteId::new(0))
+        .expect("first permit");
     assert!(matches!(
-        limiter.try_acquire("api"),
+        limiter.try_acquire(impulse_contracts::RouteId::new(0)),
         Err(RouteQueueRejection::RouteCap)
     ));
 }
@@ -40,10 +42,14 @@ fn route_queue_cap_enforced() {
 #[test]
 fn route_queue_global_cap_enforced() {
     let limiter = Arc::new(RouteQueueLimiter::new(10, 2, HashMap::new()));
-    let _p1 = limiter.try_acquire("api").expect("first permit");
-    let _p2 = limiter.try_acquire("admin").expect("second permit");
+    let _p1 = limiter
+        .try_acquire(impulse_contracts::RouteId::new(0))
+        .expect("first permit");
+    let _p2 = limiter
+        .try_acquire(impulse_contracts::RouteId::new(1))
+        .expect("second permit");
     assert!(matches!(
-        limiter.try_acquire("api"),
+        limiter.try_acquire(impulse_contracts::RouteId::new(0)),
         Err(RouteQueueRejection::GlobalCap)
     ));
 }
@@ -51,37 +57,41 @@ fn route_queue_global_cap_enforced() {
 #[test]
 fn circuit_breaker_opens_after_threshold() {
     let cb = CircuitBreakers::new(true, 2, Duration::from_secs(1), 1);
-    cb.allow_request("b1")
+    let backend = impulse_contracts::BackendId::new(0);
+    cb.allow_request(backend)
         .expect("first request")
         .record_failure();
-    cb.allow_request("b1")
+    cb.allow_request(backend)
         .expect("second request")
         .record_failure();
-    assert!(cb.allow_request("b1").is_none());
+    assert!(cb.allow_request(backend).is_none());
 }
 
 #[test]
 fn retry_budget_respects_ratio() {
     let rb = RetryBudget::new(true, 50, HashMap::new());
-    rb.mark_primary("api");
-    assert!(rb.allow_retry("api").is_ok());
-    assert!(rb.allow_retry("api").is_err());
+    let route = impulse_contracts::RouteId::new(0);
+    rb.mark_primary(route);
+    assert!(rb.allow_retry(route).is_ok());
+    assert!(rb.allow_retry(route).is_err());
 }
 
 #[test]
 fn retry_budget_disabled_allows_retries() {
     let rb = RetryBudget::new(false, 0, HashMap::new());
-    assert!(rb.allow_retry("api").is_ok());
-    assert!(rb.allow_retry("api").is_ok());
+    let route = impulse_contracts::RouteId::new(0);
+    assert!(rb.allow_retry(route).is_ok());
+    assert!(rb.allow_retry(route).is_ok());
 }
 
 #[test]
 fn brownout_preserves_core_routes() {
-    let controller = BrownoutController::new(true, 90, 60, vec!["core".to_string()]);
+    let core = impulse_contracts::RouteId::new(0);
+    let controller = BrownoutController::new(true, 90, 60, vec![core]);
     controller.observe_admission_pressure(95);
     assert!(controller.is_active());
-    assert!(controller.route_allowed("core"));
-    assert!(!controller.route_allowed("non_core"));
+    assert!(controller.route_allowed(core));
+    assert!(!controller.route_allowed(impulse_contracts::RouteId::new(1)));
 }
 
 #[test]

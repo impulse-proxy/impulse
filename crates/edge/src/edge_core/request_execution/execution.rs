@@ -117,7 +117,7 @@ impl<'a> EdgeRequestService<'a> {
             .ok_or(super::RouteResolutionError::MissingUpstreamPluginPlan)?;
         let policy = resolve_policy(upstream_policy, Arc::clone(&plugin_plan));
         if plugin_plan.is_empty() {
-            let admission = evaluate_admission(self.resilience, route.upstream_name.as_ref());
+            let admission = evaluate_admission(self.resilience, route.route_id);
             return Ok(PluginRequestExecutionState {
                 route,
                 policy,
@@ -143,7 +143,7 @@ impl<'a> EdgeRequestService<'a> {
             ),
         };
         if !has_synchronous_plugins && !has_asynchronous_plugins {
-            let admission = evaluate_admission(self.resilience, route.upstream_name.as_ref());
+            let admission = evaluate_admission(self.resilience, route.route_id);
             return Ok(PluginRequestExecutionState {
                 route,
                 policy,
@@ -160,6 +160,7 @@ impl<'a> EdgeRequestService<'a> {
         let plugin_request = PluginRequestView {
             request_id: input.request_id,
             generation: input.generation,
+            runtime_route_id: route.route_id,
             route_id: Some(route.upstream_name.as_ref()),
             upstream_name: route.upstream_name.as_ref(),
             method: request.method,
@@ -349,7 +350,7 @@ impl<'a> EdgeRequestService<'a> {
             }
         }
 
-        let admission = evaluate_admission(self.resilience, route.upstream_name.as_ref());
+        let admission = evaluate_admission(self.resilience, route.route_id);
         Ok(PluginRequestExecutionState {
             route,
             policy,

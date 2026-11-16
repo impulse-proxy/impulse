@@ -3,17 +3,19 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+use impulse_contracts::RouteId;
+
 pub struct RouteQueueLimiter {
     default_cap: usize,
     global_cap: usize,
-    caps: HashMap<String, usize>,
+    caps: HashMap<RouteId, usize>,
     inflight: Mutex<RouteQueueState>,
 }
 
 #[derive(Default)]
 struct RouteQueueState {
     total: usize,
-    by_route: HashMap<String, usize>,
+    by_route: HashMap<RouteId, usize>,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -23,7 +25,7 @@ pub enum RouteQueueRejection {
 }
 
 impl RouteQueueLimiter {
-    pub fn new(default_cap: usize, global_cap: usize, caps: HashMap<String, usize>) -> Self {
+    pub fn new(default_cap: usize, global_cap: usize, caps: HashMap<RouteId, usize>) -> Self {
         Self {
             default_cap: default_cap.max(1),
             global_cap: global_cap.max(1),
@@ -34,11 +36,11 @@ impl RouteQueueLimiter {
 
     pub fn try_acquire(
         self: &Arc<Self>,
-        route: &str,
+        route: RouteId,
     ) -> Result<RouteQueuePermit, RouteQueueRejection> {
         let cap = self
             .caps
-            .get(route)
+            .get(&route)
             .copied()
             .unwrap_or(self.default_cap)
             .max(1);
@@ -49,22 +51,22 @@ impl RouteQueueLimiter {
         if guard.total >= self.global_cap {
             return Err(RouteQueueRejection::GlobalCap);
         }
-        let current = guard.by_route.get(route).copied().unwrap_or(0);
+        let current = guard.by_route.get(&route).copied().unwrap_or(0);
         if current >= cap {
             return Err(RouteQueueRejection::RouteCap);
         }
         guard.total = guard.total.saturating_add(1);
-        guard.by_route.insert(route.to_string(), current + 1);
+        guard.by_route.insert(route, current + 1);
         Ok(RouteQueuePermit {
             limiter: Arc::clone(self),
-            route: route.to_string(),
+            route,
         })
     }
 }
 
 pub struct RouteQueuePermit {
     limiter: Arc<RouteQueueLimiter>,
-    route: String,
+    route: RouteId,
 }
 
 impl Drop for RouteQueuePermit {
@@ -85,26 +87,33 @@ impl Drop for RouteQueuePermit {
 mod tests {
     use std::{collections::HashMap, sync::Arc};
 
+    use impulse_contracts::RouteId;
+
     use super::{RouteQueueLimiter, RouteQueueRejection};
 
     #[test]
     fn try_acquire_distinguishes_route_cap_from_global_cap() {
+        let api_route = RouteId::new(0);
         let limiter = Arc::new(RouteQueueLimiter::new(
             2,
             3,
-            HashMap::from([(String::from("api"), 1usize)]),
+            HashMap::from([(api_route, 1usize)]),
         ));
 
-        let api = limiter.try_acquire("api").expect("api permit");
+        let api = limiter.try_acquire(api_route).expect("api permit");
         assert!(matches!(
-            limiter.try_acquire("api"),
+            limiter.try_acquire(api_route),
             Err(RouteQueueRejection::RouteCap)
         ));
 
-        let other_a = limiter.try_acquire("other-a").expect("other-a permit");
-        let other_b = limiter.try_acquire("other-b").expect("other-b permit");
+        let other_a = limiter
+            .try_acquire(RouteId::new(1))
+            .expect("other-a permit");
+        let other_b = limiter
+            .try_acquire(RouteId::new(2))
+            .expect("other-b permit");
         assert!(matches!(
-            limiter.try_acquire("other-c"),
+            limiter.try_acquire(RouteId::new(3)),
             Err(RouteQueueRejection::GlobalCap)
         ));
 
@@ -117,14 +126,15 @@ mod tests {
     fn dropping_permit_releases_capacity_for_same_route() {
         let limiter = Arc::new(RouteQueueLimiter::new(1, 1, HashMap::new()));
 
-        let permit = limiter.try_acquire("api").expect("first permit");
+        let route = RouteId::new(0);
+        let permit = limiter.try_acquire(route).expect("first permit");
         assert!(matches!(
-            limiter.try_acquire("api"),
+            limiter.try_acquire(route),
             Err(RouteQueueRejection::GlobalCap)
         ));
 
         drop(permit);
 
-        assert!(limiter.try_acquire("api").is_ok());
+        assert!(limiter.try_acquire(route).is_ok());
     }
 }

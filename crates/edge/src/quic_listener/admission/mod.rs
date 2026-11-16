@@ -174,7 +174,7 @@ pub(super) fn execute_forwarding_post_auth_admission(
         }
     };
 
-    let route_queue_permit = match resilience.route_queue.try_acquire(upstream_name) {
+    let route_queue_permit = match resilience.route_queue.try_acquire(pending_forward.route_id) {
         Ok(permit) => permit,
         Err(rejection) => {
             return PostAuthAdmissionExecution::Rejected(PostAuthAdmissionRejection::Overloaded(
@@ -578,10 +578,12 @@ mod tests {
 
         #[test]
         fn brownout_policy_sheds_non_core_routes_and_preserves_core_routes() {
-            let brownout = BrownoutController::new(true, 50, 25, vec![String::from("core")]);
+            let core_route = impulse_contracts::RouteId::new(0);
+            let brownout = BrownoutController::new(true, 50, 25, vec![core_route]);
 
-            let core = evaluate_brownout_admission(&brownout, 90, "core", 9);
-            let non_core = evaluate_brownout_admission(&brownout, 90, "payments", 9);
+            let core = evaluate_brownout_admission(&brownout, 90, core_route, 9);
+            let non_core =
+                evaluate_brownout_admission(&brownout, 90, impulse_contracts::RouteId::new(1), 9);
 
             assert_eq!(core, AdmissionPolicyDecision::AdmitReady);
             assert_eq!(
@@ -752,7 +754,7 @@ mod tests {
             let _route_held = route_cap
                 .route_queue
                 .clone()
-                .try_acquire("api")
+                .try_acquire(impulse_contracts::RouteId::new(0))
                 .expect("route permit");
             let pending_forward = test_pending_forward_for_api(vec![]);
             let route_result = execute_post_auth_for_api(
@@ -783,7 +785,7 @@ mod tests {
             let _global_route_held = global_cap
                 .route_queue
                 .clone()
-                .try_acquire("other")
+                .try_acquire(impulse_contracts::RouteId::new(1))
                 .expect("global route permit");
             let global_result = execute_post_auth_for_api(
                 &global_cap,

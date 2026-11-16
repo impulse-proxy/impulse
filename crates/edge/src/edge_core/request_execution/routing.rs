@@ -18,6 +18,7 @@ pub(crate) fn resolve_route(
         .ok_or(RouteResolutionError::NoRoute)?;
 
     Ok(ResolvedRouteTarget {
+        route_id: route.route_id,
         upstream_id: route.upstream_id,
         upstream_name: Arc::from(route.upstream),
         matched_path_len: route.matched_path_len,

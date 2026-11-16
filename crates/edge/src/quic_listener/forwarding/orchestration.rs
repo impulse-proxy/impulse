@@ -63,6 +63,7 @@ fn execute_deferred_quota_plugin(
     let request = impulse_contracts::PluginRequestView {
         request_id: pending_forward.request_id,
         generation: pending_forward.plugin_plan.generation(),
+        runtime_route_id: pending_forward.route_id,
         route_id: Some(pending_forward.upstream_name.as_ref()),
         upstream_name: pending_forward.upstream_name.as_ref(),
         method: pending_forward.method.as_ref(),

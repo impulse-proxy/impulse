@@ -2092,7 +2092,7 @@ fn make_test_permits() -> AdmissionPermits {
         .try_acquire()
         .expect("adaptive permit");
     let route_queue = Arc::new(RouteQueueLimiter::new(100, 1000, Default::default()))
-        .try_acquire("test")
+        .try_acquire(impulse_contracts::RouteId::new(0))
         .expect("route permit");
     AdmissionPermits {
         global,
@@ -2214,7 +2214,9 @@ fn abort_stream_receiving_request_releases_permits() {
     let global_permit = global_sem.clone().try_acquire_owned().unwrap();
     let upstream_permit = upstream_sem.clone().try_acquire_owned().unwrap();
     let adaptive_permit = adaptive.try_acquire().unwrap();
-    let route_permit = route_limiter.try_acquire("test").unwrap();
+    let route_permit = route_limiter
+        .try_acquire(impulse_contracts::RouteId::new(0))
+        .unwrap();
 
     let mut req = make_admitted_envelope(
         Instant::now(),
@@ -2433,7 +2435,9 @@ fn abort_stream_upstream_error_releases_all_resources() {
             global: global_permit,
             upstream: upstream_permit,
             adaptive: adaptive.try_acquire().unwrap(),
-            route_queue: route_limiter.try_acquire("test").unwrap(),
+            route_queue: route_limiter
+                .try_acquire(impulse_contracts::RouteId::new(0))
+                .unwrap(),
         },
     );
     req.transition_admitted_to_awaiting_upstream(None, oneshot::channel().1)
@@ -2492,7 +2496,9 @@ fn abort_stream_is_idempotent() {
             global: permit,
             upstream: upstream_sem.try_acquire_owned().unwrap(),
             adaptive: adaptive.try_acquire().unwrap(),
-            route_queue: route_limiter.try_acquire("test").unwrap(),
+            route_queue: route_limiter
+                .try_acquire(impulse_contracts::RouteId::new(0))
+                .unwrap(),
         },
     );
 

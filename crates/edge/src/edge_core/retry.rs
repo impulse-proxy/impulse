@@ -1,4 +1,4 @@
-use impulse_contracts::{AlternateBackendFailureReason, RetryPolicyDenialReason};
+use impulse_contracts::{AlternateBackendFailureReason, RetryPolicyDenialReason, RouteId};
 use impulse_errors::{
     HedgePolicyDecision, HedgePolicyFacts, HedgePrimaryState, PoolError, ProxyError,
     RetryPolicyDecision, RetryPolicyFacts, classify_retryability, evaluate_hedge_policy,
@@ -70,7 +70,7 @@ impl RetryCoordinator {
         self,
         primary_error: &ProxyError,
         retry_count: u8,
-        route_name: &str,
+        route_id: RouteId,
         retry_budget: &RetryBudget,
         alternate_backend_available: bool,
         alternate_backend_failure: Option<AlternateBackendFailureReason>,
@@ -90,7 +90,7 @@ impl RetryCoordinator {
             return decision;
         }
         if matches!(primary_error, ProxyError::Pool(PoolError::CircuitOpen(_)))
-            || retry_budget.allow_retry(route_name).is_ok()
+            || retry_budget.allow_retry(route_id).is_ok()
         {
             decision
         } else {
