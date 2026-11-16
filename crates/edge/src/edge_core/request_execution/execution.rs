@@ -90,7 +90,7 @@ impl<'a> EdgeRequestService<'a> {
         )?;
         let upstream_policy = route.runtime.upstream_policy.as_ref();
         let plugin_plan = route.runtime.plugin_plan.as_ref();
-        let policy = resolve_policy(upstream_policy, route.runtime.plugin_plan.clone());
+        let policy = resolve_policy(upstream_policy);
         if plugin_plan.is_empty() {
             let admission = evaluate_admission(&self.generation.resilience, route.route_id);
             return Ok(PluginRequestExecutionState {

@@ -586,6 +586,7 @@ impl Http3Service {
                     policy,
                     outcome,
                 } = execution;
+                let plugin_plan = Arc::clone(&route.runtime.plugin_plan);
                 Self::resolve_forwarding_target(ForwardTargetResolutionInput {
                     request: TargetResolutionRequest::new(
                         method,
@@ -603,28 +604,32 @@ impl Http3Service {
                     policy,
                     outcome,
                 })
+                .map(|resolved| (resolved, plugin_plan))
             });
 
         let prepared = match resolved {
-            Ok(PluginRequestExecutionState {
-                route:
-                    ForwardTargetResolution {
-                        route_id,
-                        upstream_id,
-                        upstream_name,
-                        upstream_pool,
-                        route_path_len,
-                        route_host_specific,
-                        route_reason,
-                        backend_id,
-                        backend_addr,
-                        backend_index,
-                        backend_lb,
-                        lb_key,
-                    },
-                policy: resolved_policy,
-                outcome,
-            }) => {
+            Ok((
+                PluginRequestExecutionState {
+                    route:
+                        ForwardTargetResolution {
+                            route_id,
+                            upstream_id,
+                            upstream_name,
+                            upstream_pool,
+                            route_path_len,
+                            route_host_specific,
+                            route_reason,
+                            backend_id,
+                            backend_addr,
+                            backend_index,
+                            backend_lb,
+                            lb_key,
+                        },
+                    policy: resolved_policy,
+                    outcome,
+                },
+                plugin_plan,
+            )) => {
                 let routing = RoutingSnapshot {
                     route_id,
                     upstream_id,
@@ -860,7 +865,7 @@ impl Http3Service {
                         .map(Arc::<str>::from),
                     host_policy: resolved_policy.host_policy,
                     forwarded_header_policy: resolved_policy.forwarded_header_policy,
-                    plugin_plan: Arc::clone(&resolved_policy.plugin_plan),
+                    plugin_plan: Arc::clone(&plugin_plan),
                     auth_header_mutations: plugin_mutations.map(|mutations| {
                         mutations
                             .iter()
@@ -876,15 +881,15 @@ impl Http3Service {
                 );
 
                 #[cfg(feature = "external-auth")]
-                let external_auth = resolved_policy
-                    .plugin_plan
-                    .async_request_gate()
-                    .iter()
-                    .find_map(|plugin| match plugin {
-                        CompiledAsyncRequestPlugin::ExternalAuth(input) => Some(input.clone()),
-                        #[cfg(feature = "quota")]
-                        CompiledAsyncRequestPlugin::Quota(_) => None,
-                    });
+                let external_auth =
+                    plugin_plan
+                        .async_request_gate()
+                        .iter()
+                        .find_map(|plugin| match plugin {
+                            CompiledAsyncRequestPlugin::ExternalAuth(input) => Some(input.clone()),
+                            #[cfg(feature = "quota")]
+                            CompiledAsyncRequestPlugin::Quota(_) => None,
+                        });
                 #[cfg(not(feature = "external-auth"))]
                 let external_auth: Option<ExternalAuthInput> = None;
                 Some(match external_auth {
