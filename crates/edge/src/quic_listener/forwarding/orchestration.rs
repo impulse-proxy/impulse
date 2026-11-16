@@ -845,8 +845,9 @@ impl Http3Service {
                                 if req.request_mode().bodyless_mode() && read > 0 {
                                     reject_body_for_bodyless = Some((
                                         req.upstream_name
-                                            .clone()
-                                            .unwrap_or_else(|| "unrouted".to_string()),
+                                            .as_deref()
+                                            .unwrap_or("unrouted")
+                                            .to_string(),
                                         req.start.elapsed(),
                                     ));
                                 }
@@ -876,8 +877,9 @@ impl Http3Service {
                                         }) => {
                                             payload_too_large = Some((
                                                 req.upstream_name
-                                                    .clone()
-                                                    .unwrap_or_else(|| "unrouted".to_string()),
+                                                    .as_deref()
+                                                    .unwrap_or("unrouted")
+                                                    .to_string(),
                                                 req.start.elapsed(),
                                             ));
                                         }
@@ -898,10 +900,9 @@ impl Http3Service {
                                                     if err == RequestBufferError::BodySize {
                                                         payload_too_large = Some((
                                                             req.upstream_name
-                                                                .clone()
-                                                                .unwrap_or_else(|| {
-                                                                    "unrouted".to_string()
-                                                                }),
+                                                                .as_deref()
+                                                                .unwrap_or("unrouted")
+                                                                .to_string(),
                                                             req.start.elapsed(),
                                                         ));
                                                     } else {

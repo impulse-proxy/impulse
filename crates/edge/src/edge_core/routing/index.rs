@@ -6,10 +6,12 @@ use impulse_config::{
 };
 use impulse_contracts::{RouteId, UpstreamId};
 
+#[cfg(test)]
+use crate::routing::matcher::prefer_route_candidate;
 use crate::routing::{
     decision::{RouteDecision, RouteDecisionReason, RoutePreference},
     host::{ConfiguredHostPattern, normalize_host_for_routing, parse_configured_host_pattern},
-    matcher::{compare_route_candidate, prefer_host_lookup_result, prefer_route_candidate},
+    matcher::{compare_route_candidate, prefer_host_lookup_result},
     route::{HostLookupResult, HostMatchKind, IndexedRoute, RouteCandidate},
     trie::RouteTrie,
 };

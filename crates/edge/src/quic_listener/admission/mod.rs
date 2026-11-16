@@ -161,7 +161,6 @@ pub(super) fn execute_forwarding_post_auth_admission(
     global_inflight: Arc<Semaphore>,
     inflight_acquire_wait: Duration,
 ) -> PostAuthAdmissionExecution {
-    let upstream_name = pending_forward.upstream_name.as_ref();
     let adaptive_permit = match evaluate_adaptive_admission(
         &resilience.adaptive_admission,
         resilience.shed_retry_after_seconds,
