@@ -573,7 +573,7 @@ impl Http3Service {
         let alternate_pool = req.upstream_pool.clone();
         let alternate_selector = shared_ctx
             .pingora_load_balancing
-            .selector(pending_forward.upstream_name.as_ref())
+            .selector_by_id(pending_forward.upstream_id)
             .cloned();
         let alternate_generation = shared_ctx.generation;
         let alternate_metrics = Arc::clone(&shared_ctx.metrics);

@@ -532,10 +532,7 @@ impl RuntimeBundleHandle {
         metrics
             .runtime_observations()
             .reconcile_runtime_metric_labels(
-                generation_state
-                    .upstream_policies
-                    .keys()
-                    .map(String::as_str),
+                generation_state.identities.upstream_names(),
                 generation_state
                     .backend_endpoints
                     .keys()

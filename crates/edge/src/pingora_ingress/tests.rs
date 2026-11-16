@@ -675,16 +675,22 @@ fn passthrough_and_full_route_execution_preserve_response_behavior() {
         .expect("start HTTP/3 parity ingress");
 
     let generation = pingora_service.runtime_bundle.current();
-    let route_execution_classes = &generation
-        .shared_state
-        .generation_state()
-        .route_execution_classes;
+    let generation_state = generation.shared_state.generation_state();
+    let route_execution_classes = &generation_state.route_execution_classes;
+    let passthrough_id = generation_state
+        .identities
+        .upstream_id("passthrough")
+        .expect("passthrough upstream identity");
+    let full_id = generation_state
+        .identities
+        .upstream_id("full")
+        .expect("full upstream identity");
     assert_eq!(
-        route_execution_classes.get("passthrough"),
+        route_execution_classes.get(passthrough_id.get() as usize),
         Some(&RouteExecutionClass::Passthrough)
     );
     assert_eq!(
-        route_execution_classes.get("full"),
+        route_execution_classes.get(full_id.get() as usize),
         Some(&RouteExecutionClass::Full)
     );
 

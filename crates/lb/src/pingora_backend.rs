@@ -9,6 +9,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use impulse_contracts::UpstreamId;
 #[cfg(test)]
 use pingora_load_balancing::discovery::Static as StaticDiscovery;
 pub use pingora_load_balancing::{
@@ -550,7 +551,9 @@ impl PingoraDiscoveryUpdate {
 pub struct PingoraLoadBalancingRuntimeState<T> {
     generation: u64,
     upstream_pools: HashMap<String, Arc<RwLock<UpstreamPool>>>,
+    upstream_pools_by_id: Box<[Arc<RwLock<UpstreamPool>>]>,
     selectors: HashMap<String, Arc<GenerationSelector<T>>>,
+    selectors_by_id: Box<[Arc<GenerationSelector<T>>]>,
     discoveries: HashMap<String, ImpulseServiceDiscovery>,
     backend_readiness: RwLock<HashMap<String, bool>>,
     health_registry: Arc<HealthRegistry>,
@@ -620,10 +623,25 @@ where
             ));
         }
 
+        let mut upstream_names = upstream_pools.keys().collect::<Vec<_>>();
+        upstream_names.sort_unstable();
+        let upstream_pools_by_id = upstream_names
+            .iter()
+            .map(|name| Arc::clone(&upstream_pools[*name]))
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+        let selectors_by_id = upstream_names
+            .iter()
+            .map(|name| Arc::clone(&selectors[*name]))
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+
         Ok(Self {
             generation,
             upstream_pools,
+            upstream_pools_by_id,
             selectors,
+            selectors_by_id,
             discoveries,
             backend_readiness: RwLock::new(HashMap::new()),
             health_registry,
@@ -638,8 +656,19 @@ where
         self.selectors.get(upstream_name)
     }
 
+    pub fn selector_by_id(&self, upstream_id: UpstreamId) -> Option<&Arc<GenerationSelector<T>>> {
+        self.selectors_by_id.get(upstream_id.get() as usize)
+    }
+
     pub fn upstream_pool(&self, upstream_name: &str) -> Option<&Arc<RwLock<UpstreamPool>>> {
         self.upstream_pools.get(upstream_name)
+    }
+
+    pub fn upstream_pool_by_id(
+        &self,
+        upstream_id: UpstreamId,
+    ) -> Option<&Arc<RwLock<UpstreamPool>>> {
+        self.upstream_pools_by_id.get(upstream_id.get() as usize)
     }
 
     pub fn upstream_pools(&self) -> &HashMap<String, Arc<RwLock<UpstreamPool>>> {

@@ -245,7 +245,7 @@ impl Http3Service {
             h3_config,
             runtime_state: ListenerRuntimeState::Standalone(Arc::clone(&shared_state)),
             upstream_policies: Arc::clone(&generation_state.upstream_policies),
-            upstream_inflight: generation_state.upstream_inflight.clone(),
+            upstream_inflight: Arc::clone(&generation_state.upstream_inflight),
             global_inflight: Arc::clone(&generation_state.global_inflight),
             routing_index: Arc::clone(&generation_state.routing_index),
             metrics: Arc::clone(&shared_services.metrics),

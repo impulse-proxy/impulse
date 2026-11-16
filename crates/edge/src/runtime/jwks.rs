@@ -32,7 +32,7 @@ pub(crate) fn runtime_sources(config: &RuntimeConfig) -> Vec<JwtJwksSourceConfig
 }
 
 fn compiled_sources(plans: &CompiledGenerationPluginPlans) -> Vec<JwtJwksSourceConfig> {
-    let sources = plans.upstreams().values().flat_map(|plan| {
+    let sources = plans.upstreams().iter().flat_map(|plan| {
         plan.request_gate().iter().filter_map(|plugin| {
             let CompiledRequestPlugin::JwtAuth(compiled) = plugin else {
                 return None;

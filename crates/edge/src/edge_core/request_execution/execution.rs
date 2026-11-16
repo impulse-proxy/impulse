@@ -3,7 +3,6 @@ use std::time::Instant;
 #[cfg(feature = "jwt-auth")]
 use std::time::SystemTime;
 use std::{
-    collections::HashMap,
     sync::Arc,
     task::{Context, Poll, Waker},
 };
@@ -37,18 +36,18 @@ use crate::{Metrics, resilience::runtime::RuntimeResilience, routing::index::Rou
 /// Borrowed protocol-neutral request executor for one runtime generation.
 pub(crate) struct EdgeRequestService<'a> {
     routing_index: &'a RouteIndex,
-    upstream_policies: &'a HashMap<String, RuntimeUpstreamPolicy>,
+    upstream_policies: &'a [RuntimeUpstreamPolicy],
     plugin_plans: &'a CompiledGenerationPluginPlans,
-    route_execution_classes: &'a HashMap<String, RouteExecutionClass>,
+    route_execution_classes: &'a [RouteExecutionClass],
     resilience: &'a RuntimeResilience,
     metrics: &'a Metrics,
 }
 impl<'a> EdgeRequestService<'a> {
     pub(crate) fn new(
         routing_index: &'a RouteIndex,
-        upstream_policies: &'a HashMap<String, RuntimeUpstreamPolicy>,
+        upstream_policies: &'a [RuntimeUpstreamPolicy],
         plugin_plans: &'a CompiledGenerationPluginPlans,
-        route_execution_classes: &'a HashMap<String, RouteExecutionClass>,
+        route_execution_classes: &'a [RouteExecutionClass],
         resilience: &'a RuntimeResilience,
         metrics: &'a Metrics,
     ) -> Self {
@@ -110,11 +109,11 @@ impl<'a> EdgeRequestService<'a> {
         )?;
         let upstream_policy = self
             .upstream_policies
-            .get(route.upstream_name.as_ref())
+            .get(route.upstream_id.get() as usize)
             .ok_or(super::RouteResolutionError::MissingUpstreamPolicy)?;
         let plugin_plan = self
             .plugin_plans
-            .upstream_plan(route.upstream_name.as_ref())
+            .upstream_plan(route.upstream_id)
             .ok_or(super::RouteResolutionError::MissingUpstreamPluginPlan)?;
         let policy = resolve_policy(upstream_policy, Arc::clone(&plugin_plan));
         if plugin_plan.is_empty() {
@@ -130,7 +129,7 @@ impl<'a> EdgeRequestService<'a> {
         }
         let execution_class = self
             .route_execution_classes
-            .get(route.upstream_name.as_ref())
+            .get(route.upstream_id.get() as usize)
             .ok_or(super::RouteResolutionError::MissingUpstreamPluginPlan)?;
         let (has_synchronous_plugins, has_asynchronous_plugins) = match execution_class {
             RouteExecutionClass::Passthrough

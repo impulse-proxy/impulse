@@ -616,6 +616,7 @@ impl Http3Service {
             Ok(PluginRequestExecutionState {
                 route:
                     ForwardTargetResolution {
+                        upstream_id,
                         upstream_name,
                         upstream_pool,
                         route_path_len,
@@ -828,6 +829,7 @@ impl Http3Service {
                     path: Arc::<str>::from(path),
                     authority: authority.map(Arc::<str>::from),
                     headers: Arc::new(headers.to_vec()),
+                    upstream_id,
                     upstream_name: Arc::<str>::from(upstream_name.as_str()),
                     route_reason: Arc::<str>::from(route_reason.as_str()),
                     route_path_len,

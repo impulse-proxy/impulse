@@ -91,12 +91,25 @@ impl RuntimeBuilder {
                 ProxyError::Transport(format!("failed to compile runtime plugin plans: {error}"))
             })?,
         );
-        let route_execution_classes = Arc::new(
+        let route_execution_classes = Arc::from(
             plugin_plans
                 .upstreams()
                 .iter()
-                .map(|(upstream, plan)| (upstream.clone(), plan.execution_class()))
-                .collect(),
+                .map(|plan| plan.execution_class())
+                .collect::<Vec<_>>(),
+        );
+        let upstream_policies = Arc::from(
+            identities
+                .upstream_names()
+                .map(|name| {
+                    config
+                        .upstreams
+                        .get(name)
+                        .expect("interned upstream must exist in runtime config")
+                        .policy
+                        .clone()
+                })
+                .collect::<Vec<_>>(),
         );
         let transport_policy = &config.policies.transport;
         let timeout_policy = &config.policies.timeouts;
@@ -252,7 +265,12 @@ impl RuntimeBuilder {
             backend_dns_resolver.clone(),
         )?;
         let mut upstream_pools = HashMap::new();
-        let mut upstream_inflight = HashMap::new();
+        let upstream_inflight = Arc::from(
+            identities
+                .upstream_names()
+                .map(|_| Arc::new(Semaphore::new(per_upstream_limit)))
+                .collect::<Vec<_>>(),
+        );
         let mut pingora_selectors = Vec::with_capacity(config.upstreams.len());
         let pingora_health_registry = Arc::new(HealthRegistry::with_equivalence(|backend| {
             backend
@@ -275,7 +293,6 @@ impl RuntimeBuilder {
                 ))
             })?;
             upstream_pools.insert(name.clone(), Arc::new(RwLock::new(upstream_pool)));
-            upstream_inflight.insert(name.clone(), Arc::new(Semaphore::new(per_upstream_limit)));
 
             let tls_identity = runtime_upstream.backend_tls_policy().clone();
             let backend_inputs = load_balancing_backend_inputs(runtime_upstream);
@@ -411,13 +428,7 @@ impl RuntimeBuilder {
                 listener_runtime_configs: Arc::new(listener_runtime_configs),
                 backend_endpoints: Arc::new(backend_endpoints),
                 backend_health_checks: Arc::new(backend_health_checks),
-                upstream_policies: Arc::new(
-                    config
-                        .upstreams
-                        .iter()
-                        .map(|(name, upstream)| (name.clone(), upstream.policy.clone()))
-                        .collect(),
-                ),
+                upstream_policies,
                 plugin_plans,
                 route_execution_classes,
                 pingora_load_balancing,

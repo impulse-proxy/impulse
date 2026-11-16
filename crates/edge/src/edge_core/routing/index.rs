@@ -4,6 +4,7 @@ use impulse_config::{
     config::Upstream,
     runtime::{RuntimeRouteHostPattern, RuntimeUpstream},
 };
+use impulse_contracts::UpstreamId;
 
 use crate::routing::{
     decision::{RouteDecision, RouteDecisionReason, RoutePreference},
@@ -17,6 +18,7 @@ pub struct RouteIndex {
     pub wildcard_host_tries: HashMap<String, RouteTrie>,
     pub default_trie: RouteTrie,
     pub default_max_path_len: usize,
+    pub upstream_ids: Vec<UpstreamId>,
     pub upstream_names: Vec<String>,
     pub upstream_methods: Vec<Option<String>>,
 }
@@ -79,11 +81,15 @@ impl RouteIndex {
         let mut wildcard_host_tries = HashMap::new();
         let mut default_trie = RouteTrie::default();
         let mut default_max_path_len = 0usize;
+        let mut upstream_ids = Vec::new();
         let mut upstream_names = Vec::new();
         let mut upstream_methods = Vec::new();
         for route_source in routes {
             let path_prefix = route_source.path_prefix.as_deref();
             let upstream_idx = upstream_names.len();
+            upstream_ids.push(UpstreamId::new(
+                u32::try_from(upstream_idx).expect("route index exceeds compact upstream identity"),
+            ));
             upstream_names.push(route_source.name);
             upstream_methods.push(route_source.method);
 
@@ -116,6 +122,7 @@ impl RouteIndex {
             wildcard_host_tries,
             default_trie,
             default_max_path_len,
+            upstream_ids,
             upstream_names,
             upstream_methods,
         }
@@ -215,6 +222,7 @@ impl RouteIndex {
                 }
             };
             return Some(RouteDecision {
+                upstream_id: self.upstream_ids[best.candidate.route.upstream_idx],
                 upstream: self.upstream_names[best.candidate.route.upstream_idx].as_str(),
                 matched_path_len: best.candidate.route.path_len,
                 host_specific: best.candidate.route.host_specific,
@@ -225,6 +233,7 @@ impl RouteIndex {
 
         match (default_best, host_best) {
             (Some(default_route), None) => Some(RouteDecision {
+                upstream_id: self.upstream_ids[default_route.candidate.route.upstream_idx],
                 upstream: self.upstream_names[default_route.candidate.route.upstream_idx].as_str(),
                 matched_path_len: default_route.candidate.route.path_len,
                 host_specific: default_route.candidate.route.host_specific,
@@ -234,6 +243,7 @@ impl RouteIndex {
                     .unwrap_or(RouteDecisionReason::DefaultPathLonger),
             }),
             (None, Some(host_route)) => Some(RouteDecision {
+                upstream_id: self.upstream_ids[host_route.candidate.route.upstream_idx],
                 upstream: self.upstream_names[host_route.candidate.route.upstream_idx].as_str(),
                 matched_path_len: host_route.candidate.route.path_len,
                 host_specific: host_route.candidate.route.host_specific,
@@ -270,6 +280,7 @@ impl RouteIndex {
                     _ => candidate.candidate,
                 };
                 Some(RouteDecision {
+                    upstream_id: self.upstream_ids[selected.route.upstream_idx],
                     upstream: self.upstream_names[selected.route.upstream_idx].as_str(),
                     matched_path_len: selected.route.path_len,
                     host_specific: selected.route.host_specific,

@@ -501,7 +501,7 @@ impl Http3Service {
         let shared = self.runtime_state.shared_state().shared_services();
         let generation = self.runtime_state.shared_state().generation_state();
         self.upstream_policies = Arc::clone(&generation.upstream_policies);
-        self.upstream_inflight = generation.upstream_inflight.clone();
+        self.upstream_inflight = Arc::clone(&generation.upstream_inflight);
         self.global_inflight = Arc::clone(&generation.global_inflight);
         self.routing_index = Arc::clone(&generation.routing_index);
         self.metrics = Arc::clone(&shared.metrics);

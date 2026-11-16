@@ -284,16 +284,14 @@ impl PingoraEdgeRequestService {
         session: &Session,
         ctx: &mut PingoraRequestContext,
     ) -> Result<PingoraSelectedBackend> {
-        let upstream_name = ctx
-            .route
-            .as_ref()
-            .map(|route| Arc::clone(&route.upstream_name))
-            .ok_or_else(|| {
-                Error::explain(
-                    InternalError,
-                    "Pingora ingress request filter did not resolve a route",
-                )
-            })?;
+        let route = ctx.route.as_ref().ok_or_else(|| {
+            Error::explain(
+                InternalError,
+                "Pingora ingress request filter did not resolve a route",
+            )
+        })?;
+        let upstream_id = route.upstream_id;
+        let upstream_name = Arc::clone(&route.upstream_name);
         let method = ctx.method.clone().ok_or_else(|| {
             Error::explain(
                 InternalError,
@@ -311,7 +309,7 @@ impl PingoraEdgeRequestService {
         let state = ctx.runtime.shared_state.generation_state();
         let pool = state
             .pingora_load_balancing
-            .upstream_pool(upstream_name.as_ref())
+            .upstream_pool_by_id(upstream_id)
             .cloned()
             .ok_or_else(|| {
                 Error::explain(
@@ -350,7 +348,7 @@ impl PingoraEdgeRequestService {
             );
             let selector = state
                 .pingora_load_balancing
-                .selector(upstream_name.as_ref())
+                .selector_by_id(upstream_id)
                 .ok_or_else(|| {
                     ctx.runtime
                         .shared_state
@@ -2075,17 +2073,13 @@ fn handle_pingora_proxy_failure(
         error.set_retry(false);
         return error;
     };
-    let route_name = ctx
-        .route
-        .as_ref()
-        .map(|route| route.upstream_name.as_ref())
-        .unwrap_or("unrouted");
-    let selector = ctx
-        .runtime
-        .shared_state
-        .generation_state()
-        .pingora_load_balancing
-        .selector(route_name);
+    let selector = ctx.route.as_ref().and_then(|route| {
+        ctx.runtime
+            .shared_state
+            .generation_state()
+            .pingora_load_balancing
+            .selector_by_id(route.upstream_id)
+    });
     let metrics = ctx.runtime.shared_state.shared_services().metrics.as_ref();
     let selection = match selector {
         Some(selector) => Some(ForwardingSelectionService::select_backend_excluding(

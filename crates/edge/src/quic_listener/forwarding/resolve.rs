@@ -44,7 +44,6 @@ impl<'a> TargetResolutionRequest<'a> {
 
 #[derive(Clone, Copy)]
 pub(in crate::quic_listener) struct ResolutionContext<'a> {
-    pub(in crate::quic_listener) upstream_pools: &'a HashMap<String, Arc<RwLock<UpstreamPool>>>,
     pingora_load_balancing: &'a PingoraLoadBalancingRuntimeState<RuntimeBackendTlsPolicy>,
     generation: u64,
     metrics: &'a Metrics,
@@ -52,13 +51,12 @@ pub(in crate::quic_listener) struct ResolutionContext<'a> {
 
 impl<'a> ResolutionContext<'a> {
     pub(in crate::quic_listener) fn new(
-        upstream_pools: &'a HashMap<String, Arc<RwLock<UpstreamPool>>>,
+        _upstream_pools: &'a HashMap<String, Arc<RwLock<UpstreamPool>>>,
         pingora_load_balancing: &'a PingoraLoadBalancingRuntimeState<RuntimeBackendTlsPolicy>,
         generation: u64,
         metrics: &'a Metrics,
     ) -> Self {
         Self {
-            upstream_pools,
             pingora_load_balancing,
             generation,
             metrics,
@@ -140,6 +138,7 @@ impl<'a> ResolutionObservation<'a> {
 }
 
 pub(in crate::quic_listener) struct RouteResolution {
+    pub(in crate::quic_listener) upstream_id: impulse_contracts::UpstreamId,
     pub(in crate::quic_listener) upstream_name: String,
     pub(in crate::quic_listener) upstream_pool: Arc<RwLock<UpstreamPool>>,
     pub(in crate::quic_listener) route_path_len: usize,
@@ -160,6 +159,7 @@ pub(in crate::quic_listener) struct TargetResolution {
 }
 
 pub(super) struct ForwardTargetResolution {
+    pub(super) upstream_id: impulse_contracts::UpstreamId,
     pub(super) upstream_name: String,
     pub(super) upstream_pool: Arc<RwLock<UpstreamPool>>,
     pub(super) route_path_len: usize,
@@ -319,6 +319,7 @@ impl Http3Service {
             }
         };
         let RouteResolution {
+            upstream_id,
             upstream_name,
             upstream_pool,
             route_path_len,
@@ -333,6 +334,7 @@ impl Http3Service {
         } = backend;
 
         Ok(ForwardTargetResolution {
+            upstream_id,
             upstream_name,
             upstream_pool,
             route_path_len,
@@ -368,11 +370,12 @@ impl Http3Service {
     ) -> Result<RouteResolution, ProxyError> {
         let upstream_name = route_target.upstream_name.to_string();
         let upstream_pool = context
-            .upstream_pools
-            .get(route_target.upstream_name.as_ref())
+            .pingora_load_balancing
+            .upstream_pool_by_id(route_target.upstream_id)
             .ok_or_else(|| ProxyError::Transport(format!("pool not found: {upstream_name}")))?
             .clone();
         Ok(RouteResolution {
+            upstream_id: route_target.upstream_id,
             upstream_name,
             upstream_pool,
             route_path_len: route_target.matched_path_len,
@@ -423,7 +426,7 @@ impl Http3Service {
     ) -> Result<TargetResolution, ProxyError> {
         let selector = context
             .pingora_load_balancing
-            .selector(&route.upstream_name)
+            .selector_by_id(route.upstream_id)
             .ok_or_else(|| {
                 context
                     .metrics

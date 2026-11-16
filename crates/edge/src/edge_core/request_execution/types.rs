@@ -2,7 +2,7 @@ use std::{net::SocketAddr, sync::Arc};
 
 use impulse_contracts::{
     IngressProtocol, PluginHeaderLookup, PluginHeaderMutation, PluginRejection,
-    PluginRejectionReason, RequestDecision, RequestId,
+    PluginRejectionReason, RequestDecision, RequestId, UpstreamId,
 };
 
 use super::policy::ResolvedRequestPolicy;
@@ -80,6 +80,7 @@ impl PluginTerminalObservation {
 /// The route selected by the shared routing service before backend selection.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ResolvedRouteTarget {
+    pub(crate) upstream_id: UpstreamId,
     pub(crate) upstream_name: Arc<str>,
     pub(crate) matched_path_len: usize,
     pub(crate) host_specific: bool,

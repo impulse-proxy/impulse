@@ -121,6 +121,10 @@ impl RuntimeIdentities {
             .map(|name| name.as_ref())
     }
 
+    pub fn upstream_names(&self) -> impl ExactSizeIterator<Item = &str> {
+        self.upstream_names.iter().map(|name| name.as_ref())
+    }
+
     #[must_use]
     pub fn backend_id(&self, upstream: UpstreamId, name: &str) -> Option<BackendId> {
         self.backend_ids.get(&upstream)?.get(name).copied()
@@ -270,16 +274,16 @@ pub struct RuntimeGenerationState {
     pub backend_endpoints: Arc<HashMap<String, BackendEndpoint>>,
     /// Backend health-check definitions, keyed by backend id.
     pub backend_health_checks: Arc<HashMap<String, RuntimeBackendHealthCheck>>,
-    /// Upstream policies, keyed by upstream name.
-    pub upstream_policies: Arc<HashMap<String, RuntimeUpstreamPolicy>>,
+    /// Upstream policies indexed by compact upstream identity.
+    pub upstream_policies: Arc<[RuntimeUpstreamPolicy]>,
     /// Immutable connection and per-upstream plugin plans compiled for this generation.
     pub plugin_plans: Arc<CompiledGenerationPluginPlans>,
     /// Precompiled route execution classes owned by this runtime generation.
-    pub route_execution_classes: Arc<HashMap<String, RouteExecutionClass>>,
+    pub route_execution_classes: Arc<[RouteExecutionClass]>,
     /// Backend membership, readiness, discovery, and selectors for this generation.
     pub pingora_load_balancing: SharedPingoraLoadBalancingRuntimeState<RuntimeBackendTlsPolicy>,
     /// Per-upstream inflight semaphores.
-    pub upstream_inflight: HashMap<String, Arc<Semaphore>>,
+    pub upstream_inflight: Arc<[Arc<Semaphore>]>,
     /// Global inflight semaphore.
     pub global_inflight: Arc<Semaphore>,
     /// Routing index for this generation.

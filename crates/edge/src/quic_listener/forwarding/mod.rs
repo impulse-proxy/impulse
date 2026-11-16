@@ -39,10 +39,10 @@ pub(in crate::quic_listener) struct ForwardingSharedCtx<'a> {
     pub(in crate::quic_listener) resilience: &'a RuntimeResilience,
     pub(in crate::quic_listener) routing_index: &'a RouteIndex,
     pub(in crate::quic_listener) upstream_pools: &'a HashMap<String, Arc<RwLock<UpstreamPool>>>,
-    pub(in crate::quic_listener) upstream_policies: &'a HashMap<String, RuntimeUpstreamPolicy>,
+    pub(in crate::quic_listener) upstream_policies: &'a [RuntimeUpstreamPolicy],
     pub(in crate::quic_listener) plugin_plans: &'a impulse_plugins::CompiledGenerationPluginPlans,
     pub(in crate::quic_listener) route_execution_classes:
-        &'a HashMap<String, impulse_plugins::RouteExecutionClass>,
+        &'a [impulse_plugins::RouteExecutionClass],
     pub(in crate::quic_listener) pingora_load_balancing:
         &'a PingoraLoadBalancingRuntimeState<RuntimeBackendTlsPolicy>,
     pub(in crate::quic_listener) generation: u64,
@@ -51,7 +51,7 @@ pub(in crate::quic_listener) struct ForwardingSharedCtx<'a> {
 pub(in crate::quic_listener) struct ForwardingExecutionCtx<'a> {
     pub(in crate::quic_listener) upstream_executor: UpstreamRequestExecutor,
     pub(in crate::quic_listener) backend_endpoints: Arc<HashMap<String, BackendEndpoint>>,
-    pub(in crate::quic_listener) upstream_inflight: &'a HashMap<String, Arc<Semaphore>>,
+    pub(in crate::quic_listener) upstream_inflight: &'a [Arc<Semaphore>],
     pub(in crate::quic_listener) global_inflight: Arc<Semaphore>,
     pub(in crate::quic_listener) inflight_acquire_wait: Duration,
     #[cfg(feature = "response-cache")]
