@@ -26,7 +26,10 @@ use crate::{
             lifecycle::BackendLifecycleCoordinator, resolution::RuntimeBackendResolution,
             store::RuntimeBackendResolutionStore,
         },
-        generation::{CarriedProcessSharedServices, RuntimeGenerationState, RuntimeSharedServices},
+        generation::{
+            CarriedProcessSharedServices, RuntimeGenerationState, RuntimeIdentities,
+            RuntimeSharedServices,
+        },
         shared_state::SharedRuntimeState,
         subsystem_mapping::{
             load_balancing_backend_inputs, load_balancing_strategy_input,
@@ -77,6 +80,7 @@ impl RuntimeBuilder {
         listener_tls_store: Arc<ListenerTlsReloadStore>,
     ) -> Result<SharedRuntimeState, ProxyError> {
         validate_plugin_availability(config)?;
+        let identities = Arc::new(RuntimeIdentities::prepare(config)?);
         let plugin_plans = Arc::new(
             compile_generation_plugin_plans(
                 compiled_plugin_catalog(),
@@ -403,6 +407,7 @@ impl RuntimeBuilder {
                 process_tasks,
             },
             RuntimeGenerationState {
+                identities,
                 listener_runtime_configs: Arc::new(listener_runtime_configs),
                 backend_endpoints: Arc::new(backend_endpoints),
                 backend_health_checks: Arc::new(backend_health_checks),
