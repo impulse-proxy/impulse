@@ -51,6 +51,9 @@ pub struct RequestContext {
 
 #[derive(Debug, Clone)]
 pub struct RoutingSnapshot {
+    pub route_id: impulse_contracts::RouteId,
+    pub upstream_id: impulse_contracts::UpstreamId,
+    pub backend_id: impulse_contracts::BackendId,
     pub backend_addr: String,
     pub backend_index: usize,
     pub upstream_name: Arc<str>,

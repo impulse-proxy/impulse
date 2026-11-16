@@ -29,7 +29,9 @@ use crate::{
             },
             state::BackendIdentity,
         },
-        connection::stream::{BackendFailureReason, RejectionReason, TerminalState, TimeoutReason},
+        connection::stream::{
+            BackendFailureReason, RejectionReason, RoutingSnapshot, TerminalState, TimeoutReason,
+        },
     },
 };
 
@@ -174,6 +176,9 @@ pub(crate) struct RequestOutcomeClassification {
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct RequestOutcomeObservation<'a> {
+    pub(crate) route_id: Option<impulse_contracts::RouteId>,
+    pub(crate) upstream_id: Option<impulse_contracts::UpstreamId>,
+    pub(crate) backend_id: Option<impulse_contracts::BackendId>,
     pub(crate) route_target: RouteOutcomeTarget<'a>,
     pub(crate) backend_target: Option<BackendOutcomeTarget<'a>>,
     pub(crate) elapsed: Duration,
@@ -351,6 +356,9 @@ pub(crate) fn record_request_metrics_observation(
     observation: RequestOutcomeObservation<'_>,
 ) {
     let RequestOutcomeObservation {
+        route_id,
+        upstream_id,
+        backend_id,
         route_target,
         backend_target,
         elapsed,
@@ -373,20 +381,60 @@ pub(crate) fn record_request_metrics_observation(
         }
     }
 
-    metrics
-        .request_observations()
-        .record_route(route_target.route, elapsed, metrics_outcome);
-    metrics.request_observations().record_request_result(
-        route_target.route,
-        backend_target.and_then(|target| target.backend_addr),
-        status,
-        metrics_outcome,
-        elapsed,
-    );
+    if let Some(route_id) = route_id {
+        metrics
+            .request_observations()
+            .record_route_id(route_id, elapsed, metrics_outcome);
+    } else {
+        metrics
+            .request_observations()
+            .record_route(route_target.route, elapsed, metrics_outcome);
+    }
+    if let Some(upstream_id) = upstream_id {
+        metrics.request_observations().record_request_result_ids(
+            upstream_id,
+            backend_id,
+            status,
+            metrics_outcome,
+            elapsed,
+        );
+    } else {
+        metrics.request_observations().record_request_result(
+            route_target.route,
+            backend_target.and_then(|target| target.backend_addr),
+            status,
+            metrics_outcome,
+            elapsed,
+        );
+    }
 }
 
 pub(crate) fn observe_request_outcome(
     metrics: &Metrics,
+    route_target: RouteOutcomeTarget<'_>,
+    backend_target: Option<BackendOutcomeTarget<'_>>,
+    elapsed: Duration,
+    status: Option<StatusCode>,
+    decision: RequestOutcomeClassification,
+) -> RequestOutcomeClassification {
+    observe_request_outcome_with_runtime_ids(
+        metrics,
+        None,
+        None,
+        None,
+        route_target,
+        backend_target,
+        elapsed,
+        status,
+        decision,
+    )
+}
+
+fn observe_request_outcome_with_runtime_ids(
+    metrics: &Metrics,
+    route_id: Option<impulse_contracts::RouteId>,
+    upstream_id: Option<impulse_contracts::UpstreamId>,
+    backend_id: Option<impulse_contracts::BackendId>,
     route_target: RouteOutcomeTarget<'_>,
     backend_target: Option<BackendOutcomeTarget<'_>>,
     elapsed: Duration,
@@ -400,6 +448,9 @@ pub(crate) fn observe_request_outcome(
     record_request_metrics_observation(
         metrics,
         RequestOutcomeObservation {
+            route_id,
+            upstream_id,
+            backend_id,
             route_target,
             backend_target,
             elapsed,
@@ -466,27 +517,36 @@ pub(crate) fn observe_admission_outcome(
     )
 }
 
-fn terminal_route_target(state: &TerminalState) -> RouteOutcomeTarget<'_> {
-    let routing = match state {
+fn terminal_routing(state: &TerminalState) -> Option<&RoutingSnapshot> {
+    match state {
         TerminalState::Completed(state) => state.snapshot.routing.as_ref(),
         TerminalState::Cancelled(state) => state.snapshot.routing.as_ref(),
         TerminalState::TimedOut(state) => state.snapshot.routing.as_ref(),
         TerminalState::Rejected(state) => state.snapshot.routing.as_ref(),
         TerminalState::BackendFailed(state) => state.snapshot.routing.as_ref(),
-    };
-    routing.map_or(RouteOutcomeTarget::UNROUTED, |routing| RouteOutcomeTarget {
+    }
+}
+
+fn terminal_route_target(state: &TerminalState) -> RouteOutcomeTarget<'_> {
+    terminal_routing(state).map_or(RouteOutcomeTarget::UNROUTED, |routing| RouteOutcomeTarget {
         route: &routing.upstream_name,
     })
 }
 
+fn terminal_route_id(state: &TerminalState) -> Option<impulse_contracts::RouteId> {
+    terminal_routing(state).map(|routing| routing.route_id)
+}
+
+fn terminal_upstream_id(state: &TerminalState) -> Option<impulse_contracts::UpstreamId> {
+    terminal_routing(state).map(|routing| routing.upstream_id)
+}
+
+fn terminal_backend_id(state: &TerminalState) -> Option<impulse_contracts::BackendId> {
+    terminal_routing(state).map(|routing| routing.backend_id)
+}
+
 fn terminal_backend_target(state: &TerminalState) -> Option<BackendOutcomeTarget<'_>> {
-    let routing = match state {
-        TerminalState::Completed(state) => state.snapshot.routing.as_ref(),
-        TerminalState::Cancelled(state) => state.snapshot.routing.as_ref(),
-        TerminalState::TimedOut(state) => state.snapshot.routing.as_ref(),
-        TerminalState::Rejected(state) => state.snapshot.routing.as_ref(),
-        TerminalState::BackendFailed(state) => state.snapshot.routing.as_ref(),
-    }?;
+    let routing = terminal_routing(state)?;
     Some(BackendOutcomeTarget {
         upstream: &routing.upstream_name,
         backend_addr: Some(&routing.backend_addr),
@@ -677,8 +737,11 @@ pub(crate) fn observe_terminal_request_outcome(
     state: &TerminalState,
 ) -> RequestOutcomeClassification {
     let status = infer_terminal_status(state);
-    observe_request_outcome(
+    observe_request_outcome_with_runtime_ids(
         metrics,
+        terminal_route_id(state),
+        terminal_upstream_id(state),
+        terminal_backend_id(state),
         terminal_route_target(state),
         terminal_backend_target(state),
         terminal_elapsed(state),

@@ -634,6 +634,9 @@ impl Http3Service {
                 outcome,
             }) => {
                 let routing = RoutingSnapshot {
+                    route_id,
+                    upstream_id,
+                    backend_id,
                     backend_addr: backend_addr.clone(),
                     backend_index,
                     upstream_name: upstream_name.clone(),

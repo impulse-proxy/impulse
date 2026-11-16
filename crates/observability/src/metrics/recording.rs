@@ -37,7 +37,7 @@ impl Metrics {
     where
         I: IntoIterator<Item = String>,
     {
-        Self::new_with_detailed_plugin_timing(worker_slots, route_labels, false)
+        Self::new_with_runtime_labels(worker_slots, route_labels, [], false)
     }
 
     pub fn new_with_detailed_plugin_timing<I>(
@@ -47,6 +47,19 @@ impl Metrics {
     ) -> Self
     where
         I: IntoIterator<Item = String>,
+    {
+        Self::new_with_runtime_labels(worker_slots, route_labels, [], detailed_plugin_timing)
+    }
+
+    pub fn new_with_runtime_labels<I, B>(
+        worker_slots: usize,
+        route_labels: I,
+        backend_labels: B,
+        detailed_plugin_timing: bool,
+    ) -> Self
+    where
+        I: IntoIterator<Item = String>,
+        B: IntoIterator<Item = String>,
     {
         let route_latency_sample_every = env::var(ROUTE_LATENCY_SAMPLE_EVERY_ENV)
             .ok()
@@ -95,6 +108,11 @@ impl Metrics {
             .map(|(idx, label)| (idx, label.to_string()))
             .collect::<Vec<_>>();
         route_render_order.sort_by(|(_, left), (_, right)| left.cmp(right));
+        let runtime_route_labels = route_labels_dedup.clone().into_boxed_slice();
+        let runtime_backend_labels = backend_labels
+            .into_iter()
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
 
         Self {
             detailed_plugin_timing,
@@ -231,6 +249,8 @@ impl Metrics {
             route_latency_sample_every,
             route_latency_sample_counter: AtomicU64::new(0),
             route_render_order,
+            runtime_route_labels,
+            runtime_backend_labels,
             route_label_to_id,
             route_stats,
             unrouted_route_id,
@@ -915,6 +935,27 @@ impl Metrics {
         }
     }
 
+    pub fn record_request_result_ids(
+        &self,
+        upstream: UpstreamId,
+        backend: Option<BackendId>,
+        status: Option<u16>,
+        outcome: RouteOutcome,
+        latency: Duration,
+    ) {
+        let upstream = self
+            .runtime_route_labels
+            .get(upstream.get() as usize)
+            .map(String::as_str)
+            .unwrap_or("unrouted");
+        let backend = backend.and_then(|backend| {
+            self.runtime_backend_labels
+                .get(backend.get() as usize)
+                .map(String::as_str)
+        });
+        self.record_request_result(upstream, backend, status, outcome, latency);
+    }
+
     fn current_worker_stats(&self) -> Option<&WorkerStatsAtomic> {
         let idx = WORKER_METRICS_SLOT.with(|current| current.get());
         self.worker_stats
@@ -1497,6 +1538,14 @@ impl Metrics {
             .get(route)
             .copied()
             .unwrap_or(self.unrouted_route_id);
+        self.record_route_index(route_id, latency, outcome);
+    }
+
+    pub fn record_route_id(&self, route: RouteId, latency: Duration, outcome: RouteOutcome) {
+        self.record_route_index(route.get() as usize, latency, outcome);
+    }
+
+    fn record_route_index(&self, route_id: usize, latency: Duration, outcome: RouteOutcome) {
         let Some(entry) = self.route_stats.get(route_id) else {
             return;
         };

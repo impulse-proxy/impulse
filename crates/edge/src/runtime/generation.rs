@@ -179,6 +179,10 @@ impl RuntimeIdentities {
             .map(|(_, name)| name.as_ref())
     }
 
+    pub fn backend_names(&self) -> impl ExactSizeIterator<Item = &str> {
+        self.backend_names.iter().map(|(_, name)| name.as_ref())
+    }
+
     #[must_use]
     pub fn backend_upstream(&self, id: BackendId) -> Option<UpstreamId> {
         self.backend_names

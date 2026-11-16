@@ -2044,6 +2044,9 @@ fn make_request_context(start: Instant, method: &str) -> RequestContext {
 
 fn make_routing_snapshot() -> RoutingSnapshot {
     RoutingSnapshot {
+        route_id: impulse_contracts::RouteId::new(0),
+        upstream_id: impulse_contracts::UpstreamId::new(0),
+        backend_id: impulse_contracts::BackendId::new(0),
         backend_addr: "http://127.0.0.1:8080".into(),
         backend_index: 0,
         upstream_name: "api".into(),
@@ -2278,6 +2281,9 @@ fn abort_stream_waiting_for_auth_clears_async_auth_state() {
             completion: req.completion.clone(),
         },
         routing: RoutingSnapshot {
+            route_id: impulse_contracts::RouteId::new(0),
+            upstream_id: impulse_contracts::UpstreamId::new(0),
+            backend_id: impulse_contracts::BackendId::new(0),
             backend_addr: "http://127.0.0.1:8080".into(),
             backend_index: 0,
             upstream_name: "api".into(),

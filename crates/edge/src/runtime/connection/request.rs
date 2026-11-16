@@ -1086,6 +1086,9 @@ mod tests {
 
     fn make_routing_snapshot() -> crate::runtime::connection::stream::RoutingSnapshot {
         crate::runtime::connection::stream::RoutingSnapshot {
+            route_id: impulse_contracts::RouteId::new(0),
+            upstream_id: impulse_contracts::UpstreamId::new(0),
+            backend_id: impulse_contracts::BackendId::new(0),
             backend_addr: "http://127.0.0.1:8080".into(),
             backend_index: 0,
             upstream_name: "api".into(),
