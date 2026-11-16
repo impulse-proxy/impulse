@@ -47,7 +47,7 @@ pub struct RequestEnvelope {
     /// Resolved backend address and index (for health marking on response).
     pub backend_addr: Option<String>,
     pub backend_index: Option<usize>,
-    pub upstream_name: Option<String>,
+    pub upstream_name: Option<Arc<str>>,
     pub route_reason: Option<String>,
     pub route_path_len: Option<usize>,
     pub route_host_specific: Option<bool>,

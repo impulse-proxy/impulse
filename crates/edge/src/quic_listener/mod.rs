@@ -393,6 +393,11 @@ impl Http3Service {
             metrics: Arc::clone(&self.metrics),
             resilience: &self.resilience,
             routing_index: &self.routing_index,
+            identities: &self
+                .runtime_state
+                .shared_state()
+                .generation_state()
+                .identities,
             upstream_pools: self
                 .runtime_state
                 .shared_state()
@@ -527,6 +532,11 @@ impl Http3Service {
             metrics: Arc::clone(&self.metrics),
             resilience: &self.resilience,
             routing_index: &self.routing_index,
+            identities: &self
+                .runtime_state
+                .shared_state()
+                .generation_state()
+                .identities,
             upstream_pools: self
                 .runtime_state
                 .shared_state()

@@ -31,7 +31,6 @@ use crate::{
 #[derive(Clone, Debug)]
 pub struct RuntimeIdentities {
     route_ids: HashMap<Arc<str>, RouteId>,
-    route_names: Box<[Arc<str>]>,
     upstream_ids: HashMap<Arc<str>, UpstreamId>,
     upstream_names: Box<[Arc<str>]>,
     backend_ids: HashMap<UpstreamId, HashMap<Arc<str>, BackendId>>,
@@ -47,7 +46,6 @@ impl RuntimeIdentities {
         upstreams.sort_unstable_by_key(|(name, _)| name.as_str());
 
         let mut route_ids = HashMap::with_capacity(upstreams.len());
-        let mut route_names = Vec::with_capacity(upstreams.len());
         let mut upstream_ids = HashMap::with_capacity(upstreams.len());
         let mut upstream_names = Vec::with_capacity(upstreams.len());
         let mut backend_ids = HashMap::with_capacity(upstreams.len());
@@ -60,7 +58,6 @@ impl RuntimeIdentities {
             let upstream_id = UpstreamId::new(value);
             let name: Arc<str> = Arc::from(name.as_str());
             route_ids.insert(Arc::clone(&name), route_id);
-            route_names.push(Arc::clone(&name));
             upstream_ids.insert(Arc::clone(&name), upstream_id);
             upstream_names.push(name);
 
@@ -92,7 +89,6 @@ impl RuntimeIdentities {
 
         Ok(Self {
             route_ids,
-            route_names: route_names.into_boxed_slice(),
             upstream_ids,
             upstream_names: upstream_names.into_boxed_slice(),
             backend_ids,
@@ -103,6 +99,32 @@ impl RuntimeIdentities {
         })
     }
 
+    #[cfg(test)]
+    pub(crate) fn for_upstream_names(names: impl IntoIterator<Item = String>) -> Self {
+        let mut names = names.into_iter().collect::<Vec<_>>();
+        names.sort_unstable();
+        let mut route_ids = HashMap::with_capacity(names.len());
+        let mut upstream_ids = HashMap::with_capacity(names.len());
+        let mut upstream_names = Vec::with_capacity(names.len());
+        for (index, name) in names.into_iter().enumerate() {
+            let identity = u32::try_from(index).expect("test identity must fit in u32");
+            let name: Arc<str> = Arc::from(name);
+            route_ids.insert(Arc::clone(&name), RouteId::new(identity));
+            upstream_ids.insert(Arc::clone(&name), UpstreamId::new(identity));
+            upstream_names.push(name);
+        }
+        Self {
+            route_ids,
+            upstream_ids,
+            upstream_names: upstream_names.into_boxed_slice(),
+            backend_ids: HashMap::new(),
+            backend_ids_by_upstream: Box::new([]),
+            backend_names: Box::new([]),
+            listener_ids: HashMap::new(),
+            listener_names: Box::new([]),
+        }
+    }
+
     #[must_use]
     pub fn route_id(&self, name: &str) -> Option<RouteId> {
         self.route_ids.get(name).copied()
@@ -110,9 +132,7 @@ impl RuntimeIdentities {
 
     #[must_use]
     pub fn route_name(&self, id: RouteId) -> Option<&str> {
-        self.route_names
-            .get(id.get() as usize)
-            .map(|name| name.as_ref())
+        self.upstream_name(UpstreamId::new(id.get()))
     }
 
     #[must_use]
@@ -125,6 +145,11 @@ impl RuntimeIdentities {
         self.upstream_names
             .get(id.get() as usize)
             .map(|name| name.as_ref())
+    }
+
+    #[must_use]
+    pub fn upstream_display_name(&self, id: UpstreamId) -> Option<Arc<str>> {
+        self.upstream_names.get(id.get() as usize).map(Arc::clone)
     }
 
     pub fn upstream_names(&self) -> impl ExactSizeIterator<Item = &str> {

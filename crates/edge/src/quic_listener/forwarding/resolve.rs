@@ -148,7 +148,7 @@ impl<'a> ResolutionObservation<'a> {
 pub(in crate::quic_listener) struct RouteResolution {
     pub(in crate::quic_listener) route_id: impulse_contracts::RouteId,
     pub(in crate::quic_listener) upstream_id: impulse_contracts::UpstreamId,
-    pub(in crate::quic_listener) upstream_name: String,
+    pub(in crate::quic_listener) upstream_name: Arc<str>,
     pub(in crate::quic_listener) upstream_pool: Arc<RwLock<UpstreamPool>>,
     pub(in crate::quic_listener) route_path_len: usize,
     pub(in crate::quic_listener) route_host_specific: bool,
@@ -171,7 +171,7 @@ pub(in crate::quic_listener) struct TargetResolution {
 pub(super) struct ForwardTargetResolution {
     pub(super) route_id: impulse_contracts::RouteId,
     pub(super) upstream_id: impulse_contracts::UpstreamId,
-    pub(super) upstream_name: String,
+    pub(super) upstream_name: Arc<str>,
     pub(super) upstream_pool: Arc<RwLock<UpstreamPool>>,
     pub(super) route_path_len: usize,
     pub(super) route_host_specific: bool,
@@ -277,6 +277,9 @@ impl Http3Service {
             RouteResolutionError::MissingUpstreamPluginPlan => {
                 ProxyError::Transport(format!("upstream plugin plan not found for {path}"))
             }
+            RouteResolutionError::MissingUpstreamDisplayName => {
+                ProxyError::Transport(format!("upstream display name not found for {path}"))
+            }
         }
     }
 
@@ -370,8 +373,12 @@ impl Http3Service {
         context: &ResolutionContext<'_>,
         routing_index: &RouteIndex,
     ) -> Result<RouteResolution, ProxyError> {
+        let identities = crate::runtime::generation::RuntimeIdentities::for_upstream_names(
+            routing_index.upstream_names.iter().cloned(),
+        );
         let route_target = resolve_route(
             routing_index,
+            &identities,
             request.method,
             request.path,
             request.authority,
@@ -384,7 +391,7 @@ impl Http3Service {
         route_target: ResolvedRouteTarget,
         context: &ResolutionContext<'_>,
     ) -> Result<RouteResolution, ProxyError> {
-        let upstream_name = route_target.upstream_name.to_string();
+        let upstream_name = route_target.upstream_name;
         let upstream_pool = context
             .pingora_load_balancing
             .upstream_pool_by_id(route_target.upstream_id)
@@ -719,6 +726,9 @@ mod tests {
         );
         let route = resolve_route(
             &routing_index,
+            &crate::runtime::generation::RuntimeIdentities::for_upstream_names(
+                routing_index.upstream_names.iter().cloned(),
+            ),
             request.method,
             request.path,
             request.authority,

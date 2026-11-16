@@ -31,11 +31,15 @@ use super::{
     PluginTerminalObservation, admission::evaluate_admission, policy::resolve_policy,
     routing::resolve_route,
 };
-use crate::{Metrics, resilience::runtime::RuntimeResilience, routing::index::RouteIndex};
+use crate::{
+    Metrics, resilience::runtime::RuntimeResilience, routing::index::RouteIndex,
+    runtime::generation::RuntimeIdentities,
+};
 
 /// Borrowed protocol-neutral request executor for one runtime generation.
 pub(crate) struct EdgeRequestService<'a> {
     routing_index: &'a RouteIndex,
+    identities: &'a RuntimeIdentities,
     upstream_policies: &'a [RuntimeUpstreamPolicy],
     plugin_plans: &'a CompiledGenerationPluginPlans,
     route_execution_classes: &'a [RouteExecutionClass],
@@ -45,6 +49,7 @@ pub(crate) struct EdgeRequestService<'a> {
 impl<'a> EdgeRequestService<'a> {
     pub(crate) fn new(
         routing_index: &'a RouteIndex,
+        identities: &'a RuntimeIdentities,
         upstream_policies: &'a [RuntimeUpstreamPolicy],
         plugin_plans: &'a CompiledGenerationPluginPlans,
         route_execution_classes: &'a [RouteExecutionClass],
@@ -53,6 +58,7 @@ impl<'a> EdgeRequestService<'a> {
     ) -> Self {
         Self {
             routing_index,
+            identities,
             upstream_policies,
             plugin_plans,
             route_execution_classes,
@@ -103,6 +109,7 @@ impl<'a> EdgeRequestService<'a> {
         let request = input.request;
         let route = resolve_route(
             self.routing_index,
+            self.identities,
             request.method,
             request.path,
             request.authority,

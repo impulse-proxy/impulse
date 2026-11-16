@@ -818,6 +818,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             |name: &str| request_headers.get(name).map(http::HeaderValue::as_bytes);
         let request_service = EdgeRequestService::new(
             &state.routing_index,
+            &state.identities,
             &state.upstream_policies,
             &state.plugin_plans,
             &state.route_execution_classes,
@@ -861,7 +862,8 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             Err(
                 RouteResolutionError::NoRoute
                 | RouteResolutionError::MissingUpstreamPolicy
-                | RouteResolutionError::MissingUpstreamPluginPlan,
+                | RouteResolutionError::MissingUpstreamPluginPlan
+                | RouteResolutionError::MissingUpstreamDisplayName,
             ) => {
                 write_local_response(
                     session,

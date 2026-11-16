@@ -38,6 +38,7 @@ pub(in crate::quic_listener) struct ForwardingSharedCtx<'a> {
     pub(in crate::quic_listener) metrics: Arc<Metrics>,
     pub(in crate::quic_listener) resilience: &'a RuntimeResilience,
     pub(in crate::quic_listener) routing_index: &'a RouteIndex,
+    pub(in crate::quic_listener) identities: &'a crate::runtime::generation::RuntimeIdentities,
     pub(in crate::quic_listener) upstream_pools: &'a HashMap<String, Arc<RwLock<UpstreamPool>>>,
     pub(in crate::quic_listener) upstream_policies: &'a [RuntimeUpstreamPolicy],
     pub(in crate::quic_listener) plugin_plans: &'a impulse_plugins::CompiledGenerationPluginPlans,

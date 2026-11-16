@@ -20,6 +20,7 @@ pub struct RouteIndex {
     pub default_max_path_len: usize,
     pub route_ids: Vec<RouteId>,
     pub upstream_ids: Vec<UpstreamId>,
+    #[cfg(test)]
     pub upstream_names: Vec<String>,
     pub upstream_methods: Vec<Option<String>>,
 }
@@ -29,9 +30,10 @@ impl RouteIndex {
         let mut ordered: Vec<(&String, &Upstream)> = upstreams.iter().collect();
         ordered.sort_by_key(|(left, _)| *left);
         Self::from_ordered_routes(ordered.into_iter().enumerate().map(
-            |(order, (name, upstream))| {
+            |(order, (_name, upstream))| {
                 IndexedRouteSource {
-                    name: name.clone(),
+                    #[cfg(test)]
+                    name: _name.clone(),
                     method: upstream
                         .route
                         .method
@@ -64,8 +66,9 @@ impl RouteIndex {
         let mut ordered: Vec<(&String, &RuntimeUpstream)> = upstreams.iter().collect();
         ordered.sort_by_key(|(left, _)| *left);
         Self::from_ordered_routes(ordered.into_iter().enumerate().map(
-            |(order, (name, upstream))| IndexedRouteSource {
-                name: name.clone(),
+            |(order, (_name, upstream))| IndexedRouteSource {
+                #[cfg(test)]
+                name: _name.clone(),
                 method: upstream.route.method.clone(),
                 path_prefix: upstream.route.path_prefix.clone(),
                 path_len: upstream.route.path_len,
@@ -84,15 +87,17 @@ impl RouteIndex {
         let mut default_max_path_len = 0usize;
         let mut route_ids = Vec::new();
         let mut upstream_ids = Vec::new();
+        #[cfg(test)]
         let mut upstream_names = Vec::new();
         let mut upstream_methods = Vec::new();
         for route_source in routes {
             let path_prefix = route_source.path_prefix.as_deref();
-            let upstream_idx = upstream_names.len();
+            let upstream_idx = route_ids.len();
             let identity =
                 u32::try_from(upstream_idx).expect("route index exceeds compact identity");
             route_ids.push(RouteId::new(identity));
             upstream_ids.push(UpstreamId::new(identity));
+            #[cfg(test)]
             upstream_names.push(route_source.name);
             upstream_methods.push(route_source.method);
 
@@ -127,15 +132,18 @@ impl RouteIndex {
             default_max_path_len,
             route_ids,
             upstream_ids,
+            #[cfg(test)]
             upstream_names,
             upstream_methods,
         }
     }
 
+    #[cfg(test)]
     pub fn lookup<'a>(&'a self, path: &str, host: Option<&str>) -> Option<&'a str> {
         self.lookup_for_method(path, host, None)
     }
 
+    #[cfg(test)]
     pub fn lookup_for_method<'a>(
         &'a self,
         path: &str,
@@ -168,20 +176,16 @@ impl RouteIndex {
     }
 
     #[cfg(test)]
-    pub fn lookup_with_decision<'a>(
-        &'a self,
-        path: &str,
-        host: Option<&str>,
-    ) -> Option<RouteDecision<'a>> {
+    pub fn lookup_with_decision(&self, path: &str, host: Option<&str>) -> Option<RouteDecision> {
         self.lookup_with_decision_for_method(path, host, None)
     }
 
-    pub fn lookup_with_decision_for_method<'a>(
-        &'a self,
+    pub fn lookup_with_decision_for_method(
+        &self,
         path: &str,
         host: Option<&str>,
         method: Option<&str>,
-    ) -> Option<RouteDecision<'a>> {
+    ) -> Option<RouteDecision> {
         let host_best = host
             .and_then(normalize_host_for_routing)
             .and_then(|normalized_host| {
@@ -228,7 +232,6 @@ impl RouteIndex {
             return Some(RouteDecision {
                 route_id: self.route_ids[best.candidate.route.upstream_idx],
                 upstream_id: self.upstream_ids[best.candidate.route.upstream_idx],
-                upstream: self.upstream_names[best.candidate.route.upstream_idx].as_str(),
                 matched_path_len: best.candidate.route.path_len,
                 host_specific: best.candidate.route.host_specific,
                 method_specific: best.candidate.route.method_specific,
@@ -240,7 +243,6 @@ impl RouteIndex {
             (Some(default_route), None) => Some(RouteDecision {
                 route_id: self.route_ids[default_route.candidate.route.upstream_idx],
                 upstream_id: self.upstream_ids[default_route.candidate.route.upstream_idx],
-                upstream: self.upstream_names[default_route.candidate.route.upstream_idx].as_str(),
                 matched_path_len: default_route.candidate.route.path_len,
                 host_specific: default_route.candidate.route.host_specific,
                 method_specific: default_route.candidate.route.method_specific,
@@ -251,7 +253,6 @@ impl RouteIndex {
             (None, Some(host_route)) => Some(RouteDecision {
                 route_id: self.route_ids[host_route.candidate.route.upstream_idx],
                 upstream_id: self.upstream_ids[host_route.candidate.route.upstream_idx],
-                upstream: self.upstream_names[host_route.candidate.route.upstream_idx].as_str(),
                 matched_path_len: host_route.candidate.route.path_len,
                 host_specific: host_route.candidate.route.host_specific,
                 method_specific: host_route.candidate.route.method_specific,
@@ -289,7 +290,6 @@ impl RouteIndex {
                 Some(RouteDecision {
                     route_id: self.route_ids[selected.route.upstream_idx],
                     upstream_id: self.upstream_ids[selected.route.upstream_idx],
-                    upstream: self.upstream_names[selected.route.upstream_idx].as_str(),
                     matched_path_len: selected.route.path_len,
                     host_specific: selected.route.host_specific,
                     method_specific: selected.route.method_specific,
@@ -354,6 +354,7 @@ impl RouteIndex {
 }
 
 struct IndexedRouteSource {
+    #[cfg(test)]
     name: String,
     method: Option<String>,
     path_prefix: Option<String>,
@@ -426,7 +427,10 @@ mod tests {
         let decision = index
             .lookup_with_decision("/api", Some("pay.example.com"))
             .expect("route decision");
-        assert_eq!(decision.upstream, "payments");
+        assert_eq!(
+            index.upstream_names[decision.upstream_id.get() as usize],
+            "payments"
+        );
         assert_eq!(decision.reason, RouteDecisionReason::HostSpecificTieBreak);
     }
 
@@ -449,7 +453,10 @@ mod tests {
         let decision = index
             .lookup_with_decision("/api", Some("api.example.com"))
             .expect("route decision");
-        assert_eq!(decision.upstream, "exact");
+        assert_eq!(
+            index.upstream_names[decision.upstream_id.get() as usize],
+            "exact"
+        );
         assert_eq!(decision.reason, RouteDecisionReason::ExactHostTieBreak);
     }
 
@@ -475,7 +482,10 @@ mod tests {
         let decision = index
             .lookup_with_decision("/api", Some("edge.svc.example.com"))
             .expect("route decision");
-        assert_eq!(decision.upstream, "narrow");
+        assert_eq!(
+            index.upstream_names[decision.upstream_id.get() as usize],
+            "narrow"
+        );
         assert_eq!(
             decision.reason,
             RouteDecisionReason::WildcardSpecificityTieBreak
@@ -501,7 +511,10 @@ mod tests {
         let decision = index
             .lookup_with_decision_for_method("/transfer", None, Some("POST"))
             .expect("route decision");
-        assert_eq!(decision.upstream, "post_only");
+        assert_eq!(
+            index.upstream_names[decision.upstream_id.get() as usize],
+            "post_only"
+        );
         assert_eq!(decision.reason, RouteDecisionReason::MethodSpecificTieBreak);
     }
 
@@ -524,7 +537,10 @@ mod tests {
         let decision = index
             .lookup_with_decision_for_method("/chat/socket", None, Some("CONNECT"))
             .expect("route decision");
-        assert_eq!(decision.upstream, "connect_only");
+        assert_eq!(
+            index.upstream_names[decision.upstream_id.get() as usize],
+            "connect_only"
+        );
         assert_eq!(decision.reason, RouteDecisionReason::DefaultPathLonger);
     }
 
@@ -550,7 +566,10 @@ mod tests {
         let decision = index
             .lookup_with_decision("/api/v1/payments", Some("pay.example.com"))
             .expect("route decision");
-        assert_eq!(decision.upstream, "default_long");
+        assert_eq!(
+            index.upstream_names[decision.upstream_id.get() as usize],
+            "default_long"
+        );
         assert_eq!(decision.reason, RouteDecisionReason::DefaultPathLonger);
     }
 }

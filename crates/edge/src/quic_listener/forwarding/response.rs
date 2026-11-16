@@ -1776,7 +1776,8 @@ impl Http3Service {
                         req.authority.as_deref(),
                         Some(&req.method),
                     );
-                    let upstream_name = resolved_route.map(|route| route.upstream);
+                    let upstream_name = resolved_route
+                        .and_then(|route| shared_ctx.identities.upstream_name(route.upstream_id));
                     let upstream_pool = resolved_route.and_then(|route| {
                         shared_ctx
                             .pingora_load_balancing

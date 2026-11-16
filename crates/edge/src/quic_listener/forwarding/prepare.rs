@@ -535,6 +535,7 @@ impl Http3Service {
         };
         let request_service = EdgeRequestService::new(
             shared_ctx.routing_index,
+            shared_ctx.identities,
             shared_ctx.upstream_policies,
             shared_ctx.plugin_plans,
             shared_ctx.route_execution_classes,
@@ -833,7 +834,7 @@ impl Http3Service {
                     headers: Arc::new(headers.to_vec()),
                     route_id,
                     upstream_id,
-                    upstream_name: Arc::<str>::from(upstream_name.as_str()),
+                    upstream_name: Arc::clone(&upstream_name),
                     route_reason: Arc::<str>::from(route_reason.as_str()),
                     route_path_len,
                     route_host_specific,
