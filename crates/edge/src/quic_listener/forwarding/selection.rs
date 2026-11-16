@@ -5,7 +5,7 @@ use impulse_contracts::BackendId;
 use impulse_errors::{PoolError, ProxyError};
 use impulse_lb::{
     BackendSelectionInput,
-    alternate_backend::{AlternateBackendDecision, choose_alternate_backend},
+    alternate_backend::{AlternateBackendDecision, choose_alternate_backend_with_exclusion},
     pingora_backend::GenerationSelector,
     upstream_pool::UpstreamPool,
 };
@@ -97,7 +97,7 @@ impl ForwardingSelectionService {
             ProxyError::Transport("upstream pool lock poisoned".into())
         })?;
         let Some(selected) =
-            selector.select_excluding(input.request_key(), input.excluded_backend_indices())
+            selector.select_excluding(input.request_key(), input.excluded_backend_ids())
         else {
             metrics
                 .runtime_observations()
@@ -142,16 +142,20 @@ impl ForwardingSelectionService {
         let mut pool = pool
             .write()
             .map_err(|_| ProxyError::Transport("upstream pool lock poisoned".into()))?;
-        let selected = if input.excluded_backend_indices().is_empty() {
+        let selected = if input.excluded_backend_ids().is_empty() {
             if input.begin_request() {
                 pool.pick(input.request_key())
             } else {
                 pool.pick_without_begin(input.request_key())
             }
         } else {
-            match choose_alternate_backend(
+            match choose_alternate_backend_with_exclusion(
                 &pool,
-                input.excluded_backend_indices(),
+                |index| {
+                    selector
+                        .custom_backend_runtime_id(index)
+                        .is_some_and(|id| input.excluded_backend_ids().contains(&id))
+                },
                 Some(input.request_key()),
             ) {
                 AlternateBackendDecision::Select(choice) => {

@@ -120,7 +120,7 @@ where
 fn candidate_is_available<T>(
     backend: &PingoraBackend,
     healthy: bool,
-    excluded_backend_indices: &[usize],
+    excluded_backend_ids: &[BackendId],
 ) -> bool
 where
     T: Clone + Send + Sync + 'static,
@@ -129,12 +129,12 @@ where
         && backend
             .ext
             .get::<PingoraBackendIdentity<T>>()
-            .is_some_and(|identity| !excluded_backend_indices.contains(&identity.index()))
+            .is_some_and(|identity| !excluded_backend_ids.contains(&identity.runtime_id()))
 }
 
 fn first_available_backend<T>(
     backends: &pingora_load_balancing::Backends,
-    excluded_backend_indices: &[usize],
+    excluded_backend_ids: &[BackendId],
 ) -> Option<PingoraBackend>
 where
     T: Clone + Send + Sync + 'static,
@@ -143,7 +143,7 @@ where
         .get_backend()
         .iter()
         .find(|backend| {
-            candidate_is_available::<T>(backend, backends.ready(backend), excluded_backend_indices)
+            candidate_is_available::<T>(backend, backends.ready(backend), excluded_backend_ids)
         })
         .cloned()
 }
@@ -165,10 +165,10 @@ where
     fn select_excluding(
         &self,
         cid_key: &str,
-        excluded_backend_indices: &[usize],
+        excluded_backend_ids: &[BackendId],
     ) -> Option<BackendSelectionResult<T>> {
         self.selector
-            .select_excluding(cid_key.as_bytes(), excluded_backend_indices)
+            .select_excluding(cid_key.as_bytes(), excluded_backend_ids)
     }
 
     fn synchronize_readiness(&self, is_healthy: impl FnMut(usize) -> bool) -> Result<(), String> {
@@ -215,7 +215,7 @@ where
     fn select_excluding(
         &self,
         key: &[u8],
-        excluded_backend_indices: &[usize],
+        excluded_backend_ids: &[BackendId],
     ) -> Option<BackendSelectionResult<T>> {
         let selected = self
             .selector
@@ -223,11 +223,11 @@ where
                 key,
                 self.selector.backends().get_backend().len(),
                 |backend, healthy| {
-                    candidate_is_available::<T>(backend, healthy, excluded_backend_indices)
+                    candidate_is_available::<T>(backend, healthy, excluded_backend_ids)
                 },
             )
             .or_else(|| {
-                first_available_backend::<T>(self.selector.backends(), excluded_backend_indices)
+                first_available_backend::<T>(self.selector.backends(), excluded_backend_ids)
             })?;
         selection_result(selected, self.generation)
     }
@@ -275,7 +275,7 @@ where
 
     fn select_excluding(
         &self,
-        excluded_backend_indices: &[usize],
+        excluded_backend_ids: &[BackendId],
     ) -> Option<BackendSelectionResult<T>> {
         let selected = self
             .selector
@@ -283,11 +283,11 @@ where
                 b"",
                 self.selector.backends().get_backend().len(),
                 |backend, healthy| {
-                    candidate_is_available::<T>(backend, healthy, excluded_backend_indices)
+                    candidate_is_available::<T>(backend, healthy, excluded_backend_ids)
                 },
             )
             .or_else(|| {
-                first_available_backend::<T>(self.selector.backends(), excluded_backend_indices)
+                first_available_backend::<T>(self.selector.backends(), excluded_backend_ids)
             })?;
         selection_result(selected, self.generation)
     }
@@ -335,7 +335,7 @@ where
 
     fn select_excluding(
         &self,
-        excluded_backend_indices: &[usize],
+        excluded_backend_ids: &[BackendId],
     ) -> Option<BackendSelectionResult<T>> {
         let selected = self
             .selector
@@ -343,11 +343,11 @@ where
                 b"",
                 self.selector.backends().get_backend().len(),
                 |backend, healthy| {
-                    candidate_is_available::<T>(backend, healthy, excluded_backend_indices)
+                    candidate_is_available::<T>(backend, healthy, excluded_backend_ids)
                 },
             )
             .or_else(|| {
-                first_available_backend::<T>(self.selector.backends(), excluded_backend_indices)
+                first_available_backend::<T>(self.selector.backends(), excluded_backend_ids)
             })?;
         selection_result(selected, self.generation)
     }
@@ -524,20 +524,20 @@ where
     pub fn select_excluding(
         &self,
         key: &str,
-        excluded_backend_indices: &[usize],
+        excluded_backend_ids: &[BackendId],
     ) -> Option<BackendSelectionResult<T>> {
         match &self.kind {
             GenerationSelectorKind::WeightedRoundRobin(selector) => {
-                selector.select_excluding(excluded_backend_indices)
+                selector.select_excluding(excluded_backend_ids)
             }
             GenerationSelectorKind::WeightedRandom(selector) => {
-                selector.select_excluding(excluded_backend_indices)
+                selector.select_excluding(excluded_backend_ids)
             }
             GenerationSelectorKind::Ketama(selector) => {
-                selector.select_excluding(key.as_bytes(), excluded_backend_indices)
+                selector.select_excluding(key.as_bytes(), excluded_backend_ids)
             }
             GenerationSelectorKind::StickyCid(selector) => {
-                selector.select_excluding(key, excluded_backend_indices)
+                selector.select_excluding(key, excluded_backend_ids)
             }
             GenerationSelectorKind::CustomLeastConnections(_)
             | GenerationSelectorKind::CustomLatencyAware(_) => None,
@@ -1103,7 +1103,7 @@ mod tests {
             for key in ["request-a", "request-b", "request-c"] {
                 assert_eq!(
                     selector
-                        .select_excluding(key, &[0])
+                        .select_excluding(key, &[BackendId::new(0)])
                         .expect("alternate selection")
                         .index(),
                     1

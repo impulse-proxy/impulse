@@ -37,12 +37,24 @@ pub fn choose_alternate_backend(
     excluded_indices: &[usize],
     lb_key: Option<&str>,
 ) -> AlternateBackendDecision {
+    choose_alternate_backend_with_exclusion(
+        pool,
+        |index| is_excluded(index, excluded_indices),
+        lb_key,
+    )
+}
+
+pub fn choose_alternate_backend_with_exclusion(
+    pool: &UpstreamPool,
+    mut is_excluded: impl FnMut(usize) -> bool,
+    lb_key: Option<&str>,
+) -> AlternateBackendDecision {
     let policy = pool.alternate_backend_policy();
 
     if policy.readonly_lb_pick {
         let readonly_candidate = pool
             .pick_readonly(lb_key.unwrap_or_default())
-            .filter(|index| !is_excluded(*index, excluded_indices));
+            .filter(|index| !is_excluded(*index));
         if let Some(index) = readonly_candidate {
             return AlternateBackendDecision::Select(AlternateBackendChoice {
                 index,
@@ -54,7 +66,7 @@ pub fn choose_alternate_backend(
     if policy.healthy_fallback {
         let fallback_candidate = pool
             .healthy_backend_indices_iter()
-            .find(|index| !is_excluded(*index, excluded_indices));
+            .find(|index| !is_excluded(*index));
         if let Some(index) = fallback_candidate {
             return AlternateBackendDecision::Select(AlternateBackendChoice {
                 index,

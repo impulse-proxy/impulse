@@ -1,7 +1,7 @@
 use std::convert::Infallible;
 
 use impulse_config::runtime::RuntimeBackendTlsPolicy;
-use impulse_contracts::{AlternateBackendFailureReason, HedgeOutcomeTelemetryReason};
+use impulse_contracts::{AlternateBackendFailureReason, BackendId, HedgeOutcomeTelemetryReason};
 #[cfg(feature = "response-cache")]
 use impulse_contracts::{IngressProtocol, PluginRequestView};
 use impulse_errors::{HedgePolicyDecision, RetryPolicyDecision, is_idempotent_method};
@@ -447,13 +447,13 @@ impl Http3Service {
         selector: &GenerationSelector<RuntimeBackendTlsPolicy>,
         generation: u64,
         lb_key: &str,
-        primary_index: usize,
+        primary_backend_id: BackendId,
         metrics: &Metrics,
     ) -> ResolvedAlternateBackend {
         match ForwardingSelectionService::select_backend_excluding(
             selector,
             upstream_pool,
-            BackendSelectionInput::new(generation, lb_key, &[primary_index], false),
+            BackendSelectionInput::new(generation, lb_key, &[primary_backend_id], false),
             metrics,
         ) {
             Ok(Some(BackendCandidate { id, address, .. })) => {
@@ -632,7 +632,7 @@ impl Http3Service {
                         selector,
                         alternate_generation,
                         pending_forward.lb_key.as_ref(),
-                        pending_forward.backend_index,
+                        pending_forward.backend_id,
                         alternate_metrics.as_ref(),
                     )
                 })

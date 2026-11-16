@@ -2110,7 +2110,7 @@ fn handle_pingora_proxy_failure(
             BackendSelectionInput::new(
                 ctx.runtime.generation,
                 ctx.lb_key.as_deref().unwrap_or_default(),
-                &[selected.index],
+                &[selected.id],
                 false,
             ),
             metrics,
