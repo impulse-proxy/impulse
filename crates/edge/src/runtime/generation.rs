@@ -35,6 +35,7 @@ pub struct RuntimeIdentities {
     upstream_ids: HashMap<Arc<str>, UpstreamId>,
     upstream_names: Box<[Arc<str>]>,
     backend_ids: HashMap<UpstreamId, HashMap<Arc<str>, BackendId>>,
+    backend_ids_by_upstream: Box<[Box<[BackendId]>]>,
     backend_names: Box<[(UpstreamId, Arc<str>)]>,
     listener_ids: HashMap<Arc<str>, ListenerId>,
     listener_names: Box<[Arc<str>]>,
@@ -50,6 +51,7 @@ impl RuntimeIdentities {
         let mut upstream_ids = HashMap::with_capacity(upstreams.len());
         let mut upstream_names = Vec::with_capacity(upstreams.len());
         let mut backend_ids = HashMap::with_capacity(upstreams.len());
+        let mut backend_ids_by_upstream = Vec::with_capacity(upstreams.len());
         let mut backend_names = Vec::new();
 
         for (index, (name, upstream)) in upstreams.into_iter().enumerate() {
@@ -63,14 +65,17 @@ impl RuntimeIdentities {
             upstream_names.push(name);
 
             let mut ids = HashMap::with_capacity(upstream.backends.len());
+            let mut indexed_ids = Vec::with_capacity(upstream.backends.len());
             for backend in &upstream.backends {
                 let backend_id =
                     BackendId::new(compact_identity_value(backend_names.len(), "backend")?);
                 let name: Arc<str> = Arc::from(backend.backend.id.as_str());
                 ids.insert(Arc::clone(&name), backend_id);
+                indexed_ids.push(backend_id);
                 backend_names.push((upstream_id, name));
             }
             backend_ids.insert(upstream_id, ids);
+            backend_ids_by_upstream.push(indexed_ids.into_boxed_slice());
         }
 
         let mut listener_ids = HashMap::with_capacity(config.listeners.len());
@@ -91,6 +96,7 @@ impl RuntimeIdentities {
             upstream_ids,
             upstream_names: upstream_names.into_boxed_slice(),
             backend_ids,
+            backend_ids_by_upstream: backend_ids_by_upstream.into_boxed_slice(),
             backend_names: backend_names.into_boxed_slice(),
             listener_ids,
             listener_names: listener_names.into_boxed_slice(),
@@ -128,6 +134,17 @@ impl RuntimeIdentities {
     #[must_use]
     pub fn backend_id(&self, upstream: UpstreamId, name: &str) -> Option<BackendId> {
         self.backend_ids.get(&upstream)?.get(name).copied()
+    }
+
+    fn backend_ids(&self, upstream: UpstreamId) -> Option<&[BackendId]> {
+        self.backend_ids_by_upstream
+            .get(upstream.get() as usize)
+            .map(|ids| ids.as_ref())
+    }
+
+    #[must_use]
+    pub fn backend_id_at(&self, upstream: UpstreamId, index: usize) -> Option<BackendId> {
+        self.backend_ids(upstream)?.get(index).copied()
     }
 
     #[must_use]
@@ -270,8 +287,10 @@ pub struct RuntimeGenerationState {
     pub identities: Arc<RuntimeIdentities>,
     /// Per-listener runtime config, keyed by listener label.
     pub listener_runtime_configs: Arc<HashMap<String, ListenerRuntimeConfig>>,
-    /// Resolved backend endpoints, keyed by backend id.
+    /// Resolved backend endpoints, keyed by configured backend address.
     pub backend_endpoints: Arc<HashMap<String, BackendEndpoint>>,
+    /// Backend endpoints indexed by compact backend identity for request execution.
+    pub backend_endpoints_by_id: Arc<[BackendEndpoint]>,
     /// Backend health-check definitions, keyed by backend id.
     pub backend_health_checks: Arc<HashMap<String, RuntimeBackendHealthCheck>>,
     /// Upstream policies indexed by compact upstream identity.

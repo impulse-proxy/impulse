@@ -149,6 +149,7 @@ impl Drop for PingoraEdgeRequestState {
 }
 
 struct PingoraSelectedBackend {
+    id: impulse_contracts::BackendId,
     address: String,
     pool: Arc<RwLock<UpstreamPool>>,
     index: usize,
@@ -317,11 +318,13 @@ impl PingoraEdgeRequestService {
                     format!("Pingora ingress upstream pool is missing: {upstream_name}"),
                 )
             })?;
-        let (backend_addr, backend_index) = if let Some((address, index)) = retry_backend {
+        let (backend_id, backend_addr, backend_index) = if let Some((backend_id, index)) =
+            retry_backend
+        {
             let pool = pool.read().map_err(|_| {
                 Error::explain(InternalError, "Pingora ingress upstream pool lock poisoned")
             })?;
-            if pool.backend_address(index) != Some(address.as_str())
+            if state.identities.backend_id_at(upstream_id, index) != Some(backend_id)
                 || !pool.begin_request_if_healthy(index)
             {
                 return Error::e_explain(
@@ -329,7 +332,13 @@ impl PingoraEdgeRequestService {
                     "Pingora ingress retry backend is no longer available",
                 );
             }
-            (address, index)
+            let address = pool.backend_address(index).ok_or_else(|| {
+                Error::explain(
+                    InternalError,
+                    "Pingora ingress retry backend has no configured address",
+                )
+            })?;
+            (backend_id, address.to_string(), index)
         } else {
             let request = session.req_header();
             let header_lookup = |name: &str| {
@@ -377,9 +386,14 @@ impl PingoraEdgeRequestService {
                 .resilience
                 .retry_budget
                 .mark_primary(upstream_name.as_ref());
-            (selected.backend_addr, selected.backend_index)
+            (
+                selected.backend_id,
+                selected.backend_addr,
+                selected.backend_index,
+            )
         };
         Ok(PingoraSelectedBackend {
+            id: backend_id,
             address: backend_addr,
             pool,
             index: backend_index,
@@ -1480,8 +1494,8 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             .runtime
             .shared_state
             .generation_state()
-            .backend_endpoints
-            .get(&selected.address)
+            .backend_endpoints_by_id
+            .get(selected.id.get() as usize)
             .ok_or_else(|| {
                 Error::explain(
                     InternalError,
@@ -2101,7 +2115,7 @@ fn handle_pingora_proxy_failure(
         }
     };
     let (retry_backend, alternate_failure) = match selection {
-        Some(Ok(Some(BackendCandidate { address, index }))) => (Some((address, index)), None),
+        Some(Ok(Some(BackendCandidate { id, index, .. }))) => (Some((id, index)), None),
         Some(Ok(None)) => match selected.pool.read() {
             Ok(pool) if pool.membership_summary().healthy_backends == 0 => {
                 (None, Some(AlternateBackendFailureReason::NoHealthyBackends))

@@ -30,6 +30,7 @@ pub(in crate::quic_listener) type UpstreamRequest = Request<BoxBody<Bytes, Infal
 #[derive(Clone, Debug)]
 enum ResolvedAlternateBackend {
     Selected {
+        id: impulse_contracts::BackendId,
         address: String,
     },
     Unavailable {
@@ -51,11 +52,13 @@ impl ResolvedAlternateBackend {
 }
 
 struct AlternateBodylessCandidate {
+    backend_id: impulse_contracts::BackendId,
     backend: String,
     request: UpstreamRequest,
 }
 
 struct WebsocketTunnelForwardInput {
+    backend_id: impulse_contracts::BackendId,
     backend: Arc<str>,
     endpoint: BackendEndpoint,
     pending_forward: Arc<PendingForward>,
@@ -103,7 +106,7 @@ struct RetryExecutionCtx<'a> {
     policy_telemetry: &'a mut ForwardingPolicyTelemetry,
     retry_budget: &'a crate::resilience::retry_budget::RetryBudget,
     alternate_backend: Option<&'a ResolvedAlternateBackend>,
-    backend_endpoints: &'a HashMap<String, BackendEndpoint>,
+    backend_endpoints: &'a [BackendEndpoint],
     pending_forward: &'a PendingForward,
     circuit_breakers: &'a crate::resilience::circuit_breaker::CircuitBreakers,
     executor: &'a UpstreamRequestExecutor,
@@ -280,13 +283,17 @@ impl Http3Service {
     }
 
     async fn send_upstream_request(
+        backend_id: impulse_contracts::BackendId,
         backend: &str,
         request: UpstreamRequest,
         circuit_breakers: &crate::resilience::circuit_breaker::CircuitBreakers,
         executor: &UpstreamRequestExecutor,
     ) -> Result<UpstreamExchangeResponse, ProxyError> {
-        let breaker_permit =
-            ForwardingSelectionService::allow_backend_request(circuit_breakers, backend)?;
+        let breaker_permit = ForwardingSelectionService::allow_backend_request(
+            circuit_breakers,
+            backend_id,
+            backend,
+        )?;
 
         let request = Self::into_upstream_exchange_request(request)?;
         let send_result = executor.execute(backend, request).await;
@@ -342,15 +349,21 @@ impl Http3Service {
         executor: &UpstreamRequestExecutor,
     ) -> ForwardResult {
         let WebsocketTunnelForwardInput {
+            backend_id,
             backend,
             endpoint,
             pending_forward,
             mut body_rx,
         } = input;
         let request = pending_forward.build_http1_websocket_tunnel_request(&endpoint)?;
-        let response =
-            Self::send_upstream_request(backend.as_ref(), request, circuit_breakers, executor)
-                .await?;
+        let response = Self::send_upstream_request(
+            backend_id,
+            backend.as_ref(),
+            request,
+            circuit_breakers,
+            executor,
+        )
+        .await?;
 
         let upstream_status = response.head.status;
         if upstream_status != StatusCode::SWITCHING_PROTOCOLS {
@@ -441,8 +454,8 @@ impl Http3Service {
             BackendSelectionInput::new(generation, lb_key, &[primary_index], false),
             metrics,
         ) {
-            Ok(Some(BackendCandidate { address, .. })) => {
-                ResolvedAlternateBackend::Selected { address }
+            Ok(Some(BackendCandidate { id, address, .. })) => {
+                ResolvedAlternateBackend::Selected { id, address }
             }
             Ok(None) => {
                 let reason = match upstream_pool.read() {
@@ -462,14 +475,15 @@ impl Http3Service {
 
     fn build_alternate_bodyless_candidate(
         alternate_backend: Option<&ResolvedAlternateBackend>,
-        backend_endpoints: &HashMap<String, BackendEndpoint>,
+        backend_endpoints: &[BackendEndpoint],
         pending_forward: &PendingForward,
     ) -> Option<AlternateBodylessCandidate> {
         match alternate_backend? {
-            ResolvedAlternateBackend::Selected { address } => {
-                let endpoint = backend_endpoints.get(address)?;
+            ResolvedAlternateBackend::Selected { id, address } => {
+                let endpoint = backend_endpoints.get(id.get() as usize)?;
                 let request = pending_forward.build_bodyless_request(endpoint).ok()?;
                 Some(AlternateBodylessCandidate {
+                    backend_id: *id,
                     backend: address.clone(),
                     request,
                 })
@@ -527,6 +541,7 @@ impl Http3Service {
         };
 
         let Some(AlternateBodylessCandidate {
+            backend_id: retry_backend_id,
             backend: retry_backend,
             request: retry_request,
         }) = Self::build_alternate_bodyless_candidate(
@@ -547,6 +562,7 @@ impl Http3Service {
             retry_backend
         );
         Self::send_upstream_request(
+            retry_backend_id,
             retry_backend.as_str(),
             retry_request,
             circuit_breakers,
@@ -623,6 +639,7 @@ impl Http3Service {
                 .then(resolve_alternate)
                 .flatten();
             let route_name = pending_forward.upstream_name.as_ref();
+            let primary_backend_id = pending_forward.backend_id;
             let primary_backend = pending_forward.backend_addr.as_ref();
             let circuit_breakers = circuit_breakers.as_ref();
             let retry_budget = retry_budget.as_ref();
@@ -665,6 +682,7 @@ impl Http3Service {
                     };
                     Self::forward_http1_websocket_tunnel(
                         WebsocketTunnelForwardInput {
+                            backend_id: primary_backend_id,
                             backend: Arc::clone(&pending_forward.backend_addr),
                             endpoint: backend_endpoint.clone(),
                             pending_forward: Arc::clone(&pending_forward),
@@ -694,12 +712,14 @@ impl Http3Service {
                             );
 
                             if let Some(AlternateBodylessCandidate {
+                                backend_id: hedge_backend_id,
                                 backend: hedge_backend,
                                 request: hedge_request,
                             }) = hedge_candidate
                             {
                                 let primary_started = Instant::now();
                                 let primary_fut = Self::send_upstream_request(
+                                    primary_backend_id,
                                     primary_backend,
                                     request,
                                     circuit_breakers,
@@ -721,6 +741,7 @@ impl Http3Service {
                                         HedgePolicyDecision::Hedge { reason } => {
                                             policy_telemetry.hedge.record_trigger(reason);
                                             let hedge_fut = Self::send_upstream_request(
+                                                hedge_backend_id,
                                                 hedge_backend.as_str(),
                                                 hedge_request,
                                                 circuit_breakers,
@@ -787,6 +808,7 @@ impl Http3Service {
                                 }
                             } else {
                                 Self::send_upstream_request(
+                                    primary_backend_id,
                                     primary_backend,
                                     request,
                                     circuit_breakers,
@@ -804,6 +826,7 @@ impl Http3Service {
                                 denial
                             );
                             match Self::send_upstream_request(
+                                primary_backend_id,
                                 primary_backend,
                                 request,
                                 circuit_breakers,
@@ -843,6 +866,7 @@ impl Http3Service {
                                 reason
                             );
                             match Self::send_upstream_request(
+                                primary_backend_id,
                                 primary_backend,
                                 request,
                                 circuit_breakers,

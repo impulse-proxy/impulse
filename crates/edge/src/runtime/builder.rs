@@ -176,14 +176,19 @@ impl RuntimeBuilder {
         let mut backend_resolutions = Vec::new();
         let mut seen_backend_origins: HashMap<String, (String, String)> = HashMap::new();
         let mut backend_endpoints = HashMap::new();
+        let mut backend_endpoints_by_id = Vec::new();
         let mut backend_health_checks = HashMap::new();
-        for (upstream_name, upstream) in &config.upstreams {
+        for upstream_name in identities.upstream_names() {
+            let upstream = config
+                .upstreams
+                .get(upstream_name)
+                .expect("interned upstream must exist in runtime config");
             for backend in &upstream.backends {
                 let endpoint = backend.endpoint.canonical.clone();
                 let origin = backend.endpoint.origin.clone();
                 if let Some((existing_upstream, existing_backend)) = seen_backend_origins.insert(
                     origin.clone(),
-                    (upstream_name.clone(), backend.backend.id.clone()),
+                    (upstream_name.to_string(), backend.backend.id.clone()),
                 ) {
                     return Err(ProxyError::Transport(format!(
                         "duplicate backend address '{}' detected while building upstream transport pool: upstream '{}' backend '{}' conflicts with upstream '{}' backend '{}'",
@@ -234,7 +239,8 @@ impl RuntimeBuilder {
                     upstream.backend_tls_policy().ca_dir,
                     authority_kind
                 );
-                backend_endpoints.insert(backend.backend.address.clone(), endpoint);
+                backend_endpoints.insert(backend.backend.address.clone(), endpoint.clone());
+                backend_endpoints_by_id.push(endpoint);
                 if let Some(health_check) = backend.health_check.clone() {
                     backend_health_checks.insert(backend.backend.address.clone(), health_check);
                 }
@@ -286,6 +292,9 @@ impl RuntimeBuilder {
                 )
         }));
         for (name, runtime_upstream) in &config.upstreams {
+            let upstream_id = identities
+                .upstream_id(name)
+                .expect("runtime upstream must have an interned identity");
             let upstream_pool = upstream_pool_from_runtime(runtime_upstream).map_err(|err| {
                 ProxyError::Transport(format!(
                     "failed to create upstream pool '{}': {}",
@@ -310,7 +319,16 @@ impl RuntimeBuilder {
                             .unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED)),
                         endpoint.authority_port,
                     );
-                    let mut mapped = map_validated_backend(backend, address, tls_identity.clone())?;
+                    let backend_id = identities
+                        .backend_id_at(upstream_id, backend.index())
+                        .ok_or_else(|| {
+                            format!(
+                                "missing runtime identity for backend '{}'",
+                                backend.backend_id()
+                            )
+                        })?;
+                    let mut mapped =
+                        map_validated_backend(backend, backend_id, address, tls_identity.clone())?;
                     let health_identity = transport_pool
                         .pingora_backend_health_identity(backend.configured_address())
                         .ok_or_else(|| {
@@ -427,6 +445,7 @@ impl RuntimeBuilder {
                 identities,
                 listener_runtime_configs: Arc::new(listener_runtime_configs),
                 backend_endpoints: Arc::new(backend_endpoints),
+                backend_endpoints_by_id: Arc::from(backend_endpoints_by_id),
                 backend_health_checks: Arc::new(backend_health_checks),
                 upstream_policies,
                 plugin_plans,

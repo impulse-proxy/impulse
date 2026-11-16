@@ -1,6 +1,7 @@
 use std::sync::{Arc, RwLock};
 
 use impulse_config::runtime::RuntimeBackendTlsPolicy;
+use impulse_contracts::BackendId;
 use impulse_errors::{PoolError, ProxyError};
 use impulse_lb::{
     BackendSelectionInput,
@@ -23,6 +24,7 @@ use crate::{
 pub(crate) struct ForwardingSelectionService;
 
 pub(crate) struct BackendCandidate {
+    pub(crate) id: BackendId,
     pub(crate) address: String,
     pub(crate) index: usize,
 }
@@ -61,6 +63,7 @@ impl ForwardingSelectionService {
             return Err(ProxyError::Transport("no healthy servers".into()));
         };
         Ok(BackendSelection {
+            backend_id: selected.id,
             backend_addr: selected.address,
             backend_index: selected.index,
             backend_lb,
@@ -85,7 +88,7 @@ impl ForwardingSelectionService {
             )));
         }
         if selector.uses_custom_dynamic_selector() {
-            return Self::select_custom_dynamic_backend(pool, input);
+            return Self::select_custom_dynamic_backend(selector, pool, input);
         }
         let pool = pool.read().map_err(|_| {
             metrics
@@ -112,6 +115,7 @@ impl ForwardingSelectionService {
             )));
         }
         let index = selected.index();
+        let id = selected.runtime_id();
         let Some(address) = pool.backend_address(index).map(str::to_string) else {
             metrics
                 .runtime_observations()
@@ -127,10 +131,11 @@ impl ForwardingSelectionService {
             return Ok(None);
         }
         metrics.runtime_observations().inc_pingora_lb_selection();
-        Ok(Some(BackendCandidate { address, index }))
+        Ok(Some(BackendCandidate { id, address, index }))
     }
 
     fn select_custom_dynamic_backend(
+        selector: &GenerationSelector<RuntimeBackendTlsPolicy>,
         pool: &Arc<RwLock<UpstreamPool>>,
         input: BackendSelectionInput<'_>,
     ) -> Result<Option<BackendCandidate>, ProxyError> {
@@ -162,20 +167,26 @@ impl ForwardingSelectionService {
         let Some(index) = selected else {
             return Ok(None);
         };
+        let Some(id) = selector.custom_backend_runtime_id(index) else {
+            return Err(ProxyError::Transport(
+                "custom selector returned an invalid backend identity".into(),
+            ));
+        };
         let Some(address) = pool.backend_address(index).map(str::to_string) else {
             return Err(ProxyError::Transport(
                 "custom selector returned an invalid backend index".into(),
             ));
         };
-        Ok(Some(BackendCandidate { address, index }))
+        Ok(Some(BackendCandidate { id, address, index }))
     }
 
     pub(super) fn allow_backend_request<'a>(
         circuit_breakers: &'a CircuitBreakers,
-        backend: &str,
+        backend_id: BackendId,
+        backend_addr: &str,
     ) -> Result<CircuitBreakerPermit<'a>, ProxyError> {
         circuit_breakers
-            .allow_request(backend)
-            .ok_or_else(|| ProxyError::Pool(PoolError::CircuitOpen(backend.to_string())))
+            .allow_request(backend_id)
+            .ok_or_else(|| ProxyError::Pool(PoolError::CircuitOpen(backend_addr.to_string())))
     }
 }

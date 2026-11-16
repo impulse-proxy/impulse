@@ -376,7 +376,7 @@ impl Http3Service {
 
         let Some(backend_endpoint) = exec_ctx
             .backend_endpoints
-            .get(pending_forward.backend_addr.as_ref())
+            .get(pending_forward.backend_id.get() as usize)
             .cloned()
         else {
             let _ = observe_proxy_error_outcome(

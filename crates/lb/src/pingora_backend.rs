@@ -9,7 +9,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use impulse_contracts::UpstreamId;
+use impulse_contracts::{BackendId, UpstreamId};
 #[cfg(test)]
 use pingora_load_balancing::discovery::Static as StaticDiscovery;
 pub use pingora_load_balancing::{
@@ -28,6 +28,7 @@ use crate::{
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BackendSelectionResult<P> {
+    runtime_id: BackendId,
     backend_id: String,
     address: SocketAddr,
     index: usize,
@@ -37,6 +38,7 @@ pub struct BackendSelectionResult<P> {
 
 impl<P> BackendSelectionResult<P> {
     pub fn new(
+        runtime_id: BackendId,
         backend_id: impl Into<String>,
         address: SocketAddr,
         index: usize,
@@ -44,12 +46,17 @@ impl<P> BackendSelectionResult<P> {
         connection_policy: P,
     ) -> Self {
         Self {
+            runtime_id,
             backend_id: backend_id.into(),
             address,
             index,
             generation,
             connection_policy,
         }
+    }
+
+    pub fn runtime_id(&self) -> BackendId {
+        self.runtime_id
     }
 
     pub fn backend_id(&self) -> &str {
@@ -101,6 +108,7 @@ where
     let identity = backend.ext.get::<PingoraBackendIdentity<T>>()?;
 
     Some(BackendSelectionResult::new(
+        identity.runtime_id(),
         identity.backend_id(),
         address,
         identity.index(),
@@ -191,6 +199,7 @@ where
         let GenerationBackendView {
             generation,
             upstream_name,
+            backend_ids: _,
             view,
             discovery: _,
         } = view;
@@ -251,6 +260,7 @@ where
         let GenerationBackendView {
             generation,
             upstream_name,
+            backend_ids: _,
             view,
             discovery: _,
         } = view;
@@ -310,6 +320,7 @@ where
         let GenerationBackendView {
             generation,
             upstream_name,
+            backend_ids: _,
             view,
             discovery: _,
         } = view;
@@ -357,6 +368,7 @@ where
 pub struct GenerationBackendView {
     generation: u64,
     upstream_name: String,
+    backend_ids: Box<[BackendId]>,
     view: BackendView,
     discovery: Option<ImpulseServiceDiscovery>,
 }
@@ -399,7 +411,33 @@ where
         }
     }
 
-    fn new(strategy: LoadBalancingStrategy, view: GenerationBackendView) -> Result<Self, String> {
+    fn new(
+        strategy: LoadBalancingStrategy,
+        mut view: GenerationBackendView,
+    ) -> Result<Self, String> {
+        let mut backend_ids = vec![None; view.view.get_backend().len()];
+        for backend in view.view.get_backend().iter() {
+            let identity = backend
+                .ext
+                .get::<PingoraBackendIdentity<T>>()
+                .ok_or_else(|| {
+                    format!("Pingora backend '{}' has no Impulse identity", backend.addr)
+                })?;
+            let slot = backend_ids.get_mut(identity.index()).ok_or_else(|| {
+                format!("Pingora backend '{}' has an invalid index", backend.addr)
+            })?;
+            *slot = Some(identity.runtime_id());
+        }
+        view.backend_ids = backend_ids
+            .into_iter()
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| {
+                format!(
+                    "upstream '{}' has incomplete backend identities",
+                    view.upstream_name
+                )
+            })?
+            .into_boxed_slice();
         let kind = match strategy {
             LoadBalancingStrategy::RoundRobin => GenerationSelectorKind::WeightedRoundRobin(
                 GenerationWeightedRoundRobin::from_backend_view(view),
@@ -449,6 +487,16 @@ where
             GenerationSelectorKind::CustomLeastConnections(_)
                 | GenerationSelectorKind::CustomLatencyAware(_)
         )
+    }
+
+    pub fn custom_backend_runtime_id(&self, index: usize) -> Option<BackendId> {
+        match &self.kind {
+            GenerationSelectorKind::CustomLeastConnections(view)
+            | GenerationSelectorKind::CustomLatencyAware(view) => {
+                view.backend_ids.get(index).copied()
+            }
+            _ => None,
+        }
     }
 
     pub fn synchronize_readiness(
@@ -773,6 +821,7 @@ impl GenerationBackendView {
         Ok(Self {
             generation,
             upstream_name,
+            backend_ids: Box::new([]),
             view,
             discovery: Some(discovery),
         })
@@ -799,6 +848,7 @@ impl GenerationBackendView {
 
 #[derive(Clone)]
 pub struct PingoraBackendIdentity<T> {
+    runtime_id: BackendId,
     backend_id: String,
     configured_address: String,
     index: usize,
@@ -806,6 +856,10 @@ pub struct PingoraBackendIdentity<T> {
 }
 
 impl<T> PingoraBackendIdentity<T> {
+    pub fn runtime_id(&self) -> BackendId {
+        self.runtime_id
+    }
+
     pub fn backend_id(&self) -> &str {
         &self.backend_id
     }
@@ -825,6 +879,7 @@ impl<T> PingoraBackendIdentity<T> {
 
 pub fn map_validated_backend<T>(
     backend: &BackendInput,
+    runtime_id: BackendId,
     address: SocketAddr,
     tls_identity: T,
 ) -> Result<PingoraBackend, String>
@@ -842,6 +897,7 @@ where
     )
     .map_err(|error| format!("failed to map backend '{}': {error}", backend.backend_id()))?;
     mapped.ext.insert(PingoraBackendIdentity {
+        runtime_id,
         backend_id: backend.backend_id().to_string(),
         configured_address: backend.configured_address().to_string(),
         index: backend.index(),
@@ -890,7 +946,14 @@ mod tests {
             generation,
             "api",
             &backend_inputs,
-            |backend| map_validated_backend(backend, SocketAddr::from(([0, 0, 0, 0], 8080)), ()),
+            |backend| {
+                map_validated_backend(
+                    backend,
+                    BackendId::new(backend.index() as u32),
+                    SocketAddr::from(([0, 0, 0, 0], 8080)),
+                    (),
+                )
+            },
             health_registry(),
         )
         .expect("hostname backend view")
@@ -946,7 +1009,7 @@ mod tests {
                     health_check: None,
                 };
                 let input = crate::test_support::backend_input(index, &backend);
-                map_validated_backend(&input, address, ())
+                map_validated_backend(&input, BackendId::new(input.index() as u32), address, ())
             })
             .collect::<Result<BTreeSet<_>, _>>()
             .expect("map test backends");
@@ -962,6 +1025,7 @@ mod tests {
         GenerationBackendView {
             generation: GENERATION,
             upstream_name: "api".to_string(),
+            backend_ids: Box::new([]),
             view,
             discovery: None,
         }
@@ -991,8 +1055,13 @@ mod tests {
         };
 
         let input = crate::test_support::backend_input(0, &backend);
-        let mapped = map_validated_backend(&input, SocketAddr::from(([127, 0, 0, 1], 8000)), ())
-            .expect("map backend");
+        let mapped = map_validated_backend(
+            &input,
+            BackendId::new(input.index() as u32),
+            SocketAddr::from(([127, 0, 0, 1], 8000)),
+            (),
+        )
+        .expect("map backend");
 
         assert_eq!(mapped.weight, 3);
     }

@@ -69,6 +69,8 @@ pub(in crate::quic_listener) fn selectors_for_test(
     runtime: &impulse_config::runtime::RuntimeConfig,
 ) -> PingoraLoadBalancingRuntimeState<RuntimeBackendTlsPolicy> {
     let generation = 1;
+    let identities = crate::runtime::generation::RuntimeIdentities::prepare(runtime)
+        .expect("runtime identities");
     let health_registry = Arc::new(
         impulse_lb::pingora_backend::HealthRegistry::with_equivalence(|backend| {
             let mut hasher = DefaultHasher::new();
@@ -90,6 +92,9 @@ pub(in crate::quic_listener) fn selectors_for_test(
         })
         .collect();
     let views = runtime.upstreams.iter().map(move |(name, upstream)| {
+        let upstream_id = identities
+            .upstream_id(name)
+            .expect("test upstream identity");
         let tls_identity = upstream.backend_tls_policy().clone();
         let backend_inputs = load_balancing_backend_inputs(upstream);
         let view = impulse_lb::pingora_backend::GenerationBackendView::new(
@@ -107,6 +112,9 @@ pub(in crate::quic_listener) fn selectors_for_test(
                 );
                 impulse_lb::pingora_backend::map_validated_backend(
                     backend,
+                    identities
+                        .backend_id_at(upstream_id, backend.index())
+                        .expect("test backend identity"),
                     address,
                     tls_identity.clone(),
                 )
@@ -147,6 +155,7 @@ pub(in crate::quic_listener) struct RouteResolution {
 }
 
 pub(crate) struct BackendSelection {
+    pub(crate) backend_id: impulse_contracts::BackendId,
     pub(crate) backend_addr: String,
     pub(crate) backend_index: usize,
     pub(in crate::quic_listener) backend_lb: String,
@@ -165,6 +174,7 @@ pub(super) struct ForwardTargetResolution {
     pub(super) route_path_len: usize,
     pub(super) route_host_specific: bool,
     pub(super) route_reason: String,
+    pub(super) backend_id: impulse_contracts::BackendId,
     pub(super) backend_addr: String,
     pub(super) backend_index: usize,
     pub(super) backend_lb: String,
@@ -327,6 +337,7 @@ impl Http3Service {
             route_reason,
         } = route;
         let BackendSelection {
+            backend_id,
             backend_addr,
             backend_index,
             backend_lb,
@@ -340,6 +351,7 @@ impl Http3Service {
             route_path_len,
             route_host_specific,
             route_reason: format!("{route_reason:?}"),
+            backend_id,
             backend_addr,
             backend_index,
             backend_lb,
