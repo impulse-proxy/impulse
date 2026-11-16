@@ -40,7 +40,7 @@ const OIDC_METADATA_CACHE_MAX_ENTRIES: usize = 256;
 pub(super) fn observe_external_auth_plugin_completion(
     metrics: &Metrics,
     outcome: PluginExecutionOutcome,
-    started_at: Instant,
+    started_at: Option<Instant>,
 ) {
     metrics
         .plugin_observations()
@@ -48,7 +48,11 @@ pub(super) fn observe_external_auth_plugin_completion(
             kind: PluginKind::ExternalAuth,
             phase: PluginPhase::AsyncRequestGate,
             outcome,
-            async_duration: Some(started_at.elapsed()),
+            async_duration: if metrics.detailed_plugin_timing_enabled() {
+                started_at.map(|started_at| started_at.elapsed())
+            } else {
+                None
+            },
         });
 }
 
@@ -699,7 +703,7 @@ impl Http3Service {
                     } else {
                         PluginExecutionOutcome::Continue
                     },
-                    auth_started_at,
+                    Some(auth_started_at),
                 );
                 metrics.policy_observations().inc_external_auth_allowed();
                 if let Err(state_err) =
@@ -745,7 +749,7 @@ impl Http3Service {
                 observe_external_auth_plugin_completion(
                     metrics,
                     PluginExecutionOutcome::Reject,
-                    auth_started_at,
+                    Some(auth_started_at),
                 );
                 req.response_status = Some(decision.status().as_u16());
                 metrics.policy_observations().inc_policy_denied();
@@ -787,7 +791,7 @@ impl Http3Service {
                 observe_external_auth_plugin_completion(
                     metrics,
                     PluginExecutionOutcome::Fail,
-                    auth_started_at,
+                    Some(auth_started_at),
                 );
                 metrics.policy_observations().inc_external_auth_error();
                 if let Some(error) = &error {
@@ -826,7 +830,7 @@ impl Http3Service {
                 observe_external_auth_plugin_completion(
                     metrics,
                     PluginExecutionOutcome::Fail,
-                    auth_started_at,
+                    Some(auth_started_at),
                 );
                 metrics.policy_observations().inc_external_auth_timeout();
                 req.response_status = Some(status.as_u16());

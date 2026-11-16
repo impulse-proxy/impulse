@@ -87,6 +87,13 @@ impl RuntimeBuilder {
                 ProxyError::Transport(format!("failed to compile runtime plugin plans: {error}"))
             })?,
         );
+        let route_execution_classes = Arc::new(
+            plugin_plans
+                .upstreams()
+                .iter()
+                .map(|(upstream, plan)| (upstream.clone(), plan.execution_class()))
+                .collect(),
+        );
         let transport_policy = &config.policies.transport;
         let timeout_policy = &config.policies.timeouts;
         let worker_threads = transport_policy.worker_threads.max(1);
@@ -220,7 +227,11 @@ impl RuntimeBuilder {
         let mut route_labels = config.upstreams.keys().cloned().collect::<Vec<_>>();
         route_labels.push("unrouted".to_string());
         let routing_index = Arc::new(RouteIndex::from_runtime_upstreams(&config.upstreams));
-        let metrics = Arc::new(crate::Metrics::new(worker_slots, route_labels));
+        let metrics = Arc::new(crate::Metrics::new_with_detailed_plugin_timing(
+            worker_slots,
+            route_labels,
+            config.observability.metrics.detailed_plugin_timing,
+        ));
         // Process-scoped: reuse the active generation's DNS resolver on reload so
         // its cache is preserved; only startup creates a fresh one.
         let backend_dns_resolver = carried
@@ -403,6 +414,7 @@ impl RuntimeBuilder {
                         .collect(),
                 ),
                 plugin_plans,
+                route_execution_classes,
                 pingora_load_balancing,
                 upstream_inflight,
                 global_inflight: Arc::new(Semaphore::new(global_inflight_limit)),

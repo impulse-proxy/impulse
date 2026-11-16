@@ -53,7 +53,7 @@ pub use instance::{
     CompiledAsyncRequestPlugin, CompiledCachePlugin, CompiledConnectionPlugin,
     CompiledRequestPlugin, CompiledResponsePlugin,
 };
-pub use plan::{CompiledConnectionPlan, CompiledPluginPlan};
+pub use plan::{CompiledConnectionPlan, CompiledPluginPlan, RouteExecutionClass};
 #[cfg(feature = "quota")]
 pub use quota::CompiledQuota;
 pub use request::{

@@ -204,12 +204,12 @@ impl PendingForward {
     }
 
     fn request_headers_cow(&self) -> Cow<'_, [quiche::h3::Header]> {
-        if self.auth_header_mutations.is_empty() {
+        let Some(mutations) = self.auth_header_mutations.as_deref() else {
             return Cow::Borrowed(self.original_request_headers());
-        }
+        };
 
         let mut headers = self.original_request_headers().to_vec();
-        apply_auth_request_mutations(&mut headers, &self.auth_header_mutations);
+        apply_auth_request_mutations(&mut headers, mutations);
         Cow::Owned(headers)
     }
 
@@ -266,24 +266,26 @@ impl PendingForward {
 
     fn request_header_mutation_refs(
         &self,
-    ) -> SmallVec<[impulse_bridge::request::RequestHeaderMutationRef<'_>; 8]> {
-        self.auth_header_mutations
-            .iter()
-            .map(|mutation| match mutation {
-                PendingHeaderMutation::Upsert { name, value } => {
-                    impulse_bridge::request::RequestHeaderMutationRef {
-                        name: name.as_slice(),
-                        value: Some(value.as_slice()),
+    ) -> Option<SmallVec<[impulse_bridge::request::RequestHeaderMutationRef<'_>; 8]>> {
+        self.auth_header_mutations.as_deref().map(|mutations| {
+            mutations
+                .iter()
+                .map(|mutation| match mutation {
+                    PendingHeaderMutation::Upsert { name, value } => {
+                        impulse_bridge::request::RequestHeaderMutationRef {
+                            name: name.as_slice(),
+                            value: Some(value.as_slice()),
+                        }
                     }
-                }
-                PendingHeaderMutation::Remove { name } => {
-                    impulse_bridge::request::RequestHeaderMutationRef {
-                        name: name.as_slice(),
-                        value: None,
+                    PendingHeaderMutation::Remove { name } => {
+                        impulse_bridge::request::RequestHeaderMutationRef {
+                            name: name.as_slice(),
+                            value: None,
+                        }
                     }
-                }
-            })
-            .collect()
+                })
+                .collect()
+        })
     }
 
     pub(super) fn build_request(
@@ -299,7 +301,7 @@ impl PendingForward {
                 self.request_build_input(
                     &self.method,
                     self.original_request_headers(),
-                    auth_header_mutations.as_slice(),
+                    auth_header_mutations.as_deref().unwrap_or_default(),
                     body,
                     content_length,
                 ),
@@ -311,7 +313,7 @@ impl PendingForward {
                 self.request_build_input(
                     &self.method,
                     self.original_request_headers(),
-                    auth_header_mutations.as_slice(),
+                    auth_header_mutations.as_deref().unwrap_or_default(),
                     body,
                     content_length,
                 ),
@@ -535,6 +537,7 @@ impl Http3Service {
             shared_ctx.routing_index,
             shared_ctx.upstream_policies,
             shared_ctx.plugin_plans,
+            shared_ctx.route_execution_classes,
             resilience,
             metrics,
         );
@@ -635,6 +638,8 @@ impl Http3Service {
                     route_host_specific,
                     backend_lb: Some(backend_lb.clone()),
                 };
+                // Brownout is route-independent resilience state; keep the gauge
+                // current even on routes without plugins (single atomic store).
                 metrics
                     .policy_observations()
                     .set_brownout_active(resilience.brownout.is_active());
@@ -854,10 +859,12 @@ impl Http3Service {
                     host_policy: resolved_policy.host_policy,
                     forwarded_header_policy: resolved_policy.forwarded_header_policy,
                     plugin_plan: Arc::clone(&resolved_policy.plugin_plan),
-                    auth_header_mutations: plugin_mutations
-                        .iter()
-                        .map(Self::pending_plugin_header_mutation)
-                        .collect(),
+                    auth_header_mutations: plugin_mutations.map(|mutations| {
+                        mutations
+                            .iter()
+                            .map(Self::pending_plugin_header_mutation)
+                            .collect()
+                    }),
                 });
                 let dispatch_ready = Self::build_dispatch_ready_candidate(
                     intake,
@@ -964,7 +971,7 @@ impl Http3Service {
                 let auth_disposition =
                     ExternalAuthTaskConfig::from_external_auth(&external_auth).disposition;
                 let pending_forward = Arc::clone(&request.request.state.pending_forward);
-                let auth_started_at = Instant::now();
+                let auth_started_at = metrics.detailed_plugin_timing_enabled().then(Instant::now);
                 let auth_start = match start_external_auth_task(pending_forward, external_auth) {
                     Ok(start) => Some(start),
                     Err(err) => {
@@ -1211,7 +1218,7 @@ mod tests {
     #[test]
     fn build_request_injects_auth_mutations_after_configured_headers() {
         let pending_forward = PendingForward {
-            auth_header_mutations: vec![
+            auth_header_mutations: Some(vec![
                 PendingHeaderMutation::Upsert {
                     name: b"x-auth-user".to_vec(),
                     value: b"alice".to_vec(),
@@ -1219,7 +1226,7 @@ mod tests {
                 PendingHeaderMutation::Remove {
                     name: b"x-remove-me".to_vec(),
                 },
-            ],
+            ]),
             ..PendingForward::sample_for_test(vec![
                 quiche::h3::Header::new(b"x-configured-auth", b"route-policy"),
                 quiche::h3::Header::new(b"x-auth-user", b"stale"),
@@ -1261,10 +1268,10 @@ mod tests {
     #[test]
     fn request_headers_materializes_owned_headers_when_auth_mutations_are_pending() {
         let pending_forward = PendingForward {
-            auth_header_mutations: vec![PendingHeaderMutation::Upsert {
+            auth_header_mutations: Some(vec![PendingHeaderMutation::Upsert {
                 name: b"x-auth-user".to_vec(),
                 value: b"alice".to_vec(),
-            }],
+            }]),
             ..PendingForward::sample_for_test(vec![quiche::h3::Header::new(b"x-test", b"1")])
         };
 

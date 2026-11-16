@@ -18,6 +18,8 @@ use impulse_contracts::{PluginCacheView, PluginPhase};
 use impulse_plugins::CachePluginFillDecision;
 #[cfg(any(feature = "response-cache", feature = "response-compression"))]
 use impulse_plugins::CompiledPluginPlan;
+#[cfg(any(feature = "response-cache", feature = "response-compression"))]
+use impulse_plugins::RouteExecutionClass;
 #[cfg(feature = "response-cache")]
 use impulse_plugins::{CachePluginDecision, CompiledCachePlugin, execute_cache_plugins};
 #[cfg(feature = "response-compression")]
@@ -125,40 +127,36 @@ pub(crate) fn process_response(input: ResponseProcessingInput<'_>) -> ResponsePr
     for header in normalized.headers {
         headers.append(header.name, header.value);
     }
+    let body_forwarding_enabled = matches!(normalized.emission.body, ResponseBodyPolicy::Forward);
+    let emit_end_stream_on_headers = normalized.emission.emit_end_stream_on_headers;
+
+    #[cfg(any(feature = "response-cache", feature = "response-compression"))]
+    if input.plugin_plan.execution_class() == RouteExecutionClass::Passthrough
+        || (input.plugin_plan.cache_policy().is_empty()
+            && input.plugin_plan.response_policy().is_empty())
+    {
+        return ResponseProcessingResult {
+            headers,
+            body_forwarding_enabled,
+            emit_end_stream_on_headers,
+            #[cfg(feature = "response-compression")]
+            compression: disabled_compression_evaluation(),
+            #[cfg(feature = "response-cache")]
+            cache: CachePluginFillDecision::Disabled,
+        };
+    }
 
     #[cfg(feature = "response-cache")]
     let mut cache = CachePluginFillDecision::Disabled;
     #[cfg(feature = "response-compression")]
-    let mut compression = ResponseCompressionEvaluation {
-        action: ResponseCompressionAction::Bypass(ResponseCompressionBypassReason::Disabled),
-        vary_accept_encoding: false,
-    };
-    #[cfg(any(feature = "response-cache", feature = "response-compression"))]
-    if input.plugin_plan.cache_policy().is_empty() && input.plugin_plan.response_policy().is_empty()
-    {
-        return ResponseProcessingResult {
-            headers,
-            body_forwarding_enabled: matches!(
-                normalized.emission.body,
-                ResponseBodyPolicy::Forward
-            ),
-            emit_end_stream_on_headers: normalized.emission.emit_end_stream_on_headers,
-            #[cfg(feature = "response-compression")]
-            compression,
-            #[cfg(feature = "response-cache")]
-            cache,
-        };
-    }
+    let mut compression = disabled_compression_evaluation();
 
     #[cfg(any(feature = "response-cache", feature = "response-compression"))]
     let Some(plugin_request) = input.plugin_request else {
         return ResponseProcessingResult {
             headers,
-            body_forwarding_enabled: matches!(
-                normalized.emission.body,
-                ResponseBodyPolicy::Forward
-            ),
-            emit_end_stream_on_headers: normalized.emission.emit_end_stream_on_headers,
+            body_forwarding_enabled,
+            emit_end_stream_on_headers,
             #[cfg(feature = "response-compression")]
             compression,
             #[cfg(feature = "response-cache")]
@@ -266,11 +264,19 @@ pub(crate) fn process_response(input: ResponseProcessingInput<'_>) -> ResponsePr
 
     ResponseProcessingResult {
         headers,
-        body_forwarding_enabled: matches!(normalized.emission.body, ResponseBodyPolicy::Forward),
-        emit_end_stream_on_headers: normalized.emission.emit_end_stream_on_headers,
+        body_forwarding_enabled,
+        emit_end_stream_on_headers,
         #[cfg(feature = "response-compression")]
         compression,
         #[cfg(feature = "response-cache")]
         cache,
+    }
+}
+
+#[cfg(feature = "response-compression")]
+const fn disabled_compression_evaluation() -> ResponseCompressionEvaluation {
+    ResponseCompressionEvaluation {
+        action: ResponseCompressionAction::Bypass(ResponseCompressionBypassReason::Disabled),
+        vary_accept_encoding: false,
     }
 }

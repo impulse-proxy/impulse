@@ -16,6 +16,7 @@ use impulse_config::{
     validator::validate,
 };
 use impulse_pingora_ingress::ConnectionAdmission;
+use impulse_plugins::RouteExecutionClass;
 use pingora_core::{server::configuration::ServerConf, services::Service as PingoraService};
 
 use super::{
@@ -602,6 +603,131 @@ fn pingora_and_http3_match_response_compression_contracts() {
         pingora.status,
         http::StatusCode::SERVICE_UNAVAILABLE.as_u16()
     );
+}
+
+#[test]
+fn passthrough_and_full_route_execution_preserve_response_behavior() {
+    if !local_listener_bind_available() {
+        return;
+    }
+
+    let mut harness = ProtocolParityHarness::new();
+    let backend_handler = |_request: hyper::Request<hyper::body::Incoming>| async move {
+        Ok::<_, std::convert::Infallible>(
+            hyper::Response::builder()
+                .status(http::StatusCode::CREATED)
+                .header(http::header::CONTENT_TYPE, "text/plain")
+                .header(http::header::CACHE_CONTROL, "no-store")
+                .header("x-parity", "same")
+                .body(http_body_util::Full::new(bytes::Bytes::from_static(
+                    b"same backend response\n",
+                )))
+                .expect("backend response"),
+        )
+    };
+    // Each upstream needs its own backend address; the validator rejects sharing one.
+    let plain_backend_addr = harness.start_h1_backend(backend_handler);
+    let full_backend_addr = harness.start_h1_backend(backend_handler);
+    let passthrough = make_upstream(
+        "/plain",
+        vec![make_backend(
+            "backend-plain",
+            plain_backend_addr.to_string(),
+        )],
+        None,
+        "round-robin",
+    );
+    let mut full = make_upstream(
+        "/full",
+        vec![make_backend("backend-full", full_backend_addr.to_string())],
+        None,
+        "round-robin",
+    );
+    full.auth = RouteAuth {
+        api_key: Some(ApiKeyAuth {
+            header_name: "x-api-key".to_string(),
+            keys: vec!["edge-key".to_string()],
+        }),
+        ..RouteAuth::default()
+    };
+    full.cache = ResponseCache {
+        enabled: true,
+        max_bytes: 4096,
+        max_entries: 4,
+        max_object_bytes: 1024,
+        max_ttl_secs: 60,
+    };
+    full.compression = ResponseCompression {
+        enabled: true,
+        minimum_size_bytes: 4096,
+    };
+
+    let config = harness.make_config(HashMap::from([
+        ("passthrough".to_string(), passthrough),
+        ("full".to_string(), full),
+    ]));
+    let mut pingora_config = config.clone();
+    pingora_config.listen.port = reserve_unused_listener_port();
+    let (pingora_service, pingora_addr) =
+        PingoraTestService::start(pingora_config).expect("start Pingora parity ingress");
+    harness
+        .start_listener(config)
+        .expect("start HTTP/3 parity ingress");
+
+    let generation = pingora_service.runtime_bundle.current();
+    let route_execution_classes = &generation
+        .shared_state
+        .generation_state()
+        .route_execution_classes;
+    assert_eq!(
+        route_execution_classes.get("passthrough"),
+        Some(&RouteExecutionClass::Passthrough)
+    );
+    assert_eq!(
+        route_execution_classes.get("full"),
+        Some(&RouteExecutionClass::Full)
+    );
+
+    // `content-length` is intentionally not compared: HTTP/3 response normalization
+    // strips it by design, so it legitimately differs between Pingora and HTTP/3.
+    let selected_response_headers = [
+        "cache-control",
+        "content-encoding",
+        "content-type",
+        "vary",
+        "x-parity",
+    ];
+    let request_headers = [("x-api-key", "edge-key")];
+    let (plain_pingora, plain_http3) = protocol_pair(
+        &harness,
+        pingora_addr,
+        ParityRequestSpec {
+            method: "GET",
+            authority: "localhost",
+            path: "/plain/resource",
+            headers: &request_headers,
+            body: None,
+            user_agent: "impulse-execution-parity-test",
+            selected_response_headers: &selected_response_headers,
+        },
+    );
+    let (full_pingora, full_http3) = protocol_pair(
+        &harness,
+        pingora_addr,
+        ParityRequestSpec {
+            method: "GET",
+            authority: "localhost",
+            path: "/full/resource",
+            headers: &request_headers,
+            body: None,
+            user_agent: "impulse-execution-parity-test",
+            selected_response_headers: &selected_response_headers,
+        },
+    );
+
+    assert_eq!(plain_pingora, plain_http3);
+    assert_eq!(full_pingora, full_http3);
+    assert_eq!(plain_pingora, full_pingora);
 }
 
 #[test]

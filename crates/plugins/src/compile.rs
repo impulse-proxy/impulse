@@ -22,7 +22,7 @@ use crate::CompiledResponsePlugin;
 use crate::CompiledScopedRateLimit;
 use crate::{
     CompiledConnectionPlan, CompiledPluginPlan, PluginCatalog, PluginConstructionInputs,
-    UpstreamPluginInputs,
+    RouteExecutionClass, UpstreamPluginInputs,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -299,10 +299,18 @@ fn compile_upstream_plan(
         ));
     }
 
+    let execution_class = RouteExecutionClass::compile(
+        !request_gate.is_empty(),
+        !async_request_gate.is_empty(),
+        !cache_policy.is_empty(),
+        !response_policy.is_empty(),
+    );
+
     Ok((
         inputs.upstream_name,
         Arc::new(
             CompiledPluginPlan::new(
+                execution_class,
                 request_gate,
                 async_request_gate,
                 cache_policy,

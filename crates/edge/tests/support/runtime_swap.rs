@@ -131,6 +131,7 @@ impl RuntimeSwapHarness {
                 allow_non_loopback: false,
                 port: self.metrics_port,
                 path: "/metrics".to_string(),
+                detailed_plugin_timing: false,
                 max_connections: 32,
                 connection_timeout_ms: 5_000,
             },

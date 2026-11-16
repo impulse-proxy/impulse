@@ -135,6 +135,7 @@ pub struct DiscoveryRefreshUpdate<'a> {
 }
 
 pub struct Metrics {
+    detailed_plugin_timing: bool,
     pub requests_total: AtomicU64,
     pub requests_success: AtomicU64,
     pub requests_failure: AtomicU64,

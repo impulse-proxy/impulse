@@ -42,6 +42,8 @@ use impulse_plugins::AsyncRequestPluginExecutionGuard;
 use impulse_plugins::CachePluginFillDecision;
 #[cfg(feature = "response-cache")]
 use impulse_plugins::ResponseCacheKeyParts;
+#[cfg(any(feature = "response-cache", feature = "response-compression"))]
+use impulse_plugins::RouteExecutionClass;
 #[cfg(feature = "external-auth")]
 use impulse_plugins::{AsyncRequestPluginDecision, CompiledAsyncRequestPlugin};
 #[cfg(feature = "response-cache")]
@@ -119,7 +121,7 @@ pub(crate) struct PingoraEdgeRequestState {
     pub(crate) runtime: Arc<RuntimeBundle>,
     pub(crate) route: Option<ResolvedRouteTarget>,
     pub(crate) policy: Option<ResolvedRequestPolicy>,
-    auth_header_mutations: Vec<PendingHeaderMutation>,
+    auth_header_mutations: Option<Vec<PendingHeaderMutation>>,
     pub(crate) completion: RequestCompletion,
     terminal_classification: Option<PingoraTerminalClassification>,
     response_processing: Option<ResponseProcessingResult>,
@@ -683,7 +685,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
                 runtime,
                 route: None,
                 policy: None,
-                auth_header_mutations: Vec::new(),
+                auth_header_mutations: None,
                 completion: RequestCompletion::default(),
                 terminal_classification: None,
                 response_processing: None,
@@ -804,6 +806,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             &state.routing_index,
             &state.upstream_policies,
             &state.plugin_plans,
+            &state.route_execution_classes,
             &state.resilience,
             &shared.metrics,
         );
@@ -859,6 +862,8 @@ impl PingoraRequestService for PingoraEdgeRequestService {
         };
         let route = execution.route;
         let policy = execution.policy;
+        // Brownout is route-independent resilience state; keep the gauge current
+        // even on routes without plugins (single atomic store).
         shared
             .metrics
             .policy_observations()
@@ -952,7 +957,10 @@ impl PingoraRequestService for PingoraEdgeRequestService {
                     "Pingora ingress request filter did not validate a path",
                 )
             })?;
-            let started_at = Instant::now();
+            let started_at = shared
+                .metrics
+                .detailed_plugin_timing_enabled()
+                .then(Instant::now);
             let decision = execute_compiled_external_auth(
                 crate::runtime::connection::auth::ExternalAuthRequest {
                     method,
@@ -981,12 +989,16 @@ impl PingoraRequestService for PingoraEdgeRequestService {
                         }
                         AsyncRequestPluginDecision::Reject(_) => PluginExecutionOutcome::Fail,
                     },
-                    async_duration: Some(started_at.elapsed()),
+                    async_duration: started_at.map(|started_at| started_at.elapsed()),
                 });
             match decision {
                 AsyncRequestPluginDecision::Continue => {}
                 AsyncRequestPluginDecision::Mutate(mutations) => {
-                    plugin_mutations.extend(mutations);
+                    if !mutations.is_empty() {
+                        plugin_mutations
+                            .get_or_insert_with(Vec::new)
+                            .extend(mutations);
+                    }
                 }
                 AsyncRequestPluginDecision::Reject(rejection) => {
                     let external_auth_timed_out = rejection.reason()
@@ -1026,10 +1038,14 @@ impl PingoraRequestService for PingoraEdgeRequestService {
                 .policy_observations()
                 .inc_external_auth_allowed();
         }
-        ctx.auth_header_mutations = plugin_mutations
-            .iter()
-            .map(pending_header_mutation)
-            .collect();
+        if let Some(plugin_mutations) = plugin_mutations {
+            ctx.auth_header_mutations = Some(
+                plugin_mutations
+                    .iter()
+                    .map(pending_header_mutation)
+                    .collect(),
+            );
+        }
 
         if let Some(response) = admission.rejection_response() {
             match admission {
@@ -1495,30 +1511,31 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             &policy.host_policy,
             &policy.forwarded_header_policy,
         );
-        let auth_header_mutations = ctx
-            .auth_header_mutations
-            .iter()
-            .map(|mutation| match mutation {
-                PendingHeaderMutation::Upsert { name, value } => {
-                    impulse_bridge::request::RequestHeaderMutationRef {
-                        name: name.as_slice(),
-                        value: Some(value.as_slice()),
+        let auth_header_mutations = ctx.auth_header_mutations.as_ref().map(|mutations| {
+            mutations
+                .iter()
+                .map(|mutation| match mutation {
+                    PendingHeaderMutation::Upsert { name, value } => {
+                        impulse_bridge::request::RequestHeaderMutationRef {
+                            name: name.as_slice(),
+                            value: Some(value.as_slice()),
+                        }
                     }
-                }
-                PendingHeaderMutation::Remove { name } => {
-                    impulse_bridge::request::RequestHeaderMutationRef {
-                        name: name.as_slice(),
-                        value: None,
+                    PendingHeaderMutation::Remove { name } => {
+                        impulse_bridge::request::RequestHeaderMutationRef {
+                            name: name.as_slice(),
+                            value: None,
+                        }
                     }
-                }
-            })
-            .collect::<Vec<_>>();
+                })
+                .collect::<Vec<_>>()
+        });
         let input = impulse_bridge::request::RequestBuildInput {
             method,
             path,
             authority: ctx.authority.as_deref(),
             headers: &headers,
-            auth_header_mutations: &auth_header_mutations,
+            auth_header_mutations: auth_header_mutations.as_deref().unwrap_or_default(),
             body: BoxBody::new(Full::<Bytes>::new(Bytes::new())),
             body_mode: impulse_bridge::request::RequestBuildInput::<
                 BoxBody<Bytes, Infallible>,
@@ -1561,8 +1578,19 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             .get(http::header::CONTENT_LENGTH)
             .and_then(|value| value.to_str().ok())
             .and_then(|value| value.parse::<usize>().ok());
+        let has_response_plugins = ctx.policy.as_ref().is_some_and(|policy| {
+            !policy.plugin_plan.cache_policy().is_empty()
+                || !policy.plugin_plan.response_policy().is_empty()
+        });
+        if !has_response_plugins {
+            return Ok(());
+        }
         let processed = Self::process_response_head(session, upstream_response, ctx)?;
         #[cfg(feature = "response-compression")]
+        if ctx
+            .policy
+            .as_ref()
+            .is_some_and(|policy| !policy.plugin_plan.response_policy().is_empty())
         {
             ctx.runtime
                 .shared_state
@@ -1847,53 +1875,62 @@ impl PingoraRequestService for PingoraEdgeRequestService {
                 backend_index: Some(selected.index),
             });
         let metrics = &ctx.runtime.shared_state.shared_services().metrics;
+        #[cfg(any(feature = "response-cache", feature = "response-compression"))]
+        let passthrough = ctx.policy.as_ref().is_some_and(|policy| {
+            policy.plugin_plan.execution_class() == RouteExecutionClass::Passthrough
+        });
         #[cfg(feature = "response-cache")]
-        match session.cache.phase() {
-            CachePhase::Hit | CachePhase::Revalidated => {
-                metrics
-                    .ingress_observations()
-                    .record_response_cache_outcome(ResponseCacheOutcome::Hit);
+        if !passthrough {
+            match session.cache.phase() {
+                CachePhase::Hit | CachePhase::Revalidated => {
+                    metrics
+                        .ingress_observations()
+                        .record_response_cache_outcome(ResponseCacheOutcome::Hit);
+                }
+                CachePhase::Miss => {
+                    metrics
+                        .ingress_observations()
+                        .record_response_cache_outcome(ResponseCacheOutcome::Miss);
+                }
+                CachePhase::Expired => {
+                    metrics
+                        .ingress_observations()
+                        .record_response_cache_outcome(ResponseCacheOutcome::Expiry);
+                    metrics
+                        .ingress_observations()
+                        .record_response_cache_outcome(ResponseCacheOutcome::Miss);
+                }
+                CachePhase::Stale | CachePhase::StaleUpdating => {
+                    metrics
+                        .ingress_observations()
+                        .record_response_cache_outcome(ResponseCacheOutcome::Expiry);
+                    metrics
+                        .ingress_observations()
+                        .record_response_cache_outcome(ResponseCacheOutcome::Hit);
+                }
+                CachePhase::Bypass if !ctx.response_cache_bypass_recorded => {
+                    metrics
+                        .ingress_observations()
+                        .record_response_cache_outcome(ResponseCacheOutcome::Bypass);
+                }
+                CachePhase::Disabled(_)
+                | CachePhase::Uninit
+                | CachePhase::CacheKey
+                | CachePhase::Bypass
+                | CachePhase::RevalidatedNoCache(_) => {}
             }
-            CachePhase::Miss => {
-                metrics
-                    .ingress_observations()
-                    .record_response_cache_outcome(ResponseCacheOutcome::Miss);
-            }
-            CachePhase::Expired => {
-                metrics
-                    .ingress_observations()
-                    .record_response_cache_outcome(ResponseCacheOutcome::Expiry);
-                metrics
-                    .ingress_observations()
-                    .record_response_cache_outcome(ResponseCacheOutcome::Miss);
-            }
-            CachePhase::Stale | CachePhase::StaleUpdating => {
-                metrics
-                    .ingress_observations()
-                    .record_response_cache_outcome(ResponseCacheOutcome::Expiry);
-                metrics
-                    .ingress_observations()
-                    .record_response_cache_outcome(ResponseCacheOutcome::Hit);
-            }
-            CachePhase::Bypass if !ctx.response_cache_bypass_recorded => {
-                metrics
-                    .ingress_observations()
-                    .record_response_cache_outcome(ResponseCacheOutcome::Bypass);
-            }
-            CachePhase::Disabled(_)
-            | CachePhase::Uninit
-            | CachePhase::CacheKey
-            | CachePhase::Bypass
-            | CachePhase::RevalidatedNoCache(_) => {}
         }
         #[cfg(feature = "response-cache")]
-        if session.cache.lock_duration().is_some() {
+        if !passthrough && session.cache.lock_duration().is_some() {
             metrics
                 .ingress_observations()
                 .record_response_cache_outcome(ResponseCacheOutcome::LockWait);
         }
         #[cfg(feature = "response-compression")]
-        if let Some(("gzip", input, output, _duration)) = session.upstream_compression.get_info() {
+        if !passthrough
+            && let Some(("gzip", input, output, _duration)) =
+                session.upstream_compression.get_info()
+        {
             metrics
                 .ingress_observations()
                 .add_response_compression_bytes(input, output);

@@ -22,7 +22,7 @@ use impulse_plugins::CompiledAsyncRequestPlugin;
 use impulse_plugins::CompiledRequestPlugin;
 use impulse_plugins::{
     AsyncRequestPluginDecision, AsyncRequestPluginExecution, AsyncRequestPluginExecutionGuard,
-    CompiledGenerationPluginPlans, SynchronousRequestPluginDecision,
+    CompiledGenerationPluginPlans, RouteExecutionClass, SynchronousRequestPluginDecision,
     SynchronousRequestPluginExecution, execute_async_request_plugins,
     execute_synchronous_request_plugins,
 };
@@ -39,6 +39,7 @@ pub(crate) struct EdgeRequestService<'a> {
     routing_index: &'a RouteIndex,
     upstream_policies: &'a HashMap<String, RuntimeUpstreamPolicy>,
     plugin_plans: &'a CompiledGenerationPluginPlans,
+    route_execution_classes: &'a HashMap<String, RouteExecutionClass>,
     resilience: &'a RuntimeResilience,
     metrics: &'a Metrics,
 }
@@ -47,6 +48,7 @@ impl<'a> EdgeRequestService<'a> {
         routing_index: &'a RouteIndex,
         upstream_policies: &'a HashMap<String, RuntimeUpstreamPolicy>,
         plugin_plans: &'a CompiledGenerationPluginPlans,
+        route_execution_classes: &'a HashMap<String, RouteExecutionClass>,
         resilience: &'a RuntimeResilience,
         metrics: &'a Metrics,
     ) -> Self {
@@ -54,6 +56,7 @@ impl<'a> EdgeRequestService<'a> {
             routing_index,
             upstream_policies,
             plugin_plans,
+            route_execution_classes,
             resilience,
             metrics,
         }
@@ -114,8 +117,32 @@ impl<'a> EdgeRequestService<'a> {
             .upstream_plan(route.upstream_name.as_ref())
             .ok_or(super::RouteResolutionError::MissingUpstreamPluginPlan)?;
         let policy = resolve_policy(upstream_policy, Arc::clone(&plugin_plan));
-        let has_synchronous_plugins = !plugin_plan.request_gate().is_empty();
-        let has_asynchronous_plugins = !plugin_plan.async_request_gate().is_empty();
+        if plugin_plan.is_empty() {
+            let admission = evaluate_admission(self.resilience, route.upstream_name.as_ref());
+            return Ok(PluginRequestExecutionState {
+                route,
+                policy,
+                outcome: PluginRequestExecutionOutcome::Admitted {
+                    admission,
+                    mutations: None,
+                },
+            });
+        }
+        let execution_class = self
+            .route_execution_classes
+            .get(route.upstream_name.as_ref())
+            .ok_or(super::RouteResolutionError::MissingUpstreamPluginPlan)?;
+        let (has_synchronous_plugins, has_asynchronous_plugins) = match execution_class {
+            RouteExecutionClass::Passthrough
+            | RouteExecutionClass::Cache
+            | RouteExecutionClass::Compression => (false, false),
+            RouteExecutionClass::SynchronousPolicy => (true, false),
+            RouteExecutionClass::AsynchronousPolicy => (false, true),
+            RouteExecutionClass::Full => (
+                !plugin_plan.request_gate().is_empty(),
+                !plugin_plan.async_request_gate().is_empty(),
+            ),
+        };
         if !has_synchronous_plugins && !has_asynchronous_plugins {
             let admission = evaluate_admission(self.resilience, route.upstream_name.as_ref());
             return Ok(PluginRequestExecutionState {
@@ -123,7 +150,7 @@ impl<'a> EdgeRequestService<'a> {
                 policy,
                 outcome: PluginRequestExecutionOutcome::Admitted {
                     admission,
-                    mutations: Vec::new(),
+                    mutations: None,
                 },
             });
         }
@@ -188,7 +215,7 @@ impl<'a> EdgeRequestService<'a> {
                 }
             }
         } else {
-            Vec::new()
+            None
         };
 
         if has_asynchronous_plugins {
@@ -196,6 +223,7 @@ impl<'a> EdgeRequestService<'a> {
                 async_guard,
                 &plugin_plan,
                 plugin_request,
+                self.metrics.detailed_plugin_timing_enabled(),
                 |observation| {
                     #[cfg(feature = "external-auth")]
                     let external_auth_deferred = observation.kind == PluginKind::ExternalAuth
@@ -243,7 +271,11 @@ impl<'a> EdgeRequestService<'a> {
                 AsyncRequestPluginExecution::Continue {
                     mutations: async_mutations,
                 } => {
-                    mutations.extend(async_mutations);
+                    if let Some(async_mutations) = async_mutations {
+                        mutations
+                            .get_or_insert_with(Vec::new)
+                            .extend(async_mutations);
+                    }
                     #[cfg(feature = "quota")]
                     if input.ingress_protocol != IngressProtocol::Http3
                         && plugin_plan
@@ -251,11 +283,14 @@ impl<'a> EdgeRequestService<'a> {
                             .iter()
                             .any(|plugin| matches!(plugin, CompiledAsyncRequestPlugin::Quota(_)))
                     {
-                        let started_at = Instant::now();
+                        let started_at = self
+                            .metrics
+                            .detailed_plugin_timing_enabled()
+                            .then(Instant::now);
                         let decision = super::execute_compiled_quota_plugin(
                             &plugin_plan,
                             plugin_request,
-                            &mutations,
+                            mutations.as_deref().unwrap_or_default(),
                         )
                         .await;
                         self.metrics.plugin_observations().record_execution(
@@ -272,7 +307,7 @@ impl<'a> EdgeRequestService<'a> {
                                         }
                                     },
                                 ),
-                                async_duration: Some(started_at.elapsed()),
+                                async_duration: started_at.map(|started_at| started_at.elapsed()),
                             },
                         );
                         if let Some(decision) = decision {
