@@ -215,20 +215,19 @@ pub(crate) struct RuntimeObservationFlags {
     pub(crate) detailed_plugin_timing: bool,
 }
 
-/// Immutable, generation-pinned references needed to execute one route.
-#[derive(Clone, Copy)]
-pub(crate) struct RouteRuntime<'a> {
-    pub(crate) plugin_plan: &'a CompiledPluginPlan,
-    pub(crate) selector: &'a GenerationSelector<RuntimeBackendTlsPolicy>,
-    pub(crate) upstream_pool: &'a Arc<RwLock<UpstreamPool>>,
-    #[allow(dead_code)] // Available to protocol adapters handling transport policy.
-    pub(crate) transport_policy: &'a RuntimeTransportPolicy,
-    pub(crate) retry_policy: &'a RetryBudget,
-    #[allow(dead_code)] // Consumed by response-cache handling after request execution.
-    pub(crate) cache_policy: &'a RuntimeResponseCachePolicy,
-    #[allow(dead_code)] // Consumed by response-compression handling after request execution.
-    pub(crate) compression_policy: &'a RuntimeResponseCompressionPolicy,
-    pub(crate) observation_flags: &'a RuntimeObservationFlags,
+/// Immutable route state compiled with and owned by one runtime generation.
+pub(crate) struct RouteRuntime {
+    pub(crate) plugin_plan: Arc<CompiledPluginPlan>,
+    pub(crate) selector: Arc<GenerationSelector<RuntimeBackendTlsPolicy>>,
+    pub(crate) upstream_pool: Arc<RwLock<UpstreamPool>>,
+    #[allow(dead_code)]
+    pub(crate) transport_policy: Arc<RuntimeTransportPolicy>,
+    pub(crate) retry_policy: Arc<RetryBudget>,
+    #[allow(dead_code)]
+    pub(crate) cache_policy: Arc<RuntimeResponseCachePolicy>,
+    #[allow(dead_code)]
+    pub(crate) compression_policy: Arc<RuntimeResponseCompressionPolicy>,
+    pub(crate) observation_flags: Arc<RuntimeObservationFlags>,
 }
 
 fn compact_identity_value(index: usize, kind: &str) -> Result<u32, ProxyError> {
@@ -353,13 +352,15 @@ pub struct RuntimeGenerationState {
     /// Upstream policies indexed by compact upstream identity.
     pub upstream_policies: Arc<[RuntimeUpstreamPolicy]>,
     /// Normalized transport settings shared by routes in this generation.
-    pub transport_policy: RuntimeTransportPolicy,
+    pub transport_policy: Arc<RuntimeTransportPolicy>,
     /// Observation switches shared by route execution in this generation.
-    pub(crate) observation_flags: RuntimeObservationFlags,
+    pub(crate) observation_flags: Arc<RuntimeObservationFlags>,
     /// Immutable connection and per-upstream plugin plans compiled for this generation.
     pub plugin_plans: Arc<CompiledGenerationPluginPlans>,
     /// Precompiled route execution classes owned by this runtime generation.
     pub route_execution_classes: Arc<[RouteExecutionClass]>,
+    /// Fully compiled route execution state, indexed by upstream identity.
+    pub(crate) route_runtimes: Arc<[RouteRuntime]>,
     /// Backend membership, readiness, discovery, and selectors for this generation.
     pub pingora_load_balancing: SharedPingoraLoadBalancingRuntimeState<RuntimeBackendTlsPolicy>,
     /// Per-upstream inflight semaphores.
@@ -375,24 +376,8 @@ pub struct RuntimeGenerationState {
 }
 
 impl RuntimeGenerationState {
-    pub(crate) fn route_runtime(&self, upstream_id: UpstreamId) -> Option<RouteRuntime<'_>> {
-        let index = upstream_id.get() as usize;
-        let upstream_policy = self.upstream_policies.get(index)?;
-        Some(RouteRuntime {
-            plugin_plan: self.plugin_plans.upstream_plan_ref(upstream_id)?.as_ref(),
-            selector: self
-                .pingora_load_balancing
-                .selector_by_id(upstream_id)?
-                .as_ref(),
-            upstream_pool: self
-                .pingora_load_balancing
-                .upstream_pool_by_id(upstream_id)?,
-            transport_policy: &self.transport_policy,
-            retry_policy: &self.resilience.retry_budget,
-            cache_policy: &upstream_policy.response_cache,
-            compression_policy: &upstream_policy.response_compression,
-            observation_flags: &self.observation_flags,
-        })
+    pub(crate) fn route_runtime(&self, upstream_id: UpstreamId) -> Option<&RouteRuntime> {
+        self.route_runtimes.get(upstream_id.get() as usize)
     }
 }
 

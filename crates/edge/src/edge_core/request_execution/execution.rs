@@ -103,7 +103,7 @@ impl<'a> EdgeRequestService<'a> {
             .plugin_plans
             .upstream_plan(route.upstream_id)
             .ok_or(super::RouteResolutionError::MissingUpstreamPluginPlan)?;
-        let plugin_plan = route_runtime.plugin_plan;
+        let plugin_plan = route_runtime.plugin_plan.as_ref();
         let policy = resolve_policy(upstream_policy, plugin_plan_handle);
         if plugin_plan.is_empty() {
             let admission = evaluate_admission(&self.generation.resilience, route.route_id);

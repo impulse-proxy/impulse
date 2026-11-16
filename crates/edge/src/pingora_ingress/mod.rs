@@ -322,7 +322,7 @@ impl PingoraEdgeRequestService {
                 format!("Pingora route runtime is missing: {upstream_name}"),
             )
         })?;
-        let pool = Arc::clone(route_runtime.upstream_pool);
+        let pool = Arc::clone(&route_runtime.upstream_pool);
         let (backend_id, backend_addr, backend_index) = if let Some((backend_id, index)) =
             retry_backend
         {
@@ -363,7 +363,7 @@ impl PingoraEdgeRequestService {
             let selected = ForwardingSelectionService::select_backend(
                 &selection_request,
                 &pool,
-                route_runtime.selector,
+                &route_runtime.selector,
                 ctx.runtime.generation,
                 true,
                 ctx.runtime.shared_state.shared_services().metrics.as_ref(),
@@ -2079,7 +2079,7 @@ fn handle_pingora_proxy_failure(
     let metrics = ctx.runtime.shared_state.shared_services().metrics.as_ref();
     let selection = match route_runtime.as_ref() {
         Some(route_runtime) => Some(ForwardingSelectionService::select_backend_excluding(
-            route_runtime.selector,
+            &route_runtime.selector,
             &selected.pool,
             BackendSelectionInput::new(
                 ctx.runtime.generation,
@@ -2127,7 +2127,7 @@ fn handle_pingora_proxy_failure(
                 .generation_state()
                 .resilience
                 .retry_budget,
-            |route_runtime| route_runtime.retry_policy,
+            |route_runtime| route_runtime.retry_policy.as_ref(),
         ),
         retry_backend.is_some(),
         alternate_failure,
