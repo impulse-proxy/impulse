@@ -505,6 +505,7 @@ impl Http3Service {
         let resilience = shared_ctx.resilience;
         let resolution_context = ResolutionContext::new(
             shared_ctx.pingora_load_balancing,
+            &shared_ctx.runtime_generation.backend_endpoints_by_id,
             shared_ctx.generation,
             metrics,
         );
@@ -621,6 +622,7 @@ impl Http3Service {
                             backend_id,
                             backend_addr,
                             backend_index,
+                            transport_identity,
                             backend_lb,
                             lb_key,
                         },
@@ -840,6 +842,7 @@ impl Http3Service {
                     backend_id,
                     backend_addr: Arc::<str>::from(backend_addr.as_str()),
                     backend_index,
+                    transport_identity,
                     backend_lb: Some(Arc::<str>::from(backend_lb.as_str())),
                     lb_key: Arc::<str>::from(lb_key.as_str()),
                     client_addr: peer_address,

@@ -1,6 +1,6 @@
 use std::convert::Infallible;
 
-use impulse_config::runtime::RuntimeBackendTlsPolicy;
+use impulse_config::{backend_endpoint::BackendEndpoint, runtime::RuntimeBackendTlsPolicy};
 use impulse_contracts::{AlternateBackendFailureReason, BackendId, HedgeOutcomeTelemetryReason};
 #[cfg(feature = "response-cache")]
 use impulse_contracts::{IngressProtocol, PluginRequestView};
@@ -32,6 +32,7 @@ enum ResolvedAlternateBackend {
     Selected {
         id: impulse_contracts::BackendId,
         address: String,
+        transport_identity: BackendEndpoint,
     },
     Unavailable {
         reason: AlternateBackendFailureReason,
@@ -107,7 +108,6 @@ struct RetryExecutionCtx<'a> {
     policy_telemetry: &'a mut ForwardingPolicyTelemetry,
     retry_budget: &'a crate::resilience::retry_budget::RetryBudget,
     alternate_backend: Option<&'a ResolvedAlternateBackend>,
-    backend_endpoints: &'a [BackendEndpoint],
     pending_forward: &'a PendingForward,
     circuit_breakers: &'a crate::resilience::circuit_breaker::CircuitBreakers,
     executor: &'a UpstreamRequestExecutor,
@@ -445,6 +445,7 @@ impl Http3Service {
     fn resolve_alternate_backend(
         upstream_pool: &Arc<RwLock<UpstreamPool>>,
         selector: &GenerationSelector<RuntimeBackendTlsPolicy>,
+        backend_transport_identities: &[BackendEndpoint],
         generation: u64,
         lb_key: &str,
         primary_backend_id: BackendId,
@@ -453,12 +454,20 @@ impl Http3Service {
         match ForwardingSelectionService::select_backend_excluding(
             selector,
             upstream_pool,
+            backend_transport_identities,
             BackendSelectionInput::new(generation, lb_key, &[primary_backend_id], false),
             metrics,
         ) {
-            Ok(Some(BackendCandidate { id, address, .. })) => {
-                ResolvedAlternateBackend::Selected { id, address }
-            }
+            Ok(Some(BackendCandidate {
+                id,
+                address,
+                transport_identity,
+                ..
+            })) => ResolvedAlternateBackend::Selected {
+                id,
+                address,
+                transport_identity,
+            },
             Ok(None) => {
                 let reason = match upstream_pool.read() {
                     Ok(pool) if pool.membership_summary().healthy_backends == 0 => {
@@ -477,13 +486,17 @@ impl Http3Service {
 
     fn build_alternate_bodyless_candidate(
         alternate_backend: Option<&ResolvedAlternateBackend>,
-        backend_endpoints: &[BackendEndpoint],
         pending_forward: &PendingForward,
     ) -> Option<AlternateBodylessCandidate> {
         match alternate_backend? {
-            ResolvedAlternateBackend::Selected { id, address } => {
-                let endpoint = backend_endpoints.get(id.get() as usize)?;
-                let request = pending_forward.build_bodyless_request(endpoint).ok()?;
+            ResolvedAlternateBackend::Selected {
+                id,
+                address,
+                transport_identity,
+            } => {
+                let request = pending_forward
+                    .build_bodyless_request(transport_identity)
+                    .ok()?;
                 Some(AlternateBodylessCandidate {
                     backend_id: *id,
                     backend: address.clone(),
@@ -506,7 +519,6 @@ impl Http3Service {
             policy_telemetry,
             retry_budget,
             alternate_backend,
-            backend_endpoints,
             pending_forward,
             circuit_breakers,
             executor,
@@ -547,11 +559,7 @@ impl Http3Service {
             backend_id: retry_backend_id,
             backend: retry_backend,
             request: retry_request,
-        }) = Self::build_alternate_bodyless_candidate(
-            alternate_backend,
-            backend_endpoints,
-            pending_forward,
-        )
+        }) = Self::build_alternate_bodyless_candidate(alternate_backend, pending_forward)
         else {
             return Err(primary_err);
         };
@@ -630,6 +638,7 @@ impl Http3Service {
                     Self::resolve_alternate_backend(
                         upstream_pool,
                         selector,
+                        backend_endpoints.as_ref(),
                         alternate_generation,
                         pending_forward.lb_key.as_ref(),
                         pending_forward.backend_id,
@@ -710,7 +719,6 @@ impl Http3Service {
                         HedgePolicyDecision::WaitForPrimary => {
                             let hedge_candidate = Self::build_alternate_bodyless_candidate(
                                 alternate_backend.as_ref(),
-                                backend_endpoints.as_ref(),
                                 pending_forward.as_ref(),
                             );
 
@@ -851,7 +859,6 @@ impl Http3Service {
                                             policy_telemetry: &mut policy_telemetry,
                                             retry_budget,
                                             alternate_backend: alternate_backend.as_ref(),
-                                            backend_endpoints: backend_endpoints.as_ref(),
                                             pending_forward: pending_forward.as_ref(),
                                             circuit_breakers,
                                             executor: upstream_executor,
@@ -892,7 +899,6 @@ impl Http3Service {
                                             policy_telemetry: &mut policy_telemetry,
                                             retry_budget,
                                             alternate_backend: alternate_backend.as_ref(),
-                                            backend_endpoints: backend_endpoints.as_ref(),
                                             pending_forward: pending_forward.as_ref(),
                                             circuit_breakers,
                                             executor: upstream_executor,

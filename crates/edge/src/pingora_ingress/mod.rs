@@ -11,7 +11,10 @@ use impulse_bridge::response::{
     ResponseBodyMode, ResponseNormalizationProtocol, ResponseProtocolConstraints,
     normalize_response_trailers,
 };
-use impulse_config::{backend_endpoint::BackendScheme, runtime::ListenerRuntimeConfig};
+use impulse_config::{
+    backend_endpoint::{BackendEndpoint, BackendScheme},
+    runtime::ListenerRuntimeConfig,
+};
 use impulse_contracts::{
     AlternateBackendFailureReason, HealthFailureReason, IngressProtocol,
     PluginExecutionObservation, PluginExecutionOutcome, PluginHeaderMutation, PluginKind,
@@ -130,6 +133,7 @@ pub(crate) struct PingoraEdgeRequestState {
     #[cfg(feature = "response-cache")]
     response_cache_bypass_recorded: bool,
     selected_backend: Option<PingoraSelectedBackend>,
+    retry_transport_identity: Option<BackendEndpoint>,
     plugin_execution: AsyncRequestPluginExecutionGuard,
     drain: Arc<PingoraDrainState>,
 }
@@ -153,6 +157,7 @@ struct PingoraSelectedBackend {
     address: String,
     pool: Arc<RwLock<UpstreamPool>>,
     index: usize,
+    transport_identity: BackendEndpoint,
     selected_at: Instant,
     finish_status: Option<u16>,
     failure_handled: bool,
@@ -304,67 +309,79 @@ impl PingoraEdgeRequestService {
         })?;
         let authority = ctx.authority.clone();
         let retry_backend = ctx.retry_backend.take();
+        let retry_transport_identity =
+            retry_backend.and_then(|_| ctx.retry_transport_identity.take());
         let state = ctx.runtime.shared_state.generation_state();
         let pool = Arc::clone(&route_runtime.upstream_pool);
-        let (backend_id, backend_addr, backend_index) = if let Some((backend_id, index)) =
-            retry_backend
-        {
-            let pool = pool.read().map_err(|_| {
-                Error::explain(InternalError, "Pingora ingress upstream pool lock poisoned")
-            })?;
-            if state.identities.backend_id_at(upstream_id, index) != Some(backend_id)
-                || !pool.begin_request_if_healthy(index)
-            {
-                return Error::e_explain(
-                    InternalError,
-                    "Pingora ingress retry backend is no longer available",
+        let (backend_id, backend_addr, backend_index, transport_identity) =
+            if let Some((backend_id, index)) = retry_backend {
+                let transport_identity = retry_transport_identity.ok_or_else(|| {
+                    Error::explain(
+                        InternalError,
+                        "Pingora ingress retry backend has no transport identity",
+                    )
+                })?;
+                let pool = pool.read().map_err(|_| {
+                    Error::explain(InternalError, "Pingora ingress upstream pool lock poisoned")
+                })?;
+                if state.identities.backend_id_at(upstream_id, index) != Some(backend_id)
+                    || !pool.begin_request_if_healthy(index)
+                {
+                    return Error::e_explain(
+                        InternalError,
+                        "Pingora ingress retry backend is no longer available",
+                    );
+                }
+                let address = pool.backend_address(index).ok_or_else(|| {
+                    Error::explain(
+                        InternalError,
+                        "Pingora ingress retry backend has no configured address",
+                    )
+                })?;
+                (backend_id, address.to_string(), index, transport_identity)
+            } else {
+                let request = session.req_header();
+                let header_lookup = |name: &str| {
+                    request
+                        .headers
+                        .get(name)
+                        .and_then(|value| value.to_str().ok())
+                        .map(str::to_owned)
+                };
+                let selection_request = TargetResolutionRequest::new(
+                    &method,
+                    &path,
+                    authority.as_deref(),
+                    None,
+                    Some(&header_lookup),
                 );
-            }
-            let address = pool.backend_address(index).ok_or_else(|| {
-                Error::explain(
-                    InternalError,
-                    "Pingora ingress retry backend has no configured address",
+                let selected = ForwardingSelectionService::select_backend(
+                    &selection_request,
+                    &pool,
+                    &route_runtime.selector,
+                    &state.backend_endpoints_by_id,
+                    ctx.runtime.generation,
+                    true,
+                    ctx.runtime.shared_state.shared_services().metrics.as_ref(),
                 )
-            })?;
-            (backend_id, address.to_string(), index)
-        } else {
-            let request = session.req_header();
-            let header_lookup = |name: &str| {
-                request
-                    .headers
-                    .get(name)
-                    .and_then(|value| value.to_str().ok())
-                    .map(str::to_owned)
+                .map_err(|error| {
+                    Error::because(InternalError, "backend selection failed", error)
+                })?;
+                route_runtime.retry_policy.mark_primary(route_id);
+                ctx.lb_key = Some(selected.lb_key);
+                (
+                    selected.backend_id,
+                    selected.backend_addr,
+                    selected.backend_index,
+                    selected.transport_identity,
+                )
             };
-            let selection_request = TargetResolutionRequest::new(
-                &method,
-                &path,
-                authority.as_deref(),
-                None,
-                Some(&header_lookup),
-            );
-            let selected = ForwardingSelectionService::select_backend(
-                &selection_request,
-                &pool,
-                &route_runtime.selector,
-                ctx.runtime.generation,
-                true,
-                ctx.runtime.shared_state.shared_services().metrics.as_ref(),
-            )
-            .map_err(|error| Error::because(InternalError, "backend selection failed", error))?;
-            route_runtime.retry_policy.mark_primary(route_id);
-            ctx.lb_key = Some(selected.lb_key);
-            (
-                selected.backend_id,
-                selected.backend_addr,
-                selected.backend_index,
-            )
-        };
         Ok(PingoraSelectedBackend {
             id: backend_id,
             address: backend_addr,
             pool,
             index: backend_index,
+            transport_identity,
             selected_at: Instant::now(),
             finish_status: None,
             failure_handled: false,
@@ -674,6 +691,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
                 #[cfg(feature = "response-cache")]
                 response_cache_bypass_recorded: false,
                 selected_backend: None,
+                retry_transport_identity: None,
                 plugin_execution: AsyncRequestPluginExecutionGuard::default(),
                 drain: Arc::clone(&self.drain),
             },
@@ -1452,21 +1470,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
                 "Pingora ingress request filter did not validate a path",
             )
         })?;
-        let endpoint = ctx
-            .runtime
-            .shared_state
-            .generation_state()
-            .backend_endpoints_by_id
-            .get(selected.id.get() as usize)
-            .ok_or_else(|| {
-                Error::explain(
-                    InternalError,
-                    format!(
-                        "Pingora ingress backend endpoint is missing: {}",
-                        selected.address
-                    ),
-                )
-            })?;
+        let endpoint = &selected.transport_identity;
         let client_addr = session
             .client_addr()
             .and_then(|address| address.as_inet())
@@ -2058,6 +2062,10 @@ fn handle_pingora_proxy_failure(
     let selection = ForwardingSelectionService::select_backend_excluding(
         &route_runtime.selector,
         &selected.pool,
+        &ctx.runtime
+            .shared_state
+            .generation_state()
+            .backend_endpoints_by_id,
         BackendSelectionInput::new(
             ctx.runtime.generation,
             ctx.lb_key.as_deref().unwrap_or_default(),
@@ -2066,19 +2074,35 @@ fn handle_pingora_proxy_failure(
         ),
         metrics,
     );
-    let (retry_backend, alternate_failure) = match selection {
-        Ok(Some(BackendCandidate { id, index, .. })) => (Some((id, index)), None),
+    let (retry_backend, retry_transport_identity, alternate_failure) = match selection {
+        Ok(Some(BackendCandidate {
+            id,
+            index,
+            transport_identity,
+            ..
+        })) => (Some((id, index)), Some(transport_identity), None),
         Ok(None) => match selected.pool.read() {
-            Ok(pool) if pool.membership_summary().healthy_backends == 0 => {
-                (None, Some(AlternateBackendFailureReason::NoHealthyBackends))
-            }
+            Ok(pool) if pool.membership_summary().healthy_backends == 0 => (
+                None,
+                None,
+                Some(AlternateBackendFailureReason::NoHealthyBackends),
+            ),
             Ok(_) => (
+                None,
                 None,
                 Some(AlternateBackendFailureReason::OnlyExcludedBackendsHealthy),
             ),
-            Err(_) => (None, Some(AlternateBackendFailureReason::PoolUnavailable)),
+            Err(_) => (
+                None,
+                None,
+                Some(AlternateBackendFailureReason::PoolUnavailable),
+            ),
         },
-        Err(_) => (None, Some(AlternateBackendFailureReason::PoolUnavailable)),
+        Err(_) => (
+            None,
+            None,
+            Some(AlternateBackendFailureReason::PoolUnavailable),
+        ),
     };
     let retry = RetryCoordinator::new(
         ctx.method.as_deref().is_some_and(is_idempotent_method),
@@ -2103,6 +2127,7 @@ fn handle_pingora_proxy_failure(
                 .inc_retry_attempt(RetryAttemptTelemetryReason::from(reason));
             ctx.retry_count = ctx.retry_count.saturating_add(1);
             ctx.retry_backend = retry_backend;
+            ctx.retry_transport_identity = retry_transport_identity;
             error.set_retry(true);
             true
         }

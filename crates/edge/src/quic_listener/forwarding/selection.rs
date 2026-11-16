@@ -1,5 +1,6 @@
 use std::sync::{Arc, RwLock};
 
+use impulse_config::backend_endpoint::BackendEndpoint;
 use impulse_config::runtime::RuntimeBackendTlsPolicy;
 use impulse_contracts::BackendId;
 use impulse_errors::{PoolError, ProxyError};
@@ -27,6 +28,25 @@ pub(crate) struct BackendCandidate {
     pub(crate) id: BackendId,
     pub(crate) address: String,
     pub(crate) index: usize,
+    pub(crate) transport_identity: BackendEndpoint,
+}
+
+fn transport_identity_for_backend(
+    id: BackendId,
+    address: &str,
+    identities: &[BackendEndpoint],
+) -> Option<BackendEndpoint> {
+    identities.get(id.get() as usize).cloned().or_else(|| {
+        #[cfg(test)]
+        {
+            return BackendEndpoint::parse(address).ok();
+        }
+        #[cfg(not(test))]
+        {
+            let _ = address;
+            None
+        }
+    })
 }
 
 impl ForwardingSelectionService {
@@ -34,6 +54,7 @@ impl ForwardingSelectionService {
         request: &TargetResolutionRequest<'_>,
         upstream_pool: &Arc<RwLock<UpstreamPool>>,
         selector: &GenerationSelector<RuntimeBackendTlsPolicy>,
+        backend_transport_identities: &[BackendEndpoint],
         generation: u64,
         begin_request: bool,
         metrics: &Metrics,
@@ -56,6 +77,7 @@ impl ForwardingSelectionService {
         let Some(selected) = Self::select_backend_excluding(
             selector,
             upstream_pool,
+            backend_transport_identities,
             BackendSelectionInput::new(generation, &lb_key, &[], begin_request),
             metrics,
         )?
@@ -66,6 +88,7 @@ impl ForwardingSelectionService {
             backend_id: selected.id,
             backend_addr: selected.address,
             backend_index: selected.index,
+            transport_identity: selected.transport_identity,
             backend_lb,
             lb_key,
         })
@@ -74,6 +97,7 @@ impl ForwardingSelectionService {
     pub(crate) fn select_backend_excluding(
         selector: &GenerationSelector<RuntimeBackendTlsPolicy>,
         pool: &Arc<RwLock<UpstreamPool>>,
+        backend_transport_identities: &[BackendEndpoint],
         input: BackendSelectionInput<'_>,
         metrics: &Metrics,
     ) -> Result<Option<BackendCandidate>, ProxyError> {
@@ -88,7 +112,12 @@ impl ForwardingSelectionService {
             )));
         }
         if selector.uses_custom_dynamic_selector() {
-            return Self::select_custom_dynamic_backend(selector, pool, input);
+            return Self::select_custom_dynamic_backend(
+                selector,
+                pool,
+                backend_transport_identities,
+                input,
+            );
         }
         let pool = pool.read().map_err(|_| {
             metrics
@@ -124,6 +153,13 @@ impl ForwardingSelectionService {
                 "Pingora selector returned an invalid backend index".into(),
             ));
         };
+        let Some(transport_identity) =
+            transport_identity_for_backend(id, &address, backend_transport_identities)
+        else {
+            return Err(ProxyError::Transport(
+                "Pingora selector returned an unknown backend transport identity".into(),
+            ));
+        };
         if input.begin_request() && !pool.begin_request_if_healthy(index) {
             metrics
                 .runtime_observations()
@@ -131,12 +167,18 @@ impl ForwardingSelectionService {
             return Ok(None);
         }
         metrics.runtime_observations().inc_pingora_lb_selection();
-        Ok(Some(BackendCandidate { id, address, index }))
+        Ok(Some(BackendCandidate {
+            id,
+            address,
+            index,
+            transport_identity,
+        }))
     }
 
     fn select_custom_dynamic_backend(
         selector: &GenerationSelector<RuntimeBackendTlsPolicy>,
         pool: &Arc<RwLock<UpstreamPool>>,
+        backend_transport_identities: &[BackendEndpoint],
         input: BackendSelectionInput<'_>,
     ) -> Result<Option<BackendCandidate>, ProxyError> {
         let mut pool = pool
@@ -181,7 +223,19 @@ impl ForwardingSelectionService {
                 "custom selector returned an invalid backend index".into(),
             ));
         };
-        Ok(Some(BackendCandidate { id, address, index }))
+        let Some(transport_identity) =
+            transport_identity_for_backend(id, &address, backend_transport_identities)
+        else {
+            return Err(ProxyError::Transport(
+                "custom selector returned an unknown backend transport identity".into(),
+            ));
+        };
+        Ok(Some(BackendCandidate {
+            id,
+            address,
+            index,
+            transport_identity,
+        }))
     }
 
     pub(super) fn allow_backend_request<'a>(

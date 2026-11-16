@@ -6,6 +6,7 @@ use std::{
 };
 
 use bytes::Bytes;
+use impulse_config::backend_endpoint::BackendEndpoint;
 use impulse_config::config::{AccessLog, ForwardedHeaderPolicy, UpstreamHostPolicy};
 use impulse_lb::upstream_pool::UpstreamPool;
 use impulse_plugins::CompiledPluginPlan;
@@ -1004,6 +1005,7 @@ pub struct PendingForward {
     pub backend_id: impulse_contracts::BackendId,
     pub backend_addr: Arc<str>,
     pub backend_index: usize,
+    pub transport_identity: BackendEndpoint,
     pub backend_lb: Option<Arc<str>>,
     pub lb_key: Arc<str>,
     pub client_addr: SocketAddr,
@@ -1037,6 +1039,8 @@ impl PendingForward {
             backend_id: impulse_contracts::BackendId::new(0),
             backend_addr: Arc::<str>::from("backend.internal:443"),
             backend_index: 0,
+            transport_identity: BackendEndpoint::parse("backend.internal:443")
+                .expect("test transport identity"),
             backend_lb: None,
             lb_key: Arc::<str>::from(""),
             client_addr: "203.0.113.55:43210".parse().expect("client addr"),
