@@ -219,6 +219,7 @@ pub(crate) struct RuntimeObservationFlags {
 #[derive(Clone)]
 pub(crate) struct RouteRuntime {
     pub(crate) plugin_plan: Arc<CompiledPluginPlan>,
+    pub(crate) upstream_policy: Arc<RuntimeUpstreamPolicy>,
     pub(crate) selector: Arc<GenerationSelector<RuntimeBackendTlsPolicy>>,
     pub(crate) upstream_pool: Arc<RwLock<UpstreamPool>>,
     #[allow(dead_code)]

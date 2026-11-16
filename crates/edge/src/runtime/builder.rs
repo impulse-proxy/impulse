@@ -474,6 +474,7 @@ impl RuntimeBuilder {
                     })?;
                 Ok(RouteRuntime {
                     plugin_plan,
+                    upstream_policy: Arc::new(upstream_policy.clone()),
                     selector,
                     upstream_pool,
                     transport_policy: Arc::clone(&transport_policy),

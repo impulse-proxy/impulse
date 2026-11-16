@@ -274,9 +274,6 @@ impl Http3Service {
                 ProxyError::Transport("empty method or path".into())
             }
             RouteResolutionError::NoRoute => ProxyError::Transport(format!("no route for {path}")),
-            RouteResolutionError::MissingUpstreamPolicy => {
-                ProxyError::Transport(format!("upstream policy not found for {path}"))
-            }
             RouteResolutionError::MissingUpstreamDisplayName => {
                 ProxyError::Transport(format!("upstream display name not found for {path}"))
             }

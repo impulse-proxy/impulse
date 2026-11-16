@@ -824,7 +824,6 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             }
             Err(
                 RouteResolutionError::NoRoute
-                | RouteResolutionError::MissingUpstreamPolicy
                 | RouteResolutionError::MissingUpstreamDisplayName
                 | RouteResolutionError::MissingRouteRuntime,
             ) => {

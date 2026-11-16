@@ -88,11 +88,7 @@ impl<'a> EdgeRequestService<'a> {
             request.path,
             request.authority,
         )?;
-        let upstream_policy = self
-            .generation
-            .upstream_policies
-            .get(route.upstream_id.get() as usize)
-            .ok_or(super::RouteResolutionError::MissingUpstreamPolicy)?;
+        let upstream_policy = route.runtime.upstream_policy.as_ref();
         let plugin_plan = route.runtime.plugin_plan.as_ref();
         let policy = resolve_policy(upstream_policy, route.runtime.plugin_plan.clone());
         if plugin_plan.is_empty() {

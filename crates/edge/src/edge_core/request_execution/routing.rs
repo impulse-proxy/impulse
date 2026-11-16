@@ -79,7 +79,6 @@ pub(crate) struct ResolvedRouteMatch {
 pub(crate) enum RouteResolutionError {
     EmptyMethodOrPath,
     NoRoute,
-    MissingUpstreamPolicy,
     MissingUpstreamDisplayName,
     MissingRouteRuntime,
 }
