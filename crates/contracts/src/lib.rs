@@ -15,7 +15,8 @@ mod request;
 mod tunnel;
 
 pub use identity::{
-    BackendId, BackendIdentity, IngressProtocol, ListenerId, RequestId, RouteId, UpstreamId,
+    BackendId, BackendIdentity, IngressProtocol, ListenerId, RequestId, RouteId, SpanId, TraceId,
+    UpstreamId,
 };
 pub use outcome::{
     AdmissionOutcomeKind, AlternateBackendFailureReason, BackendFailureReason,

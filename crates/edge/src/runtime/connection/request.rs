@@ -39,8 +39,8 @@ use crate::{
 
 pub struct RequestEnvelope {
     pub request_id: impulse_contracts::RequestId,
-    pub trace_id: Option<String>,
-    pub span_id: Option<String>,
+    pub trace_id: Option<impulse_contracts::TraceId>,
+    pub span_id: Option<impulse_contracts::SpanId>,
     pub traceparent: Option<String>,
     pub trace_span: Option<Span>,
 
@@ -120,8 +120,8 @@ impl RequestEnvelope {
 
         Self {
             request_id: context.request_id,
-            trace_id: context.trace_id.clone(),
-            span_id: context.span_id.clone(),
+            trace_id: context.trace_id,
+            span_id: context.span_id,
             traceparent: context.traceparent.clone(),
             trace_span: context.trace_span.clone(),
             method: context.method.clone(),
@@ -179,8 +179,8 @@ impl RequestEnvelope {
 
         Self {
             request_id: context.request_id,
-            trace_id: context.trace_id.clone(),
-            span_id: context.span_id.clone(),
+            trace_id: context.trace_id,
+            span_id: context.span_id,
             traceparent: context.traceparent.clone(),
             trace_span: context.trace_span.clone(),
             method: context.method.clone(),
@@ -957,8 +957,8 @@ impl RequestEnvelope {
         TerminalSnapshot {
             context: RequestContext {
                 request_id: self.request_id,
-                trace_id: self.trace_id.clone(),
-                span_id: self.span_id.clone(),
+                trace_id: self.trace_id,
+                span_id: self.span_id,
                 traceparent: self.traceparent.clone(),
                 trace_span: self.trace_span.clone(),
                 method: self.method.clone(),
@@ -1015,8 +1015,8 @@ pub struct PendingForward {
     pub lb_key: Arc<str>,
     pub client_addr: SocketAddr,
     pub request_id: impulse_contracts::RequestId,
-    pub trace_id: Option<Arc<str>>,
-    pub span_id: Option<Arc<str>>,
+    pub trace_id: Option<impulse_contracts::TraceId>,
+    pub span_id: Option<impulse_contracts::SpanId>,
     pub traceparent: Option<Arc<str>>,
     pub host_policy: UpstreamHostPolicy,
     pub forwarded_header_policy: ForwardedHeaderPolicy,
@@ -1144,8 +1144,8 @@ mod tests {
 
         let req = RequestEnvelope {
             request_id: context.request_id,
-            trace_id: context.trace_id.clone(),
-            span_id: context.span_id.clone(),
+            trace_id: context.trace_id,
+            span_id: context.span_id,
             traceparent: context.traceparent.clone(),
             trace_span: context.trace_span.clone(),
             method: context.method.clone(),

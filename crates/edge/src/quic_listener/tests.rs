@@ -2118,8 +2118,8 @@ fn make_dispatch_ready_envelope(
     let routing = make_routing_snapshot();
     RequestEnvelope {
         request_id: context.request_id,
-        trace_id: context.trace_id.clone(),
-        span_id: context.span_id.clone(),
+        trace_id: context.trace_id,
+        span_id: context.span_id,
         traceparent: context.traceparent.clone(),
         trace_span: context.trace_span.clone(),
         method: context.method.clone(),
@@ -2274,8 +2274,8 @@ fn abort_stream_waiting_for_auth_clears_async_auth_state() {
     req.execution = RequestExecutionState::AwaitingAuth(AwaitingAuthState {
         context: crate::runtime::connection::stream::RequestContext {
             request_id: req.request_id,
-            trace_id: req.trace_id.clone(),
-            span_id: req.span_id.clone(),
+            trace_id: req.trace_id,
+            span_id: req.span_id,
             traceparent: req.traceparent.clone(),
             trace_span: req.trace_span.clone(),
             method: req.method.clone(),

@@ -256,7 +256,9 @@ pub fn extract_header_value<'a>(headers: &'a [quiche::h3::Header], name: &[u8]) 
         .filter(|value| !value.is_empty())
 }
 
-pub fn parse_traceparent(value: &str) -> Option<(String, String)> {
+pub fn parse_traceparent(
+    value: &str,
+) -> Option<(impulse_contracts::TraceId, impulse_contracts::SpanId)> {
     let mut parts = value.split('-');
     let version = parts.next()?;
     let trace_id = parts.next()?;
@@ -265,37 +267,40 @@ pub fn parse_traceparent(value: &str) -> Option<(String, String)> {
     if parts.next().is_some() || version != "00" {
         return None;
     }
-    let trace_valid = trace_id.len() == 32
-        && trace_id
-            .chars()
-            .all(|character| character.is_ascii_hexdigit())
-        && trace_id != "00000000000000000000000000000000";
-    let span_valid = parent_span_id.len() == 16
-        && parent_span_id
-            .chars()
-            .all(|character| character.is_ascii_hexdigit())
-        && parent_span_id != "0000000000000000";
     let flags_valid =
         flags.len() == 2 && flags.chars().all(|character| character.is_ascii_hexdigit());
-    (trace_valid && span_valid && flags_valid).then(|| {
-        (
-            trace_id.to_ascii_lowercase(),
-            parent_span_id.to_ascii_lowercase(),
-        )
-    })
+    if !flags_valid {
+        return None;
+    }
+    Some((
+        impulse_contracts::TraceId::from_hex(trace_id)?,
+        impulse_contracts::SpanId::from_hex(parent_span_id)?,
+    ))
 }
 
-pub fn generated_trace_id(connection_trace_id: &str, request_id: u64) -> String {
-    let mut seed = connection_trace_id.as_bytes().to_vec();
-    seed.extend_from_slice(&request_id.to_be_bytes());
-    let low = stable_hash64(&seed);
-    seed.extend_from_slice(b"trace-hi");
-    let high = stable_hash64(&seed);
-    format!("{high:016x}{low:016x}")
+pub fn generated_trace_id(
+    connection_trace_id: &str,
+    request_id: u64,
+) -> impulse_contracts::TraceId {
+    let request_id = request_id.to_be_bytes();
+    let low = stable_hash64_parts(&[connection_trace_id.as_bytes(), &request_id]);
+    let high = stable_hash64_parts(&[connection_trace_id.as_bytes(), &request_id, b"trace-hi"]);
+    impulse_contracts::TraceId::from_u64_pair(high, low)
 }
 
-pub fn generated_span_id(request_id: u64) -> String {
-    format!("{:016x}", stable_hash64(&request_id.to_be_bytes()))
+pub fn generated_span_id(request_id: u64) -> impulse_contracts::SpanId {
+    impulse_contracts::SpanId::from_u64(stable_hash64(&request_id.to_be_bytes()))
+}
+
+fn stable_hash64_parts(parts: &[&[u8]]) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325;
+    for bytes in parts {
+        for byte in *bytes {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    }
+    hash
 }
 
 fn stable_hash64(bytes: &[u8]) -> u64 {

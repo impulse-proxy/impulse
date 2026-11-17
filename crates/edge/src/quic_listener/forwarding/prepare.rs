@@ -371,7 +371,7 @@ impl Http3Service {
             extract_header_value(headers, b"traceparent").and_then(parse_traceparent);
         let trace_id = incoming_traceparent
             .as_ref()
-            .map(|(trace_id, _)| trace_id.clone())
+            .map(|(trace_id, _)| *trace_id)
             .or_else(|| tracing_enabled.then(|| generated_trace_id(quic_trace_id, request_id)));
         let span_id = trace_id.as_ref().map(|_| generated_span_id(request_id));
         let traceparent = trace_id
@@ -847,18 +847,8 @@ impl Http3Service {
                     lb_key: Arc::<str>::from(lb_key.as_str()),
                     client_addr: peer_address,
                     request_id,
-                    trace_id: intake
-                        .state
-                        .context
-                        .trace_id
-                        .as_deref()
-                        .map(Arc::<str>::from),
-                    span_id: intake
-                        .state
-                        .context
-                        .span_id
-                        .as_deref()
-                        .map(Arc::<str>::from),
+                    trace_id: intake.state.context.trace_id,
+                    span_id: intake.state.context.span_id,
                     traceparent: intake
                         .state
                         .context

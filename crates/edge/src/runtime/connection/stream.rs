@@ -3,8 +3,8 @@ use std::{collections::VecDeque, sync::Arc, time::Instant};
 use bytes::Bytes;
 use http::StatusCode;
 pub(crate) use impulse_contracts::{
-    BackendFailureReason, CancellationReason, CompletionReason, RejectionReason, TerminalReason,
-    TimeoutReason, TunnelMode,
+    BackendFailureReason, CancellationReason, CompletionReason, RejectionReason, SpanId,
+    TerminalReason, TimeoutReason, TraceId, TunnelMode,
 };
 use impulse_errors::ProxyError;
 pub(crate) use impulse_http3_ingress::{
@@ -37,8 +37,8 @@ pub(crate) enum ResponseBackpressureState {
 #[derive(Debug, Clone)]
 pub struct RequestContext {
     pub request_id: impulse_contracts::RequestId,
-    pub trace_id: Option<String>,
-    pub span_id: Option<String>,
+    pub trace_id: Option<TraceId>,
+    pub span_id: Option<SpanId>,
     pub traceparent: Option<String>,
     pub trace_span: Option<Span>,
     pub method: String,
