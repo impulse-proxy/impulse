@@ -391,7 +391,7 @@ impl Http3Service {
         #[cfg(any(feature = "response-cache", feature = "response-compression"))]
         let has_response_plugins = !req.plugin_plan.cache_policy().is_empty()
             || !req.plugin_plan.response_policy().is_empty();
-        #[cfg(any(feature = "response-cache", feature = "response-compression"))]
+        #[cfg(feature = "response-compression")]
         let request_headers = has_response_plugins.then(|| {
             let mut headers = http::HeaderMap::new();
             for header in pending_forward.original_request_headers() {
@@ -405,12 +405,7 @@ impl Http3Service {
             headers
         });
         #[cfg(any(feature = "response-cache", feature = "response-compression"))]
-        let request_header = |name: &str| {
-            request_headers
-                .as_ref()
-                .and_then(|headers| headers.get(name))
-                .map(http::HeaderValue::as_bytes)
-        };
+        let request_header = |name: &str| pending_forward.policy_header(name);
         let processed_response = process_response(ResponseProcessingInput {
             #[cfg(any(feature = "response-cache", feature = "response-compression"))]
             metrics,

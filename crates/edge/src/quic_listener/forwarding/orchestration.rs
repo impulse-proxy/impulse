@@ -46,20 +46,7 @@ fn execute_deferred_quota_plugin(
     {
         return None;
     }
-    let mut effective_headers = pending_forward.headers.as_ref().clone();
-    crate::runtime::connection::auth::apply_auth_request_mutations(
-        &mut effective_headers,
-        pending_forward
-            .auth_header_mutations
-            .as_deref()
-            .unwrap_or_default(),
-    );
-    let header_lookup = |name: &str| {
-        effective_headers
-            .iter()
-            .find(|header| header.name().eq_ignore_ascii_case(name.as_bytes()))
-            .map(|header| header.value())
-    };
+    let header_lookup = |name: &str| pending_forward.policy_header(name);
     let request = impulse_contracts::PluginRequestView {
         request_id: pending_forward.request_id,
         generation: pending_forward.plugin_plan.generation(),

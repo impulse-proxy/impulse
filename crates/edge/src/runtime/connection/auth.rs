@@ -11,6 +11,39 @@ pub(crate) use impulse_policy::{
     merge_external_auth_mutations as merge_auth_request_mutations,
     resolve_external_auth_state_transition,
 };
+
+pub(crate) enum PendingHeaderOverride<'a> {
+    Unchanged,
+    Removed,
+    Value(&'a [u8]),
+}
+
+pub(crate) fn pending_header_override<'a>(
+    mutations: Option<&'a [PendingHeaderMutation]>,
+    name: &[u8],
+) -> PendingHeaderOverride<'a> {
+    let Some(mutations) = mutations else {
+        return PendingHeaderOverride::Unchanged;
+    };
+    for mutation in mutations.iter().rev() {
+        match mutation {
+            PendingHeaderMutation::Upsert {
+                name: mutation_name,
+                value,
+            } if mutation_name.eq_ignore_ascii_case(name) => {
+                return PendingHeaderOverride::Value(value);
+            }
+            PendingHeaderMutation::Remove {
+                name: mutation_name,
+            } if mutation_name.eq_ignore_ascii_case(name) => {
+                return PendingHeaderOverride::Removed;
+            }
+            _ => {}
+        }
+    }
+    PendingHeaderOverride::Unchanged
+}
+
 #[cfg(test)]
 pub(crate) use impulse_policy::{
     ExternalAuthRedirectResponse, allowed_external_auth_headers as allowed_auth_headers,

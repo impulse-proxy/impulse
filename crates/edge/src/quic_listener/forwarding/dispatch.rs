@@ -151,7 +151,7 @@ impl Http3Service {
             }
         }
         let (is_upgrade, is_tunnel) = impulse_http3_ingress::tunnel_cache_flags(tunnel_mode);
-        let request_header = |name: &str| headers.get(name).map(http::HeaderValue::as_bytes);
+        let request_header = |name: &str| pending_forward.policy_header(name);
         let Ok(representation) = process_cache_lookup(CacheLookupProcessingInput {
             metrics,
             plugin_plan: &pending_forward.plugin_plan,

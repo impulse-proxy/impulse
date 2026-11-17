@@ -103,7 +103,7 @@ use crate::{
     runtime::{
         bundle::{RuntimeBundle, RuntimeBundleHandle},
         connection::{
-            auth::PendingHeaderMutation,
+            auth::{PendingHeaderMutation, PendingHeaderOverride, pending_header_override},
             outcome::{
                 AdmissionOutcomeClass, BackendHealthObservationInput, BackendOutcomeTarget,
                 ClassifiedBackendFailureInput, RouteOutcomeTarget,
@@ -151,6 +151,16 @@ pub(crate) struct PingoraEdgeRequestState {
 }
 
 pub(crate) type PingoraRequestContext = IngressRequestContext<PingoraEdgeRequestState>;
+
+impl PingoraEdgeRequestState {
+    fn policy_header<'a>(&'a self, headers: &'a http::HeaderMap, name: &str) -> Option<&'a [u8]> {
+        match pending_header_override(self.auth_header_mutations.as_deref(), name.as_bytes()) {
+            PendingHeaderOverride::Value(value) => Some(value),
+            PendingHeaderOverride::Removed => None,
+            PendingHeaderOverride::Unchanged => headers.get(name).map(http::HeaderValue::as_bytes),
+        }
+    }
+}
 
 enum PingoraTerminalClassification {
     Admission(AdmissionOutcomeClass),
@@ -214,8 +224,7 @@ impl PingoraEdgeRequestService {
         #[cfg(any(feature = "response-cache", feature = "response-compression"))]
         let request_headers = &session.req_header().headers;
         #[cfg(any(feature = "response-cache", feature = "response-compression"))]
-        let request_header =
-            |name: &str| request_headers.get(name).map(http::HeaderValue::as_bytes);
+        let request_header = |name: &str| ctx.policy_header(request_headers, name);
         #[cfg(any(feature = "response-cache", feature = "response-compression"))]
         let has_response_plugins =
             !plugin_plan.cache_policy().is_empty() || !plugin_plan.response_policy().is_empty();
@@ -1127,8 +1136,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             IngressProtocol::Http1
         };
         let request_headers = &session.req_header().headers;
-        let request_header =
-            |name: &str| request_headers.get(name).map(http::HeaderValue::as_bytes);
+        let request_header = |name: &str| ctx.policy_header(request_headers, name);
         let representation = process_cache_lookup(CacheLookupProcessingInput {
             metrics: &ctx.runtime.shared_state.shared_services().metrics,
             plugin_plan,

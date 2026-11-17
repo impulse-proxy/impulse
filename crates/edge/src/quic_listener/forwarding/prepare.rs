@@ -29,7 +29,8 @@ use crate::{
     runtime::connection::{
         auth::{
             ExternalAuthCompletion, ExternalAuthFailureDisposition, ExternalAuthTaskConfig,
-            PendingHeaderMutation, apply_auth_request_mutations, evaluate_external_auth_completion,
+            PendingHeaderMutation, PendingHeaderOverride, apply_auth_request_mutations,
+            evaluate_external_auth_completion, pending_header_override,
         },
         outcome::{
             AdmissionOutcomeClass, BackendOutcomeTarget, RouteOutcomeTarget,
@@ -201,6 +202,20 @@ impl PendingForward {
         self.original_request_headers()
             .iter()
             .any(|header| header.name().eq_ignore_ascii_case(b"trailer"))
+    }
+
+    pub(super) fn policy_header(&self, name: &str) -> Option<&[u8]> {
+        let name = name.as_bytes();
+        match pending_header_override(self.auth_header_mutations.as_deref(), name) {
+            PendingHeaderOverride::Value(value) => return Some(value),
+            PendingHeaderOverride::Removed => return None,
+            PendingHeaderOverride::Unchanged => {}
+        }
+
+        self.original_request_headers()
+            .iter()
+            .find(|header| header.name().eq_ignore_ascii_case(name))
+            .map(|header| header.value())
     }
 
     fn request_headers_cow(&self) -> Cow<'_, [quiche::h3::Header]> {
