@@ -1195,7 +1195,7 @@ mod tests {
         let headers = [("authorization".to_string(), "Bearer token-1".to_string())]
             .into_iter()
             .collect::<std::collections::HashMap<_, _>>();
-        let lookup = |name: &str| headers.get(&name.to_ascii_lowercase()).cloned();
+        let lookup = |name: &str| headers.get(&name.to_ascii_lowercase()).map(String::as_str);
         let client_addr = "203.0.113.9:443".parse().expect("client addr");
 
         assert_eq!(
@@ -1241,7 +1241,7 @@ mod tests {
         ]
         .into_iter()
         .collect::<std::collections::HashMap<_, _>>();
-        let lookup = |name: &str| headers.get(&name.to_ascii_lowercase()).cloned();
+        let lookup = |name: &str| headers.get(&name.to_ascii_lowercase()).map(String::as_str);
         let client_addr = "203.0.113.9:443".parse().expect("client addr");
 
         let assert_key = |spec: &str, expected: &str| {
@@ -1340,7 +1340,7 @@ mod tests {
         ]
         .into_iter()
         .collect::<std::collections::HashMap<_, _>>();
-        let lookup = |name: &str| headers.get(&name.to_ascii_lowercase()).cloned();
+        let lookup = |name: &str| headers.get(&name.to_ascii_lowercase()).map(String::as_str);
         let route_request = TestTargetResolutionRequest::new(
             "GET",
             "/api/items?tenant=acme",

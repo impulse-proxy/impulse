@@ -145,12 +145,15 @@ impl Http3Service {
             RequestKeyInput::BearerToken => request
                 .header_lookup
                 .and_then(|lookup| lookup(http::header::AUTHORIZATION.as_str()))
-                .and_then(|value| Self::bearer_token_from_authorization_value(&value)),
-            RequestKeyInput::Header(name) => request.header_lookup.and_then(|lookup| lookup(name)),
+                .and_then(Self::bearer_token_from_authorization_value),
+            RequestKeyInput::Header(name) => request
+                .header_lookup
+                .and_then(|lookup| lookup(name))
+                .map(str::to_owned),
             RequestKeyInput::Cookie(name) => request
                 .header_lookup
                 .and_then(|lookup| lookup(http::header::COOKIE.as_str()))
-                .and_then(|value| extract_cookie_value(&value, name)),
+                .and_then(|value| extract_cookie_value(value, name)),
             RequestKeyInput::Query(name) => extract_query_param(request.path, name),
         }
     }
@@ -189,7 +192,7 @@ impl Http3Service {
             let raw = request
                 .header_lookup
                 .and_then(|lookup| lookup(http::header::AUTHORIZATION.as_str()))?;
-            return Self::bearer_token_from_authorization_value(&raw);
+            return Self::bearer_token_from_authorization_value(raw);
         }
 
         let (source, key_name) = spec.split_once(':')?;
@@ -199,14 +202,17 @@ impl Http3Service {
         }
 
         if source.eq_ignore_ascii_case("header") {
-            return request.header_lookup.and_then(|lookup| lookup(key_name));
+            return request
+                .header_lookup
+                .and_then(|lookup| lookup(key_name))
+                .map(str::to_owned);
         }
 
         if source.eq_ignore_ascii_case("cookie") {
             let cookie_header = request
                 .header_lookup
                 .and_then(|lookup| lookup(http::header::COOKIE.as_str()))?;
-            return extract_cookie_value(cookie_header.as_str(), key_name);
+            return extract_cookie_value(cookie_header, key_name);
         }
 
         if source.eq_ignore_ascii_case("query") {
@@ -330,9 +336,9 @@ mod tests {
         client_addr: Option<SocketAddr>,
         headers: HashMap<String, String>,
     ) -> LbKeyRequestParts<'static> {
-        let leaked = Box::leak(Box::new(headers));
+        let leaked: &'static HashMap<String, String> = Box::leak(Box::new(headers));
         let lookup = Box::leak(Box::new(move |name: &str| {
-            leaked.get(&name.to_ascii_lowercase()).cloned()
+            leaked.get(&name.to_ascii_lowercase()).map(String::as_str)
         }));
         LbKeyRequestParts::new(method, path, authority, cid_key, client_addr, Some(lookup))
     }

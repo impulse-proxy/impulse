@@ -1207,7 +1207,7 @@ fn resolve_backend_uses_configured_header_lb_key() {
 
     let header_lookup = |name: &str| {
         if name.eq_ignore_ascii_case("x-user-id") {
-            Some("alice".to_string())
+            Some("alice")
         } else {
             None
         }

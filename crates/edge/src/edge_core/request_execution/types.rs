@@ -8,7 +8,7 @@ use impulse_contracts::{
 use super::policy::ResolvedRequestPolicy;
 use crate::{routing::decision::RouteDecisionReason, runtime::generation::RouteRuntime};
 
-pub(crate) type RequestHeaderLookup<'a> = dyn Fn(&str) -> Option<String> + Sync + 'a;
+pub(crate) type RequestHeaderLookup<'a> = dyn Fn(&str) -> Option<&'a str> + Sync + 'a;
 
 /// Protocol-neutral request data supplied to shared edge execution.
 pub(crate) struct RequestExecutionInput<'a> {

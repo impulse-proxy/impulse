@@ -366,7 +366,6 @@ impl PingoraEdgeRequestService {
                         .headers
                         .get(name)
                         .and_then(|value| value.to_str().ok())
-                        .map(str::to_owned)
                 };
                 let selection_request = TargetResolutionRequest::new(
                     method,

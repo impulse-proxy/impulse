@@ -537,7 +537,6 @@ impl Http3Service {
                 .iter()
                 .find(|header| header.name().eq_ignore_ascii_case(name.as_bytes()))
                 .and_then(|header| std::str::from_utf8(header.value()).ok())
-                .map(str::to_string)
         };
         let plugin_header_lookup = |name: &str| {
             headers
