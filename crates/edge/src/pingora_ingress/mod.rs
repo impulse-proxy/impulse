@@ -1457,7 +1457,6 @@ impl PingoraRequestService for PingoraEdgeRequestService {
                 Error::explain(InternalError, "Pingora ingress client address is missing")
             })?;
         let downstream_request = session.req_header();
-        let headers = bridge_headers(&downstream_request.headers);
         let traceparent = downstream_request
             .headers
             .get("traceparent")
@@ -1490,7 +1489,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             method,
             path,
             authority: ctx.authority.as_deref(),
-            headers: &headers,
+            headers: (&downstream_request.headers).into(),
             auth_header_mutations: auth_header_mutations.as_deref().unwrap_or_default(),
             body: BoxBody::new(Full::<Bytes>::new(Bytes::new())),
             body_mode: impulse_bridge::request::RequestBuildInput::<
@@ -2214,13 +2213,6 @@ fn pingora_response_constraints(preserve_upgrade: bool) -> ResponseProtocolConst
         protocol: ResponseNormalizationProtocol::Http1,
         preserve_upgrade,
     }
-}
-
-fn bridge_headers(headers: &http::HeaderMap) -> Vec<quiche::h3::Header> {
-    headers
-        .iter()
-        .map(|(name, value)| quiche::h3::Header::new(name.as_str().as_bytes(), value.as_bytes()))
-        .collect()
 }
 
 fn pending_header_mutation(mutation: &PluginHeaderMutation) -> PendingHeaderMutation {

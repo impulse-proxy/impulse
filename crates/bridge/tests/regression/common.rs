@@ -82,7 +82,7 @@ pub(crate) fn request_input<'a>(
         method,
         path,
         authority: meta.authority,
-        headers,
+        headers: headers.into(),
         auth_header_mutations: &[],
         body: Empty::<Bytes>::new().boxed(),
         body_mode: RequestBuildInput::<BoxBody<Bytes, Infallible>>::body_mode_for_length(

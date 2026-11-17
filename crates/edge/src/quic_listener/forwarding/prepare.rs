@@ -264,7 +264,7 @@ impl PendingForward {
             method,
             path: &self.path,
             authority: self.authority.as_deref(),
-            headers,
+            headers: headers.into(),
             auth_header_mutations,
             body,
             body_mode:

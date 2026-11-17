@@ -10,7 +10,7 @@ use crate::{
         RequestBuildInput, RequestBuildTarget, RequestHeaderAssembly, RequestHeaderPolicyInput,
         apply_request_header_assembly, apply_request_header_policies,
     },
-    websocket::legacy_websocket_upgrade_requested,
+    websocket::legacy_websocket_upgrade_requested_for_headers,
 };
 
 /// Build an HTTP/1.1 request forwarded to an `http://` upstream.
@@ -40,7 +40,7 @@ pub(crate) fn build_h1_request(
     let content_length = body_mode.content_length();
 
     let method = Method::from_bytes(method.as_bytes()).map_err(|_| BridgeError::InvalidMethod)?;
-    let preserve_upgrade = legacy_websocket_upgrade_requested(method.as_str(), headers);
+    let preserve_upgrade = legacy_websocket_upgrade_requested_for_headers(method.as_str(), headers);
 
     let builder = Request::builder().method(method.clone());
     let (mut builder, resolved_headers) = apply_request_header_policies(

@@ -4,6 +4,8 @@
 //! Transport execution and tunnel I/O stay outside this crate; callers should
 //! use these helpers only to decide whether websocket-specific bridging rules apply.
 
+use crate::request::RequestHeaders;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum H3WebsocketRequestKind {
     None,
@@ -14,8 +16,13 @@ pub fn h3_websocket_request_kind(
     method: &str,
     headers: &[quiche::h3::Header],
 ) -> H3WebsocketRequestKind {
-    use quiche::h3::NameValue;
+    websocket_request_kind(method, headers.into())
+}
 
+pub(crate) fn websocket_request_kind(
+    method: &str,
+    headers: RequestHeaders<'_>,
+) -> H3WebsocketRequestKind {
     let protocol_is_websocket = headers.iter().any(|header| {
         header.name().eq_ignore_ascii_case(b":protocol")
             && std::str::from_utf8(header.value())
@@ -35,8 +42,13 @@ pub fn h3_websocket_request_kind(
 /// This is not a valid HTTP/3 ingress shape; H3 callers must use
 /// [`h3_websocket_request_kind`] and require extended CONNECT.
 pub fn legacy_websocket_upgrade_requested(method: &str, headers: &[quiche::h3::Header]) -> bool {
-    use quiche::h3::NameValue;
+    legacy_websocket_upgrade_requested_for_headers(method, headers.into())
+}
 
+pub(crate) fn legacy_websocket_upgrade_requested_for_headers(
+    method: &str,
+    headers: RequestHeaders<'_>,
+) -> bool {
     method.eq_ignore_ascii_case("GET")
         && headers.iter().any(|header| {
             header.name().eq_ignore_ascii_case(b"upgrade")
