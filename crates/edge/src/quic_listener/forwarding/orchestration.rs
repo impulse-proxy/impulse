@@ -760,9 +760,10 @@ impl Http3Service {
                         None => continue,
                     };
                     let StartedRequestEnvelope {
-                        envelope,
+                        mut envelope,
                         should_materialize_forward,
                     } = started_auth;
+                    envelope.pinned_generation = shared_ctx.pinned_generation.clone();
                     connection.streams.insert(stream_id, envelope);
                     if should_materialize_forward {
                         let keep_stream = if let Some(req) = connection.streams.get_mut(&stream_id)

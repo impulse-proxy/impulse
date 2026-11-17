@@ -391,6 +391,7 @@ impl Http3Service {
 
         let shared_ctx = ForwardingSharedCtx {
             metrics: Arc::clone(&self.metrics),
+            pinned_generation: self.runtime_state.pinned_generation(),
             runtime_generation: self.runtime_state.shared_state().generation_state(),
             resilience: &self.resilience,
             pingora_load_balancing: self
@@ -508,6 +509,7 @@ impl Http3Service {
         let mut to_remove = Vec::new();
         let shared_ctx = ForwardingSharedCtx {
             metrics: Arc::clone(&self.metrics),
+            pinned_generation: self.runtime_state.pinned_generation(),
             runtime_generation: self.runtime_state.shared_state().generation_state(),
             resilience: &self.resilience,
             pingora_load_balancing: self

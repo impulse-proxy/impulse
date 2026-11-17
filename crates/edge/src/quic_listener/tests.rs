@@ -2139,6 +2139,7 @@ fn make_dispatch_ready_envelope(
         bodyless_mode: false,
         tunnel_mode: TunnelMode::None,
         plugin_plan: Arc::new(impulse_plugins::CompiledPluginPlan::default()),
+        pinned_generation: None,
         retry_count: 0,
         error_kind: None,
         terminal_overload_reason: None,
