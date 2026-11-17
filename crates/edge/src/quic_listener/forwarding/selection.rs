@@ -1,7 +1,6 @@
 use std::sync::{Arc, RwLock};
 
-use impulse_config::backend_endpoint::BackendEndpoint;
-use impulse_config::runtime::RuntimeBackendTlsPolicy;
+use impulse_config::{backend_endpoint::BackendEndpoint, runtime::RuntimeBackendTlsPolicy};
 use impulse_contracts::BackendId;
 use impulse_errors::{PoolError, ProxyError};
 use impulse_lb::{

@@ -35,6 +35,6 @@ pub use plugin::{
 pub use request::{
     AuthChallengeKind, BoundedRejectionResponse, HeaderMutation, HeaderMutationRef,
     OverloadDecision, OverloadDecisionReason, RateLimitedDecision, RequestDecision,
-    UnauthorizedDecision,
+    RequestHeadView, UnauthorizedDecision,
 };
 pub use tunnel::TunnelMode;

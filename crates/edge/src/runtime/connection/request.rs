@@ -6,8 +6,10 @@ use std::{
 };
 
 use bytes::Bytes;
-use impulse_config::backend_endpoint::BackendEndpoint;
-use impulse_config::config::{AccessLog, ForwardedHeaderPolicy, UpstreamHostPolicy};
+use impulse_config::{
+    backend_endpoint::BackendEndpoint,
+    config::{AccessLog, ForwardedHeaderPolicy, UpstreamHostPolicy},
+};
 use impulse_lb::upstream_pool::UpstreamPool;
 use impulse_plugins::CompiledPluginPlan;
 use tokio::sync::{mpsc, oneshot};
