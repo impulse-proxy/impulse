@@ -435,9 +435,9 @@ impl Http3Service {
             listen_port: self.config.listen.listen.port,
         };
         let access_log = self
-            .runtime_bundle
-            .as_ref()
-            .map(|runtime| runtime.current_view().startup().log_config.access)
+            .runtime_state
+            .pinned_generation()
+            .map(|runtime| runtime.startup().log_config.access)
             .unwrap_or_default();
         let request_config = H3RequestHandlingConfig::new(
             RequestFinalizationConfig {

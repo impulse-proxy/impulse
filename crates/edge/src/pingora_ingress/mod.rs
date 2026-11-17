@@ -57,8 +57,8 @@ use pingora_cache::{CacheKey, CacheMeta, CachePhase, NoCacheReason, RespCacheabl
 use pingora_core::protocols::http::compression::Algorithm;
 use pingora_core::{
     Error, HTTPStatus, InternalError, Result,
-    apps::{HttpServerApp, HttpServerOptions, ReusedHttpStream, ServerApp},
-    protocols::{Stream, http::ServerSession},
+    apps::ServerApp,
+    protocols::Stream,
     server::{ShutdownWatch, configuration::ServerConf},
     services::listening::Service,
     upstreams::peer::HttpPeer,
@@ -391,16 +391,10 @@ impl PingoraEdgeRequestService {
 }
 
 pub(crate) struct PingoraConnectionLimitedApp {
-    proxy: Arc<PingoraRequestDeadlineApp>,
-    runtime: RuntimeBundleHandle,
-    listener_label: String,
-    drain: Arc<PingoraDrainState>,
-}
-
-struct PingoraRequestDeadlineApp {
     proxy: Arc<HttpProxy<PingoraIngressAdapter<PingoraEdgeRequestService>>>,
     runtime: RuntimeBundleHandle,
     listener_label: String,
+    drain: Arc<PingoraDrainState>,
 }
 
 pub(crate) struct PingoraRuntimeConnectionAdmission {
@@ -447,37 +441,6 @@ impl ConnectionAdmission for PingoraRuntimeConnectionAdmission {
             metrics.ingress_observations().inc_ingress_rate_limited();
         }
         admitted
-    }
-}
-
-#[async_trait]
-impl HttpServerApp for PingoraRequestDeadlineApp {
-    async fn process_new_http(
-        self: &Arc<Self>,
-        session: ServerSession,
-        shutdown: &ShutdownWatch,
-    ) -> Option<ReusedHttpStream> {
-        let current = self.runtime.current();
-        let listener = current.listener_runtime_config(&self.listener_label)?;
-        tokio::time::timeout(
-            listener.policies.timeouts.backend_total_request,
-            self.proxy.process_new_http(session, shutdown),
-        )
-        .await
-        .ok()
-        .flatten()
-    }
-
-    fn server_options(&self) -> Option<&HttpServerOptions> {
-        self.proxy.server_options()
-    }
-
-    fn h2_options(&self) -> Option<pingora_core::protocols::http::v2::server::H2Options> {
-        self.proxy.h2_options()
-    }
-
-    async fn http_cleanup(&self) {
-        self.proxy.http_cleanup().await;
     }
 }
 
@@ -655,11 +618,7 @@ fn pingora_ingress_service_for_listener(
     configure_tunnel_proxy(&mut proxy);
     let service = create_listener_service(
         PingoraConnectionLimitedApp {
-            proxy: Arc::new(PingoraRequestDeadlineApp {
-                proxy: Arc::new(proxy),
-                runtime: runtime.clone(),
-                listener_label: listener_label.clone(),
-            }),
+            proxy: Arc::new(proxy),
             runtime,
             listener_label: listener_label.clone(),
             drain: Arc::clone(&drain),
