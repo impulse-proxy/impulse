@@ -52,7 +52,7 @@ pub struct ResponseEmissionPolicy {
 
 #[derive(Debug)]
 pub struct NormalizedResponse {
-    pub headers: Vec<NormalizedHeader>,
+    pub headers: HeaderMap,
     pub emission: ResponseEmissionPolicy,
 }
 
@@ -127,15 +127,12 @@ pub fn normalize_response_trailers(
 pub fn normalize_upstream_response(input: ResponseNormalizationInput<'_>) -> NormalizedResponse {
     let constraints = input.constraints;
     let headers = input.upstream.headers;
-    let mut normalized_headers = Vec::with_capacity(headers.len());
+    let mut normalized_headers = HeaderMap::with_capacity(headers.len());
     for (name, value) in headers {
         if should_strip_response_header(name, headers, constraints) {
             continue;
         }
-        normalized_headers.push(NormalizedHeader {
-            name: name.clone(),
-            value: value.clone(),
-        });
+        normalized_headers.append(name.clone(), value.clone());
     }
 
     let declared_content_length = headers
@@ -188,12 +185,16 @@ mod tests {
         }
     }
 
-    fn header_value<'a>(headers: &'a [NormalizedHeader], name: &str) -> Option<&'a str> {
+    fn normalized_header_value<'a>(headers: &'a [NormalizedHeader], name: &str) -> Option<&'a str> {
         let name = HeaderName::from_bytes(name.as_bytes()).ok()?;
         headers
             .iter()
             .find(|header| header.name == name)
             .and_then(|header| header.value.to_str().ok())
+    }
+
+    fn header_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
+        headers.get(name).and_then(|value| value.to_str().ok())
     }
 
     #[test]
@@ -311,9 +312,15 @@ mod tests {
         let normalized = normalize_response_trailers(&trailers, http3_constraints());
 
         assert_eq!(normalized.len(), 2);
-        assert_eq!(header_value(&normalized, "grpc-status"), Some("0"));
-        assert_eq!(header_value(&normalized, "grpc-message"), Some("ok"));
-        assert_eq!(header_value(&normalized, "x-hop-token"), None);
+        assert_eq!(
+            normalized_header_value(&normalized, "grpc-status"),
+            Some("0")
+        );
+        assert_eq!(
+            normalized_header_value(&normalized, "grpc-message"),
+            Some("ok")
+        );
+        assert_eq!(normalized_header_value(&normalized, "x-hop-token"), None);
     }
 
     #[test]
@@ -341,17 +348,11 @@ mod tests {
         assert_eq!(normalized.emission.body, ResponseBodyPolicy::Suppress);
         assert!(normalized.emission.emit_end_stream_on_headers);
         assert!(
-            normalized
+            !normalized
                 .headers
-                .iter()
-                .all(|header| header.name != http::header::CONTENT_LENGTH)
+                .contains_key(http::header::CONTENT_LENGTH)
         );
-        assert!(
-            normalized
-                .headers
-                .iter()
-                .any(|header| header.name == http::HeaderName::from_static("x-custom"))
-        );
+        assert!(normalized.headers.contains_key("x-custom"));
     }
 
     #[test]
@@ -399,15 +400,9 @@ mod tests {
         assert!(
             normalized
                 .headers
-                .iter()
-                .any(|header| header.name == http::header::CONTENT_LENGTH)
+                .contains_key(http::header::CONTENT_LENGTH)
         );
-        assert!(
-            normalized
-                .headers
-                .iter()
-                .any(|header| header.name == http::HeaderName::from_static("etag"))
-        );
+        assert!(normalized.headers.contains_key(http::header::ETAG));
     }
 
     #[test]
