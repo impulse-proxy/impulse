@@ -17,7 +17,7 @@ use crate::{
     ForwardingPolicyInput, HostPolicyInput, UpstreamTargetInput,
     forwarded::{ForwardedHeaderChains, ForwardedHeaderValues, build_forwarded_header_values},
     h3_to_h1, h3_to_h2,
-    headers::{connection_header_tokens, should_strip_proxy_header, should_strip_request_header},
+    headers::{should_strip_proxy_header, should_strip_request_header},
     host::resolve_upstream_host_value,
 };
 
@@ -138,7 +138,6 @@ pub(crate) fn apply_request_header_policies(
         forwarded,
     } = input;
     let RequestBuildTarget { endpoint, policies } = target;
-    let connection_tokens = connection_header_tokens(headers);
     let mut passthrough_headers = Vec::new();
     let mut host_header_index = None;
     let mut forwarded_from_headers = smallvec::SmallVec::<[&[u8]; 4]>::new();
@@ -175,7 +174,7 @@ pub(crate) fn apply_request_header_policies(
         }
 
         let header_name = HeaderName::from_bytes(name).map_err(|_| BridgeError::InvalidHeader)?;
-        if should_strip_request_header(&header_name, &connection_tokens, preserve_upgrade) {
+        if should_strip_request_header(&header_name, headers, preserve_upgrade) {
             continue;
         }
 
