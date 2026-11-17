@@ -343,7 +343,7 @@ pub(crate) fn spawn_pingora_health_service(
     let registry = pingora_load_balancing.health_registry();
     registry.set_health_check(Box::new(ImpulsePingoraHealthCheck::new(
         generation,
-        pingora_load_balancing.upstream_pools(),
+        &pingora_load_balancing.upstream_pools(),
         backend_health_checks.as_ref(),
         transport_pool,
         backend_lifecycle,

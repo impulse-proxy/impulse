@@ -133,7 +133,7 @@ impl ControlPlaneRuntimeView {
         self.backend_dns_resolver.clone()
     }
 
-    pub(super) fn upstream_pools(&self) -> &HashMap<String, Arc<std::sync::RwLock<UpstreamPool>>> {
+    pub(super) fn upstream_pools(&self) -> HashMap<String, Arc<std::sync::RwLock<UpstreamPool>>> {
         self.pingora_load_balancing.upstream_pools()
     }
 
