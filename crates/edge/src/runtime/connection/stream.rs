@@ -56,7 +56,7 @@ pub struct RoutingSnapshot {
     pub backend_addr: String,
     pub backend_index: usize,
     pub upstream_name: Arc<str>,
-    pub route_reason: String,
+    pub route_reason: crate::routing::decision::RouteDecisionReason,
     pub route_path_len: usize,
     pub route_host_specific: bool,
     pub backend_lb: Option<String>,

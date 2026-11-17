@@ -1,5 +1,6 @@
 use std::{
     convert::Infallible,
+    fmt,
     sync::{Arc, RwLock, atomic::Ordering},
     time::{Duration, Instant},
 };
@@ -119,6 +120,17 @@ use crate::{
 
 #[cfg(feature = "response-compression")]
 const RESPONSE_GZIP_LEVEL: u32 = 6;
+
+struct AccessLogError<'a>(Option<&'a Error>);
+
+impl fmt::Display for AccessLogError<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.0 {
+            Some(error) => fmt::Display::fmt(error, formatter),
+            None => formatter.write_str("-"),
+        }
+    }
+}
 
 pub(crate) struct PingoraEdgeRequestState {
     pub(crate) runtime: Arc<RuntimeBundle>,
@@ -1949,7 +1961,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
                 route.route,
                 ctx.started_at.elapsed().as_millis(),
                 ctx.retry_count,
-                error.map_or_else(|| "-".to_string(), ToString::to_string),
+                AccessLogError(error),
             );
         }
         ctx.selected_backend.take();

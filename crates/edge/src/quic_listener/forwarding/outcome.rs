@@ -56,7 +56,9 @@ impl Http3Service {
 
         if req.routing_transparency_enabled {
             let reason = if req.routing_transparency_include_reason {
-                req.route_reason.as_deref().unwrap_or("-")
+                req.route_reason
+                    .as_ref()
+                    .map_or("-", |reason| reason.as_str())
             } else {
                 "-"
             };

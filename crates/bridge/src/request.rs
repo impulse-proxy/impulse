@@ -272,17 +272,21 @@ pub(crate) fn apply_request_header_assembly(
         .headers_ref()
         .is_some_and(|h| h.contains_key("traceparent"));
     if !has_traceparent {
-        let traceparent = trace.traceparent.map(str::to_owned).or_else(|| {
-            trace
-                .trace_id
-                .zip(trace.span_id)
-                .map(|(trace_id, span_id)| format!("00-{trace_id}-{span_id}-01"))
-        });
+        let traceparent = if let Some(traceparent) = trace.traceparent {
+            Some(HeaderValue::from_str(traceparent).map_err(|_| BridgeError::InvalidHeader)?)
+        } else if let Some((trace_id, span_id)) = trace.trace_id.zip(trace.span_id) {
+            let mut encoded = [0; 55];
+            encoded[..3].copy_from_slice(b"00-");
+            encoded[3..35].copy_from_slice(trace_id.as_str().as_bytes());
+            encoded[35] = b'-';
+            encoded[36..52].copy_from_slice(span_id.as_str().as_bytes());
+            encoded[52..].copy_from_slice(b"-01");
+            Some(HeaderValue::from_bytes(&encoded).map_err(|_| BridgeError::InvalidHeader)?)
+        } else {
+            None
+        };
         if let Some(traceparent) = traceparent {
-            builder = builder.header(
-                HeaderName::from_static("traceparent"),
-                HeaderValue::from_str(&traceparent).map_err(|_| BridgeError::InvalidHeader)?,
-            );
+            builder = builder.header(HeaderName::from_static("traceparent"), traceparent);
         }
     }
 
