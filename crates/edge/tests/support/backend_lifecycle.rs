@@ -147,7 +147,7 @@ impl BackendLifecycleHarness {
         Ok(current
             .shared_services()
             .backend_lifecycle
-            .snapshot_inventory(current.state().pingora_load_balancing.upstream_pools()))
+            .snapshot_inventory(&current.state().pingora_load_balancing.upstream_pools()))
     }
 
     pub(crate) fn backend_snapshot(
@@ -168,10 +168,8 @@ impl BackendLifecycleHarness {
     ) -> Result<UpstreamPoolMembershipSummary, String> {
         let handle = self.runtime_bundle_handle()?;
         let current = handle.current_view();
-        let pool = current
-            .state()
-            .pingora_load_balancing
-            .upstream_pools()
+        let pools = current.state().pingora_load_balancing.upstream_pools();
+        let pool = pools
             .get(upstream_name)
             .ok_or_else(|| format!("missing upstream pool '{upstream_name}'"))?;
         let guard = pool

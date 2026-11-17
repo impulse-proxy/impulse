@@ -28,8 +28,6 @@ use impulse_bridge::response::{
     ResponseBodyMode, ResponseNormalizationProtocol, ResponseProtocolConstraints,
     normalize_response_trailers,
 };
-#[cfg(test)]
-use impulse_config::runtime::RuntimeUpstreamPolicy;
 use impulse_config::{
     backend_endpoint::{BackendEndpoint, BackendScheme},
     config::{ClientAuth, ControlApi as ControlApiConfig},

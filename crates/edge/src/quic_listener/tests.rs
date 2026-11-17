@@ -975,7 +975,7 @@ fn build_shared_state_separates_backend_identity_from_resolution_state() {
 type TestRoutingContext = (
     HashMap<String, Arc<RwLock<super::UpstreamPool>>>,
     HashMap<String, impulse_config::runtime::RuntimeUpstreamPolicy>,
-    super::RouteIndex,
+    crate::routing::index::RouteIndex,
     Arc<RwLock<super::UpstreamPool>>,
     impulse_lb::pingora_backend::PingoraLoadBalancingRuntimeState<
         impulse_config::runtime::RuntimeBackendTlsPolicy,
@@ -987,7 +987,8 @@ fn test_routing_context(lb_type: &str) -> TestRoutingContext {
     upstreams.insert("api_pool".to_string(), test_upstream(lb_type));
     let runtime = runtime_config_with_upstreams(upstreams);
     let selectors = super::forwarding::test_selectors(&runtime);
-    let routing_index = super::RouteIndex::from_runtime_upstreams(&runtime.upstreams);
+    let routing_index =
+        crate::routing::index::RouteIndex::from_runtime_upstreams(&runtime.upstreams);
     let pool = Arc::clone(
         selectors
             .upstream_pool_by_id(impulse_contracts::UpstreamId::new(0))
@@ -1132,7 +1133,8 @@ fn resolve_backend_prefers_method_specific_route() {
     let runtime = runtime_config_with_upstreams(upstreams);
     let selectors = super::forwarding::test_selectors(&runtime);
     let metrics = super::Metrics::new(1, vec!["route".to_string()]);
-    let routing_index = super::RouteIndex::from_runtime_upstreams(&runtime.upstreams);
+    let routing_index =
+        crate::routing::index::RouteIndex::from_runtime_upstreams(&runtime.upstreams);
     let mut upstream_pools = HashMap::new();
     for (name, upstream) in &runtime.upstreams {
         let pool = super::upstream_pool_from_runtime(upstream).expect("pool");
@@ -1175,7 +1177,8 @@ fn resolve_backend_uses_configured_header_lb_key() {
         );
         let runtime = runtime_config_with_upstreams(upstreams);
         let selectors = super::forwarding::test_selectors(&runtime);
-        let routing_index = super::RouteIndex::from_runtime_upstreams(&runtime.upstreams);
+        let routing_index =
+            crate::routing::index::RouteIndex::from_runtime_upstreams(&runtime.upstreams);
         let pool =
             super::upstream_pool_from_runtime(runtime.upstreams.get("api_pool").expect("upstream"))
                 .expect("pool");

@@ -10,6 +10,8 @@ use impulse_lb::pingora_backend::{GenerationSelector, PingoraLoadBalancingRuntim
 use super::{selection::ForwardingSelectionService, *};
 #[cfg(test)]
 use crate::edge_core::request_execution::resolve_route_match;
+#[cfg(test)]
+use crate::routing::index::RouteIndex;
 use crate::{
     edge_core::request_execution::{ResolvedRouteTarget, RouteResolutionError},
     runtime::connection::outcome::{RouteOutcomeTarget, observe_proxy_error_outcome},
@@ -410,7 +412,7 @@ impl Http3Service {
 
     #[cfg(test)]
     fn route_resolution_from_match(
-        route_target: crate::edge_core::request_execution::routing::ResolvedRouteMatch,
+        route_target: crate::edge_core::request_execution::ResolvedRouteMatch,
         context: &ResolutionContext<'_>,
     ) -> Result<RouteResolution, ProxyError> {
         let upstream_name = route_target.upstream_name;
