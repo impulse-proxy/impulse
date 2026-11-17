@@ -167,7 +167,7 @@ pub(super) struct StartedRequestEnvelope {
 
 /// The parsed HTTP request-line/header inputs needed to build a request intake.
 pub(super) struct IntakeRequestDescriptor<'a> {
-    pub(super) quic_trace_id: &'a str,
+    pub(super) quic_trace_seed: u64,
     pub(super) request_start: Instant,
     pub(super) method: &'a str,
     pub(super) path: &'a str,
@@ -256,7 +256,9 @@ impl PendingForward {
                 impulse_bridge::request::RequestBuildInput::<BoxBody<Bytes, Infallible>>::body_mode_for_length(content_length),
             trace: impulse_bridge::request::RequestTraceContext {
                 request_id: self.request_id,
-                traceparent: self.traceparent.as_deref(),
+                traceparent: None,
+                trace_id: self.trace_id,
+                span_id: self.span_id,
             },
             forwarded: impulse_bridge::request::RequestForwardedContext {
                 client_addr: self.client_addr,
@@ -355,7 +357,7 @@ impl PendingForward {
 impl Http3Service {
     fn build_request_intake(descriptor: IntakeRequestDescriptor<'_>) -> IntakeRequestCandidate {
         let IntakeRequestDescriptor {
-            quic_trace_id,
+            quic_trace_seed,
             request_start,
             method,
             path,
@@ -372,12 +374,8 @@ impl Http3Service {
         let trace_id = incoming_traceparent
             .as_ref()
             .map(|(trace_id, _)| *trace_id)
-            .or_else(|| tracing_enabled.then(|| generated_trace_id(quic_trace_id, request_id)));
+            .or_else(|| tracing_enabled.then(|| generated_trace_id(quic_trace_seed, request_id)));
         let span_id = trace_id.as_ref().map(|_| generated_span_id(request_id));
-        let traceparent = trace_id
-            .as_ref()
-            .zip(span_id.as_ref())
-            .map(|(trace_id, span_id)| format!("00-{trace_id}-{span_id}-01"));
         let trace_span = trace_id
             .as_ref()
             .zip(span_id.as_ref())
@@ -398,7 +396,6 @@ impl Http3Service {
                     request_id,
                     trace_id,
                     span_id,
-                    traceparent,
                     trace_span,
                     method: method.to_string(),
                     path: path.to_string(),
@@ -491,7 +488,7 @@ impl Http3Service {
             intake,
         } = request;
         let IntakeRequestDescriptor {
-            quic_trace_id,
+            quic_trace_seed,
             request_start,
             method,
             path,
@@ -510,7 +507,7 @@ impl Http3Service {
             metrics,
         );
         let intake = Self::build_request_intake(IntakeRequestDescriptor {
-            quic_trace_id,
+            quic_trace_seed,
             request_start,
             method,
             path,
@@ -849,12 +846,6 @@ impl Http3Service {
                     request_id,
                     trace_id: intake.state.context.trace_id,
                     span_id: intake.state.context.span_id,
-                    traceparent: intake
-                        .state
-                        .context
-                        .traceparent
-                        .as_deref()
-                        .map(Arc::<str>::from),
                     host_policy: resolved_policy.host_policy,
                     forwarded_header_policy: resolved_policy.forwarded_header_policy,
                     plugin_plan: Arc::clone(&plugin_plan),

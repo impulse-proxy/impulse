@@ -1480,6 +1480,8 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             trace: impulse_bridge::request::RequestTraceContext {
                 request_id: ctx.request_id,
                 traceparent,
+                trace_id: None,
+                span_id: None,
             },
             forwarded: impulse_bridge::request::RequestForwardedContext { client_addr },
         };

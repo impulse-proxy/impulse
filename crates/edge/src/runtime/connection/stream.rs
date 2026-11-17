@@ -39,7 +39,6 @@ pub struct RequestContext {
     pub request_id: impulse_contracts::RequestId,
     pub trace_id: Option<TraceId>,
     pub span_id: Option<SpanId>,
-    pub traceparent: Option<String>,
     pub trace_span: Option<Span>,
     pub method: String,
     pub path: String,

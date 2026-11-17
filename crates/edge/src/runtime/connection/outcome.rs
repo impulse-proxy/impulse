@@ -1090,7 +1090,6 @@ mod tests {
                 request_id: 1,
                 trace_id: None,
                 span_id: None,
-                traceparent: None,
                 trace_span: None,
                 method: "GET".to_string(),
                 path: "/".to_string(),

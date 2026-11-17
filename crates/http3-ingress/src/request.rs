@@ -279,32 +279,28 @@ pub fn parse_traceparent(
 }
 
 pub fn generated_trace_id(
-    connection_trace_id: &str,
+    connection_trace_seed: u64,
     request_id: u64,
 ) -> impulse_contracts::TraceId {
     let request_id = request_id.to_be_bytes();
-    let low = stable_hash64_parts(&[connection_trace_id.as_bytes(), &request_id]);
-    let high = stable_hash64_parts(&[connection_trace_id.as_bytes(), &request_id, b"trace-hi"]);
+    let low = stable_hash64_extend(connection_trace_seed, &request_id);
+    let high = stable_hash64_extend(low, b"trace-hi");
     impulse_contracts::TraceId::from_u64_pair(high, low)
+}
+
+pub fn trace_id_seed(connection_trace_id: &str) -> u64 {
+    stable_hash64(connection_trace_id.as_bytes())
 }
 
 pub fn generated_span_id(request_id: u64) -> impulse_contracts::SpanId {
     impulse_contracts::SpanId::from_u64(stable_hash64(&request_id.to_be_bytes()))
 }
 
-fn stable_hash64_parts(parts: &[&[u8]]) -> u64 {
-    let mut hash = 0xcbf2_9ce4_8422_2325;
-    for bytes in parts {
-        for byte in *bytes {
-            hash ^= u64::from(*byte);
-            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-        }
-    }
-    hash
+fn stable_hash64(bytes: &[u8]) -> u64 {
+    stable_hash64_extend(0xcbf2_9ce4_8422_2325, bytes)
 }
 
-fn stable_hash64(bytes: &[u8]) -> u64 {
-    let mut hash = 0xcbf2_9ce4_8422_2325;
+fn stable_hash64_extend(mut hash: u64, bytes: &[u8]) -> u64 {
     for byte in bytes {
         hash ^= u64::from(*byte);
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);

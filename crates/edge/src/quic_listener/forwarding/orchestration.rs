@@ -717,7 +717,7 @@ impl Http3Service {
                     }
 
                     let sticky_cid_key = hex::encode(connection.primary_scid.as_ref());
-                    let quic_trace_id = connection.quic.trace_id().to_string();
+                    let quic_trace_seed = trace_id_seed(connection.quic.trace_id());
                     let pre_auth = match Self::prepare_request_for_auth(
                         stream_id,
                         h3,
@@ -726,7 +726,7 @@ impl Http3Service {
                             peer_address: connection.peer_address,
                             sticky_cid_key: sticky_cid_key.as_str(),
                             intake: self::prepare::IntakeRequestDescriptor {
-                                quic_trace_id: &quic_trace_id,
+                                quic_trace_seed,
                                 request_start,
                                 method: request_head.method,
                                 path: request_head.path,

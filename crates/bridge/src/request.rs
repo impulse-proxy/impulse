@@ -10,7 +10,7 @@ use bytes::Bytes;
 use http::{HeaderName, HeaderValue};
 use http_body_util::combinators::BoxBody;
 pub use impulse_contracts::HeaderMutationRef as RequestHeaderMutationRef;
-use impulse_contracts::RequestId;
+use impulse_contracts::{RequestId, SpanId, TraceId};
 use impulse_errors::BridgeError;
 
 use crate::{
@@ -46,6 +46,8 @@ pub enum RequestBodyMode {
 pub struct RequestTraceContext<'a> {
     pub request_id: RequestId,
     pub traceparent: Option<&'a str>,
+    pub trace_id: Option<TraceId>,
+    pub span_id: Option<SpanId>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -269,11 +271,19 @@ pub(crate) fn apply_request_header_assembly(
     let has_traceparent = builder
         .headers_ref()
         .is_some_and(|h| h.contains_key("traceparent"));
-    if !has_traceparent && let Some(traceparent) = trace.traceparent {
-        builder = builder.header(
-            HeaderName::from_static("traceparent"),
-            HeaderValue::from_str(traceparent).map_err(|_| BridgeError::InvalidHeader)?,
-        );
+    if !has_traceparent {
+        let traceparent = trace.traceparent.map(str::to_owned).or_else(|| {
+            trace
+                .trace_id
+                .zip(trace.span_id)
+                .map(|(trace_id, span_id)| format!("00-{trace_id}-{span_id}-01"))
+        });
+        if let Some(traceparent) = traceparent {
+            builder = builder.header(
+                HeaderName::from_static("traceparent"),
+                HeaderValue::from_str(&traceparent).map_err(|_| BridgeError::InvalidHeader)?,
+            );
+        }
     }
 
     if let Some(value) = resolved_headers.forwarded_values.forwarded {

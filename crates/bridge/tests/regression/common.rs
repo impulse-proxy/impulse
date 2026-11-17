@@ -91,6 +91,8 @@ pub(crate) fn request_input<'a>(
         trace: RequestTraceContext {
             request_id: meta.request_id,
             traceparent: meta.traceparent,
+            trace_id: None,
+            span_id: None,
         },
         forwarded: RequestForwardedContext {
             client_addr: meta.client_addr,
