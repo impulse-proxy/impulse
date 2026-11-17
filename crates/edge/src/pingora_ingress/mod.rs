@@ -295,19 +295,6 @@ impl PingoraEdgeRequestService {
         let route_id = route.route_id;
         let upstream_id = route.upstream_id;
         let route_runtime = route.runtime.clone();
-        let method = ctx.method.clone().ok_or_else(|| {
-            Error::explain(
-                InternalError,
-                "Pingora ingress request filter did not validate a method",
-            )
-        })?;
-        let path = ctx.path.clone().ok_or_else(|| {
-            Error::explain(
-                InternalError,
-                "Pingora ingress request filter did not validate a path",
-            )
-        })?;
-        let authority = ctx.authority.clone();
         let retry_backend = ctx.retry_backend.take();
         let retry_transport_identity =
             retry_backend.and_then(|_| ctx.retry_transport_identity.take());
@@ -340,6 +327,18 @@ impl PingoraEdgeRequestService {
                 })?;
                 (backend_id, address.to_string(), index, transport_identity)
             } else {
+                let method = ctx.method.as_deref().ok_or_else(|| {
+                    Error::explain(
+                        InternalError,
+                        "Pingora ingress request filter did not validate a method",
+                    )
+                })?;
+                let path = ctx.path.as_deref().ok_or_else(|| {
+                    Error::explain(
+                        InternalError,
+                        "Pingora ingress request filter did not validate a path",
+                    )
+                })?;
                 let request = session.req_header();
                 let header_lookup = |name: &str| {
                     request
@@ -349,9 +348,9 @@ impl PingoraEdgeRequestService {
                         .map(str::to_owned)
                 };
                 let selection_request = TargetResolutionRequest::new(
-                    &method,
-                    &path,
-                    authority.as_deref(),
+                    method,
+                    path,
+                    ctx.authority.as_deref(),
                     None,
                     Some(&header_lookup),
                 );
