@@ -43,16 +43,19 @@ pub(crate) fn build_h2_request_for_target(
         method.clone()
     };
     let is_connect = upstream_method == Method::CONNECT;
-    let mut builder = Request::builder().method(upstream_method.clone());
-    let resolved_headers = apply_request_header_policies(RequestHeaderPolicyInput {
-        target: RequestBuildTarget { endpoint, policies },
-        authority,
-        headers,
-        auth_header_mutations,
-        preserve_upgrade: false,
-        forwarded,
-    })?;
-    let host_value = resolved_headers.host_value.as_ref();
+    let builder = Request::builder().method(upstream_method.clone());
+    let (mut builder, resolved_headers) = apply_request_header_policies(
+        builder,
+        RequestHeaderPolicyInput {
+            target: RequestBuildTarget { endpoint, policies },
+            authority,
+            headers,
+            auth_header_mutations,
+            preserve_upgrade: false,
+            forwarded,
+        },
+    )?;
+    let host_value = resolved_headers.host_value;
 
     let uri = if websocket_extended_connect {
         let request_path = if path.is_empty() { "/" } else { path };

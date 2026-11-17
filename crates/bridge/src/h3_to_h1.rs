@@ -42,16 +42,18 @@ pub(crate) fn build_h1_request(
     let method = Method::from_bytes(method.as_bytes()).map_err(|_| BridgeError::InvalidMethod)?;
     let preserve_upgrade = legacy_websocket_upgrade_requested(method.as_str(), headers);
 
-    let mut builder = Request::builder().method(method.clone());
-    let resolved_headers = apply_request_header_policies(RequestHeaderPolicyInput {
-        target: RequestBuildTarget { endpoint, policies },
-        authority,
-        headers,
-        auth_header_mutations,
-        preserve_upgrade,
-        forwarded,
-    })?;
-
+    let builder = Request::builder().method(method.clone());
+    let (mut builder, resolved_headers) = apply_request_header_policies(
+        builder,
+        RequestHeaderPolicyInput {
+            target: RequestBuildTarget { endpoint, policies },
+            authority,
+            headers,
+            auth_header_mutations,
+            preserve_upgrade,
+            forwarded,
+        },
+    )?;
     let request_path = if path.is_empty() { "/" } else { path };
     let uri =
         Uri::try_from(endpoint.uri_for_path(request_path)).map_err(|_| BridgeError::InvalidUri)?;
