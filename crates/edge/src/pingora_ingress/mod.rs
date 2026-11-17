@@ -11,7 +11,10 @@ use impulse_bridge::response::{
     ResponseBodyMode, ResponseNormalizationProtocol, ResponseProtocolConstraints,
     normalize_response_trailers,
 };
-use impulse_config::{backend_endpoint::BackendScheme, runtime::ListenerRuntimeConfig};
+use impulse_config::{
+    backend_endpoint::{BackendEndpoint, BackendScheme},
+    runtime::ListenerRuntimeConfig,
+};
 use impulse_contracts::{
     AlternateBackendFailureReason, HealthFailureReason, IngressProtocol,
     PluginExecutionObservation, PluginExecutionOutcome, PluginHeaderMutation, PluginKind,
@@ -54,8 +57,8 @@ use pingora_cache::{CacheKey, CacheMeta, CachePhase, NoCacheReason, RespCacheabl
 use pingora_core::protocols::http::compression::Algorithm;
 use pingora_core::{
     Error, HTTPStatus, InternalError, Result,
-    apps::{HttpServerApp, HttpServerOptions, ReusedHttpStream, ServerApp},
-    protocols::{Stream, http::ServerSession},
+    apps::ServerApp,
+    protocols::Stream,
     server::{ShutdownWatch, configuration::ServerConf},
     services::listening::Service,
     upstreams::peer::HttpPeer,
@@ -130,6 +133,7 @@ pub(crate) struct PingoraEdgeRequestState {
     #[cfg(feature = "response-cache")]
     response_cache_bypass_recorded: bool,
     selected_backend: Option<PingoraSelectedBackend>,
+    retry_transport_identity: Option<BackendEndpoint>,
     plugin_execution: AsyncRequestPluginExecutionGuard,
     drain: Arc<PingoraDrainState>,
 }
@@ -153,6 +157,7 @@ struct PingoraSelectedBackend {
     address: String,
     pool: Arc<RwLock<UpstreamPool>>,
     index: usize,
+    transport_identity: BackendEndpoint,
     selected_at: Instant,
     finish_status: Option<u16>,
     failure_handled: bool,
@@ -181,12 +186,13 @@ impl PingoraEdgeRequestService {
         #[cfg(not(any(feature = "response-cache", feature = "response-compression")))]
         let _ = session;
         #[cfg(any(feature = "response-cache", feature = "response-compression"))]
-        let policy = ctx.policy.as_ref().ok_or_else(|| {
+        let route = ctx.route.as_ref().ok_or_else(|| {
             Error::explain(
                 InternalError,
-                "Pingora ingress request filter did not resolve a request policy",
+                "Pingora ingress request filter did not resolve a route",
             )
         })?;
+        let plugin_plan = route.runtime.plugin_plan.as_ref();
         let method = ctx.method.as_deref().ok_or_else(|| {
             Error::explain(
                 InternalError,
@@ -199,20 +205,14 @@ impl PingoraEdgeRequestService {
         let request_header =
             |name: &str| request_headers.get(name).map(http::HeaderValue::as_bytes);
         #[cfg(any(feature = "response-cache", feature = "response-compression"))]
-        let has_response_plugins = !policy.plugin_plan.cache_policy().is_empty()
-            || !policy.plugin_plan.response_policy().is_empty();
+        let has_response_plugins =
+            !plugin_plan.cache_policy().is_empty() || !plugin_plan.response_policy().is_empty();
         #[cfg(any(feature = "response-cache", feature = "response-compression"))]
         let plugin_request = if has_response_plugins {
             let path = ctx.path.as_deref().ok_or_else(|| {
                 Error::explain(
                     InternalError,
                     "Pingora ingress request filter did not validate a path",
-                )
-            })?;
-            let route = ctx.route.as_ref().ok_or_else(|| {
-                Error::explain(
-                    InternalError,
-                    "Pingora ingress request filter did not resolve a route",
                 )
             })?;
             let peer_address = session
@@ -222,7 +222,7 @@ impl PingoraEdgeRequestService {
                 .unwrap_or_else(|| ([0, 0, 0, 0], 0).into());
             Some(PluginRequestView {
                 request_id: ctx.request_id,
-                generation: policy.plugin_plan.generation(),
+                generation: plugin_plan.generation(),
                 runtime_route_id: route.route_id,
                 route_id: Some(route.upstream_name.as_ref()),
                 upstream_name: route.upstream_name.as_ref(),
@@ -256,7 +256,7 @@ impl PingoraEdgeRequestService {
             #[cfg(any(feature = "response-cache", feature = "response-compression"))]
             metrics: &ctx.runtime.shared_state.shared_services().metrics,
             #[cfg(any(feature = "response-cache", feature = "response-compression"))]
-            plugin_plan: &policy.plugin_plan,
+            plugin_plan,
             #[cfg(any(feature = "response-cache", feature = "response-compression"))]
             plugin_request,
             status: upstream_response.status,
@@ -294,7 +294,7 @@ impl PingoraEdgeRequestService {
         })?;
         let route_id = route.route_id;
         let upstream_id = route.upstream_id;
-        let upstream_name = Arc::clone(&route.upstream_name);
+        let route_runtime = route.runtime.clone();
         let method = ctx.method.clone().ok_or_else(|| {
             Error::explain(
                 InternalError,
@@ -309,96 +309,79 @@ impl PingoraEdgeRequestService {
         })?;
         let authority = ctx.authority.clone();
         let retry_backend = ctx.retry_backend.take();
+        let retry_transport_identity =
+            retry_backend.and_then(|_| ctx.retry_transport_identity.take());
         let state = ctx.runtime.shared_state.generation_state();
-        let pool = state
-            .pingora_load_balancing
-            .upstream_pool_by_id(upstream_id)
-            .cloned()
-            .ok_or_else(|| {
-                Error::explain(
-                    InternalError,
-                    format!("Pingora ingress upstream pool is missing: {upstream_name}"),
-                )
-            })?;
-        let (backend_id, backend_addr, backend_index) = if let Some((backend_id, index)) =
-            retry_backend
-        {
-            let pool = pool.read().map_err(|_| {
-                Error::explain(InternalError, "Pingora ingress upstream pool lock poisoned")
-            })?;
-            if state.identities.backend_id_at(upstream_id, index) != Some(backend_id)
-                || !pool.begin_request_if_healthy(index)
-            {
-                return Error::e_explain(
-                    InternalError,
-                    "Pingora ingress retry backend is no longer available",
-                );
-            }
-            let address = pool.backend_address(index).ok_or_else(|| {
-                Error::explain(
-                    InternalError,
-                    "Pingora ingress retry backend has no configured address",
-                )
-            })?;
-            (backend_id, address.to_string(), index)
-        } else {
-            let request = session.req_header();
-            let header_lookup = |name: &str| {
-                request
-                    .headers
-                    .get(name)
-                    .and_then(|value| value.to_str().ok())
-                    .map(str::to_owned)
-            };
-            let selection_request = TargetResolutionRequest::new(
-                &method,
-                &path,
-                authority.as_deref(),
-                None,
-                Some(&header_lookup),
-            );
-            let selector = state
-                .pingora_load_balancing
-                .selector_by_id(upstream_id)
-                .ok_or_else(|| {
-                    ctx.runtime
-                        .shared_state
-                        .shared_services()
-                        .metrics
-                        .runtime_observations()
-                        .inc_pingora_lb_selector_failure();
+        let pool = Arc::clone(&route_runtime.upstream_pool);
+        let (backend_id, backend_addr, backend_index, transport_identity) =
+            if let Some((backend_id, index)) = retry_backend {
+                let transport_identity = retry_transport_identity.ok_or_else(|| {
                     Error::explain(
                         InternalError,
-                        format!("Pingora ingress selector is missing: {upstream_name}"),
+                        "Pingora ingress retry backend has no transport identity",
                     )
                 })?;
-            let selected = ForwardingSelectionService::select_backend(
-                &selection_request,
-                &pool,
-                selector,
-                ctx.runtime.generation,
-                true,
-                ctx.runtime.shared_state.shared_services().metrics.as_ref(),
-            )
-            .map_err(|error| Error::because(InternalError, "backend selection failed", error))?;
-            ctx.lb_key = Some(selected.lb_key);
-            ctx.runtime
-                .shared_state
-                .generation_state()
-                .resilience
-                .retry_budget
-                .mark_primary(route_id);
-            (
-                selected.backend_id,
-                selected.backend_addr,
-                selected.backend_index,
-            )
-        };
+                let pool = pool.read().map_err(|_| {
+                    Error::explain(InternalError, "Pingora ingress upstream pool lock poisoned")
+                })?;
+                if state.identities.backend_id_at(upstream_id, index) != Some(backend_id)
+                    || !pool.begin_request_if_healthy(index)
+                {
+                    return Error::e_explain(
+                        InternalError,
+                        "Pingora ingress retry backend is no longer available",
+                    );
+                }
+                let address = pool.backend_address(index).ok_or_else(|| {
+                    Error::explain(
+                        InternalError,
+                        "Pingora ingress retry backend has no configured address",
+                    )
+                })?;
+                (backend_id, address.to_string(), index, transport_identity)
+            } else {
+                let request = session.req_header();
+                let header_lookup = |name: &str| {
+                    request
+                        .headers
+                        .get(name)
+                        .and_then(|value| value.to_str().ok())
+                        .map(str::to_owned)
+                };
+                let selection_request = TargetResolutionRequest::new(
+                    &method,
+                    &path,
+                    authority.as_deref(),
+                    None,
+                    Some(&header_lookup),
+                );
+                let selected = ForwardingSelectionService::select_backend(
+                    &selection_request,
+                    &pool,
+                    &route_runtime.selector,
+                    &state.backend_endpoints_by_id,
+                    ctx.runtime.generation,
+                    true,
+                    ctx.runtime.shared_state.shared_services().metrics.as_ref(),
+                )
+                .map_err(|error| {
+                    Error::because(InternalError, "backend selection failed", error)
+                })?;
+                route_runtime.retry_policy.mark_primary(route_id);
+                ctx.lb_key = Some(selected.lb_key);
+                (
+                    selected.backend_id,
+                    selected.backend_addr,
+                    selected.backend_index,
+                    selected.transport_identity,
+                )
+            };
         Ok(PingoraSelectedBackend {
             id: backend_id,
             address: backend_addr,
             pool,
             index: backend_index,
+            transport_identity,
             selected_at: Instant::now(),
             finish_status: None,
             failure_handled: false,
@@ -408,16 +391,10 @@ impl PingoraEdgeRequestService {
 }
 
 pub(crate) struct PingoraConnectionLimitedApp {
-    proxy: Arc<PingoraRequestDeadlineApp>,
-    runtime: RuntimeBundleHandle,
-    listener_label: String,
-    drain: Arc<PingoraDrainState>,
-}
-
-struct PingoraRequestDeadlineApp {
     proxy: Arc<HttpProxy<PingoraIngressAdapter<PingoraEdgeRequestService>>>,
     runtime: RuntimeBundleHandle,
     listener_label: String,
+    drain: Arc<PingoraDrainState>,
 }
 
 pub(crate) struct PingoraRuntimeConnectionAdmission {
@@ -464,37 +441,6 @@ impl ConnectionAdmission for PingoraRuntimeConnectionAdmission {
             metrics.ingress_observations().inc_ingress_rate_limited();
         }
         admitted
-    }
-}
-
-#[async_trait]
-impl HttpServerApp for PingoraRequestDeadlineApp {
-    async fn process_new_http(
-        self: &Arc<Self>,
-        session: ServerSession,
-        shutdown: &ShutdownWatch,
-    ) -> Option<ReusedHttpStream> {
-        let current = self.runtime.current();
-        let listener = current.listener_runtime_config(&self.listener_label)?;
-        tokio::time::timeout(
-            listener.policies.timeouts.backend_total_request,
-            self.proxy.process_new_http(session, shutdown),
-        )
-        .await
-        .ok()
-        .flatten()
-    }
-
-    fn server_options(&self) -> Option<&HttpServerOptions> {
-        self.proxy.server_options()
-    }
-
-    fn h2_options(&self) -> Option<pingora_core::protocols::http::v2::server::H2Options> {
-        self.proxy.h2_options()
-    }
-
-    async fn http_cleanup(&self) {
-        self.proxy.http_cleanup().await;
     }
 }
 
@@ -672,11 +618,7 @@ fn pingora_ingress_service_for_listener(
     configure_tunnel_proxy(&mut proxy);
     let service = create_listener_service(
         PingoraConnectionLimitedApp {
-            proxy: Arc::new(PingoraRequestDeadlineApp {
-                proxy: Arc::new(proxy),
-                runtime: runtime.clone(),
-                listener_label: listener_label.clone(),
-            }),
+            proxy: Arc::new(proxy),
             runtime,
             listener_label: listener_label.clone(),
             drain: Arc::clone(&drain),
@@ -708,6 +650,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
                 #[cfg(feature = "response-cache")]
                 response_cache_bypass_recorded: false,
                 selected_backend: None,
+                retry_transport_identity: None,
                 plugin_execution: AsyncRequestPluginExecutionGuard::default(),
                 drain: Arc::clone(&self.drain),
             },
@@ -816,15 +759,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
         let request_headers = &request.headers;
         let plugin_header_lookup =
             |name: &str| request_headers.get(name).map(http::HeaderValue::as_bytes);
-        let request_service = EdgeRequestService::new(
-            &state.routing_index,
-            &state.identities,
-            &state.upstream_policies,
-            &state.plugin_plans,
-            &state.route_execution_classes,
-            &state.resilience,
-            &shared.metrics,
-        );
+        let request_service = EdgeRequestService::new(state, &shared.metrics);
         let execution = match request_service
             .execute_ingress_plugins(
                 PluginRequestExecutionInput {
@@ -861,9 +796,8 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             }
             Err(
                 RouteResolutionError::NoRoute
-                | RouteResolutionError::MissingUpstreamPolicy
-                | RouteResolutionError::MissingUpstreamPluginPlan
-                | RouteResolutionError::MissingUpstreamDisplayName,
+                | RouteResolutionError::MissingUpstreamDisplayName
+                | RouteResolutionError::MissingRouteRuntime,
             ) => {
                 write_local_response(
                     session,
@@ -947,16 +881,16 @@ impl PingoraRequestService for PingoraEdgeRequestService {
         };
 
         #[cfg(feature = "external-auth")]
-        if let Some(external_auth) =
-            policy
-                .plugin_plan
-                .async_request_gate()
-                .iter()
-                .find_map(|plugin| match plugin {
-                    CompiledAsyncRequestPlugin::ExternalAuth(input) => Some(input.clone()),
-                    #[cfg(feature = "quota")]
-                    CompiledAsyncRequestPlugin::Quota(_) => None,
-                })
+        if let Some(external_auth) = route
+            .runtime
+            .plugin_plan
+            .async_request_gate()
+            .iter()
+            .find_map(|plugin| match plugin {
+                CompiledAsyncRequestPlugin::ExternalAuth(input) => Some(input.clone()),
+                #[cfg(feature = "quota")]
+                CompiledAsyncRequestPlugin::Quota(_) => None,
+            })
         {
             let selected = self.select_backend(session, ctx)?;
             let backend_addr = selected.address.clone();
@@ -1138,7 +1072,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
         }
 
         #[cfg(feature = "response-compression")]
-        if !policy.plugin_plan.response_policy().is_empty() {
+        if !route.runtime.plugin_plan.response_policy().is_empty() {
             session.upstream_compression.adjust_level(0);
             session
                 .upstream_compression
@@ -1151,25 +1085,25 @@ impl PingoraRequestService for PingoraEdgeRequestService {
 
     #[cfg(feature = "response-cache")]
     fn request_cache_filter(&self, session: &mut Session, ctx: &mut Self::Context) -> Result<()> {
-        let (Some(cache), Some(policy), Some(method), Some(path)) = (
+        let (Some(cache), Some(method), Some(path)) = (
             self.runtime.response_cache(),
-            ctx.policy.as_ref(),
             ctx.method.as_deref(),
             ctx.path.as_deref(),
         ) else {
             return Ok(());
         };
-        let Some(compiled_cache) = policy.plugin_plan.response_cache() else {
-            return Ok(());
-        };
-        let (is_upgrade, is_tunnel) = tunnel_cache_flags(ctx.tunnel_mode);
-        let has_body = !session.is_body_empty();
         let Some(route) = ctx.route.as_ref() else {
             return Error::e_explain(
                 InternalError,
                 "Pingora ingress cache lookup is missing its resolved route",
             );
         };
+        let plugin_plan = route.runtime.plugin_plan.as_ref();
+        let Some(compiled_cache) = plugin_plan.response_cache() else {
+            return Ok(());
+        };
+        let (is_upgrade, is_tunnel) = tunnel_cache_flags(ctx.tunnel_mode);
+        let has_body = !session.is_body_empty();
         let peer_address = session
             .client_addr()
             .and_then(|address| address.as_inet())
@@ -1185,10 +1119,10 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             |name: &str| request_headers.get(name).map(http::HeaderValue::as_bytes);
         let representation = process_cache_lookup(CacheLookupProcessingInput {
             metrics: &ctx.runtime.shared_state.shared_services().metrics,
-            plugin_plan: &policy.plugin_plan,
+            plugin_plan,
             plugin_request: PluginRequestView {
                 request_id: ctx.request_id,
-                generation: policy.plugin_plan.generation(),
+                generation: plugin_plan.generation(),
                 runtime_route_id: route.route_id,
                 route_id: Some(route.upstream_name.as_ref()),
                 upstream_name: route.upstream_name.as_ref(),
@@ -1233,9 +1167,9 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             Error::explain(InternalError, "response cache request target is missing")
         })?;
         let compiled_cache = ctx
-            .policy
+            .route
             .as_ref()
-            .and_then(|policy| policy.plugin_plan.response_cache())
+            .and_then(|route| route.runtime.plugin_plan.response_cache())
             .ok_or_else(|| Error::explain(InternalError, "response cache plugin is missing"))?;
         let accept_encoding = session
             .req_header()
@@ -1495,21 +1429,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
                 "Pingora ingress request filter did not validate a path",
             )
         })?;
-        let endpoint = ctx
-            .runtime
-            .shared_state
-            .generation_state()
-            .backend_endpoints_by_id
-            .get(selected.id.get() as usize)
-            .ok_or_else(|| {
-                Error::explain(
-                    InternalError,
-                    format!(
-                        "Pingora ingress backend endpoint is missing: {}",
-                        selected.address
-                    ),
-                )
-            })?;
+        let endpoint = &selected.transport_identity;
         let client_addr = session
             .client_addr()
             .and_then(|address| address.as_inet())
@@ -1595,9 +1515,9 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             .get(http::header::CONTENT_LENGTH)
             .and_then(|value| value.to_str().ok())
             .and_then(|value| value.parse::<usize>().ok());
-        let has_response_plugins = ctx.policy.as_ref().is_some_and(|policy| {
-            !policy.plugin_plan.cache_policy().is_empty()
-                || !policy.plugin_plan.response_policy().is_empty()
+        let has_response_plugins = ctx.route.as_ref().is_some_and(|route| {
+            !route.runtime.plugin_plan.cache_policy().is_empty()
+                || !route.runtime.plugin_plan.response_policy().is_empty()
         });
         if !has_response_plugins {
             return Ok(());
@@ -1605,9 +1525,9 @@ impl PingoraRequestService for PingoraEdgeRequestService {
         let processed = Self::process_response_head(session, upstream_response, ctx)?;
         #[cfg(feature = "response-compression")]
         if ctx
-            .policy
+            .route
             .as_ref()
-            .is_some_and(|policy| !policy.plugin_plan.response_policy().is_empty())
+            .is_some_and(|route| !route.runtime.plugin_plan.response_policy().is_empty())
         {
             ctx.runtime
                 .shared_state
@@ -1893,8 +1813,8 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             });
         let metrics = &ctx.runtime.shared_state.shared_services().metrics;
         #[cfg(any(feature = "response-cache", feature = "response-compression"))]
-        let passthrough = ctx.policy.as_ref().is_some_and(|policy| {
-            policy.plugin_plan.execution_class() == RouteExecutionClass::Passthrough
+        let passthrough = ctx.route.as_ref().is_some_and(|route| {
+            route.runtime.plugin_plan.execution_class() == RouteExecutionClass::Passthrough
         });
         #[cfg(feature = "response-cache")]
         if !passthrough {
@@ -2096,45 +2016,52 @@ fn handle_pingora_proxy_failure(
         error.set_retry(false);
         return error;
     };
-    let selector = ctx
-        .runtime
-        .shared_state
-        .generation_state()
-        .pingora_load_balancing
-        .selector_by_id(route.upstream_id);
+    let route_runtime = route.runtime.clone();
     let metrics = ctx.runtime.shared_state.shared_services().metrics.as_ref();
-    let selection = match selector {
-        Some(selector) => Some(ForwardingSelectionService::select_backend_excluding(
-            selector,
-            &selected.pool,
-            BackendSelectionInput::new(
-                ctx.runtime.generation,
-                ctx.lb_key.as_deref().unwrap_or_default(),
-                &[selected.id],
-                false,
+    let selection = ForwardingSelectionService::select_backend_excluding(
+        &route_runtime.selector,
+        &selected.pool,
+        &ctx.runtime
+            .shared_state
+            .generation_state()
+            .backend_endpoints_by_id,
+        BackendSelectionInput::new(
+            ctx.runtime.generation,
+            ctx.lb_key.as_deref().unwrap_or_default(),
+            &[selected.id],
+            false,
+        ),
+        metrics,
+    );
+    let (retry_backend, retry_transport_identity, alternate_failure) = match selection {
+        Ok(Some(BackendCandidate {
+            id,
+            index,
+            transport_identity,
+            ..
+        })) => (Some((id, index)), Some(transport_identity), None),
+        Ok(None) => match selected.pool.read() {
+            Ok(pool) if pool.membership_summary().healthy_backends == 0 => (
+                None,
+                None,
+                Some(AlternateBackendFailureReason::NoHealthyBackends),
             ),
-            metrics,
-        )),
-        None => {
-            metrics
-                .runtime_observations()
-                .inc_pingora_lb_selector_failure();
-            None
-        }
-    };
-    let (retry_backend, alternate_failure) = match selection {
-        Some(Ok(Some(BackendCandidate { id, index, .. }))) => (Some((id, index)), None),
-        Some(Ok(None)) => match selected.pool.read() {
-            Ok(pool) if pool.membership_summary().healthy_backends == 0 => {
-                (None, Some(AlternateBackendFailureReason::NoHealthyBackends))
-            }
             Ok(_) => (
+                None,
                 None,
                 Some(AlternateBackendFailureReason::OnlyExcludedBackendsHealthy),
             ),
-            Err(_) => (None, Some(AlternateBackendFailureReason::PoolUnavailable)),
+            Err(_) => (
+                None,
+                None,
+                Some(AlternateBackendFailureReason::PoolUnavailable),
+            ),
         },
-        Some(Err(_)) | None => (None, Some(AlternateBackendFailureReason::PoolUnavailable)),
+        Err(_) => (
+            None,
+            None,
+            Some(AlternateBackendFailureReason::PoolUnavailable),
+        ),
     };
     let retry = RetryCoordinator::new(
         ctx.method.as_deref().is_some_and(is_idempotent_method),
@@ -2147,11 +2074,7 @@ fn handle_pingora_proxy_failure(
         &proxy_error,
         ctx.retry_count,
         route.route_id,
-        &ctx.runtime
-            .shared_state
-            .generation_state()
-            .resilience
-            .retry_budget,
+        route_runtime.retry_policy.as_ref(),
         retry_backend.is_some(),
         alternate_failure,
     );
@@ -2163,6 +2086,7 @@ fn handle_pingora_proxy_failure(
                 .inc_retry_attempt(RetryAttemptTelemetryReason::from(reason));
             ctx.retry_count = ctx.retry_count.saturating_add(1);
             ctx.retry_backend = retry_backend;
+            ctx.retry_transport_identity = retry_transport_identity;
             error.set_retry(true);
             true
         }

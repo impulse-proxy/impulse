@@ -6,6 +6,7 @@ use std::{
 };
 
 use bytes::Bytes;
+use impulse_config::backend_endpoint::BackendEndpoint;
 use impulse_config::config::{AccessLog, ForwardedHeaderPolicy, UpstreamHostPolicy};
 use impulse_lb::upstream_pool::UpstreamPool;
 use impulse_plugins::CompiledPluginPlan;
@@ -62,6 +63,7 @@ pub struct RequestEnvelope {
     pub bodyless_mode: bool,
     pub tunnel_mode: TunnelMode,
     pub plugin_plan: Arc<CompiledPluginPlan>,
+    pub(crate) pinned_generation: Option<crate::runtime::bundle::ActiveRuntimeGeneration>,
 
     pub retry_count: u8,
     pub error_kind: Option<&'static str>,
@@ -140,6 +142,7 @@ impl RequestEnvelope {
             bodyless_mode: request_mode.bodyless_mode(),
             tunnel_mode: request_mode.tunnel_mode(),
             plugin_plan: Arc::clone(&pending_forward.plugin_plan),
+            pinned_generation: None,
             retry_count,
             error_kind,
             terminal_overload_reason: None,
@@ -198,6 +201,7 @@ impl RequestEnvelope {
             bodyless_mode: request_mode.bodyless_mode(),
             tunnel_mode: request_mode.tunnel_mode(),
             plugin_plan: Arc::clone(&pending_forward.plugin_plan),
+            pinned_generation: None,
             retry_count,
             error_kind,
             terminal_overload_reason: None,
@@ -1004,6 +1008,7 @@ pub struct PendingForward {
     pub backend_id: impulse_contracts::BackendId,
     pub backend_addr: Arc<str>,
     pub backend_index: usize,
+    pub transport_identity: BackendEndpoint,
     pub backend_lb: Option<Arc<str>>,
     pub lb_key: Arc<str>,
     pub client_addr: SocketAddr,
@@ -1037,6 +1042,8 @@ impl PendingForward {
             backend_id: impulse_contracts::BackendId::new(0),
             backend_addr: Arc::<str>::from("backend.internal:443"),
             backend_index: 0,
+            transport_identity: BackendEndpoint::parse("backend.internal:443")
+                .expect("test transport identity"),
             backend_lb: None,
             lb_key: Arc::<str>::from(""),
             client_addr: "203.0.113.55:43210".parse().expect("client addr"),
@@ -1159,6 +1166,7 @@ mod tests {
             bodyless_mode: false,
             tunnel_mode: TunnelMode::None,
             plugin_plan: Arc::new(CompiledPluginPlan::default()),
+            pinned_generation: None,
             retry_count: 0,
             error_kind: None,
             terminal_overload_reason: None,
@@ -1311,6 +1319,7 @@ mod tests {
             bodyless_mode: false,
             tunnel_mode: TunnelMode::None,
             plugin_plan: Arc::new(CompiledPluginPlan::default()),
+            pinned_generation: None,
             retry_count: 0,
             error_kind: None,
             terminal_overload_reason: None,

@@ -1,24 +1,31 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    sync::{Arc, RwLock},
+};
 
 use impulse_config::{
     backend_endpoint::BackendEndpoint,
     config::Log,
     runtime::{
         ListenerRuntimeConfig, RuntimeBackendHealthCheck, RuntimeBackendTlsPolicy, RuntimeConfig,
+        RuntimeResponseCachePolicy, RuntimeResponseCompressionPolicy, RuntimeTransportPolicy,
         RuntimeUpstreamPolicy,
     },
 };
 use impulse_contracts::{BackendId, ListenerId, RouteId, UpstreamId};
 use impulse_errors::ProxyError;
-use impulse_lb::pingora_backend::SharedPingoraLoadBalancingRuntimeState;
+use impulse_lb::{
+    pingora_backend::{GenerationSelector, SharedPingoraLoadBalancingRuntimeState},
+    upstream_pool::UpstreamPool,
+};
 use impulse_operations::watchdog::WatchdogCoordinator;
-use impulse_plugins::{CompiledGenerationPluginPlans, RouteExecutionClass};
+use impulse_plugins::{CompiledGenerationPluginPlans, CompiledPluginPlan, RouteExecutionClass};
 use impulse_transport::{SharedDnsResolver, UpstreamTransportPool};
 use tokio::sync::Semaphore;
 
 use crate::{
     Metrics,
-    resilience::runtime::RuntimeResilience,
+    resilience::{retry_budget::RetryBudget, runtime::RuntimeResilience},
     routing::index::RouteIndex,
     runtime::{
         backend::{lifecycle::BackendLifecycleCoordinator, store::RuntimeBackendResolutionStore},
@@ -203,6 +210,28 @@ impl RuntimeIdentities {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct RuntimeObservationFlags {
+    pub(crate) detailed_plugin_timing: bool,
+}
+
+/// Immutable route state compiled with and owned by one runtime generation.
+#[derive(Clone)]
+pub(crate) struct RouteRuntime {
+    pub(crate) plugin_plan: Arc<CompiledPluginPlan>,
+    pub(crate) upstream_policy: Arc<RuntimeUpstreamPolicy>,
+    pub(crate) selector: Arc<GenerationSelector<RuntimeBackendTlsPolicy>>,
+    pub(crate) upstream_pool: Arc<RwLock<UpstreamPool>>,
+    #[allow(dead_code)]
+    pub(crate) transport_policy: Arc<RuntimeTransportPolicy>,
+    pub(crate) retry_policy: Arc<RetryBudget>,
+    #[allow(dead_code)]
+    pub(crate) cache_policy: Arc<RuntimeResponseCachePolicy>,
+    #[allow(dead_code)]
+    pub(crate) compression_policy: Arc<RuntimeResponseCompressionPolicy>,
+    pub(crate) observation_flags: Arc<RuntimeObservationFlags>,
+}
+
 fn compact_identity_value(index: usize, kind: &str) -> Result<u32, ProxyError> {
     u32::try_from(index).map_err(|_| {
         ProxyError::Transport(format!(
@@ -324,10 +353,16 @@ pub struct RuntimeGenerationState {
     pub backend_health_checks: Arc<HashMap<String, RuntimeBackendHealthCheck>>,
     /// Upstream policies indexed by compact upstream identity.
     pub upstream_policies: Arc<[RuntimeUpstreamPolicy]>,
+    /// Normalized transport settings shared by routes in this generation.
+    pub transport_policy: Arc<RuntimeTransportPolicy>,
+    /// Observation switches shared by route execution in this generation.
+    pub(crate) observation_flags: Arc<RuntimeObservationFlags>,
     /// Immutable connection and per-upstream plugin plans compiled for this generation.
     pub plugin_plans: Arc<CompiledGenerationPluginPlans>,
     /// Precompiled route execution classes owned by this runtime generation.
     pub route_execution_classes: Arc<[RouteExecutionClass]>,
+    /// Fully compiled route execution state, indexed by upstream identity.
+    pub(crate) route_runtimes: Arc<[RouteRuntime]>,
     /// Backend membership, readiness, discovery, and selectors for this generation.
     pub pingora_load_balancing: SharedPingoraLoadBalancingRuntimeState<RuntimeBackendTlsPolicy>,
     /// Per-upstream inflight semaphores.
@@ -340,6 +375,12 @@ pub struct RuntimeGenerationState {
     pub resilience: Arc<RuntimeResilience>,
     /// Background task registry for this generation (retired on swap).
     pub generation_tasks: Arc<RuntimeTaskRegistry>,
+}
+
+impl RuntimeGenerationState {
+    pub(crate) fn route_runtime(&self, upstream_id: UpstreamId) -> Option<&RouteRuntime> {
+        self.route_runtimes.get(upstream_id.get() as usize)
+    }
 }
 
 impl OwnedRuntimeState for RuntimeGenerationState {

@@ -29,6 +29,13 @@ pub enum ListenerRuntimeState {
 }
 
 impl ListenerRuntimeState {
+    pub fn pinned_generation(&self) -> Option<ActiveRuntimeGeneration> {
+        match self {
+            Self::Standalone(_) => None,
+            Self::Managed(runtime) => Some(runtime.clone()),
+        }
+    }
+
     pub fn shared_state(&self) -> &SharedRuntimeState {
         match self {
             Self::Standalone(state) => state,

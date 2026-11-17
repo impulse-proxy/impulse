@@ -71,7 +71,8 @@ impl SharedRuntimeState {
             .shared_services
             .backend_lifecycle
             .snapshot_inventory(
-                self.generation_state
+                &self
+                    .generation_state
                     .pingora_load_balancing
                     .upstream_pools(),
             )

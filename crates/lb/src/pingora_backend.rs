@@ -598,11 +598,10 @@ impl PingoraDiscoveryUpdate {
 /// and selector state.
 pub struct PingoraLoadBalancingRuntimeState<T> {
     generation: u64,
-    upstream_pools: HashMap<String, Arc<RwLock<UpstreamPool>>>,
+    upstream_names: Box<[String]>,
     upstream_pools_by_id: Box<[Arc<RwLock<UpstreamPool>>]>,
-    selectors: HashMap<String, Arc<GenerationSelector<T>>>,
     selectors_by_id: Box<[Arc<GenerationSelector<T>>]>,
-    discoveries: HashMap<String, ImpulseServiceDiscovery>,
+    discoveries_by_id: Box<[Option<ImpulseServiceDiscovery>]>,
     backend_readiness: RwLock<HashMap<String, bool>>,
     health_registry: Arc<HealthRegistry>,
 }
@@ -617,7 +616,7 @@ where
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         backend_readiness.insert(configured_address.to_string(), ready);
-        for selector in self.selectors.values() {
+        for selector in self.selectors_by_id.iter() {
             selector.set_backend_enabled(configured_address, ready);
         }
     }
@@ -671,26 +670,30 @@ where
             ));
         }
 
-        let mut upstream_names = upstream_pools.keys().collect::<Vec<_>>();
+        let mut upstream_names = upstream_pools.keys().cloned().collect::<Vec<_>>();
         upstream_names.sort_unstable();
         let upstream_pools_by_id = upstream_names
             .iter()
-            .map(|name| Arc::clone(&upstream_pools[*name]))
+            .map(|name| Arc::clone(&upstream_pools[name]))
             .collect::<Vec<_>>()
             .into_boxed_slice();
         let selectors_by_id = upstream_names
             .iter()
-            .map(|name| Arc::clone(&selectors[*name]))
+            .map(|name| Arc::clone(&selectors[name]))
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+        let discoveries_by_id = upstream_names
+            .iter()
+            .map(|name| discoveries.remove(name))
             .collect::<Vec<_>>()
             .into_boxed_slice();
 
         Ok(Self {
             generation,
-            upstream_pools,
+            upstream_names: upstream_names.into_boxed_slice(),
             upstream_pools_by_id,
-            selectors,
             selectors_by_id,
-            discoveries,
+            discoveries_by_id,
             backend_readiness: RwLock::new(HashMap::new()),
             health_registry,
         })
@@ -700,16 +703,8 @@ where
         self.generation
     }
 
-    pub fn selector(&self, upstream_name: &str) -> Option<&Arc<GenerationSelector<T>>> {
-        self.selectors.get(upstream_name)
-    }
-
     pub fn selector_by_id(&self, upstream_id: UpstreamId) -> Option<&Arc<GenerationSelector<T>>> {
         self.selectors_by_id.get(upstream_id.get() as usize)
-    }
-
-    pub fn upstream_pool(&self, upstream_name: &str) -> Option<&Arc<RwLock<UpstreamPool>>> {
-        self.upstream_pools.get(upstream_name)
     }
 
     pub fn upstream_pool_by_id(
@@ -719,16 +714,20 @@ where
         self.upstream_pools_by_id.get(upstream_id.get() as usize)
     }
 
-    pub fn upstream_pools(&self) -> &HashMap<String, Arc<RwLock<UpstreamPool>>> {
-        &self.upstream_pools
+    pub fn upstream_pools(&self) -> HashMap<String, Arc<RwLock<UpstreamPool>>> {
+        self.upstream_names
+            .iter()
+            .cloned()
+            .zip(self.upstream_pools_by_id.iter().map(Arc::clone))
+            .collect()
     }
 
     pub fn len(&self) -> usize {
-        self.selectors.len()
+        self.selectors_by_id.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.selectors.is_empty()
+        self.selectors_by_id.is_empty()
     }
 
     pub fn health_registry(&self) -> Arc<HealthRegistry> {
@@ -740,22 +739,25 @@ where
         configured_address: &str,
         resolved_addrs: Result<Vec<SocketAddr>, String>,
     ) -> Result<PingoraDiscoveryUpdate, String> {
-        let (upstream_name, discovery, backend_index) = self
-            .discoveries
+        let (upstream_index, discovery, backend_index) = self
+            .discoveries_by_id
             .iter()
-            .find_map(|(upstream_name, discovery)| {
+            .enumerate()
+            .find_map(|(upstream_index, discovery)| {
+                let discovery = discovery.as_ref()?;
                 discovery
                     .backend_index(configured_address)
-                    .map(|backend_index| (upstream_name, discovery, backend_index))
+                    .map(|backend_index| (upstream_index, discovery, backend_index))
             })
             .ok_or_else(|| {
                 format!(
                     "no Pingora discovery backend matches configured address '{configured_address}'"
                 )
             })?;
+        let upstream_name = self.upstream_names[upstream_index].as_str();
         let selector = self
-            .selectors
-            .get(upstream_name)
+            .selectors_by_id
+            .get(upstream_index)
             .ok_or_else(|| format!("upstream '{upstream_name}' has no Pingora selector"))?;
         let publication =
             discovery.publish_dns_result(self.generation, backend_index, resolved_addrs)?;
@@ -772,7 +774,7 @@ where
         }
         let rebuild_duration = started.elapsed();
         Ok(PingoraDiscoveryUpdate {
-            upstream_name: upstream_name.clone(),
+            upstream_name: upstream_name.to_string(),
             membership_generation: publication.membership_generation(),
             membership_changed: publication.membership_changed(),
             rebuild_duration,
@@ -984,7 +986,9 @@ mod tests {
         runtime: &PingoraLoadBalancingRuntimeState<()>,
         count: usize,
     ) -> BTreeSet<SocketAddr> {
-        let selector = runtime.selector("api").expect("api selector");
+        let selector = runtime
+            .selector_by_id(UpstreamId::new(0))
+            .expect("api selector");
         (0..count)
             .map(|_| {
                 selector
@@ -1125,7 +1129,9 @@ mod tests {
             health_registry(),
         )
         .expect("selector runtime");
-        let selector = runtime.selector("api").expect("api selector");
+        let selector = runtime
+            .selector_by_id(UpstreamId::new(0))
+            .expect("api selector");
         selector
             .synchronize_readiness(|_| true)
             .expect("synchronize readiness");

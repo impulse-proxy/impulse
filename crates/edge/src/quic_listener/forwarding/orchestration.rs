@@ -375,40 +375,7 @@ impl Http3Service {
             return Ok(false);
         }
 
-        let Some(backend_endpoint) = exec_ctx
-            .backend_endpoints
-            .get(pending_forward.backend_id.get() as usize)
-            .cloned()
-        else {
-            let _ = observe_proxy_error_outcome(
-                metrics,
-                RouteOutcomeTarget {
-                    route: &upstream_name,
-                },
-                Some(BackendOutcomeTarget {
-                    upstream: &upstream_name,
-                    backend_addr: Some(pending_forward.backend_addr.as_ref()),
-                    backend_index: Some(backend_index),
-                }),
-                req.start.elapsed(),
-                Some(http::StatusCode::BAD_GATEWAY),
-                &ProxyError::Transport("unknown backend endpoint".into()),
-                None,
-            );
-            Self::send_simple_response(
-                h3,
-                quic,
-                stream_id,
-                http::StatusCode::BAD_GATEWAY,
-                b"unknown backend endpoint\n",
-            )?;
-            terminalize_stream(
-                req,
-                TerminalReason::BackendFailed(BackendFailureReason::DispatchSpawnFailed),
-                metrics,
-            );
-            return Ok(false);
-        };
+        let backend_endpoint = pending_forward.transport_identity.clone();
 
         if backend_endpoint.scheme() == BackendScheme::Http
             && pending_forward.declares_request_trailers()
@@ -793,9 +760,10 @@ impl Http3Service {
                         None => continue,
                     };
                     let StartedRequestEnvelope {
-                        envelope,
+                        mut envelope,
                         should_materialize_forward,
                     } = started_auth;
+                    envelope.pinned_generation = shared_ctx.pinned_generation.clone();
                     connection.streams.insert(stream_id, envelope);
                     if should_materialize_forward {
                         let keep_stream = if let Some(req) = connection.streams.get_mut(&stream_id)

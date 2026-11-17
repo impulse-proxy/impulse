@@ -93,7 +93,7 @@ impl ControlApiServiceCtx {
         let paths = ControlApiPaths::from_endpoint(&endpoint);
         let backend_inventory = runtime
             .backend_lifecycle()
-            .snapshot_inventory(runtime.upstream_pools());
+            .snapshot_inventory(&runtime.upstream_pools());
         let runtime_view = OperationalRuntimeView::new(OperationalRuntimeViewInput {
             runtime_config: runtime.runtime_config().clone(),
             generation,

@@ -1,19 +1,12 @@
-use std::sync::Arc;
-
 use impulse_config::{
     config::{ForwardedHeaderPolicy, UpstreamHostPolicy},
     runtime::RuntimeUpstreamPolicy,
 };
-use impulse_plugins::CompiledPluginPlan;
 
 /// Resolves the policies selected by route resolution independently of the
 /// ingress protocol.
-pub(crate) fn resolve_policy(
-    upstream_policy: &RuntimeUpstreamPolicy,
-    plugin_plan: Arc<CompiledPluginPlan>,
-) -> ResolvedRequestPolicy {
+pub(crate) fn resolve_policy(upstream_policy: &RuntimeUpstreamPolicy) -> ResolvedRequestPolicy {
     ResolvedRequestPolicy {
-        plugin_plan,
         host_policy: upstream_policy.host.0.clone(),
         forwarded_header_policy: upstream_policy.forwarded_headers.0.clone(),
     }
@@ -22,8 +15,6 @@ pub(crate) fn resolve_policy(
 /// Protocol-neutral policies applied to a request after its route resolves.
 #[derive(Clone, Debug)]
 pub(crate) struct ResolvedRequestPolicy {
-    /// Generation-pinned plugin plan selected with this upstream policy.
-    pub(crate) plugin_plan: Arc<CompiledPluginPlan>,
     pub(crate) host_policy: UpstreamHostPolicy,
     pub(crate) forwarded_header_policy: ForwardedHeaderPolicy,
 }
@@ -50,7 +41,7 @@ mod tests {
             ..RuntimeUpstreamPolicy::default()
         };
 
-        let resolved = resolve_policy(&upstream_policy, Arc::new(CompiledPluginPlan::default()));
+        let resolved = resolve_policy(&upstream_policy);
 
         assert_eq!(
             resolved.host_policy.host.as_deref(),

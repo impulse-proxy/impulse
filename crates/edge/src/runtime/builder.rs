@@ -6,7 +6,9 @@ use std::{
     time::Duration,
 };
 
-use impulse_config::runtime::{ListenerRuntimeConfig, RuntimeBackendAddressKind, RuntimeConfig};
+use impulse_config::runtime::{
+    ListenerRuntimeConfig, RuntimeBackendAddressKind, RuntimeConfig, RuntimeUpstreamPolicy,
+};
 use impulse_contracts::PluginKind;
 use impulse_errors::ProxyError;
 use impulse_lb::pingora_backend::{
@@ -27,8 +29,8 @@ use crate::{
             store::RuntimeBackendResolutionStore,
         },
         generation::{
-            CarriedProcessSharedServices, RuntimeGenerationState, RuntimeIdentities,
-            RuntimeSharedServices,
+            CarriedProcessSharedServices, RouteRuntime, RuntimeGenerationState, RuntimeIdentities,
+            RuntimeObservationFlags, RuntimeSharedServices,
         },
         shared_state::SharedRuntimeState,
         subsystem_mapping::{
@@ -98,7 +100,7 @@ impl RuntimeBuilder {
                 .map(|plan| plan.execution_class())
                 .collect::<Vec<_>>(),
         );
-        let upstream_policies = Arc::from(
+        let upstream_policies: Arc<[RuntimeUpstreamPolicy]> = Arc::from(
             identities
                 .upstream_names()
                 .map(|name| {
@@ -431,6 +433,59 @@ impl RuntimeBuilder {
             &effective_admission,
             &identities,
         ));
+        let transport_policy = Arc::new(config.policies.transport.clone());
+        let observation_flags = Arc::new(RuntimeObservationFlags {
+            detailed_plugin_timing: config.observability.metrics.detailed_plugin_timing,
+        });
+        let route_runtimes = identities
+            .upstream_names()
+            .map(|upstream_name| {
+                let upstream_id = identities.upstream_id(upstream_name).ok_or_else(|| {
+                    ProxyError::Transport(format!(
+                        "interned upstream '{upstream_name}' has no runtime identity"
+                    ))
+                })?;
+                let index = upstream_id.get() as usize;
+                let upstream_policy = upstream_policies.get(index).ok_or_else(|| {
+                    ProxyError::Transport(format!(
+                        "upstream '{upstream_name}' has no runtime policy"
+                    ))
+                })?;
+                let plugin_plan = plugin_plans.upstream_plan(upstream_id).ok_or_else(|| {
+                    ProxyError::Transport(format!(
+                        "upstream '{upstream_name}' has no compiled plugin plan"
+                    ))
+                })?;
+                let selector = pingora_load_balancing
+                    .selector_by_id(upstream_id)
+                    .cloned()
+                    .ok_or_else(|| {
+                        ProxyError::Transport(format!(
+                            "upstream '{upstream_name}' has no compiled selector"
+                        ))
+                    })?;
+                let upstream_pool = pingora_load_balancing
+                    .upstream_pool_by_id(upstream_id)
+                    .cloned()
+                    .ok_or_else(|| {
+                        ProxyError::Transport(format!(
+                            "upstream '{upstream_name}' has no compiled upstream pool"
+                        ))
+                    })?;
+                Ok(RouteRuntime {
+                    plugin_plan,
+                    upstream_policy: Arc::new(upstream_policy.clone()),
+                    selector,
+                    upstream_pool,
+                    transport_policy: Arc::clone(&transport_policy),
+                    retry_policy: Arc::clone(&resilience.retry_budget),
+                    cache_policy: Arc::new(upstream_policy.response_cache.clone()),
+                    compression_policy: Arc::new(upstream_policy.response_compression.clone()),
+                    observation_flags: Arc::clone(&observation_flags),
+                })
+            })
+            .collect::<Result<Vec<_>, ProxyError>>()?;
+        let route_runtimes = Arc::from(route_runtimes);
         // Process-scoped: reuse the active generation's watchdog on reload so an
         // in-flight restart/drain is not silently reset; only startup creates one.
         let watchdog = match &carried {
@@ -461,8 +516,11 @@ impl RuntimeBuilder {
                 backend_endpoints_by_id: Arc::from(backend_endpoints_by_id),
                 backend_health_checks: Arc::new(backend_health_checks),
                 upstream_policies,
+                transport_policy,
+                observation_flags,
                 plugin_plans,
                 route_execution_classes,
+                route_runtimes,
                 pingora_load_balancing,
                 upstream_inflight,
                 global_inflight: Arc::new(Semaphore::new(global_inflight_limit)),
