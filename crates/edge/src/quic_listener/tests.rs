@@ -990,7 +990,7 @@ fn test_routing_context(lb_type: &str) -> TestRoutingContext {
     let routing_index = super::RouteIndex::from_runtime_upstreams(&runtime.upstreams);
     let pool = Arc::clone(
         selectors
-            .upstream_pool("api_pool")
+            .upstream_pool_by_id(impulse_contracts::UpstreamId::new(0))
             .expect("api_pool runtime pool"),
     );
     let mut upstream_pools = HashMap::new();
@@ -1062,7 +1062,7 @@ fn resolve_backend_skips_unhealthy_backends() {
     {
         let guard = pool.read().expect("pool read");
         selectors
-            .selector("api_pool")
+            .selector_by_id(impulse_contracts::UpstreamId::new(0))
             .expect("api selector")
             .synchronize_readiness(|index| guard.is_backend_healthy(index))
             .expect("synchronize selector readiness");

@@ -581,12 +581,17 @@ fn activation_service_commits_reloadable_candidate_and_advances_generation() {
         runtime_bundle_from_config(config_path.to_string_lossy().as_ref(), &current_config);
     let handle = RuntimeBundleHandle::new(bundle);
     let generation_before = handle.current_generation();
+    let initial = handle.current_view();
+    let api_id = initial
+        .state()
+        .identities
+        .upstream_id("api")
+        .expect("api upstream identity");
     let selector_before = Arc::clone(
-        handle
-            .current_view()
+        initial
             .state()
             .pingora_load_balancing
-            .selector("api")
+            .selector_by_id(api_id)
             .expect("active Pingora selector"),
     );
 
@@ -614,7 +619,7 @@ fn activation_service_commits_reloadable_candidate_and_advances_generation() {
     let selector_after = active
         .state()
         .pingora_load_balancing
-        .selector("api")
+        .selector_by_id(api_id)
         .expect("activated Pingora selector");
     assert_eq!(selector_after.generation(), generation_before + 1);
     assert!(!Arc::ptr_eq(&selector_before, selector_after));
@@ -809,12 +814,17 @@ fn rollback_service_restores_retained_generation_by_id_and_records_rollback_stat
     let handle = RuntimeBundleHandle::new(bundle_one);
     handle.replace(bundle_two).expect("install generation 2");
     handle.replace(bundle_three).expect("install generation 3");
+    let before_rollback = handle.current_view();
+    let api_id = before_rollback
+        .state()
+        .identities
+        .upstream_id("api")
+        .expect("api upstream identity");
     let selector_before = Arc::clone(
-        handle
-            .current_view()
+        before_rollback
             .state()
             .pingora_load_balancing
-            .selector("api")
+            .selector_by_id(api_id)
             .expect("pre-rollback Pingora selector"),
     );
 
@@ -835,7 +845,7 @@ fn rollback_service_restores_retained_generation_by_id_and_records_rollback_stat
     let selector_after = active
         .state()
         .pingora_load_balancing
-        .selector("api")
+        .selector_by_id(api_id)
         .expect("rolled-back Pingora selector");
     assert_eq!(selector_after.generation(), 4);
     assert!(!Arc::ptr_eq(&selector_before, selector_after));

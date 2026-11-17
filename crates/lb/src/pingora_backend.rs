@@ -703,18 +703,8 @@ where
         self.generation
     }
 
-    pub fn selector(&self, upstream_name: &str) -> Option<&Arc<GenerationSelector<T>>> {
-        self.upstream_index(upstream_name)
-            .and_then(|index| self.selectors_by_id.get(index))
-    }
-
     pub fn selector_by_id(&self, upstream_id: UpstreamId) -> Option<&Arc<GenerationSelector<T>>> {
         self.selectors_by_id.get(upstream_id.get() as usize)
-    }
-
-    pub fn upstream_pool(&self, upstream_name: &str) -> Option<&Arc<RwLock<UpstreamPool>>> {
-        self.upstream_index(upstream_name)
-            .and_then(|index| self.upstream_pools_by_id.get(index))
     }
 
     pub fn upstream_pool_by_id(
@@ -730,12 +720,6 @@ where
             .cloned()
             .zip(self.upstream_pools_by_id.iter().map(Arc::clone))
             .collect()
-    }
-
-    fn upstream_index(&self, upstream_name: &str) -> Option<usize> {
-        self.upstream_names
-            .binary_search_by(|name| name.as_str().cmp(upstream_name))
-            .ok()
     }
 
     pub fn len(&self) -> usize {
@@ -1002,7 +986,9 @@ mod tests {
         runtime: &PingoraLoadBalancingRuntimeState<()>,
         count: usize,
     ) -> BTreeSet<SocketAddr> {
-        let selector = runtime.selector("api").expect("api selector");
+        let selector = runtime
+            .selector_by_id(UpstreamId::new(0))
+            .expect("api selector");
         (0..count)
             .map(|_| {
                 selector
@@ -1143,7 +1129,9 @@ mod tests {
             health_registry(),
         )
         .expect("selector runtime");
-        let selector = runtime.selector("api").expect("api selector");
+        let selector = runtime
+            .selector_by_id(UpstreamId::new(0))
+            .expect("api selector");
         selector
             .synchronize_readiness(|_| true)
             .expect("synchronize readiness");
