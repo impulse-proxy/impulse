@@ -937,7 +937,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
                     method,
                     path,
                     authority: ctx.authority.clone(),
-                    headers: request_headers.clone(),
+                    headers: std::borrow::Cow::Borrowed(request_headers),
                     upstream_name: route.upstream_name.to_string(),
                     backend_addr: Some(backend_addr),
                 },

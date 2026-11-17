@@ -204,8 +204,8 @@ pub(super) struct AuthStart {
     pub(super) deadline: Instant,
 }
 
-struct OidcExternalAuthInput {
-    request: Arc<ExternalAuthRequest>,
+struct OidcExternalAuthInput<'a> {
+    request: Arc<ExternalAuthRequest<'a>>,
     discovery_url: Option<String>,
     issuer_url: Option<String>,
     client_id: String,
@@ -275,10 +275,10 @@ pub(super) fn append_auth_request_headers(
 
 fn append_external_auth_request_headers(
     builder: &mut http::request::Builder,
-    request: &ExternalAuthRequest,
+    request: &ExternalAuthRequest<'_>,
     configured_headers: &[ExternalAuthRequestHeader],
 ) {
-    for (name, value) in &request.headers {
+    for (name, value) in request.headers.iter() {
         if is_unsafe_forwarded_auth_request_header(name.as_str().as_bytes()) {
             continue;
         }
@@ -336,7 +336,7 @@ fn append_external_auth_request_headers(
 
 fn external_auth_request_from_pending_forward(
     pending_forward: &PendingForward,
-) -> ExternalAuthRequest {
+) -> ExternalAuthRequest<'static> {
     let mut headers = http::HeaderMap::new();
     for header in pending_forward.request_headers_read_only().iter() {
         if let (Ok(name), Ok(value)) = (
@@ -350,7 +350,7 @@ fn external_auth_request_from_pending_forward(
         method: pending_forward.method.to_string(),
         path: pending_forward.path.to_string(),
         authority: pending_forward.authority.as_deref().map(str::to_string),
-        headers,
+        headers: std::borrow::Cow::Owned(headers),
         upstream_name: pending_forward.upstream_name.to_string(),
         backend_addr: Some(pending_forward.backend_addr.to_string()),
     }
@@ -376,7 +376,7 @@ async fn collect_auth_body(mut body: Incoming) -> Result<Vec<u8>, ProxyError> {
     Ok(bytes)
 }
 
-fn authorization_header_from_request(request: &ExternalAuthRequest) -> Option<String> {
+fn authorization_header_from_request(request: &ExternalAuthRequest<'_>) -> Option<String> {
     request
         .headers
         .get(http::header::AUTHORIZATION)
@@ -411,7 +411,7 @@ async fn send_auth_request(
 }
 
 async fn run_external_auth_with_timeout(
-    request: Arc<ExternalAuthRequest>,
+    request: Arc<ExternalAuthRequest<'_>>,
     external_auth: ExternalAuthPolicy,
     timeout: Duration,
 ) -> ExternalAuthResult {
@@ -421,7 +421,7 @@ async fn run_external_auth_with_timeout(
 }
 
 async fn run_http_external_auth(
-    request: Arc<ExternalAuthRequest>,
+    request: Arc<ExternalAuthRequest<'_>>,
     endpoint: String,
     request_headers: Vec<ExternalAuthRequestHeader>,
     response_header_allowlist: Vec<String>,
@@ -473,7 +473,7 @@ async fn fetch_json_document_inner(uri: String, timeout: Duration) -> Result<Val
     serde_json::from_slice(&body).map_err(|err| ProxyError::Transport(err.to_string()))
 }
 
-async fn run_oidc_external_auth(input: OidcExternalAuthInput) -> ExternalAuthResult {
+async fn run_oidc_external_auth(input: OidcExternalAuthInput<'_>) -> ExternalAuthResult {
     let OidcExternalAuthInput {
         request,
         discovery_url,
@@ -587,7 +587,7 @@ async fn run_oidc_external_auth(input: OidcExternalAuthInput) -> ExternalAuthRes
 }
 
 async fn run_external_auth(
-    request: Arc<ExternalAuthRequest>,
+    request: Arc<ExternalAuthRequest<'_>>,
     external_auth: ExternalAuthPolicy,
 ) -> ExternalAuthResult {
     let timeout = ExternalAuthExecutionPolicy::from_external_auth(&external_auth).timeout;
@@ -634,7 +634,7 @@ async fn run_external_auth(
 }
 
 pub(crate) async fn execute_external_auth_request(
-    request: ExternalAuthRequest,
+    request: ExternalAuthRequest<'_>,
     external_auth: ExternalAuthPolicy,
 ) -> ExternalAuthResult {
     let timeout = ExternalAuthExecutionPolicy::from_external_auth(&external_auth).timeout;

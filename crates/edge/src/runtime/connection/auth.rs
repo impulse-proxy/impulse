@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 pub(crate) use impulse_contracts::HeaderMutation as PendingHeaderMutation;
 use impulse_errors::ProxyError;
 use impulse_plugins::{ExternalAuthFailureModeInput, ExternalAuthInput};
@@ -111,11 +113,11 @@ pub(crate) fn external_auth_policy_from_plugin(
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct ExternalAuthRequest {
+pub(crate) struct ExternalAuthRequest<'a> {
     pub(crate) method: String,
     pub(crate) path: String,
     pub(crate) authority: Option<String>,
-    pub(crate) headers: http::HeaderMap,
+    pub(crate) headers: Cow<'a, http::HeaderMap>,
     pub(crate) upstream_name: String,
     pub(crate) backend_addr: Option<String>,
 }
