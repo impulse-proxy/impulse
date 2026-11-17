@@ -287,7 +287,10 @@ pub(crate) fn classify_proxy_error_outcome(
             CanonicalRouteOutcome::UpstreamFailure,
             HealthEffectHint::None,
         ),
-        ProxyError::Transport(_) | ProxyError::Protocol(_) => (
+        ProxyError::Transport(_)
+        | ProxyError::RequestTransport(_)
+        | ProxyError::Protocol(_)
+        | ProxyError::RequestProtocol(_) => (
             CanonicalRouteOutcome::UpstreamFailure,
             HealthEffectHint::Failure {
                 reason: HealthFailureReason::Transport,

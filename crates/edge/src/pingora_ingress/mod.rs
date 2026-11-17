@@ -23,8 +23,8 @@ use impulse_contracts::{
     RequestDecision as AdmissionPolicyDecision, RetryAttemptTelemetryReason, TunnelMode,
 };
 use impulse_errors::{
-    BridgeError, PoolError, ProxyError, RetryPolicyDecision, classify_upstream_proxy_error,
-    is_idempotent_method,
+    BridgeError, PoolError, ProxyError, RequestFailure, RetryPolicyDecision,
+    classify_upstream_proxy_error, is_idempotent_method,
 };
 use impulse_lb::{BackendSelectionInput, upstream_pool::UpstreamPool};
 #[cfg(feature = "response-cache")]
@@ -878,7 +878,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             }
             PluginRequestExecutionOutcome::AlreadyExecuted => {
                 ctx.terminal_classification = Some(PingoraTerminalClassification::Error(
-                    ProxyError::Transport("request plugins executed more than once".into()),
+                    ProxyError::RequestTransport(RequestFailure::PluginsAlreadyExecuted),
                 ));
                 write_local_response(
                     session,
@@ -1918,10 +1918,14 @@ impl PingoraRequestService for PingoraEdgeRequestService {
                 );
             }
             (None, None) => {
-                let proxy_error = ProxyError::Transport(error.map_or_else(
-                    || "request completed without a response".to_string(),
-                    ToString::to_string,
-                ));
+                let proxy_error = error.map_or_else(
+                    || {
+                        ProxyError::RequestTransport(
+                            RequestFailure::RequestCompletedWithoutResponse,
+                        )
+                    },
+                    |error| ProxyError::Transport(error.to_string()),
+                );
                 let _ = observe_proxy_error_outcome(
                     metrics,
                     route,
@@ -1933,9 +1937,8 @@ impl PingoraRequestService for PingoraEdgeRequestService {
                 );
             }
             (Some(PingoraTerminalClassification::Admission(_)), None) => {
-                let proxy_error = ProxyError::Transport(
-                    "admission response did not reach the downstream".to_string(),
-                );
+                let proxy_error =
+                    ProxyError::RequestTransport(RequestFailure::AdmissionResponseNotDelivered);
                 let _ = observe_proxy_error_outcome(
                     metrics,
                     route,

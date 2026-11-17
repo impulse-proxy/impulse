@@ -105,7 +105,7 @@ impl Http3Service {
                 None,
                 req.start.elapsed(),
                 Some(http::StatusCode::INTERNAL_SERVER_ERROR),
-                &ProxyError::Transport("missing deferred forward snapshot".into()),
+                &ProxyError::RequestTransport(RequestFailure::MissingDeferredForwardSnapshot),
                 None,
             );
             Self::send_simple_response(
@@ -129,7 +129,7 @@ impl Http3Service {
                 None,
                 req.start.elapsed(),
                 Some(http::StatusCode::INTERNAL_SERVER_ERROR),
-                &ProxyError::Transport("missing upstream route".into()),
+                &ProxyError::RequestTransport(RequestFailure::MissingUpstreamRoute),
                 None,
             );
             Self::send_simple_response(
@@ -380,8 +380,7 @@ impl Http3Service {
         if backend_endpoint.scheme() == BackendScheme::Http
             && pending_forward.declares_request_trailers()
         {
-            let error =
-                ProxyError::Protocol("request trailers require an HTTP/2 upstream".to_string());
+            let error = ProxyError::RequestProtocol(RequestFailure::RequestTrailersRequireHttp2);
             let _ = observe_proxy_error_outcome(
                 metrics,
                 RouteOutcomeTarget {
@@ -497,7 +496,7 @@ impl Http3Service {
                     }),
                     req.start.elapsed(),
                     Some(http::StatusCode::SERVICE_UNAVAILABLE),
-                    &ProxyError::Transport("upstream runtime unavailable".into()),
+                    &ProxyError::RequestTransport(RequestFailure::UpstreamRuntimeUnavailable),
                     None,
                 );
                 Self::send_simple_response(
@@ -685,9 +684,7 @@ impl Http3Service {
                                 None,
                                 request_start.elapsed(),
                                 Some(http::StatusCode::TOO_EARLY),
-                                &ProxyError::Transport(
-                                    "request blocked by early-data policy".into(),
-                                ),
+                                &ProxyError::RequestTransport(RequestFailure::EarlyDataRejected),
                                 None,
                             );
                             Self::send_simple_response(
@@ -948,7 +945,9 @@ impl Http3Service {
                                     None,
                                     elapsed,
                                     Some(http::StatusCode::PAYLOAD_TOO_LARGE),
-                                    &ProxyError::Transport("request body too large".into()),
+                                    &ProxyError::RequestTransport(
+                                        RequestFailure::RequestBodyTooLarge,
+                                    ),
                                     None,
                                 );
                                 Self::send_simple_response(

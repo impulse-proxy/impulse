@@ -5,7 +5,7 @@ use std::{
 
 use hyper::{Method, http::Version};
 use impulse_contracts::TunnelMode;
-use impulse_errors::ProxyError;
+use impulse_errors::{ProxyError, RequestFailure};
 use pingora_core::{
     Error, InternalError, Result,
     protocols::{
@@ -138,8 +138,8 @@ impl PingoraH1UpstreamSession {
     ) -> Result<(), ProxyError> {
         if self.state != PingoraH1ExchangeState::Acquired {
             self.close().await;
-            return Err(ProxyError::Protocol(
-                "Pingora HTTP/1 request has already been written".to_string(),
+            return Err(ProxyError::RequestProtocol(
+                RequestFailure::Http1RequestAlreadyWritten,
             ));
         }
         let header = match translate_pingora_h1_request_header(head) {
@@ -169,8 +169,8 @@ impl PingoraH1UpstreamSession {
                         }
                         Ok(None) => {
                             self.close().await;
-                            return Err(ProxyError::Protocol(
-                                "request body exceeds its declared framing".to_string(),
+                            return Err(ProxyError::RequestProtocol(
+                                RequestFailure::RequestBodyExceedsDeclaredFraming,
                             ));
                         }
                         Err(error) => {
@@ -181,8 +181,8 @@ impl PingoraH1UpstreamSession {
                 }
                 Ok(UpstreamBodyFrame::Trailers(_)) => {
                     self.close().await;
-                    return Err(ProxyError::Protocol(
-                        "Pingora 0.9 cannot forward HTTP/1 request trailers".to_string(),
+                    return Err(ProxyError::RequestProtocol(
+                        RequestFailure::Http1RequestTrailersUnsupported,
                     ));
                 }
                 Err(error) => {

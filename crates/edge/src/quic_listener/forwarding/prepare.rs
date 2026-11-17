@@ -562,7 +562,7 @@ impl Http3Service {
         };
         let resolved = execution
             .map_err(|error| {
-                let error = Self::request_resolution_error(path, error);
+                let error = Self::request_resolution_error(error);
                 Self::observe_route_resolution_failure(
                     &TargetResolutionRequest::new(
                         method,
@@ -891,9 +891,9 @@ impl Http3Service {
                 intake.state.context.completion.complete();
                 let (status, body): (http::StatusCode, &[u8]) = match &err {
                     ProxyError::Bridge(_) => (http::StatusCode::BAD_REQUEST, b"invalid request\n"),
-                    ProxyError::Transport(_) | ProxyError::Pool(_) => {
-                        Self::route_resolution_error_response(&err)
-                    }
+                    ProxyError::Transport(_)
+                    | ProxyError::RequestTransport(_)
+                    | ProxyError::Pool(_) => Self::route_resolution_error_response(&err),
                     _ => (
                         http::StatusCode::INTERNAL_SERVER_ERROR,
                         b"internal proxy error\n",

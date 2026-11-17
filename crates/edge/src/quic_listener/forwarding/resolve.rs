@@ -204,7 +204,6 @@ enum RouteResolutionFailureKind {
     NoRoute,
     MissingPool,
     PoolLockPoisoned,
-    NoServers,
     NoHealthyServers,
     InvalidServerAddress,
     OtherTransport,
@@ -212,33 +211,24 @@ enum RouteResolutionFailureKind {
 }
 
 impl Http3Service {
-    fn classify_route_resolution_transport_reason(reason: &str) -> RouteResolutionFailureKind {
-        if reason.starts_with("no route for ") {
-            return RouteResolutionFailureKind::NoRoute;
-        }
-        if reason.starts_with("pool not found:") {
-            return RouteResolutionFailureKind::MissingPool;
-        }
-        if reason == "upstream pool lock poisoned" {
-            return RouteResolutionFailureKind::PoolLockPoisoned;
-        }
-        if reason == "no servers in upstream" {
-            return RouteResolutionFailureKind::NoServers;
-        }
-        if reason == "no healthy servers" {
-            return RouteResolutionFailureKind::NoHealthyServers;
-        }
-        if reason == "invalid server address" {
-            return RouteResolutionFailureKind::InvalidServerAddress;
-        }
-        RouteResolutionFailureKind::OtherTransport
-    }
-
     fn classify_route_resolution_failure(err: &ProxyError) -> RouteResolutionFailureKind {
         match err {
-            ProxyError::Transport(reason) => {
-                Self::classify_route_resolution_transport_reason(reason)
-            }
+            ProxyError::RequestTransport(failure) => match failure {
+                RequestFailure::NoRoute => RouteResolutionFailureKind::NoRoute,
+                RequestFailure::MissingUpstreamPool | RequestFailure::MissingUpstreamSelector => {
+                    RouteResolutionFailureKind::MissingPool
+                }
+                RequestFailure::UpstreamPoolLockPoisoned => {
+                    RouteResolutionFailureKind::PoolLockPoisoned
+                }
+                RequestFailure::NoHealthyServers => RouteResolutionFailureKind::NoHealthyServers,
+                RequestFailure::InvalidBackendIndex
+                | RequestFailure::UnknownBackendTransportIdentity => {
+                    RouteResolutionFailureKind::InvalidServerAddress
+                }
+                _ => RouteResolutionFailureKind::OtherTransport,
+            },
+            ProxyError::Transport(_) => RouteResolutionFailureKind::OtherTransport,
             _ => RouteResolutionFailureKind::Other,
         }
     }
@@ -246,13 +236,15 @@ impl Http3Service {
     fn log_route_resolution_failure(request: &TargetResolutionRequest<'_>, err: &ProxyError) {
         let authority = request.authority.unwrap_or("-");
         let failure_kind = Self::classify_route_resolution_failure(err);
-        let message = format!(
-            "route/backend resolution failed method={} path={} authority={} kind={:?}: {}",
-            request.method, request.path, authority, failure_kind, err
-        );
         match failure_kind {
-            RouteResolutionFailureKind::NoRoute => debug!("{}", message),
-            _ => warn!("{}", message),
+            RouteResolutionFailureKind::NoRoute => debug!(
+                "route/backend resolution failed method={} path={} authority={} kind={:?}: {}",
+                request.method, request.path, authority, failure_kind, err
+            ),
+            _ => warn!(
+                "route/backend resolution failed method={} path={} authority={} kind={:?}: {}",
+                request.method, request.path, authority, failure_kind, err
+            ),
         }
     }
 
@@ -274,19 +266,15 @@ impl Http3Service {
         Self::log_route_resolution_failure(request, err);
     }
 
-    pub(super) fn request_resolution_error(path: &str, error: RouteResolutionError) -> ProxyError {
-        match error {
-            RouteResolutionError::EmptyMethodOrPath => {
-                ProxyError::Transport("empty method or path".into())
-            }
-            RouteResolutionError::NoRoute => ProxyError::Transport(format!("no route for {path}")),
+    pub(super) fn request_resolution_error(error: RouteResolutionError) -> ProxyError {
+        ProxyError::RequestTransport(match error {
+            RouteResolutionError::EmptyMethodOrPath => RequestFailure::EmptyMethodOrPath,
+            RouteResolutionError::NoRoute => RequestFailure::NoRoute,
             RouteResolutionError::MissingUpstreamDisplayName => {
-                ProxyError::Transport(format!("upstream display name not found for {path}"))
+                RequestFailure::MissingUpstreamDisplayName
             }
-            RouteResolutionError::MissingRouteRuntime => {
-                ProxyError::Transport(format!("upstream runtime not found for {path}"))
-            }
-        }
+            RouteResolutionError::MissingRouteRuntime => RequestFailure::MissingRouteRuntime,
+        })
     }
 
     pub(in crate::quic_listener) fn route_resolution_error_response(
@@ -300,8 +288,7 @@ impl Http3Service {
             RouteResolutionFailureKind::PoolLockPoisoned => {
                 (http::StatusCode::BAD_GATEWAY, b"pool error\n")
             }
-            RouteResolutionFailureKind::NoServers
-            | RouteResolutionFailureKind::InvalidServerAddress => {
+            RouteResolutionFailureKind::InvalidServerAddress => {
                 (http::StatusCode::SERVICE_UNAVAILABLE, b"no backends\n")
             }
             RouteResolutionFailureKind::NoHealthyServers => (
@@ -392,7 +379,7 @@ impl Http3Service {
             request.path,
             request.authority,
         )
-        .map_err(|error| Self::request_resolution_error(request.path, error))?;
+        .map_err(Self::request_resolution_error)?;
         Self::route_resolution_from_match(route_target, context)
     }
 
@@ -419,14 +406,16 @@ impl Http3Service {
         let upstream_pool = context
             .pingora_load_balancing
             .upstream_pool_by_id(route_target.upstream_id)
-            .ok_or_else(|| ProxyError::Transport(format!("pool not found: {upstream_name}")))?
+            .ok_or(ProxyError::RequestTransport(
+                RequestFailure::MissingUpstreamPool,
+            ))?
             .clone();
         let selector = context
             .pingora_load_balancing
             .selector_by_id(route_target.upstream_id)
-            .ok_or_else(|| {
-                ProxyError::Transport(format!("Pingora selector not found: {upstream_name}"))
-            })?
+            .ok_or(ProxyError::RequestTransport(
+                RequestFailure::MissingUpstreamSelector,
+            ))?
             .clone();
         Ok(RouteResolution {
             route_id: route_target.route_id,
@@ -679,7 +668,7 @@ mod tests {
         };
 
         assert_eq!(first.to_string(), second.to_string());
-        assert_eq!(first.to_string(), "transport error: no route for /missing");
+        assert_eq!(first.to_string(), "transport error: no route");
 
         let (status, body) = Http3Service::route_resolution_error_response(&first);
         assert_eq!(status, http::StatusCode::BAD_GATEWAY);
@@ -734,12 +723,12 @@ mod tests {
 
     #[test]
     fn route_resolution_error_response_maps_missing_pool_and_empty_request_stably() {
-        let missing_pool = ProxyError::Transport("pool not found: payments".to_string());
+        let missing_pool = ProxyError::RequestTransport(RequestFailure::MissingUpstreamPool);
         let (status, body) = Http3Service::route_resolution_error_response(&missing_pool);
         assert_eq!(status, http::StatusCode::BAD_GATEWAY);
         assert_eq!(body, b"no pool\n");
 
-        let other = ProxyError::Transport("empty method or path".to_string());
+        let other = ProxyError::RequestTransport(RequestFailure::EmptyMethodOrPath);
         let (status, body) = Http3Service::route_resolution_error_response(&other);
         assert_eq!(status, http::StatusCode::BAD_GATEWAY);
         assert_eq!(body, b"route/backend resolution failed\n");

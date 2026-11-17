@@ -70,11 +70,13 @@ pub fn is_idempotent_method(method: &str) -> bool {
 
 pub fn classify_retryability(err: &ProxyError) -> UpstreamRetryability {
     match err {
-        ProxyError::Transport(_) => UpstreamRetryability::Retryable(UpstreamRetryReason::Transport),
+        ProxyError::Transport(_) | ProxyError::RequestTransport(_) => {
+            UpstreamRetryability::Retryable(UpstreamRetryReason::Transport)
+        }
         ProxyError::Timeout => UpstreamRetryability::Retryable(UpstreamRetryReason::Timeout),
         ProxyError::Pool(_) => UpstreamRetryability::Retryable(UpstreamRetryReason::Pool),
         ProxyError::Tls(_) => UpstreamRetryability::Terminal(UpstreamTerminalErrorKind::Tls),
-        ProxyError::Protocol(_) => {
+        ProxyError::Protocol(_) | ProxyError::RequestProtocol(_) => {
             UpstreamRetryability::Terminal(UpstreamTerminalErrorKind::Protocol)
         }
         ProxyError::Bridge(_) => UpstreamRetryability::Terminal(UpstreamTerminalErrorKind::Bridge),

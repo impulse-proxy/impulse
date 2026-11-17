@@ -1333,8 +1333,8 @@ impl Http3Service {
             None => spawn_async_task(fut, "body-pump"),
         };
         if !spawned {
-            let _ = fail_tx.try_send(ResponseChunk::Error(ProxyError::Transport(
-                "runtime unavailable".into(),
+            let _ = fail_tx.try_send(ResponseChunk::Error(ProxyError::RequestTransport(
+                RequestFailure::RuntimeUnavailable,
             )));
         }
         chunk_rx

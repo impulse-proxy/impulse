@@ -7,7 +7,7 @@
 
 use std::{collections::HashMap, sync::Arc};
 
-use impulse_errors::{PoolError, ProxyError};
+use impulse_errors::{PoolError, ProxyError, RequestFailure};
 use pingora_core::upstreams::peer::HttpPeer;
 use tokio::sync::{Semaphore, TryAcquireError};
 
@@ -80,8 +80,7 @@ impl UpstreamTransportPool {
         if self.backend_entry(backend) == Some(UpstreamProtocol::Http1)
             && head.headers.contains_key(hyper::header::TRAILER)
         {
-            let error =
-                ProxyError::Protocol("request trailers require an HTTP/2 upstream".to_string());
+            let error = ProxyError::RequestProtocol(RequestFailure::RequestTrailersRequireHttp2);
             finish_pingora_dispatch_failure(completion, &error);
             return Err(error);
         }
@@ -103,7 +102,7 @@ impl UpstreamTransportPool {
             }
         };
         let Some(pool) = self.pingora_pool.acquire() else {
-            let error = ProxyError::Transport("Pingora upstream pool is draining".to_string());
+            let error = ProxyError::RequestTransport(RequestFailure::UpstreamPoolDraining);
             finish_pingora_dispatch_failure(completion, &error);
             return Err(error);
         };
@@ -257,7 +256,9 @@ fn finish_pingora_dispatch_failure(
 ) {
     let outcome_error = match error {
         ProxyError::Transport(detail) => ProxyError::Transport(detail.clone()),
+        ProxyError::RequestTransport(failure) => ProxyError::RequestTransport(*failure),
         ProxyError::Protocol(detail) => ProxyError::Protocol(detail.clone()),
+        ProxyError::RequestProtocol(failure) => ProxyError::RequestProtocol(*failure),
         ProxyError::Timeout => ProxyError::Timeout,
         ProxyError::Tls(detail) => ProxyError::Tls(detail.clone()),
         ProxyError::Bridge(_) | ProxyError::Pool(_) => ProxyError::Transport(error.to_string()),

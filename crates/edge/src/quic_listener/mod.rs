@@ -33,7 +33,7 @@ use impulse_config::{
     config::{ClientAuth, ControlApi as ControlApiConfig},
     runtime::{ListenerRuntimeConfig, RuntimeListenerTls, RuntimeTlsIdentity},
 };
-use impulse_errors::{PoolError, ProxyError};
+use impulse_errors::{PoolError, ProxyError, RequestFailure};
 use impulse_lb::upstream_pool::UpstreamPool;
 use impulse_operations::watchdog::WatchdogCoordinator;
 use impulse_transport::UpstreamRequestExecutor;
