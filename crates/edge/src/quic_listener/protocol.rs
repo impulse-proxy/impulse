@@ -1,33 +1,13 @@
 use super::*;
 
 #[cfg(test)]
-pub(in crate::quic_listener) fn connection_header_tokens(
-    headers: &http::HeaderMap,
-) -> HashSet<String> {
-    let mut tokens = HashSet::new();
-    for value in headers.get_all(http::header::CONNECTION) {
-        let Ok(raw) = value.to_str() else {
-            continue;
-        };
-        for part in raw.split(',') {
-            let token = part.trim().to_ascii_lowercase();
-            if token.is_empty() {
-                continue;
-            }
-            tokens.insert(token);
-        }
-    }
-    tokens
-}
-
-#[cfg(test)]
 pub(in crate::quic_listener) fn should_strip_h3_response_header(
     name: &http::header::HeaderName,
-    connection_tokens: &HashSet<String>,
+    headers: &http::HeaderMap,
 ) -> bool {
     should_strip_response_header(
         name,
-        connection_tokens,
+        headers,
         ResponseProtocolConstraints {
             protocol: ResponseNormalizationProtocol::Http3,
             preserve_upgrade: false,

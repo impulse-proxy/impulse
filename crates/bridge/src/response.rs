@@ -3,8 +3,6 @@
 //! This module owns header/trailer filtering, bodyless/no-content shaping, and
 //! response emission policy decisions shared across ingress protocols.
 
-use std::collections::HashSet;
-
 use http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 pub use impulse_contracts::IngressProtocol as ResponseNormalizationProtocol;
 
@@ -80,30 +78,28 @@ fn is_hop_by_hop_response_header(name: &HeaderName, preserve_upgrade: bool) -> b
         || name.as_str().eq_ignore_ascii_case("proxy-connection")
 }
 
-pub(crate) fn response_connection_tokens(headers: &HeaderMap) -> HashSet<String> {
-    let mut tokens = HashSet::new();
+fn is_response_connection_header_token(name: &HeaderName, headers: &HeaderMap) -> bool {
     for value in headers.get_all(http::header::CONNECTION) {
         let Ok(raw) = value.to_str() else {
             continue;
         };
         for part in raw.split(',') {
-            let token = part.trim().to_ascii_lowercase();
-            if !token.is_empty() {
-                tokens.insert(token);
+            if part.trim().eq_ignore_ascii_case(name.as_str()) {
+                return true;
             }
         }
     }
-    tokens
+    false
 }
 
 pub fn should_strip_response_header(
     name: &HeaderName,
-    connection_tokens: &HashSet<String>,
+    headers: &HeaderMap,
     constraints: ResponseProtocolConstraints,
 ) -> bool {
     (!(constraints.preserve_upgrade
         && (name == http::header::CONNECTION || name == http::header::UPGRADE))
-        && connection_tokens.contains(name.as_str()))
+        && is_response_connection_header_token(name, headers))
         || is_hop_by_hop_response_header(name, constraints.preserve_upgrade)
         || matches!(constraints.protocol, ResponseNormalizationProtocol::Http3)
             && name == http::header::CONTENT_LENGTH
@@ -115,10 +111,9 @@ pub fn normalize_response_trailers(
     trailers: &HeaderMap,
     constraints: ResponseProtocolConstraints,
 ) -> Vec<NormalizedHeader> {
-    let connection_tokens = response_connection_tokens(trailers);
     let mut normalized = Vec::with_capacity(trailers.len());
     for (name, value) in trailers {
-        if should_strip_response_header(name, &connection_tokens, constraints) {
+        if should_strip_response_header(name, trailers, constraints) {
             continue;
         }
         normalized.push(NormalizedHeader {
@@ -132,10 +127,9 @@ pub fn normalize_response_trailers(
 pub fn normalize_upstream_response(input: ResponseNormalizationInput<'_>) -> NormalizedResponse {
     let constraints = input.constraints;
     let headers = input.upstream.headers;
-    let connection_tokens = response_connection_tokens(headers);
     let mut normalized_headers = Vec::with_capacity(headers.len());
     for (name, value) in headers {
-        if should_strip_response_header(name, &connection_tokens, constraints) {
+        if should_strip_response_header(name, headers, constraints) {
             continue;
         }
         normalized_headers.push(NormalizedHeader {
@@ -176,8 +170,8 @@ mod tests {
     use super::{
         NormalizedHeader, ResponseBodyMode, ResponseBodyPolicy, ResponseNormalizationInput,
         ResponseNormalizationProtocol, ResponseProtocolConstraints, UpstreamResponseView,
-        normalize_response_trailers, normalize_upstream_response, response_connection_tokens,
-        should_strip_response_header, status_forbids_response_body,
+        normalize_response_trailers, normalize_upstream_response, should_strip_response_header,
+        status_forbids_response_body,
     };
 
     fn http3_constraints() -> ResponseProtocolConstraints {
@@ -211,7 +205,7 @@ mod tests {
     }
 
     #[test]
-    fn response_connection_tokens_normalize_multiple_values() {
+    fn response_connection_tokens_match_multiple_values() {
         let mut headers = HeaderMap::new();
         headers.append(
             http::header::CONNECTION,
@@ -222,12 +216,13 @@ mod tests {
             HeaderValue::from_static("Upgrade, x-extra"),
         );
 
-        let tokens = response_connection_tokens(&headers);
-
-        assert!(tokens.contains("keep-alive"));
-        assert!(tokens.contains("x-hop"));
-        assert!(tokens.contains("upgrade"));
-        assert!(tokens.contains("x-extra"));
+        for name in ["keep-alive", "x-hop", "upgrade", "x-extra"] {
+            assert!(should_strip_response_header(
+                &HeaderName::from_bytes(name.as_bytes()).expect("header name"),
+                &headers,
+                http1_constraints(),
+            ));
+        }
     }
 
     #[test]
@@ -237,31 +232,29 @@ mod tests {
             http::header::CONNECTION,
             HeaderValue::from_static("x-internal-hop"),
         );
-        let tokens = response_connection_tokens(&headers);
-
         assert!(should_strip_response_header(
             &http::header::TE,
-            &tokens,
+            &headers,
             http3_constraints(),
         ));
         assert!(should_strip_response_header(
             &http::header::TRAILER,
-            &tokens,
+            &headers,
             http3_constraints(),
         ));
         assert!(should_strip_response_header(
             &http::header::CONTENT_LENGTH,
-            &tokens,
+            &headers,
             http3_constraints(),
         ));
         assert!(should_strip_response_header(
             &HeaderName::from_static("x-internal-hop"),
-            &tokens,
+            &headers,
             http3_constraints(),
         ));
         assert!(!should_strip_response_header(
             &http::header::CACHE_CONTROL,
-            &tokens,
+            &headers,
             http3_constraints(),
         ));
     }
@@ -273,21 +266,19 @@ mod tests {
             http::header::CONNECTION,
             HeaderValue::from_static("x-hop-token"),
         );
-        let tokens = response_connection_tokens(&headers);
-
         assert!(should_strip_response_header(
             &HeaderName::from_static("alt-svc"),
-            &tokens,
+            &headers,
             http1_constraints(),
         ));
         assert!(should_strip_response_header(
             &HeaderName::from_static("x-hop-token"),
-            &tokens,
+            &headers,
             http1_constraints(),
         ));
         assert!(!should_strip_response_header(
             &http::header::UPGRADE,
-            &tokens,
+            &headers,
             ResponseProtocolConstraints {
                 preserve_upgrade: true,
                 ..http1_constraints()

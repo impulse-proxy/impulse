@@ -23,9 +23,9 @@ use rcgen::{Certificate, CertificateParams, SanType};
 use tempfile::tempdir;
 
 use super::{
-    ConnectionRoutes, can_poll_upstream_result, collect_h3_trailers, connection_header_tokens,
-    is_bodyless_request_mode, is_connect_tunnel_response, purge_connection_routes,
-    resolve_primary_from_radix_prefix, should_strip_h3_response_header, sweep_closed_connections,
+    ConnectionRoutes, can_poll_upstream_result, collect_h3_trailers, is_bodyless_request_mode,
+    is_connect_tunnel_response, purge_connection_routes, resolve_primary_from_radix_prefix,
+    should_strip_h3_response_header, sweep_closed_connections,
 };
 use crate::{
     REQUEST_ID_COUNTER,
@@ -1251,7 +1251,7 @@ fn resolve_backend_uses_configured_header_lb_key() {
 }
 
 #[test]
-fn connection_header_tokens_are_parsed_case_insensitively() {
+fn h3_response_filter_parses_connection_tokens_case_insensitively() {
     let mut headers = HeaderMap::new();
     headers.insert(
         http::header::CONNECTION,
@@ -1262,19 +1262,21 @@ fn connection_header_tokens_are_parsed_case_insensitively() {
         HeaderValue::from_static("x-another"),
     );
 
-    let tokens = connection_header_tokens(&headers);
-    assert!(tokens.contains("keep-alive"));
-    assert!(tokens.contains("x-secret"));
-    assert!(tokens.contains("x-another"));
+    for name in ["keep-alive", "x-secret", "x-another"] {
+        assert!(should_strip_h3_response_header(
+            &http::HeaderName::from_bytes(name.as_bytes()).expect("header name"),
+            &headers,
+        ));
+    }
 }
 
 #[test]
 fn h3_response_filter_strips_te_and_trailer() {
-    let tokens = HashSet::new();
-    assert!(should_strip_h3_response_header(&http::header::TE, &tokens));
+    let headers = HeaderMap::new();
+    assert!(should_strip_h3_response_header(&http::header::TE, &headers));
     assert!(should_strip_h3_response_header(
         &http::header::TRAILER,
-        &tokens
+        &headers
     ));
 }
 
@@ -1337,9 +1339,8 @@ fn h3_response_filter_strips_connection_nominated_headers() {
         http::header::CONNECTION,
         HeaderValue::from_static("keep-alive, x-internal-hop"),
     );
-    let tokens = connection_header_tokens(&headers);
     let nominated = http::HeaderName::from_static("x-internal-hop");
-    assert!(should_strip_h3_response_header(&nominated, &tokens));
+    assert!(should_strip_h3_response_header(&nominated, &headers));
 }
 
 #[test]
