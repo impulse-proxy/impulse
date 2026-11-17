@@ -258,7 +258,6 @@ impl ScopedRateLimitRuntime {
             request
                 .header(name)
                 .and_then(|value| std::str::from_utf8(value).ok())
-                .map(str::to_string)
         };
         let identity = ScopedRateLimitIdentity::new(
             request.route_id,

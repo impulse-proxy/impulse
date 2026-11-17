@@ -484,9 +484,9 @@ mod tests {
         client_addr: Option<SocketAddr>,
         headers: HashMap<String, String>,
     ) -> QuotaIdentityContext<'static> {
-        let leaked = Box::leak(Box::new(headers));
+        let leaked: &'static HashMap<String, String> = Box::leak(Box::new(headers));
         let lookup = Box::leak(Box::new(move |name: &str| {
-            leaked.get(&name.to_ascii_lowercase()).cloned()
+            leaked.get(&name.to_ascii_lowercase()).map(String::as_str)
         }));
         QuotaIdentityContext::new(
             route,
