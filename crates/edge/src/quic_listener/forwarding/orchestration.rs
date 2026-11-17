@@ -662,19 +662,19 @@ impl Http3Service {
                             continue;
                         }
                     };
-                    let method = request.method;
-                    let path = request.path;
-                    let authority = request.authority;
+                    let request_head = request.head();
                     let content_length = request.content_length;
                     let websocket_tunnel = request.websocket_tunnel;
-                    let tunnel_mode =
-                        impulse_http3_ingress::classify_tunnel(&method, websocket_tunnel);
+                    let tunnel_mode = impulse_http3_ingress::classify_tunnel(
+                        request_head.method,
+                        websocket_tunnel,
+                    );
 
                     metrics.request_observations().inc_total();
                     let request_start = Instant::now();
 
                     if connection.quic.is_in_early_data() {
-                        if resilience.early_data_allowed_for(&method) {
+                        if resilience.early_data_allowed_for(request_head.method) {
                             metrics.ingress_observations().inc_early_data_accepted();
                         } else {
                             metrics.ingress_observations().inc_early_data_rejected();
@@ -728,9 +728,9 @@ impl Http3Service {
                             intake: self::prepare::IntakeRequestDescriptor {
                                 quic_trace_id: &quic_trace_id,
                                 request_start,
-                                method: &method,
-                                path: &path,
-                                authority: authority.as_deref(),
+                                method: request_head.method,
+                                path: request_head.path,
+                                authority: request_head.authority,
                                 headers: &list,
                                 content_length,
                                 tunnel_mode,

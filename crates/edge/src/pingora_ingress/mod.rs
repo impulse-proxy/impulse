@@ -756,6 +756,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             .await?;
             return Ok(true);
         };
+        let request_head = validated.head();
         let request_headers = &request.headers;
         let plugin_header_lookup =
             |name: &str| request_headers.get(name).map(http::HeaderValue::as_bytes);
@@ -764,9 +765,9 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             .execute_ingress_plugins(
                 PluginRequestExecutionInput {
                     request: RequestExecutionInput {
-                        method: &validated.method,
-                        path: &validated.path,
-                        authority: validated.authority.as_deref(),
+                        method: request_head.method,
+                        path: request_head.path,
+                        authority: request_head.authority,
                         peer_address,
                     },
                     request_id: ctx.request_id,
@@ -818,7 +819,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             .metrics
             .policy_observations()
             .set_brownout_active(state.resilience.brownout.is_active());
-        let tunnel_mode = classify_tunnel(&validated.method, validated.websocket_tunnel);
+        let tunnel_mode = classify_tunnel(request_head.method, validated.websocket_tunnel);
         ctx.route = Some(route.clone());
         ctx.method = Some(validated.method);
         ctx.path = Some(validated.path);
