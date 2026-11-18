@@ -1,5 +1,7 @@
 use std::convert::Infallible;
 
+use bytes::{BufMut, BytesMut};
+
 use impulse_config::{backend_endpoint::BackendEndpoint, runtime::RuntimeBackendTlsPolicy};
 use impulse_contracts::{AlternateBackendFailureReason, BackendId, HedgeOutcomeTelemetryReason};
 #[cfg(feature = "response-cache")]
@@ -64,7 +66,6 @@ struct WebsocketTunnelForwardInput {
     endpoint: BackendEndpoint,
     pending_forward: Arc<PendingForward>,
     body_rx: mpsc::Receiver<Bytes>,
-    body_buffer_pool: Arc<crate::runtime::body_buffer_pool::BodyBufferPool>,
 }
 
 #[cfg(feature = "response-cache")]
@@ -359,7 +360,6 @@ impl Http3Service {
             endpoint,
             pending_forward,
             mut body_rx,
-            body_buffer_pool,
         } = input;
         let request = pending_forward.build_http1_websocket_tunnel_request(&endpoint)?;
         let response = Self::send_upstream_request(
@@ -408,15 +408,20 @@ impl Http3Service {
                 writer.shutdown().await
             };
             let read_fut = async {
-                let mut buf = [0u8; RESPONSE_CHUNK_BYTES_LIMIT];
+                // Read straight into `BytesMut` and split the filled part off as
+                // `Bytes`: ownership moves to the response channel with no copy
+                // through an intermediate stack buffer.
+                let mut buf = BytesMut::with_capacity(RESPONSE_CHUNK_BYTES_LIMIT);
                 loop {
-                    match reader.read(&mut buf).await {
+                    buf.reserve(RESPONSE_CHUNK_BYTES_LIMIT);
+                    match reader
+                        .read_buf(&mut (&mut buf).limit(RESPONSE_CHUNK_BYTES_LIMIT))
+                        .await
+                    {
                         Ok(0) => return Ok::<(), std::io::Error>(()),
-                        Ok(read) => {
+                        Ok(_) => {
                             if chunk_tx
-                                .send(ResponseChunk::Data(
-                                    body_buffer_pool.copy_bytes(&buf[..read]),
-                                ))
+                                .send(ResponseChunk::Data(buf.split().freeze()))
                                 .await
                                 .is_err()
                             {
@@ -635,7 +640,6 @@ impl Http3Service {
         #[cfg(feature = "response-cache")]
         let response_cache_store = exec_ctx.response_cache;
         let trace_span_for_upstream = req.trace_span().cloned();
-        let body_buffer_pool = Arc::clone(&exec_ctx.body_buffer_pool);
         let (result_tx, result_rx) = oneshot::channel::<UpstreamResult>();
         let tunnel_mode = req.tunnel_mode();
         let bodyless_mode = req.bodyless_mode;
@@ -728,7 +732,6 @@ impl Http3Service {
                             endpoint: backend_endpoint.clone(),
                             pending_forward: Arc::clone(&pending_forward),
                             body_rx,
-                            body_buffer_pool: Arc::clone(&body_buffer_pool),
                         },
                         circuit_breakers,
                         upstream_executor,

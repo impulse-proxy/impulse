@@ -407,7 +407,6 @@ impl Http3Service {
                     .shared_services()
                     .transport_pool,
             )),
-            body_buffer_pool: Arc::clone(&self.body_buffer_pool),
             backend_endpoints: Arc::clone(
                 &self
                     .runtime_state
@@ -527,7 +526,6 @@ impl Http3Service {
                     .shared_services()
                     .transport_pool,
             )),
-            body_buffer_pool: Arc::clone(&self.body_buffer_pool),
             backend_endpoints: Arc::clone(
                 &self
                     .runtime_state

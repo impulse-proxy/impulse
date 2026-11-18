@@ -691,3 +691,100 @@ fn http3_large_response_bodies_are_delivered_intact() {
         );
     }
 }
+
+async fn start_h1_backend_with_header_only_routes() -> SocketAddr {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    tokio::spawn(async move {
+        loop {
+            let (stream, _) = match listener.accept().await {
+                Ok(v) => v,
+                Err(_) => break,
+            };
+            let io = TokioIo::new(stream);
+            let service = service_fn(|req: Request<Incoming>| async move {
+                let response: Response<TestBody> = match req.uri().path() {
+                    "/no-content" => Response::builder()
+                        .status(204)
+                        .body(Full::new(Bytes::new()).boxed())
+                        .unwrap(),
+                    "/not-modified" => Response::builder()
+                        .status(304)
+                        .header("etag", "\"v1\"")
+                        .body(Full::new(Bytes::new()).boxed())
+                        .unwrap(),
+                    "/empty" => Response::builder()
+                        .status(200)
+                        .header(CONTENT_LENGTH, "0")
+                        .body(Full::new(Bytes::new()).boxed())
+                        .unwrap(),
+                    _ => Response::new(Full::new(Bytes::from_static(b"body\n")).boxed()),
+                };
+                Ok::<_, hyper::Error>(response)
+            });
+            tokio::spawn(async move {
+                let _ = hyper::server::conn::http1::Builder::new()
+                    .serve_connection(io, service)
+                    .await;
+            });
+        }
+    });
+
+    addr
+}
+
+/// Responses that cannot carry a body (204, 304, `Content-Length: 0`, and HEAD)
+/// must be answered with headers and FIN straight away: no body stream, no
+/// reset, and no body bytes.
+#[test]
+fn http3_header_only_responses_finish_without_a_body() {
+    if !local_listener_bind_available() {
+        return;
+    }
+    let dir = tempdir().expect("failed to create temp dir");
+    let (cert, key) = write_test_certs(&dir);
+    let rt = tokio::runtime::Runtime::new().expect("runtime");
+
+    let backend_addr = rt.block_on(start_h1_backend_with_header_only_routes());
+    let config = make_config(0, format!("http://{backend_addr}"), cert, key);
+    let listener = Http3Service::new(config).expect("failed to create listener");
+    let listen_addr = listener.socket.local_addr().unwrap();
+    let _listener_task = ListenerTaskGuard::spawn(&rt, listener);
+
+    for (method, path, status) in [
+        ("GET", "/no-content", "204"),
+        ("GET", "/not-modified", "304"),
+        ("GET", "/empty", "200"),
+        ("HEAD", "/empty", "200"),
+        ("HEAD", "/other", "200"),
+    ] {
+        let response = run_h3_client_collect_response(
+            listen_addr,
+            vec![
+                quiche::h3::Header::new(b":method", method.as_bytes()),
+                quiche::h3::Header::new(b":scheme", b"https"),
+                quiche::h3::Header::new(b":authority", b"localhost"),
+                quiche::h3::Header::new(b":path", path.as_bytes()),
+                quiche::h3::Header::new(b"user-agent", b"impulse-header-only-test"),
+            ],
+            true,
+            Duration::from_secs(REQUEST_TIMEOUT_SECS),
+        )
+        .unwrap_or_else(|err| panic!("{method} {path}: request failed: {err}"));
+
+        assert_eq!(
+            response.status, status,
+            "{method} {path}: unexpected status"
+        );
+        assert!(
+            response.body.is_empty(),
+            "{method} {path}: header-only response must not carry a body"
+        );
+        assert!(!response.reset, "{method} {path}: stream was reset");
+        assert!(
+            response.trailers.is_empty(),
+            "{method} {path}: unexpected trailers"
+        );
+    }
+}

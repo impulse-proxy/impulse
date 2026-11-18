@@ -48,8 +48,6 @@ pub(in crate::quic_listener) struct ForwardingSharedCtx<'a> {
 
 pub(in crate::quic_listener) struct ForwardingExecutionCtx<'a> {
     pub(in crate::quic_listener) upstream_executor: UpstreamRequestExecutor,
-    pub(in crate::quic_listener) body_buffer_pool:
-        Arc<crate::runtime::body_buffer_pool::BodyBufferPool>,
     pub(in crate::quic_listener) backend_endpoints: Arc<[BackendEndpoint]>,
     pub(in crate::quic_listener) upstream_inflight: &'a [Arc<Semaphore>],
     pub(in crate::quic_listener) global_inflight: Arc<Semaphore>,
