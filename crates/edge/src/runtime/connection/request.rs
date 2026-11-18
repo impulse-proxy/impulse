@@ -1,7 +1,7 @@
 use std::{
     collections::VecDeque,
     net::SocketAddr,
-    sync::{Arc, RwLock},
+    sync::{Arc, OnceLock, RwLock},
     time::Instant,
 };
 
@@ -67,7 +67,6 @@ pub struct RequestEnvelope {
     pub error_kind: Option<&'static str>,
     pub terminal_overload_reason: Option<OverloadShedReason>,
     pub(crate) completion: RequestCompletion,
-    pub(crate) empty_request_body_runtime: RequestBodyRuntime,
     pub execution: RequestExecutionState,
 }
 
@@ -105,6 +104,11 @@ impl RequestStateError {
             Self::InvalidTransition { attempted, .. } => attempted,
         }
     }
+}
+
+fn empty_body_buf() -> &'static VecDeque<Bytes> {
+    static EMPTY: OnceLock<VecDeque<Bytes>> = OnceLock::new();
+    EMPTY.get_or_init(VecDeque::new)
 }
 
 impl RequestEnvelope {
@@ -187,7 +191,6 @@ impl RequestEnvelope {
             error_kind,
             terminal_overload_reason: None,
             completion: context.completion.clone(),
-            empty_request_body_runtime: RequestBodyRuntime::empty(context.start),
             execution: RequestExecutionState::DispatchReady(state),
         }
     }
@@ -244,7 +247,6 @@ impl RequestEnvelope {
             error_kind,
             terminal_overload_reason: None,
             completion: context.completion.clone(),
-            empty_request_body_runtime: RequestBodyRuntime::empty(context.start),
             execution: RequestExecutionState::AwaitingAuth(state),
         }
     }
@@ -276,7 +278,9 @@ impl RequestEnvelope {
     }
 
     pub fn set_request_fin_received(&mut self, value: bool) {
-        self.request_body_runtime_mut().request_fin_received = value;
+        if let Some(runtime) = self.request_body_runtime_mut() {
+            runtime.request_fin_received = value;
+        }
     }
 
     pub fn request_mode(&self) -> RequestMode {
@@ -298,11 +302,16 @@ impl RequestEnvelope {
             RequestExecutionState::DispatchReady(state) => state.request_body,
             RequestExecutionState::Admitted(state) => state.request_body,
             RequestExecutionState::AwaitingUpstream(state) => state.request_body,
-            RequestExecutionState::StreamingResponse(_) => RequestBodyState::from_runtime(
-                self.request_body_runtime().request_fin_received,
-                !self.request_body_runtime().body_buf.is_empty(),
-                self.body_tx().is_some(),
-            ),
+            RequestExecutionState::StreamingResponse(_) => {
+                self.request_body_runtime()
+                    .map_or(RequestBodyState::FinReceived, |runtime| {
+                        RequestBodyState::from_runtime(
+                            runtime.request_fin_received,
+                            !runtime.body_buf.is_empty(),
+                            self.body_tx().is_some(),
+                        )
+                    })
+            }
             RequestExecutionState::Terminal(state) => terminal_request_mode(state)
                 .initial_body_state()
                 .on_forward_closed(),
@@ -310,7 +319,9 @@ impl RequestEnvelope {
     }
 
     pub fn set_request_body_state(&mut self, next: RequestBodyState) {
-        self.request_body_runtime_mut().request_fin_received = next.request_fin_received();
+        if let Some(runtime) = self.request_body_runtime_mut() {
+            runtime.request_fin_received = next.request_fin_received();
+        }
         match &mut self.execution {
             RequestExecutionState::Intake(state) => state.request_body = next,
             RequestExecutionState::AwaitingAuth(state) => state.request_body = next,
@@ -322,11 +333,15 @@ impl RequestEnvelope {
     }
 
     pub fn refresh_request_body_state(&mut self) -> RequestBodyState {
-        let next = RequestBodyState::from_runtime(
-            self.request_body_runtime().request_fin_received,
-            !self.request_body_runtime().body_buf.is_empty(),
-            self.body_tx().is_some(),
-        );
+        let next = self
+            .request_body_runtime()
+            .map_or(RequestBodyState::FinReceived, |runtime| {
+                RequestBodyState::from_runtime(
+                    runtime.request_fin_received,
+                    !runtime.body_buf.is_empty(),
+                    self.body_tx().is_some(),
+                )
+            });
         self.set_request_body_state(next);
         next
     }
@@ -434,35 +449,50 @@ impl RequestEnvelope {
     }
 
     pub fn body_buf(&self) -> &VecDeque<Bytes> {
-        &self.request_body_runtime().body_buf
+        match self.request_body_runtime() {
+            Some(runtime) => &runtime.body_buf,
+            None => empty_body_buf(),
+        }
     }
 
     pub fn body_buf_mut(&mut self) -> &mut VecDeque<Bytes> {
-        &mut self.request_body_runtime_mut().body_buf
+        &mut self
+            .request_body_runtime_mut()
+            .expect("request body buffer requires an allocated body runtime")
+            .body_buf
     }
 
     pub fn body_buf_bytes(&self) -> usize {
-        self.request_body_runtime().body_buf_bytes
+        self.request_body_runtime()
+            .map_or(0, |runtime| runtime.body_buf_bytes)
     }
 
     pub fn set_body_buf_bytes(&mut self, value: usize) {
-        self.request_body_runtime_mut().body_buf_bytes = value;
+        if let Some(runtime) = self.request_body_runtime_mut() {
+            runtime.body_buf_bytes = value;
+        }
     }
 
     pub fn body_bytes_received(&self) -> usize {
-        self.request_body_runtime().body_bytes_received
+        self.request_body_runtime()
+            .map_or(0, |runtime| runtime.body_bytes_received)
     }
 
     pub fn set_body_bytes_received(&mut self, value: usize) {
-        self.request_body_runtime_mut().body_bytes_received = value;
+        if let Some(runtime) = self.request_body_runtime_mut() {
+            runtime.body_bytes_received = value;
+        }
     }
 
     pub fn last_body_activity(&self) -> Instant {
-        self.request_body_runtime().last_body_activity
+        self.request_body_runtime()
+            .map_or(self.start, |runtime| runtime.last_body_activity)
     }
 
     pub fn set_last_body_activity(&mut self, value: Instant) {
-        self.request_body_runtime_mut().last_body_activity = value;
+        if let Some(runtime) = self.request_body_runtime_mut() {
+            runtime.last_body_activity = value;
+        }
     }
 
     pub fn pending_forward(&self) -> Option<&Arc<PendingForward>> {
@@ -709,8 +739,10 @@ impl RequestEnvelope {
                 });
             }
         };
-        let dispatch_body_tx = if admitted.request_body_runtime.request_fin_received
-            && admitted.request_body_runtime.body_buf.is_empty()
+        let request_body_runtime = admitted.request_body_runtime;
+        let dispatch_body_tx = if request_body_runtime
+            .as_ref()
+            .is_none_or(|runtime| runtime.request_fin_received && runtime.body_buf.is_empty())
         {
             None
         } else {
@@ -725,15 +757,20 @@ impl RequestEnvelope {
             routing,
             request_mode,
             request_body: _,
-            request_body_runtime,
             pending_forward,
             permits,
+            request_body_runtime: _,
         } = admitted;
-        let request_body = RequestBodyState::from_runtime(
-            request_body_runtime.request_fin_received,
-            !request_body_runtime.body_buf.is_empty(),
-            dispatch_body_tx.is_some(),
-        );
+        let request_body =
+            request_body_runtime
+                .as_ref()
+                .map_or(RequestBodyState::FinReceived, |runtime| {
+                    RequestBodyState::from_runtime(
+                        runtime.request_fin_received,
+                        !runtime.body_buf.is_empty(),
+                        dispatch_body_tx.is_some(),
+                    )
+                });
         self.execution = RequestExecutionState::AwaitingUpstream(AwaitingUpstreamState {
             context,
             routing,
@@ -938,43 +975,50 @@ impl RequestEnvelope {
         prior_phase
     }
 
-    fn request_body_runtime(&self) -> &RequestBodyRuntime {
+    fn request_body_runtime(&self) -> Option<&RequestBodyRuntime> {
         match &self.execution {
-            RequestExecutionState::Intake(_) => &self.empty_request_body_runtime,
-            RequestExecutionState::AwaitingAuth(state) => &state.request_body_runtime,
-            RequestExecutionState::DispatchReady(state) => &state.request_body_runtime,
-            RequestExecutionState::Admitted(state) => &state.request_body_runtime,
-            RequestExecutionState::AwaitingUpstream(state) => &state.request_body_runtime,
-            RequestExecutionState::StreamingResponse(state) => &state.request_body_runtime,
-            RequestExecutionState::Terminal(_) => &self.empty_request_body_runtime,
+            RequestExecutionState::Intake(_) | RequestExecutionState::Terminal(_) => None,
+            RequestExecutionState::AwaitingAuth(state) => state.request_body_runtime.as_ref(),
+            RequestExecutionState::DispatchReady(state) => state.request_body_runtime.as_ref(),
+            RequestExecutionState::Admitted(state) => state.request_body_runtime.as_ref(),
+            RequestExecutionState::AwaitingUpstream(state) => state.request_body_runtime.as_ref(),
+            RequestExecutionState::StreamingResponse(state) => state.request_body_runtime.as_ref(),
         }
     }
 
-    fn request_body_runtime_mut(&mut self) -> &mut RequestBodyRuntime {
+    fn request_body_runtime_mut(&mut self) -> Option<&mut RequestBodyRuntime> {
         match &mut self.execution {
-            RequestExecutionState::Intake(_) => &mut self.empty_request_body_runtime,
-            RequestExecutionState::AwaitingAuth(state) => &mut state.request_body_runtime,
-            RequestExecutionState::DispatchReady(state) => &mut state.request_body_runtime,
-            RequestExecutionState::Admitted(state) => &mut state.request_body_runtime,
-            RequestExecutionState::AwaitingUpstream(state) => &mut state.request_body_runtime,
-            RequestExecutionState::StreamingResponse(state) => &mut state.request_body_runtime,
-            RequestExecutionState::Terminal(_) => &mut self.empty_request_body_runtime,
+            RequestExecutionState::Intake(_) | RequestExecutionState::Terminal(_) => None,
+            RequestExecutionState::AwaitingAuth(state) => state.request_body_runtime.as_mut(),
+            RequestExecutionState::DispatchReady(state) => state.request_body_runtime.as_mut(),
+            RequestExecutionState::Admitted(state) => state.request_body_runtime.as_mut(),
+            RequestExecutionState::AwaitingUpstream(state) => state.request_body_runtime.as_mut(),
+            RequestExecutionState::StreamingResponse(state) => state.request_body_runtime.as_mut(),
         }
     }
 
     fn buffered_request_body_bytes(execution: &RequestExecutionState) -> usize {
         match execution {
-            RequestExecutionState::AwaitingAuth(state) => state.request_body_runtime.body_buf_bytes,
-            RequestExecutionState::DispatchReady(state) => {
-                state.request_body_runtime.body_buf_bytes
-            }
-            RequestExecutionState::Admitted(state) => state.request_body_runtime.body_buf_bytes,
-            RequestExecutionState::AwaitingUpstream(state) => {
-                state.request_body_runtime.body_buf_bytes
-            }
-            RequestExecutionState::StreamingResponse(state) => {
-                state.request_body_runtime.body_buf_bytes
-            }
+            RequestExecutionState::AwaitingAuth(state) => state
+                .request_body_runtime
+                .as_ref()
+                .map_or(0, |runtime| runtime.body_buf_bytes),
+            RequestExecutionState::DispatchReady(state) => state
+                .request_body_runtime
+                .as_ref()
+                .map_or(0, |runtime| runtime.body_buf_bytes),
+            RequestExecutionState::Admitted(state) => state
+                .request_body_runtime
+                .as_ref()
+                .map_or(0, |runtime| runtime.body_buf_bytes),
+            RequestExecutionState::AwaitingUpstream(state) => state
+                .request_body_runtime
+                .as_ref()
+                .map_or(0, |runtime| runtime.body_buf_bytes),
+            RequestExecutionState::StreamingResponse(state) => state
+                .request_body_runtime
+                .as_ref()
+                .map_or(0, |runtime| runtime.body_buf_bytes),
             RequestExecutionState::Intake(_) | RequestExecutionState::Terminal(_) => 0,
         }
     }
@@ -1205,19 +1249,18 @@ mod tests {
             error_kind: None,
             terminal_overload_reason: None,
             completion: context.completion.clone(),
-            empty_request_body_runtime: RequestBodyRuntime::empty(start),
             execution: RequestExecutionState::Admitted(AdmittedState {
                 context,
                 routing,
                 request_mode: RequestMode::Normal,
                 request_body: RequestBodyState::Open,
-                request_body_runtime: RequestBodyRuntime {
+                request_body_runtime: Some(RequestBodyRuntime {
                     body_buf,
                     body_buf_bytes,
                     body_bytes_received: body_buf_bytes,
                     last_body_activity: start,
                     request_fin_received,
-                },
+                }),
                 pending_forward: make_pending_forward(),
                 permits: AdmissionPermits {
                     global: global_sem
@@ -1353,13 +1396,12 @@ mod tests {
             error_kind: None,
             terminal_overload_reason: None,
             completion: context.completion.clone(),
-            empty_request_body_runtime: RequestBodyRuntime::empty(start),
             execution: RequestExecutionState::DispatchReady(DispatchReadyState {
                 context,
                 routing: make_routing_snapshot(),
                 request_mode: RequestMode::Normal,
                 request_body: RequestBodyState::Open,
-                request_body_runtime: RequestBodyRuntime::empty(start),
+                request_body_runtime: Some(RequestBodyRuntime::empty(start)),
                 pending_forward: make_pending_forward(),
             }),
         };

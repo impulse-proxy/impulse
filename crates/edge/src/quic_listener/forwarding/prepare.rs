@@ -472,13 +472,13 @@ impl Http3Service {
                 routing: routing.clone(),
                 request_mode,
                 request_body,
-                request_body_runtime: RequestBodyRuntime {
+                request_body_runtime: (!request_mode.bodyless_mode()).then(|| RequestBodyRuntime {
                     body_buf: VecDeque::new(),
                     body_buf_bytes: 0,
                     body_bytes_received: 0,
                     last_body_activity,
                     request_fin_received: request_body.request_fin_received(),
-                },
+                }),
                 pending_forward,
             },
             routing,

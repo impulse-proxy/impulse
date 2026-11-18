@@ -1467,7 +1467,7 @@ fn non_connect_requires_request_completion_before_upstream_poll() {
         routing: make_routing_snapshot(),
         request_mode: RequestMode::Normal,
         request_body: RequestBodyState::FinReceived,
-        request_body_runtime: make_body_runtime(start, true),
+        request_body_runtime: Some(make_body_runtime(start, true)),
         pending_forward: make_pending_forward("GET"),
         auth_result_rx: oneshot::channel::<crate::runtime::connection::auth::ExternalAuthResult>()
             .1,
@@ -2138,7 +2138,6 @@ fn make_dispatch_ready_envelope(
         error_kind: None,
         terminal_overload_reason: None,
         completion: context.completion.clone(),
-        empty_request_body_runtime: RequestBodyRuntime::empty(start),
         execution: RequestExecutionState::DispatchReady(DispatchReadyState {
             context,
             routing,
@@ -2148,7 +2147,7 @@ fn make_dispatch_ready_envelope(
             } else {
                 RequestBodyState::Open
             },
-            request_body_runtime: make_body_runtime(start, request_fin_received),
+            request_body_runtime: Some(make_body_runtime(start, request_fin_received)),
             pending_forward: make_pending_forward(method),
         }),
     }
@@ -2177,7 +2176,11 @@ fn make_awaiting_upstream_envelope(
         } else {
             RequestBodyState::Open
         };
-        state.request_body_runtime.request_fin_received = request_fin_received;
+        state
+            .request_body_runtime
+            .as_mut()
+            .expect("request body runtime")
+            .request_fin_received = request_fin_received;
     }
     let (_tx, rx) = oneshot::channel::<crate::runtime::connection::response::UpstreamResult>();
     req.transition_admitted_to_awaiting_upstream(None, rx)
@@ -2290,13 +2293,13 @@ fn abort_stream_waiting_for_auth_clears_async_auth_state() {
         },
         request_mode: RequestMode::Normal,
         request_body: RequestBodyState::Open,
-        request_body_runtime: RequestBodyRuntime {
+        request_body_runtime: Some(RequestBodyRuntime {
             body_buf: std::collections::VecDeque::new(),
             body_buf_bytes: 0,
             body_bytes_received: 0,
             last_body_activity: req.start,
             request_fin_received: false,
-        },
+        }),
         pending_forward: Arc::new(crate::runtime::connection::request::PendingForward {
             method: Arc::<str>::from("POST"),
             path: Arc::<str>::from("/upload"),
