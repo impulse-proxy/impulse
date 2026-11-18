@@ -1437,7 +1437,6 @@ fn bodyless_request_mode_only_applies_to_empty_get_and_head() {
 fn connect_can_poll_upstream_before_request_fin() {
     let mut req = make_awaiting_upstream_envelope(Instant::now(), "CONNECT", false);
     req.method = "CONNECT".to_string();
-    req.tunnel_mode = TunnelMode::Connect;
     req.set_request_fin_received(false);
     if let RequestExecutionState::AwaitingUpstream(state) = &mut req.execution {
         state.request_mode = RequestMode::ConnectTunnel;
@@ -1512,7 +1511,6 @@ fn total_request_timeout_tracks_typed_execution_phase() {
 fn connect_total_request_timeout_prefers_awaiting_upstream_bucket() {
     let mut req = make_awaiting_upstream_envelope(Instant::now(), "CONNECT", false);
     req.method = "CONNECT".to_string();
-    req.tunnel_mode = TunnelMode::Connect;
     req.set_request_fin_received(false);
     if let RequestExecutionState::AwaitingUpstream(state) = &mut req.execution {
         state.request_mode = RequestMode::ConnectTunnel;
@@ -2134,7 +2132,6 @@ fn make_dispatch_ready_envelope(
         start: context.start,
         total_request_deadline: context.total_request_deadline,
         bodyless_mode: false,
-        tunnel_mode: TunnelMode::None,
         processing: None,
         pinned_generation: None,
         retry_count: 0,

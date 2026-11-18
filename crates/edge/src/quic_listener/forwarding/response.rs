@@ -367,7 +367,7 @@ impl Http3Service {
         };
         let request_mode = req.request_mode();
         let tunnel_response = impulse_http3_ingress::tunnel_response_established(
-            req.tunnel_mode,
+            req.tunnel_mode(),
             &req.method,
             status,
         );

@@ -59,7 +59,6 @@ pub struct RequestEnvelope {
     pub start: Instant,
     pub total_request_deadline: Instant,
     pub bodyless_mode: bool,
-    pub tunnel_mode: TunnelMode,
     pub(crate) processing: Option<RequestProcessingState>,
     pub(crate) pinned_generation: Option<crate::runtime::bundle::ActiveRuntimeGeneration>,
 
@@ -110,6 +109,10 @@ impl RequestStateError {
 impl RequestEnvelope {
     pub(crate) fn trace_span(&self) -> Option<&Span> {
         self.processing.as_ref()?.tracing.as_ref()?.span.as_ref()
+    }
+
+    pub(crate) fn tunnel_mode(&self) -> TunnelMode {
+        self.request_mode().tunnel_mode()
     }
 
     pub(crate) fn trace_ids(
@@ -174,7 +177,6 @@ impl RequestEnvelope {
             start: context.start,
             total_request_deadline: context.total_request_deadline,
             bodyless_mode: request_mode.bodyless_mode(),
-            tunnel_mode: request_mode.tunnel_mode(),
             processing: RequestProcessingState::new(
                 &pending_forward.plugin_plan,
                 context.tracing.clone(),
@@ -232,7 +234,6 @@ impl RequestEnvelope {
             start: context.start,
             total_request_deadline: context.total_request_deadline,
             bodyless_mode: request_mode.bodyless_mode(),
-            tunnel_mode: request_mode.tunnel_mode(),
             processing: RequestProcessingState::new(
                 &pending_forward.plugin_plan,
                 context.tracing.clone(),
@@ -1003,7 +1004,7 @@ impl RequestEnvelope {
                 completion: self.completion.clone(),
             },
             routing,
-            request_mode: RequestMode::from_intake(self.tunnel_mode, &self.method, None),
+            request_mode: RequestMode::from_intake(self.tunnel_mode(), &self.method, None),
             response_status: self
                 .response_status
                 .and_then(|status| http::StatusCode::from_u16(status).ok()),
@@ -1191,7 +1192,6 @@ mod tests {
             start,
             total_request_deadline: context.total_request_deadline,
             bodyless_mode: false,
-            tunnel_mode: TunnelMode::None,
             processing: None,
             pinned_generation: None,
             retry_count: 0,
@@ -1340,7 +1340,6 @@ mod tests {
             start,
             total_request_deadline: start,
             bodyless_mode: false,
-            tunnel_mode: TunnelMode::None,
             processing: None,
             pinned_generation: None,
             retry_count: 0,

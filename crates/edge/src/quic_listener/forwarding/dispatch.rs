@@ -632,13 +632,13 @@ impl Http3Service {
         let response_cache_store = exec_ctx.response_cache;
         let trace_span_for_upstream = req.trace_span().cloned();
         let (result_tx, result_rx) = oneshot::channel::<UpstreamResult>();
-        let tunnel_mode = req.tunnel_mode;
+        let tunnel_mode = req.tunnel_mode();
         let bodyless_mode = req.bodyless_mode;
         let request_id = req.request_id;
         let method_idempotent = is_idempotent_method(&req.method);
         let hedge_method_allowed = resilience.hedging_method_allowed(&req.method);
         let hedge_configured = resilience.hedging_route_enabled_for(pending_forward.route_id);
-        let hedge_tunnel_request = req.tunnel_mode.is_tunnel();
+        let hedge_tunnel_request = tunnel_mode.is_tunnel();
         let needs_alternate_before_primary =
             hedge_configured && hedge_method_allowed && bodyless_mode && !hedge_tunnel_request;
         let policy = RetryCoordinator::new(
