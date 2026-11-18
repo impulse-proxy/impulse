@@ -64,6 +64,7 @@ struct WebsocketTunnelForwardInput {
     endpoint: BackendEndpoint,
     pending_forward: Arc<PendingForward>,
     body_rx: mpsc::Receiver<Bytes>,
+    body_buffer_pool: Arc<crate::runtime::body_buffer_pool::BodyBufferPool>,
 }
 
 #[cfg(feature = "response-cache")]
@@ -358,6 +359,7 @@ impl Http3Service {
             endpoint,
             pending_forward,
             mut body_rx,
+            body_buffer_pool,
         } = input;
         let request = pending_forward.build_http1_websocket_tunnel_request(&endpoint)?;
         let response = Self::send_upstream_request(
@@ -412,7 +414,9 @@ impl Http3Service {
                         Ok(0) => return Ok::<(), std::io::Error>(()),
                         Ok(read) => {
                             if chunk_tx
-                                .send(ResponseChunk::Data(Bytes::copy_from_slice(&buf[..read])))
+                                .send(ResponseChunk::Data(
+                                    body_buffer_pool.copy_bytes(&buf[..read]),
+                                ))
                                 .await
                                 .is_err()
                             {
@@ -631,6 +635,7 @@ impl Http3Service {
         #[cfg(feature = "response-cache")]
         let response_cache_store = exec_ctx.response_cache;
         let trace_span_for_upstream = req.trace_span().cloned();
+        let body_buffer_pool = Arc::clone(&exec_ctx.body_buffer_pool);
         let (result_tx, result_rx) = oneshot::channel::<UpstreamResult>();
         let tunnel_mode = req.tunnel_mode();
         let bodyless_mode = req.bodyless_mode;
@@ -723,6 +728,7 @@ impl Http3Service {
                             endpoint: backend_endpoint.clone(),
                             pending_forward: Arc::clone(&pending_forward),
                             body_rx,
+                            body_buffer_pool: Arc::clone(&body_buffer_pool),
                         },
                         circuit_breakers,
                         upstream_executor,

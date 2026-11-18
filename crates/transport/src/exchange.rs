@@ -24,6 +24,7 @@ pub struct UpstreamResponseHead {
 
 #[derive(Debug)]
 pub enum UpstreamBodyFrame {
+    /// Move body storage across the transport boundary without materializing a `Vec`.
     Data(Bytes),
     Trailers(HeaderMap),
 }
