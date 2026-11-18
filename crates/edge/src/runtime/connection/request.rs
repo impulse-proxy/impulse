@@ -306,14 +306,7 @@ impl RequestEnvelope {
             RequestExecutionState::Admitted(state) => state.request_body,
             RequestExecutionState::AwaitingUpstream(state) => state.request_body,
             RequestExecutionState::StreamingResponse(_) => {
-                self.request_body_runtime()
-                    .map_or(RequestBodyState::FinReceived, |runtime| {
-                        RequestBodyState::from_runtime(
-                            runtime.request_fin_received,
-                            !runtime.body_buf.is_empty(),
-                            self.body_tx().is_some(),
-                        )
-                    })
+                self.request_body_state_from_runtime(self.body_tx().is_some())
             }
             RequestExecutionState::Terminal(state) => terminal_request_mode(state)
                 .initial_body_state()
@@ -336,15 +329,7 @@ impl RequestEnvelope {
     }
 
     pub fn refresh_request_body_state(&mut self) -> RequestBodyState {
-        let next = self
-            .request_body_runtime()
-            .map_or(RequestBodyState::FinReceived, |runtime| {
-                RequestBodyState::from_runtime(
-                    runtime.request_fin_received,
-                    !runtime.body_buf.is_empty(),
-                    self.body_tx().is_some(),
-                )
-            });
+        let next = self.request_body_state_from_runtime(self.body_tx().is_some());
         self.set_request_body_state(next);
         next
     }
@@ -782,15 +767,7 @@ impl RequestEnvelope {
             request_body_runtime: _,
         } = admitted;
         let request_body =
-            request_body_runtime
-                .as_ref()
-                .map_or(RequestBodyState::FinReceived, |runtime| {
-                    RequestBodyState::from_runtime(
-                        runtime.request_fin_received,
-                        !runtime.body_buf.is_empty(),
-                        dispatch_body_tx.is_some(),
-                    )
-                });
+            Self::body_state_for_runtime(request_body_runtime.as_ref(), dispatch_body_tx.is_some());
         self.execution = RequestExecutionState::AwaitingUpstream(AwaitingUpstreamState {
             context,
             routing,
@@ -1014,6 +991,26 @@ impl RequestEnvelope {
         drop(prior_execution);
         self.execution = RequestExecutionState::Terminal(terminal_state);
         prior_phase
+    }
+
+    /// Derive the request-body state from an optional body runtime.
+    ///
+    /// A request without an allocated runtime is bodyless: its downstream side is
+    /// already finished and nothing is buffered, so it must derive exactly what an
+    /// empty, finished runtime would. In particular, with no upstream sender that is
+    /// `ClosedToUpstream`, the only state for which forwarding is complete.
+    fn body_state_for_runtime(
+        runtime: Option<&RequestBodyRuntime>,
+        forward_open: bool,
+    ) -> RequestBodyState {
+        let (fin_received, has_buffered_body) = runtime.map_or((true, false), |runtime| {
+            (runtime.request_fin_received, !runtime.body_buf.is_empty())
+        });
+        RequestBodyState::from_runtime(fin_received, has_buffered_body, forward_open)
+    }
+
+    fn request_body_state_from_runtime(&self, forward_open: bool) -> RequestBodyState {
+        Self::body_state_for_runtime(self.request_body_runtime(), forward_open)
     }
 
     fn request_body_runtime(&self) -> Option<&RequestBodyRuntime> {
