@@ -43,15 +43,11 @@ impl CompiledQuota {
                 .rev()
                 .find(|mutation| mutation.name().as_str().eq_ignore_ascii_case(name))
             {
-                return mutation
-                    .value()
-                    .and_then(|value| value.to_str().ok())
-                    .map(str::to_owned);
+                return mutation.value().and_then(|value| value.to_str().ok());
             }
             request
                 .header(name)
                 .and_then(|value| std::str::from_utf8(value).ok())
-                .map(str::to_owned)
         };
         let context = QuotaIdentityContext::new(
             request.route_id,

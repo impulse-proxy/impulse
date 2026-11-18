@@ -18,8 +18,7 @@ pub fn apply_normalized_response_headers(
     target: &mut ResponseHeader,
     headers: &http::HeaderMap,
 ) -> Result<()> {
-    let existing_headers = target.headers.keys().cloned().collect::<Vec<_>>();
-    for name in existing_headers {
+    while let Some(name) = target.headers.keys().next().cloned() {
         target.remove_header(&name);
     }
     for (name, value) in headers {

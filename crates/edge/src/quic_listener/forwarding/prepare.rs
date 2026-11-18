@@ -29,7 +29,8 @@ use crate::{
     runtime::connection::{
         auth::{
             ExternalAuthCompletion, ExternalAuthFailureDisposition, ExternalAuthTaskConfig,
-            PendingHeaderMutation, apply_auth_request_mutations, evaluate_external_auth_completion,
+            PendingHeaderMutation, PendingHeaderOverride, apply_auth_request_mutations,
+            evaluate_external_auth_completion, pending_header_override,
         },
         outcome::{
             AdmissionOutcomeClass, BackendOutcomeTarget, RouteOutcomeTarget,
@@ -42,6 +43,23 @@ use crate::{
         },
     },
 };
+
+fn translate_http3_request_headers(
+    headers: &[quiche::h3::Header],
+) -> Result<http::HeaderMap, ProxyError> {
+    let mut translated = http::HeaderMap::with_capacity(headers.len());
+    for header in headers {
+        if header.name().starts_with(b":") {
+            continue;
+        }
+        let name = http::HeaderName::from_bytes(header.name())
+            .map_err(|_| impulse_errors::BridgeError::InvalidHeader)?;
+        let value = http::HeaderValue::from_bytes(header.value())
+            .map_err(|_| impulse_errors::BridgeError::InvalidHeader)?;
+        translated.append(name, value);
+    }
+    Ok(translated)
+}
 
 pub(super) struct IntakeRequestCandidate {
     pub(super) state: RequestIntakeState,
@@ -167,7 +185,7 @@ pub(super) struct StartedRequestEnvelope {
 
 /// The parsed HTTP request-line/header inputs needed to build a request intake.
 pub(super) struct IntakeRequestDescriptor<'a> {
-    pub(super) quic_trace_id: &'a str,
+    pub(super) quic_trace_seed: u64,
     pub(super) request_start: Instant,
     pub(super) method: &'a str,
     pub(super) path: &'a str,
@@ -201,6 +219,20 @@ impl PendingForward {
         self.original_request_headers()
             .iter()
             .any(|header| header.name().eq_ignore_ascii_case(b"trailer"))
+    }
+
+    pub(super) fn policy_header(&self, name: &str) -> Option<&[u8]> {
+        let name = name.as_bytes();
+        match pending_header_override(self.auth_header_mutations.as_deref(), name) {
+            PendingHeaderOverride::Value(value) => return Some(value),
+            PendingHeaderOverride::Removed => return None,
+            PendingHeaderOverride::Unchanged => {}
+        }
+
+        self.original_request_headers()
+            .iter()
+            .find(|header| header.name().eq_ignore_ascii_case(name))
+            .map(|header| header.value())
     }
 
     fn request_headers_cow(&self) -> Cow<'_, [quiche::h3::Header]> {
@@ -240,8 +272,9 @@ impl PendingForward {
     fn request_build_input<'a>(
         &'a self,
         method: &'a str,
-        headers: &'a [quiche::h3::Header],
+        headers: http::HeaderMap,
         auth_header_mutations: &'a [impulse_bridge::request::RequestHeaderMutationRef<'a>],
+        websocket_extended_connect: bool,
         body: BoxBody<Bytes, Infallible>,
         content_length: Option<usize>,
     ) -> impulse_bridge::request::RequestBuildInput<'a, BoxBody<Bytes, Infallible>> {
@@ -249,14 +282,17 @@ impl PendingForward {
             method,
             path: &self.path,
             authority: self.authority.as_deref(),
-            headers,
+            headers: Cow::Owned(headers),
             auth_header_mutations,
+            websocket_extended_connect,
             body,
             body_mode:
                 impulse_bridge::request::RequestBuildInput::<BoxBody<Bytes, Infallible>>::body_mode_for_length(content_length),
             trace: impulse_bridge::request::RequestTraceContext {
                 request_id: self.request_id,
-                traceparent: self.traceparent.as_deref(),
+                traceparent: None,
+                trace_id: self.trace_id,
+                span_id: self.span_id,
             },
             forwarded: impulse_bridge::request::RequestForwardedContext {
                 client_addr: self.client_addr,
@@ -295,13 +331,18 @@ impl PendingForward {
         content_length: Option<usize>,
     ) -> Result<Request<BoxBody<Bytes, Infallible>>, ProxyError> {
         let auth_header_mutations = self.request_header_mutation_refs();
+        let source_headers = self.original_request_headers();
+        let websocket_extended_connect =
+            impulse_bridge::websocket::h3_websocket_tunnel_requested(&self.method, source_headers);
+        let headers = translate_http3_request_headers(source_headers)?;
         if endpoint.scheme() == BackendScheme::Http {
             impulse_bridge::request::build_h1_request(
                 self.request_build_target(endpoint),
                 self.request_build_input(
                     &self.method,
-                    self.original_request_headers(),
+                    headers,
                     auth_header_mutations.as_deref().unwrap_or_default(),
+                    websocket_extended_connect,
                     body,
                     content_length,
                 ),
@@ -312,8 +353,9 @@ impl PendingForward {
                 self.request_build_target(endpoint),
                 self.request_build_input(
                     &self.method,
-                    self.original_request_headers(),
+                    headers,
                     auth_header_mutations.as_deref().unwrap_or_default(),
+                    websocket_extended_connect,
                     body,
                     content_length,
                 ),
@@ -334,6 +376,7 @@ impl PendingForward {
         endpoint: &BackendEndpoint,
     ) -> Result<Request<BoxBody<Bytes, Infallible>>, ProxyError> {
         let request_headers = self.request_headers_for_http1_websocket_tunnel();
+        let request_headers = translate_http3_request_headers(request_headers.as_ref())?;
 
         impulse_bridge::request::build_h1_request(
             self.request_build_target(endpoint),
@@ -342,8 +385,9 @@ impl PendingForward {
                     TunnelMode::Websocket,
                     &self.method,
                 ),
-                request_headers.as_ref(),
+                request_headers,
                 &[],
+                false,
                 BoxBody::new(Full::new(Bytes::new())),
                 None,
             ),
@@ -355,7 +399,7 @@ impl PendingForward {
 impl Http3Service {
     fn build_request_intake(descriptor: IntakeRequestDescriptor<'_>) -> IntakeRequestCandidate {
         let IntakeRequestDescriptor {
-            quic_trace_id,
+            quic_trace_seed,
             request_start,
             method,
             path,
@@ -371,13 +415,9 @@ impl Http3Service {
             extract_header_value(headers, b"traceparent").and_then(parse_traceparent);
         let trace_id = incoming_traceparent
             .as_ref()
-            .map(|(trace_id, _)| trace_id.clone())
-            .or_else(|| tracing_enabled.then(|| generated_trace_id(quic_trace_id, request_id)));
+            .map(|(trace_id, _)| *trace_id)
+            .or_else(|| tracing_enabled.then(|| generated_trace_id(quic_trace_seed, request_id)));
         let span_id = trace_id.as_ref().map(|_| generated_span_id(request_id));
-        let traceparent = trace_id
-            .as_ref()
-            .zip(span_id.as_ref())
-            .map(|(trace_id, span_id)| format!("00-{trace_id}-{span_id}-01"));
         let trace_span = trace_id
             .as_ref()
             .zip(span_id.as_ref())
@@ -398,7 +438,6 @@ impl Http3Service {
                     request_id,
                     trace_id,
                     span_id,
-                    traceparent,
                     trace_span,
                     method: method.to_string(),
                     path: path.to_string(),
@@ -491,7 +530,7 @@ impl Http3Service {
             intake,
         } = request;
         let IntakeRequestDescriptor {
-            quic_trace_id,
+            quic_trace_seed,
             request_start,
             method,
             path,
@@ -510,7 +549,7 @@ impl Http3Service {
             metrics,
         );
         let intake = Self::build_request_intake(IntakeRequestDescriptor {
-            quic_trace_id,
+            quic_trace_seed,
             request_start,
             method,
             path,
@@ -525,7 +564,6 @@ impl Http3Service {
                 .iter()
                 .find(|header| header.name().eq_ignore_ascii_case(name.as_bytes()))
                 .and_then(|header| std::str::from_utf8(header.value()).ok())
-                .map(str::to_string)
         };
         let plugin_header_lookup = |name: &str| {
             headers
@@ -565,7 +603,7 @@ impl Http3Service {
         };
         let resolved = execution
             .map_err(|error| {
-                let error = Self::request_resolution_error(path, error);
+                let error = Self::request_resolution_error(error);
                 Self::observe_route_resolution_failure(
                     &TargetResolutionRequest::new(
                         method,
@@ -638,7 +676,7 @@ impl Http3Service {
                     backend_addr: backend_addr.clone(),
                     backend_index,
                     upstream_name: upstream_name.clone(),
-                    route_reason: route_reason.clone(),
+                    route_reason,
                     route_path_len,
                     route_host_specific,
                     backend_lb: Some(backend_lb.clone()),
@@ -836,7 +874,7 @@ impl Http3Service {
                     route_id,
                     upstream_id,
                     upstream_name: Arc::clone(&upstream_name),
-                    route_reason: Arc::<str>::from(route_reason.as_str()),
+                    route_reason,
                     route_path_len,
                     route_host_specific,
                     backend_id,
@@ -847,24 +885,8 @@ impl Http3Service {
                     lb_key: Arc::<str>::from(lb_key.as_str()),
                     client_addr: peer_address,
                     request_id,
-                    trace_id: intake
-                        .state
-                        .context
-                        .trace_id
-                        .as_deref()
-                        .map(Arc::<str>::from),
-                    span_id: intake
-                        .state
-                        .context
-                        .span_id
-                        .as_deref()
-                        .map(Arc::<str>::from),
-                    traceparent: intake
-                        .state
-                        .context
-                        .traceparent
-                        .as_deref()
-                        .map(Arc::<str>::from),
+                    trace_id: intake.state.context.trace_id,
+                    span_id: intake.state.context.span_id,
                     host_policy: resolved_policy.host_policy,
                     forwarded_header_policy: resolved_policy.forwarded_header_policy,
                     plugin_plan: Arc::clone(&plugin_plan),
@@ -910,9 +932,9 @@ impl Http3Service {
                 intake.state.context.completion.complete();
                 let (status, body): (http::StatusCode, &[u8]) = match &err {
                     ProxyError::Bridge(_) => (http::StatusCode::BAD_REQUEST, b"invalid request\n"),
-                    ProxyError::Transport(_) | ProxyError::Pool(_) => {
-                        Self::route_resolution_error_response(&err)
-                    }
+                    ProxyError::Transport(_)
+                    | ProxyError::RequestTransport(_)
+                    | ProxyError::Pool(_) => Self::route_resolution_error_response(&err),
                     _ => (
                         http::StatusCode::INTERNAL_SERVER_ERROR,
                         b"internal proxy error\n",

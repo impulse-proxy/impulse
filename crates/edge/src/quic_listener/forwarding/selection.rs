@@ -1,9 +1,8 @@
 use std::sync::{Arc, RwLock};
 
-use impulse_config::backend_endpoint::BackendEndpoint;
-use impulse_config::runtime::RuntimeBackendTlsPolicy;
+use impulse_config::{backend_endpoint::BackendEndpoint, runtime::RuntimeBackendTlsPolicy};
 use impulse_contracts::BackendId;
-use impulse_errors::{PoolError, ProxyError};
+use impulse_errors::{PoolError, ProxyError, RequestFailure};
 use impulse_lb::{
     BackendSelectionInput,
     alternate_backend::{AlternateBackendDecision, choose_alternate_backend_with_exclusion},
@@ -64,7 +63,7 @@ impl ForwardingSelectionService {
                 metrics
                     .runtime_observations()
                     .inc_pingora_lb_selector_failure();
-                ProxyError::Transport("upstream pool lock poisoned".into())
+                ProxyError::RequestTransport(RequestFailure::UpstreamPoolLockPoisoned)
             })?;
             let lb_key = Http3Service::resolve_lb_key_for_runtime_request(
                 pool.lb_strategy(),
@@ -82,7 +81,9 @@ impl ForwardingSelectionService {
             metrics,
         )?
         else {
-            return Err(ProxyError::Transport("no healthy servers".into()));
+            return Err(ProxyError::RequestTransport(
+                RequestFailure::NoHealthyServers,
+            ));
         };
         Ok(BackendSelection {
             backend_id: selected.id,
@@ -123,7 +124,7 @@ impl ForwardingSelectionService {
             metrics
                 .runtime_observations()
                 .inc_pingora_lb_selector_failure();
-            ProxyError::Transport("upstream pool lock poisoned".into())
+            ProxyError::RequestTransport(RequestFailure::UpstreamPoolLockPoisoned)
         })?;
         let Some(selected) =
             selector.select_excluding(input.request_key(), input.excluded_backend_ids())
@@ -149,15 +150,15 @@ impl ForwardingSelectionService {
             metrics
                 .runtime_observations()
                 .inc_pingora_lb_selector_failure();
-            return Err(ProxyError::Transport(
-                "Pingora selector returned an invalid backend index".into(),
+            return Err(ProxyError::RequestTransport(
+                RequestFailure::InvalidBackendIndex,
             ));
         };
         let Some(transport_identity) =
             transport_identity_for_backend(id, &address, backend_transport_identities)
         else {
-            return Err(ProxyError::Transport(
-                "Pingora selector returned an unknown backend transport identity".into(),
+            return Err(ProxyError::RequestTransport(
+                RequestFailure::UnknownBackendTransportIdentity,
             ));
         };
         if input.begin_request() && !pool.begin_request_if_healthy(index) {
@@ -183,7 +184,7 @@ impl ForwardingSelectionService {
     ) -> Result<Option<BackendCandidate>, ProxyError> {
         let mut pool = pool
             .write()
-            .map_err(|_| ProxyError::Transport("upstream pool lock poisoned".into()))?;
+            .map_err(|_| ProxyError::RequestTransport(RequestFailure::UpstreamPoolLockPoisoned))?;
         let selected = if input.excluded_backend_ids().is_empty() {
             if input.begin_request() {
                 pool.pick(input.request_key())
@@ -214,20 +215,20 @@ impl ForwardingSelectionService {
             return Ok(None);
         };
         let Some(id) = selector.custom_backend_runtime_id(index) else {
-            return Err(ProxyError::Transport(
-                "custom selector returned an invalid backend identity".into(),
+            return Err(ProxyError::RequestTransport(
+                RequestFailure::InvalidBackendIndex,
             ));
         };
         let Some(address) = pool.backend_address(index).map(str::to_string) else {
-            return Err(ProxyError::Transport(
-                "custom selector returned an invalid backend index".into(),
+            return Err(ProxyError::RequestTransport(
+                RequestFailure::InvalidBackendIndex,
             ));
         };
         let Some(transport_identity) =
             transport_identity_for_backend(id, &address, backend_transport_identities)
         else {
-            return Err(ProxyError::Transport(
-                "custom selector returned an unknown backend transport identity".into(),
+            return Err(ProxyError::RequestTransport(
+                RequestFailure::UnknownBackendTransportIdentity,
             ));
         };
         Ok(Some(BackendCandidate {

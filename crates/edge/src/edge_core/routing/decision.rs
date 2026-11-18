@@ -56,7 +56,14 @@ pub fn route_preference_reason(preference: RoutePreference) -> Option<RouteDecis
 
 impl fmt::Display for RouteDecisionReason {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let value = match self {
+        f.write_str(self.as_str())
+    }
+}
+
+impl RouteDecisionReason {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
             Self::HostTrieNoDefault => "host-trie-no-default",
             Self::HostPathLongerOrEqual => "host-path-longer-or-equal",
             Self::DefaultPathLonger => "default-path-longer",
@@ -65,9 +72,7 @@ impl fmt::Display for RouteDecisionReason {
             Self::WildcardSpecificityTieBreak => "wildcard-specificity-tie-break",
             Self::MethodSpecificTieBreak => "method-specific-tie-break",
             Self::LexicalTieBreak => "lexical-tie-break",
-        };
-
-        f.write_str(value)
+        }
     }
 }
 

@@ -222,7 +222,7 @@ impl<'a> EdgeRequestService<'a> {
                                         method: external_auth_method.to_string(),
                                         path: external_auth_path.to_string(),
                                         authority: external_auth_authority.map(str::to_string),
-                                        headers: headers.clone(),
+                                        headers: std::borrow::Cow::Borrowed(headers),
                                         upstream_name: external_auth_upstream.to_string(),
                                         backend_addr: None,
                                     };
@@ -346,7 +346,7 @@ fn bearer_token(raw: &str) -> Option<&str> {
 
 #[cfg(feature = "external-auth")]
 pub(crate) async fn execute_compiled_external_auth(
-    request: crate::runtime::connection::auth::ExternalAuthRequest,
+    request: crate::runtime::connection::auth::ExternalAuthRequest<'_>,
     input: &impulse_plugins::ExternalAuthInput,
 ) -> AsyncRequestPluginDecision {
     use impulse_contracts::PluginRejectionReason;

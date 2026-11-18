@@ -4,7 +4,7 @@ use impulse_contracts::{RateLimitedDecision, RequestDecision};
 
 const MAX_REQUEST_DERIVED_IDENTITY_BYTES: usize = 256;
 
-pub type ScopedRateLimitHeaderLookup<'a> = dyn Fn(&str) -> Option<String> + Sync + 'a;
+pub type ScopedRateLimitHeaderLookup<'a> = dyn Fn(&str) -> Option<&'a str> + Sync + 'a;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RequestKeySpec {
@@ -153,9 +153,7 @@ fn header_value(
 ) -> ScopedRateLimitKeyExtraction {
     lookup
         .and_then(|lookup| lookup(name))
-        .map_or(ScopedRateLimitKeyExtraction::Missing, |value| {
-            bounded(&value)
-        })
+        .map_or(ScopedRateLimitKeyExtraction::Missing, bounded)
 }
 
 fn cookie_value(

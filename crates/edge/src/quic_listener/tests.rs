@@ -23,9 +23,9 @@ use rcgen::{Certificate, CertificateParams, SanType};
 use tempfile::tempdir;
 
 use super::{
-    ConnectionRoutes, can_poll_upstream_result, collect_h3_trailers, connection_header_tokens,
-    is_bodyless_request_mode, is_connect_tunnel_response, purge_connection_routes,
-    resolve_primary_from_radix_prefix, should_strip_h3_response_header, sweep_closed_connections,
+    ConnectionRoutes, can_poll_upstream_result, collect_h3_trailers, is_bodyless_request_mode,
+    is_connect_tunnel_response, purge_connection_routes, resolve_primary_from_radix_prefix,
+    should_strip_h3_response_header, sweep_closed_connections,
 };
 use crate::{
     REQUEST_ID_COUNTER,
@@ -1207,7 +1207,7 @@ fn resolve_backend_uses_configured_header_lb_key() {
 
     let header_lookup = |name: &str| {
         if name.eq_ignore_ascii_case("x-user-id") {
-            Some("alice".to_string())
+            Some("alice")
         } else {
             None
         }
@@ -1251,7 +1251,7 @@ fn resolve_backend_uses_configured_header_lb_key() {
 }
 
 #[test]
-fn connection_header_tokens_are_parsed_case_insensitively() {
+fn h3_response_filter_parses_connection_tokens_case_insensitively() {
     let mut headers = HeaderMap::new();
     headers.insert(
         http::header::CONNECTION,
@@ -1262,19 +1262,21 @@ fn connection_header_tokens_are_parsed_case_insensitively() {
         HeaderValue::from_static("x-another"),
     );
 
-    let tokens = connection_header_tokens(&headers);
-    assert!(tokens.contains("keep-alive"));
-    assert!(tokens.contains("x-secret"));
-    assert!(tokens.contains("x-another"));
+    for name in ["keep-alive", "x-secret", "x-another"] {
+        assert!(should_strip_h3_response_header(
+            &http::HeaderName::from_bytes(name.as_bytes()).expect("header name"),
+            &headers,
+        ));
+    }
 }
 
 #[test]
 fn h3_response_filter_strips_te_and_trailer() {
-    let tokens = HashSet::new();
-    assert!(should_strip_h3_response_header(&http::header::TE, &tokens));
+    let headers = HeaderMap::new();
+    assert!(should_strip_h3_response_header(&http::header::TE, &headers));
     assert!(should_strip_h3_response_header(
         &http::header::TRAILER,
-        &tokens
+        &headers
     ));
 }
 
@@ -1337,9 +1339,8 @@ fn h3_response_filter_strips_connection_nominated_headers() {
         http::header::CONNECTION,
         HeaderValue::from_static("keep-alive, x-internal-hop"),
     );
-    let tokens = connection_header_tokens(&headers);
     let nominated = http::HeaderName::from_static("x-internal-hop");
-    assert!(should_strip_h3_response_header(&nominated, &tokens));
+    assert!(should_strip_h3_response_header(&nominated, &headers));
 }
 
 #[test]
@@ -2035,7 +2036,6 @@ fn make_request_context(start: Instant, method: &str) -> RequestContext {
         request_id: REQUEST_ID_COUNTER.fetch_add(1, Ordering::Relaxed),
         trace_id: None,
         span_id: None,
-        traceparent: None,
         trace_span: None,
         method: method.into(),
         path: "/".into(),
@@ -2054,7 +2054,7 @@ fn make_routing_snapshot() -> RoutingSnapshot {
         backend_addr: "http://127.0.0.1:8080".into(),
         backend_index: 0,
         upstream_name: "api".into(),
-        route_reason: "path_prefix".into(),
+        route_reason: crate::routing::decision::RouteDecisionReason::DefaultPathLonger,
         route_path_len: 1,
         route_host_specific: false,
         backend_lb: None,
@@ -2118,9 +2118,8 @@ fn make_dispatch_ready_envelope(
     let routing = make_routing_snapshot();
     RequestEnvelope {
         request_id: context.request_id,
-        trace_id: context.trace_id.clone(),
-        span_id: context.span_id.clone(),
-        traceparent: context.traceparent.clone(),
+        trace_id: context.trace_id,
+        span_id: context.span_id,
         trace_span: context.trace_span.clone(),
         method: context.method.clone(),
         path: context.path.clone(),
@@ -2128,7 +2127,7 @@ fn make_dispatch_ready_envelope(
         backend_addr: Some(routing.backend_addr.clone()),
         backend_index: Some(routing.backend_index),
         upstream_name: Some(routing.upstream_name.clone()),
-        route_reason: Some(routing.route_reason.clone()),
+        route_reason: Some(routing.route_reason),
         route_path_len: Some(routing.route_path_len),
         route_host_specific: Some(routing.route_host_specific),
         backend_lb: routing.backend_lb.clone(),
@@ -2274,9 +2273,8 @@ fn abort_stream_waiting_for_auth_clears_async_auth_state() {
     req.execution = RequestExecutionState::AwaitingAuth(AwaitingAuthState {
         context: crate::runtime::connection::stream::RequestContext {
             request_id: req.request_id,
-            trace_id: req.trace_id.clone(),
-            span_id: req.span_id.clone(),
-            traceparent: req.traceparent.clone(),
+            trace_id: req.trace_id,
+            span_id: req.span_id,
             trace_span: req.trace_span.clone(),
             method: req.method.clone(),
             path: req.path.clone(),
@@ -2292,7 +2290,7 @@ fn abort_stream_waiting_for_auth_clears_async_auth_state() {
             backend_addr: "http://127.0.0.1:8080".into(),
             backend_index: 0,
             upstream_name: "api".into(),
-            route_reason: "path_prefix".into(),
+            route_reason: crate::routing::decision::RouteDecisionReason::DefaultPathLonger,
             route_path_len: 7,
             route_host_specific: false,
             backend_lb: None,

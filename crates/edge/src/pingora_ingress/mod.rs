@@ -1,5 +1,6 @@
 use std::{
     convert::Infallible,
+    fmt,
     sync::{Arc, RwLock, atomic::Ordering},
     time::{Duration, Instant},
 };
@@ -22,8 +23,8 @@ use impulse_contracts::{
     RequestDecision as AdmissionPolicyDecision, RetryAttemptTelemetryReason, TunnelMode,
 };
 use impulse_errors::{
-    BridgeError, PoolError, ProxyError, RetryPolicyDecision, classify_upstream_proxy_error,
-    is_idempotent_method,
+    BridgeError, PoolError, ProxyError, RequestFailure, RetryPolicyDecision,
+    classify_upstream_proxy_error, is_idempotent_method,
 };
 use impulse_lb::{BackendSelectionInput, upstream_pool::UpstreamPool};
 #[cfg(feature = "response-cache")]
@@ -102,7 +103,7 @@ use crate::{
     runtime::{
         bundle::{RuntimeBundle, RuntimeBundleHandle},
         connection::{
-            auth::PendingHeaderMutation,
+            auth::{PendingHeaderMutation, PendingHeaderOverride, pending_header_override},
             outcome::{
                 AdmissionOutcomeClass, BackendHealthObservationInput, BackendOutcomeTarget,
                 ClassifiedBackendFailureInput, RouteOutcomeTarget,
@@ -119,6 +120,17 @@ use crate::{
 
 #[cfg(feature = "response-compression")]
 const RESPONSE_GZIP_LEVEL: u32 = 6;
+
+struct AccessLogError<'a>(Option<&'a Error>);
+
+impl fmt::Display for AccessLogError<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.0 {
+            Some(error) => fmt::Display::fmt(error, formatter),
+            None => formatter.write_str("-"),
+        }
+    }
+}
 
 pub(crate) struct PingoraEdgeRequestState {
     pub(crate) runtime: Arc<RuntimeBundle>,
@@ -139,6 +151,16 @@ pub(crate) struct PingoraEdgeRequestState {
 }
 
 pub(crate) type PingoraRequestContext = IngressRequestContext<PingoraEdgeRequestState>;
+
+impl PingoraEdgeRequestState {
+    fn policy_header<'a>(&'a self, headers: &'a http::HeaderMap, name: &str) -> Option<&'a [u8]> {
+        match pending_header_override(self.auth_header_mutations.as_deref(), name.as_bytes()) {
+            PendingHeaderOverride::Value(value) => Some(value),
+            PendingHeaderOverride::Removed => None,
+            PendingHeaderOverride::Unchanged => headers.get(name).map(http::HeaderValue::as_bytes),
+        }
+    }
+}
 
 enum PingoraTerminalClassification {
     Admission(AdmissionOutcomeClass),
@@ -202,8 +224,7 @@ impl PingoraEdgeRequestService {
         #[cfg(any(feature = "response-cache", feature = "response-compression"))]
         let request_headers = &session.req_header().headers;
         #[cfg(any(feature = "response-cache", feature = "response-compression"))]
-        let request_header =
-            |name: &str| request_headers.get(name).map(http::HeaderValue::as_bytes);
+        let request_header = |name: &str| ctx.policy_header(request_headers, name);
         #[cfg(any(feature = "response-cache", feature = "response-compression"))]
         let has_response_plugins =
             !plugin_plan.cache_policy().is_empty() || !plugin_plan.response_policy().is_empty();
@@ -295,19 +316,6 @@ impl PingoraEdgeRequestService {
         let route_id = route.route_id;
         let upstream_id = route.upstream_id;
         let route_runtime = route.runtime.clone();
-        let method = ctx.method.clone().ok_or_else(|| {
-            Error::explain(
-                InternalError,
-                "Pingora ingress request filter did not validate a method",
-            )
-        })?;
-        let path = ctx.path.clone().ok_or_else(|| {
-            Error::explain(
-                InternalError,
-                "Pingora ingress request filter did not validate a path",
-            )
-        })?;
-        let authority = ctx.authority.clone();
         let retry_backend = ctx.retry_backend.take();
         let retry_transport_identity =
             retry_backend.and_then(|_| ctx.retry_transport_identity.take());
@@ -340,18 +348,29 @@ impl PingoraEdgeRequestService {
                 })?;
                 (backend_id, address.to_string(), index, transport_identity)
             } else {
+                let method = ctx.method.as_deref().ok_or_else(|| {
+                    Error::explain(
+                        InternalError,
+                        "Pingora ingress request filter did not validate a method",
+                    )
+                })?;
+                let path = ctx.path.as_deref().ok_or_else(|| {
+                    Error::explain(
+                        InternalError,
+                        "Pingora ingress request filter did not validate a path",
+                    )
+                })?;
                 let request = session.req_header();
                 let header_lookup = |name: &str| {
                     request
                         .headers
                         .get(name)
                         .and_then(|value| value.to_str().ok())
-                        .map(str::to_owned)
                 };
                 let selection_request = TargetResolutionRequest::new(
-                    &method,
-                    &path,
-                    authority.as_deref(),
+                    method,
+                    path,
+                    ctx.authority.as_deref(),
                     None,
                     Some(&header_lookup),
                 );
@@ -756,6 +775,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             .await?;
             return Ok(true);
         };
+        let request_head = validated.head();
         let request_headers = &request.headers;
         let plugin_header_lookup =
             |name: &str| request_headers.get(name).map(http::HeaderValue::as_bytes);
@@ -764,9 +784,9 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             .execute_ingress_plugins(
                 PluginRequestExecutionInput {
                     request: RequestExecutionInput {
-                        method: &validated.method,
-                        path: &validated.path,
-                        authority: validated.authority.as_deref(),
+                        method: request_head.method,
+                        path: request_head.path,
+                        authority: request_head.authority,
                         peer_address,
                     },
                     request_id: ctx.request_id,
@@ -818,7 +838,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             .metrics
             .policy_observations()
             .set_brownout_active(state.resilience.brownout.is_active());
-        let tunnel_mode = classify_tunnel(&validated.method, validated.websocket_tunnel);
+        let tunnel_mode = classify_tunnel(request_head.method, validated.websocket_tunnel);
         ctx.route = Some(route.clone());
         ctx.method = Some(validated.method);
         ctx.path = Some(validated.path);
@@ -866,7 +886,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             }
             PluginRequestExecutionOutcome::AlreadyExecuted => {
                 ctx.terminal_classification = Some(PingoraTerminalClassification::Error(
-                    ProxyError::Transport("request plugins executed more than once".into()),
+                    ProxyError::RequestTransport(RequestFailure::PluginsAlreadyExecuted),
                 ));
                 write_local_response(
                     session,
@@ -916,7 +936,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
                     method,
                     path,
                     authority: ctx.authority.clone(),
-                    headers: request_headers.clone(),
+                    headers: std::borrow::Cow::Borrowed(request_headers),
                     upstream_name: route.upstream_name.to_string(),
                     backend_addr: Some(backend_addr),
                 },
@@ -1115,8 +1135,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             IngressProtocol::Http1
         };
         let request_headers = &session.req_header().headers;
-        let request_header =
-            |name: &str| request_headers.get(name).map(http::HeaderValue::as_bytes);
+        let request_header = |name: &str| ctx.policy_header(request_headers, name);
         let representation = process_cache_lookup(CacheLookupProcessingInput {
             metrics: &ctx.runtime.shared_state.shared_services().metrics,
             plugin_plan,
@@ -1438,7 +1457,6 @@ impl PingoraRequestService for PingoraEdgeRequestService {
                 Error::explain(InternalError, "Pingora ingress client address is missing")
             })?;
         let downstream_request = session.req_header();
-        let headers = bridge_headers(&downstream_request.headers);
         let traceparent = downstream_request
             .headers
             .get("traceparent")
@@ -1471,8 +1489,9 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             method,
             path,
             authority: ctx.authority.as_deref(),
-            headers: &headers,
+            headers: std::borrow::Cow::Borrowed(&downstream_request.headers),
             auth_header_mutations: auth_header_mutations.as_deref().unwrap_or_default(),
+            websocket_extended_connect: false,
             body: BoxBody::new(Full::<Bytes>::new(Bytes::new())),
             body_mode: impulse_bridge::request::RequestBuildInput::<
                 BoxBody<Bytes, Infallible>,
@@ -1480,6 +1499,8 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             trace: impulse_bridge::request::RequestTraceContext {
                 request_id: ctx.request_id,
                 traceparent,
+                trace_id: None,
+                span_id: None,
             },
             forwarded: impulse_bridge::request::RequestForwardedContext { client_addr },
         };
@@ -1904,10 +1925,14 @@ impl PingoraRequestService for PingoraEdgeRequestService {
                 );
             }
             (None, None) => {
-                let proxy_error = ProxyError::Transport(error.map_or_else(
-                    || "request completed without a response".to_string(),
-                    ToString::to_string,
-                ));
+                let proxy_error = error.map_or_else(
+                    || {
+                        ProxyError::RequestTransport(
+                            RequestFailure::RequestCompletedWithoutResponse,
+                        )
+                    },
+                    |error| ProxyError::Transport(error.to_string()),
+                );
                 let _ = observe_proxy_error_outcome(
                     metrics,
                     route,
@@ -1919,9 +1944,8 @@ impl PingoraRequestService for PingoraEdgeRequestService {
                 );
             }
             (Some(PingoraTerminalClassification::Admission(_)), None) => {
-                let proxy_error = ProxyError::Transport(
-                    "admission response did not reach the downstream".to_string(),
-                );
+                let proxy_error =
+                    ProxyError::RequestTransport(RequestFailure::AdmissionResponseNotDelivered);
                 let _ = observe_proxy_error_outcome(
                     metrics,
                     route,
@@ -1947,7 +1971,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
                 route.route,
                 ctx.started_at.elapsed().as_millis(),
                 ctx.retry_count,
-                error.map_or_else(|| "-".to_string(), ToString::to_string),
+                AccessLogError(error),
             );
         }
         ctx.selected_backend.take();
@@ -2190,13 +2214,6 @@ fn pingora_response_constraints(preserve_upgrade: bool) -> ResponseProtocolConst
         protocol: ResponseNormalizationProtocol::Http1,
         preserve_upgrade,
     }
-}
-
-fn bridge_headers(headers: &http::HeaderMap) -> Vec<quiche::h3::Header> {
-    headers
-        .iter()
-        .map(|(name, value)| quiche::h3::Header::new(name.as_str().as_bytes(), value.as_bytes()))
-        .collect()
 }
 
 fn pending_header_mutation(mutation: &PluginHeaderMutation) -> PendingHeaderMutation {

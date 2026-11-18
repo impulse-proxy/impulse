@@ -56,7 +56,9 @@ impl Http3Service {
 
         if req.routing_transparency_enabled {
             let reason = if req.routing_transparency_include_reason {
-                req.route_reason.as_deref().unwrap_or("-")
+                req.route_reason
+                    .as_ref()
+                    .map_or("-", |reason| reason.as_str())
             } else {
                 "-"
             };
@@ -75,8 +77,8 @@ impl Http3Service {
             return;
         }
 
-        let trace_id = req.trace_id.as_deref().unwrap_or("-");
-        let span_id = req.span_id.as_deref().unwrap_or("-");
+        let trace_id = req.trace_id.as_ref().map_or("-", |id| id.as_str());
+        let span_id = req.span_id.as_ref().map_or("-", |id| id.as_str());
         let latency_ms = req.start.elapsed().as_millis() as u64;
         if let Some(span) = req.trace_span.as_ref() {
             span.in_scope(|| match req.error_kind.as_ref() {

@@ -205,9 +205,9 @@ pub struct PluginRequestView<'a> {
     pub ingress_protocol: IngressProtocol,
 }
 
-impl PluginRequestView<'_> {
+impl<'a> PluginRequestView<'a> {
     #[must_use]
-    pub fn header(&self, name: &str) -> Option<&[u8]> {
+    pub fn header(&self, name: &str) -> Option<&'a [u8]> {
         self.headers.and_then(|lookup| lookup(name))
     }
 }

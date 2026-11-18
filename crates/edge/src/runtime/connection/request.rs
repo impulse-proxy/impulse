@@ -6,8 +6,10 @@ use std::{
 };
 
 use bytes::Bytes;
-use impulse_config::backend_endpoint::BackendEndpoint;
-use impulse_config::config::{AccessLog, ForwardedHeaderPolicy, UpstreamHostPolicy};
+use impulse_config::{
+    backend_endpoint::BackendEndpoint,
+    config::{AccessLog, ForwardedHeaderPolicy, UpstreamHostPolicy},
+};
 use impulse_lb::upstream_pool::UpstreamPool;
 use impulse_plugins::CompiledPluginPlan;
 use tokio::sync::{mpsc, oneshot};
@@ -37,9 +39,8 @@ use crate::{
 
 pub struct RequestEnvelope {
     pub request_id: impulse_contracts::RequestId,
-    pub trace_id: Option<String>,
-    pub span_id: Option<String>,
-    pub traceparent: Option<String>,
+    pub trace_id: Option<impulse_contracts::TraceId>,
+    pub span_id: Option<impulse_contracts::SpanId>,
     pub trace_span: Option<Span>,
 
     pub method: String,
@@ -49,7 +50,7 @@ pub struct RequestEnvelope {
     pub backend_addr: Option<String>,
     pub backend_index: Option<usize>,
     pub upstream_name: Option<Arc<str>>,
-    pub route_reason: Option<String>,
+    pub route_reason: Option<crate::routing::decision::RouteDecisionReason>,
     pub route_path_len: Option<usize>,
     pub route_host_specific: Option<bool>,
     pub backend_lb: Option<String>,
@@ -118,9 +119,8 @@ impl RequestEnvelope {
 
         Self {
             request_id: context.request_id,
-            trace_id: context.trace_id.clone(),
-            span_id: context.span_id.clone(),
-            traceparent: context.traceparent.clone(),
+            trace_id: context.trace_id,
+            span_id: context.span_id,
             trace_span: context.trace_span.clone(),
             method: context.method.clone(),
             path: context.path.clone(),
@@ -128,7 +128,7 @@ impl RequestEnvelope {
             backend_addr: Some(routing.backend_addr.clone()),
             backend_index: Some(routing.backend_index),
             upstream_name: Some(routing.upstream_name.clone()),
-            route_reason: Some(routing.route_reason.clone()),
+            route_reason: Some(routing.route_reason),
             route_path_len: Some(routing.route_path_len),
             route_host_specific: Some(routing.route_host_specific),
             backend_lb: routing.backend_lb.clone(),
@@ -177,9 +177,8 @@ impl RequestEnvelope {
 
         Self {
             request_id: context.request_id,
-            trace_id: context.trace_id.clone(),
-            span_id: context.span_id.clone(),
-            traceparent: context.traceparent.clone(),
+            trace_id: context.trace_id,
+            span_id: context.span_id,
             trace_span: context.trace_span.clone(),
             method: context.method.clone(),
             path: context.path.clone(),
@@ -187,7 +186,7 @@ impl RequestEnvelope {
             backend_addr: Some(routing.backend_addr.clone()),
             backend_index: Some(routing.backend_index),
             upstream_name: Some(routing.upstream_name.clone()),
-            route_reason: Some(routing.route_reason.clone()),
+            route_reason: Some(routing.route_reason),
             route_path_len: Some(routing.route_path_len),
             route_host_specific: Some(routing.route_host_specific),
             backend_lb: routing.backend_lb.clone(),
@@ -955,9 +954,8 @@ impl RequestEnvelope {
         TerminalSnapshot {
             context: RequestContext {
                 request_id: self.request_id,
-                trace_id: self.trace_id.clone(),
-                span_id: self.span_id.clone(),
-                traceparent: self.traceparent.clone(),
+                trace_id: self.trace_id,
+                span_id: self.span_id,
                 trace_span: self.trace_span.clone(),
                 method: self.method.clone(),
                 path: self.path.clone(),
@@ -1002,7 +1000,7 @@ pub struct PendingForward {
     pub route_id: impulse_contracts::RouteId,
     pub upstream_id: impulse_contracts::UpstreamId,
     pub upstream_name: Arc<str>,
-    pub route_reason: Arc<str>,
+    pub route_reason: crate::routing::decision::RouteDecisionReason,
     pub route_path_len: usize,
     pub route_host_specific: bool,
     pub backend_id: impulse_contracts::BackendId,
@@ -1013,9 +1011,8 @@ pub struct PendingForward {
     pub lb_key: Arc<str>,
     pub client_addr: SocketAddr,
     pub request_id: impulse_contracts::RequestId,
-    pub trace_id: Option<Arc<str>>,
-    pub span_id: Option<Arc<str>>,
-    pub traceparent: Option<Arc<str>>,
+    pub trace_id: Option<impulse_contracts::TraceId>,
+    pub span_id: Option<impulse_contracts::SpanId>,
     pub host_policy: UpstreamHostPolicy,
     pub forwarded_header_policy: ForwardedHeaderPolicy,
     pub plugin_plan: Arc<CompiledPluginPlan>,
@@ -1036,7 +1033,7 @@ impl PendingForward {
             route_id: impulse_contracts::RouteId::new(0),
             upstream_id: impulse_contracts::UpstreamId::new(0),
             upstream_name: Arc::<str>::from("api"),
-            route_reason: Arc::<str>::from("path_prefix"),
+            route_reason: crate::routing::decision::RouteDecisionReason::DefaultPathLonger,
             route_path_len: 8,
             route_host_specific: true,
             backend_id: impulse_contracts::BackendId::new(0),
@@ -1050,7 +1047,6 @@ impl PendingForward {
             request_id: 17,
             trace_id: None,
             span_id: None,
-            traceparent: None,
             host_policy: UpstreamHostPolicy::default(),
             forwarded_header_policy: ForwardedHeaderPolicy::default(),
             plugin_plan: Arc::new(CompiledPluginPlan::default()),
@@ -1080,7 +1076,6 @@ mod tests {
             request_id: 42,
             trace_id: None,
             span_id: None,
-            traceparent: None,
             trace_span: None,
             method: "POST".into(),
             path: "/upload".into(),
@@ -1099,7 +1094,7 @@ mod tests {
             backend_addr: "http://127.0.0.1:8080".into(),
             backend_index: 0,
             upstream_name: "api".into(),
-            route_reason: "path_prefix".into(),
+            route_reason: crate::routing::decision::RouteDecisionReason::DefaultPathLonger,
             route_path_len: 1,
             route_host_specific: false,
             backend_lb: None,
@@ -1142,9 +1137,8 @@ mod tests {
 
         let req = RequestEnvelope {
             request_id: context.request_id,
-            trace_id: context.trace_id.clone(),
-            span_id: context.span_id.clone(),
-            traceparent: context.traceparent.clone(),
+            trace_id: context.trace_id,
+            span_id: context.span_id,
             trace_span: context.trace_span.clone(),
             method: context.method.clone(),
             path: context.path.clone(),
@@ -1152,7 +1146,7 @@ mod tests {
             backend_addr: Some(routing.backend_addr.clone()),
             backend_index: Some(routing.backend_index),
             upstream_name: Some(routing.upstream_name.clone()),
-            route_reason: Some(routing.route_reason.clone()),
+            route_reason: Some(routing.route_reason),
             route_path_len: Some(routing.route_path_len),
             route_host_specific: Some(routing.route_host_specific),
             backend_lb: routing.backend_lb.clone(),
@@ -1297,7 +1291,6 @@ mod tests {
             request_id: 1,
             trace_id: None,
             span_id: None,
-            traceparent: None,
             trace_span: None,
             method: "GET".into(),
             path: "/".into(),

@@ -1,6 +1,6 @@
 //! Shared request-building fixtures for the bridge regression suite.
 
-use std::{convert::Infallible, net::SocketAddr};
+use std::{borrow::Cow, convert::Infallible, net::SocketAddr};
 
 use bytes::Bytes;
 use http_body_util::{BodyExt, Empty, combinators::BoxBody};
@@ -21,7 +21,7 @@ use impulse_config::{
     },
 };
 use impulse_errors::BridgeError;
-use quiche::h3::Header;
+use quiche::h3::{Header, NameValue};
 
 pub(crate) type CanonicalBridgeRequest = http::Request<BoxBody<Bytes, Infallible>>;
 pub(crate) type CanonicalBridgeRequestPair = (CanonicalBridgeRequest, CanonicalBridgeRequest);
@@ -78,12 +78,53 @@ pub(crate) fn request_input<'a>(
     headers: &'a [Header],
     meta: RequestInputMeta<'a>,
 ) -> RequestBuildInput<'a, BoxBody<Bytes, Infallible>> {
+    let websocket_extended_connect =
+        impulse_bridge::websocket::h3_websocket_tunnel_requested(method, headers);
+    let mut translated_headers = http::HeaderMap::with_capacity(headers.len());
+    for header in headers {
+        if header.name().starts_with(b":") {
+            continue;
+        }
+        let (Ok(name), Ok(value)) = (
+            http::HeaderName::from_bytes(header.name()),
+            http::HeaderValue::from_bytes(header.value()),
+        ) else {
+            continue;
+        };
+        translated_headers.append(name, value);
+    }
+    request_input_from_headers(
+        method,
+        path,
+        Cow::Owned(translated_headers),
+        meta,
+        websocket_extended_connect,
+    )
+}
+
+pub(crate) fn borrowed_request_input<'a>(
+    method: &'a str,
+    path: &'a str,
+    headers: &'a http::HeaderMap,
+    meta: RequestInputMeta<'a>,
+) -> RequestBuildInput<'a, BoxBody<Bytes, Infallible>> {
+    request_input_from_headers(method, path, Cow::Borrowed(headers), meta, false)
+}
+
+fn request_input_from_headers<'a>(
+    method: &'a str,
+    path: &'a str,
+    headers: Cow<'a, http::HeaderMap>,
+    meta: RequestInputMeta<'a>,
+    websocket_extended_connect: bool,
+) -> RequestBuildInput<'a, BoxBody<Bytes, Infallible>> {
     RequestBuildInput {
         method,
         path,
         authority: meta.authority,
         headers,
         auth_header_mutations: &[],
+        websocket_extended_connect,
         body: Empty::<Bytes>::new().boxed(),
         body_mode: RequestBuildInput::<BoxBody<Bytes, Infallible>>::body_mode_for_length(
             meta.content_length,
@@ -91,6 +132,8 @@ pub(crate) fn request_input<'a>(
         trace: RequestTraceContext {
             request_id: meta.request_id,
             traceparent: meta.traceparent,
+            trace_id: None,
+            span_id: None,
         },
         forwarded: RequestForwardedContext {
             client_addr: meta.client_addr,

@@ -23,7 +23,7 @@ pub use admission::{
 pub use connection::{QuicConnection, QuicConnectionErrorSnapshot};
 pub use request::{
     Http3RequestHead, Http3RequestLimits, Http3RequestParseError, extract_header_value,
-    generated_span_id, generated_trace_id, parse_request_head, parse_traceparent,
+    generated_span_id, generated_trace_id, parse_request_head, parse_traceparent, trace_id_seed,
 };
 pub use response::{
     cancel_response_stream, response_header_block, response_headers_with_defaults,

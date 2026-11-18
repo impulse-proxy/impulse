@@ -1,3 +1,5 @@
+use impulse_contracts::RequestHeadView;
+
 use crate::{
     resilience::runtime::RuntimeResilience,
     routing::util::{canonical_request_target, request_path_is_ambiguous},
@@ -12,6 +14,12 @@ pub(crate) struct RequestValidationResult {
     pub(crate) authority: Option<String>,
     pub(crate) content_length: Option<usize>,
     pub(crate) websocket_tunnel: bool,
+}
+
+impl RequestValidationResult {
+    pub(crate) fn head(&self) -> RequestHeadView<'_> {
+        RequestHeadView::new(&self.method, &self.path, self.authority.as_deref())
+    }
 }
 
 pub(crate) struct RequestPartErrors {

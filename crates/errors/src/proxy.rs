@@ -1,5 +1,7 @@
 //! Canonical proxy and upstream error classification surface.
 
+use std::{borrow::Cow, fmt};
+
 use thiserror::Error;
 
 use crate::{
@@ -18,8 +20,14 @@ pub enum ProxyError {
     #[error("transport error: {0}")]
     Transport(String),
 
+    #[error("transport error: {0}")]
+    RequestTransport(RequestFailure),
+
     #[error("protocol error: {0}")]
     Protocol(String),
+
+    #[error("protocol error: {0}")]
+    RequestProtocol(RequestFailure),
 
     #[error("backend timeout")]
     Timeout,
@@ -27,6 +35,96 @@ pub enum ProxyError {
     #[error("TLS error: {0}")]
     Tls(String),
 }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RequestFailure {
+    EmptyMethodOrPath,
+    NoRoute,
+    MissingUpstreamDisplayName,
+    MissingRouteRuntime,
+    MissingUpstreamPool,
+    MissingUpstreamSelector,
+    UpstreamPoolLockPoisoned,
+    NoHealthyServers,
+    InvalidBackendIndex,
+    UnknownBackendTransportIdentity,
+    MissingDeferredForwardSnapshot,
+    MissingUpstreamRoute,
+    EarlyDataRejected,
+    RequestBodyTooLarge,
+    RequestTrailersRequireHttp2,
+    UpstreamRuntimeUnavailable,
+    RuntimeUnavailable,
+    UpstreamTunnelTaskStopped,
+    UpstreamPoolDraining,
+    Http1RequestAlreadyWritten,
+    RequestBodyExceedsDeclaredFraming,
+    Http1RequestTrailersUnsupported,
+    Http2RequestAlreadyWritten,
+    Http2FramesAfterTrailers,
+    Http2RequestBodyAlreadyComplete,
+    Http2ResponseStreamNotClosed,
+    MissingUpgradeTunnel,
+    UnexpectedTunnelMode,
+    PluginsAlreadyExecuted,
+    RequestCompletedWithoutResponse,
+    AdmissionResponseNotDelivered,
+}
+
+impl RequestFailure {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::EmptyMethodOrPath => "empty method or path",
+            Self::NoRoute => "no route",
+            Self::MissingUpstreamDisplayName => "upstream display name not found",
+            Self::MissingRouteRuntime => "upstream runtime not found",
+            Self::MissingUpstreamPool => "upstream pool not found",
+            Self::MissingUpstreamSelector => "upstream selector not found",
+            Self::UpstreamPoolLockPoisoned => "upstream pool lock poisoned",
+            Self::NoHealthyServers => "no healthy servers",
+            Self::InvalidBackendIndex => "invalid backend index",
+            Self::UnknownBackendTransportIdentity => "unknown backend transport identity",
+            Self::MissingDeferredForwardSnapshot => "missing deferred forward snapshot",
+            Self::MissingUpstreamRoute => "missing upstream route",
+            Self::EarlyDataRejected => "request blocked by early-data policy",
+            Self::RequestBodyTooLarge => "request body too large",
+            Self::RequestTrailersRequireHttp2 => "request trailers require an HTTP/2 upstream",
+            Self::UpstreamRuntimeUnavailable => "upstream runtime unavailable",
+            Self::RuntimeUnavailable => "runtime unavailable",
+            Self::UpstreamTunnelTaskStopped => "upstream tunnel task stopped",
+            Self::UpstreamPoolDraining => "Pingora upstream pool is draining",
+            Self::Http1RequestAlreadyWritten => "Pingora HTTP/1 request has already been written",
+            Self::RequestBodyExceedsDeclaredFraming => "request body exceeds its declared framing",
+            Self::Http1RequestTrailersUnsupported => {
+                "Pingora 0.9 cannot forward HTTP/1 request trailers"
+            }
+            Self::Http2RequestAlreadyWritten => "Pingora HTTP/2 request has already been written",
+            Self::Http2FramesAfterTrailers => "request body contains frames after HTTP/2 trailers",
+            Self::Http2RequestBodyAlreadyComplete => {
+                "Pingora HTTP/2 request body is already complete"
+            }
+            Self::Http2ResponseStreamNotClosed => {
+                "Pingora HTTP/2 response ended without closing its stream"
+            }
+            Self::MissingUpgradeTunnel => "HTTP/1 upgrade response did not provide a tunnel",
+            Self::UnexpectedTunnelMode => "WebSocket exchange returned a CONNECT tunnel lease",
+            Self::PluginsAlreadyExecuted => "request plugins executed more than once",
+            Self::RequestCompletedWithoutResponse => "request completed without a response",
+            Self::AdmissionResponseNotDelivered => {
+                "admission response did not reach the downstream"
+            }
+        }
+    }
+}
+
+impl fmt::Display for RequestFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl std::error::Error for RequestFailure {}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum UpstreamProxyErrorKind {
@@ -39,7 +137,7 @@ pub enum UpstreamProxyErrorKind {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ClassifiedUpstreamProxyError {
     pub kind: UpstreamProxyErrorKind,
-    pub detail: String,
+    pub detail: Cow<'static, str>,
     pub classification: UpstreamErrorClassification,
     pub health_failure: Option<UpstreamHealthFailureMapping>,
     pub retryability: UpstreamRetryability,
@@ -71,7 +169,17 @@ pub fn classify_upstream_proxy_error(err: &ProxyError) -> Option<ClassifiedUpstr
             let classification = UpstreamErrorClassification::transport();
             Some(ClassifiedUpstreamProxyError {
                 kind: UpstreamProxyErrorKind::Transport,
-                detail: detail.clone(),
+                detail: Cow::Owned(detail.clone()),
+                classification,
+                health_failure: passive_health_failure_for_classification(classification),
+                retryability: classify_retryability(err),
+            })
+        }
+        ProxyError::RequestTransport(failure) => {
+            let classification = UpstreamErrorClassification::transport();
+            Some(ClassifiedUpstreamProxyError {
+                kind: UpstreamProxyErrorKind::Transport,
+                detail: Cow::Borrowed(failure.as_str()),
                 classification,
                 health_failure: passive_health_failure_for_classification(classification),
                 retryability: classify_retryability(err),
@@ -81,7 +189,7 @@ pub fn classify_upstream_proxy_error(err: &ProxyError) -> Option<ClassifiedUpstr
             let classification = UpstreamErrorClassification::timeout();
             Some(ClassifiedUpstreamProxyError {
                 kind: UpstreamProxyErrorKind::Timeout,
-                detail: err.to_string(),
+                detail: Cow::Borrowed("backend timeout"),
                 classification,
                 health_failure: passive_health_failure_for_classification(classification),
                 retryability: classify_retryability(err),
@@ -89,14 +197,21 @@ pub fn classify_upstream_proxy_error(err: &ProxyError) -> Option<ClassifiedUpstr
         }
         ProxyError::Protocol(detail) => Some(ClassifiedUpstreamProxyError {
             kind: UpstreamProxyErrorKind::Protocol,
-            detail: detail.clone(),
+            detail: Cow::Owned(detail.clone()),
+            classification: UpstreamErrorClassification::protocol(),
+            health_failure: None,
+            retryability: classify_retryability(err),
+        }),
+        ProxyError::RequestProtocol(failure) => Some(ClassifiedUpstreamProxyError {
+            kind: UpstreamProxyErrorKind::Protocol,
+            detail: Cow::Borrowed(failure.as_str()),
             classification: UpstreamErrorClassification::protocol(),
             health_failure: None,
             retryability: classify_retryability(err),
         }),
         ProxyError::Tls(detail) => Some(ClassifiedUpstreamProxyError {
             kind: UpstreamProxyErrorKind::Tls,
-            detail: detail.clone(),
+            detail: Cow::Owned(detail.clone()),
             classification: classify_tls_detail(detail),
             health_failure: None,
             retryability: classify_retryability(err),

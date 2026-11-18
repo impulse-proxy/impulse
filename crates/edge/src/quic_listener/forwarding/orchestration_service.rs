@@ -1,3 +1,5 @@
+use std::fmt;
+
 use impulse_errors::{ClassifiedUpstreamProxyError, PoolError, ProxyError};
 use log::error;
 
@@ -16,6 +18,17 @@ use crate::{
 #[derive(Clone, Copy, Debug, Default)]
 pub(super) struct ForwardingOrchestrationService;
 
+struct OptionalRequestId(Option<u64>);
+
+impl fmt::Display for OptionalRequestId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.0 {
+            Some(request_id) => fmt::Display::fmt(&request_id, formatter),
+            None => formatter.write_str("-"),
+        }
+    }
+}
+
 impl ForwardingOrchestrationService {
     pub(super) fn terminalize(
         request: &mut RequestEnvelope,
@@ -29,10 +42,12 @@ impl ForwardingOrchestrationService {
         match error {
             ProxyError::Timeout => BackendFailureReason::UpstreamTimeout,
             ProxyError::Tls(_) => BackendFailureReason::UpstreamTls,
-            ProxyError::Transport(_) | ProxyError::Pool(_) => {
+            ProxyError::Transport(_) | ProxyError::RequestTransport(_) | ProxyError::Pool(_) => {
                 BackendFailureReason::UpstreamTransport
             }
-            ProxyError::Protocol(_) => BackendFailureReason::UpstreamProtocol,
+            ProxyError::Protocol(_) | ProxyError::RequestProtocol(_) => {
+                BackendFailureReason::UpstreamProtocol
+            }
             ProxyError::Bridge(_) => BackendFailureReason::UpstreamBridge,
         }
     }
@@ -74,15 +89,12 @@ impl ForwardingOrchestrationService {
         backend_addr: &str,
         classified: &ClassifiedUpstreamProxyError,
     ) {
-        let request_id = request_id
-            .map(|value| value.to_string())
-            .unwrap_or_else(|| "-".to_string());
         let upstream_name = upstream_name.unwrap_or("-");
         match classified.health_failure {
             Some(health_mapping) => error!(
                 "phase={} request_id={} upstream={} backend={} upstream failure kind={:?} retryability={:?} health_reason={:?} metrics_reason={} detail={}",
                 phase,
-                request_id,
+                OptionalRequestId(request_id),
                 upstream_name,
                 backend_addr,
                 classified.kind,
@@ -94,7 +106,7 @@ impl ForwardingOrchestrationService {
             None => error!(
                 "phase={} request_id={} upstream={} backend={} upstream failure kind={:?} retryability={:?} detail={}",
                 phase,
-                request_id,
+                OptionalRequestId(request_id),
                 upstream_name,
                 backend_addr,
                 classified.kind,

@@ -33,7 +33,7 @@ use impulse_config::{
     config::{ClientAuth, ControlApi as ControlApiConfig},
     runtime::{ListenerRuntimeConfig, RuntimeListenerTls, RuntimeTlsIdentity},
 };
-use impulse_errors::{PoolError, ProxyError};
+use impulse_errors::{PoolError, ProxyError, RequestFailure};
 use impulse_lb::upstream_pool::UpstreamPool;
 use impulse_operations::watchdog::WatchdogCoordinator;
 use impulse_transport::UpstreamRequestExecutor;
@@ -130,13 +130,12 @@ use forwarding::{
 pub(in crate::quic_listener) use protocol::{can_poll_upstream_result, collect_h3_trailers};
 #[cfg(test)]
 pub(in crate::quic_listener) use protocol::{
-    connection_header_tokens, is_bodyless_request_mode, is_connect_tunnel_response,
-    should_strip_h3_response_header,
+    is_bodyless_request_mode, is_connect_tunnel_response, should_strip_h3_response_header,
 };
 pub use runtime_state::ListenerWorkerRuntimeState;
 use validation::{
     RequestBufferError, extract_header_value, generated_span_id, generated_trace_id,
-    parse_traceparent, validate_request_headers,
+    parse_traceparent, trace_id_seed, validate_request_headers,
 };
 pub use workers::{
     ListenerWorkerGroupConfig, release_shard_queue_bytes, shard_index_for_peer,

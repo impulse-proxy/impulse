@@ -53,6 +53,28 @@ pub fn legacy_websocket_upgrade_requested(method: &str, headers: &[quiche::h3::H
         })
 }
 
+pub(crate) fn legacy_websocket_upgrade_requested_for_headers(
+    method: &str,
+    headers: &http::HeaderMap,
+) -> bool {
+    method.eq_ignore_ascii_case("GET")
+        && headers.get_all(http::header::UPGRADE).iter().any(|value| {
+            value
+                .to_str()
+                .is_ok_and(|value| value.eq_ignore_ascii_case("websocket"))
+        })
+        && headers
+            .get_all(http::header::CONNECTION)
+            .iter()
+            .any(|value| {
+                value.to_str().is_ok_and(|value| {
+                    value
+                        .split(',')
+                        .any(|part| part.trim().eq_ignore_ascii_case("upgrade"))
+                })
+            })
+}
+
 pub fn h3_websocket_tunnel_requested(method: &str, headers: &[quiche::h3::Header]) -> bool {
     h3_websocket_request_kind(method, headers) != H3WebsocketRequestKind::None
 }

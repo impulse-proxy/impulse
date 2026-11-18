@@ -151,7 +151,7 @@ impl Http3Service {
             }
         }
         let (is_upgrade, is_tunnel) = impulse_http3_ingress::tunnel_cache_flags(tunnel_mode);
-        let request_header = |name: &str| headers.get(name).map(http::HeaderValue::as_bytes);
+        let request_header = |name: &str| pending_forward.policy_header(name);
         let Ok(representation) = process_cache_lookup(CacheLookupProcessingInput {
             metrics,
             plugin_plan: &pending_forward.plugin_plan,
@@ -332,7 +332,9 @@ impl Http3Service {
             }
         };
         if !spawn_async_task(body_pump, "upstream-exchange-request-body") {
-            return Err(ProxyError::Transport("runtime unavailable".into()));
+            return Err(ProxyError::RequestTransport(
+                RequestFailure::RuntimeUnavailable,
+            ));
         }
         Ok(UpstreamExchangeRequest {
             head: UpstreamRequestHead {
@@ -379,18 +381,20 @@ impl Http3Service {
         }
 
         let headers = response.head.headers;
-        let upgrade = response.upgrade.ok_or_else(|| {
-            ProxyError::Protocol("HTTP/1 upgrade response did not provide a tunnel".into())
-        })?;
-        let tunnel = upgrade
-            .tunnel
-            .await
-            .map_err(|_| ProxyError::Transport("upstream tunnel task stopped".into()))??;
+        let upgrade = response.upgrade.ok_or(ProxyError::RequestProtocol(
+            RequestFailure::MissingUpgradeTunnel,
+        ))?;
+        let tunnel = upgrade.tunnel.await.map_err(|_| {
+            ProxyError::RequestTransport(RequestFailure::UpstreamTunnelTaskStopped)
+        })??;
         let (mode, io, completion) = tunnel.into_parts();
         if mode != TunnelMode::Websocket {
-            let detail = "WebSocket exchange returned a CONNECT tunnel lease";
-            completion.fail(ProxyError::Protocol(detail.into()));
-            return Err(ProxyError::Protocol(detail.into()));
+            completion.fail(ProxyError::RequestProtocol(
+                RequestFailure::UnexpectedTunnelMode,
+            ));
+            return Err(ProxyError::RequestProtocol(
+                RequestFailure::UnexpectedTunnelMode,
+            ));
         }
         let (chunk_tx, chunk_rx) = mpsc::channel(RESPONSE_CHUNK_CHANNEL_CAPACITY);
         let fut = async move {

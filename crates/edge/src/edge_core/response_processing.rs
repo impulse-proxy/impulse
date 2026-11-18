@@ -123,10 +123,7 @@ pub(crate) fn process_response(input: ResponseProcessingInput<'_>) -> ResponsePr
         body_mode: input.body_mode,
         constraints: input.constraints,
     });
-    let mut headers = HeaderMap::new();
-    for header in normalized.headers {
-        headers.append(header.name, header.value);
-    }
+    let mut headers = normalized.headers;
     let body_forwarding_enabled = matches!(normalized.emission.body, ResponseBodyPolicy::Forward);
     let emit_end_stream_on_headers = normalized.emission.emit_end_stream_on_headers;
 

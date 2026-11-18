@@ -1,5 +1,5 @@
 use hyper::http::Version;
-use impulse_errors::ProxyError;
+use impulse_errors::{ProxyError, RequestFailure};
 use pingora_core::{
     Error, ErrorType, InternalError, Result,
     protocols::http::{client::HttpSession as PingoraHttpSession, v2::client::Http2Session},
@@ -137,8 +137,8 @@ impl PingoraH2UpstreamSession {
     ) -> Result<(), ProxyError> {
         if self.state != PingoraH2ExchangeState::Acquired {
             self.close().await;
-            return Err(ProxyError::Protocol(
-                "Pingora HTTP/2 request has already been written".to_string(),
+            return Err(ProxyError::RequestProtocol(
+                RequestFailure::Http2RequestAlreadyWritten,
             ));
         }
         let header = match translate_pingora_h2_request_header(head) {
@@ -157,8 +157,8 @@ impl PingoraH2UpstreamSession {
         while let Some(frame) = body.recv().await {
             if ended {
                 self.close().await;
-                return Err(ProxyError::Protocol(
-                    "request body contains frames after HTTP/2 trailers".to_string(),
+                return Err(ProxyError::RequestProtocol(
+                    RequestFailure::Http2FramesAfterTrailers,
                 ));
             }
             match frame {
@@ -172,8 +172,8 @@ impl PingoraH2UpstreamSession {
                 Ok(UpstreamBodyFrame::Trailers(trailers)) => {
                     let Some(mut writer) = self.session_mut().take_request_body_writer() else {
                         self.close().await;
-                        return Err(ProxyError::Protocol(
-                            "Pingora HTTP/2 request body is already complete".to_string(),
+                        return Err(ProxyError::RequestProtocol(
+                            RequestFailure::Http2RequestBodyAlreadyComplete,
                         ));
                     };
                     if let Err(error) = writer.send_trailers(trailers) {
@@ -518,8 +518,8 @@ async fn pump_pingora_h2_response(
             session.shutdown().await;
             finish_pingora_h2_exchange(
                 lifecycle,
-                UpstreamExchangeOutcome::Failed(ProxyError::Protocol(
-                    "Pingora HTTP/2 response ended without closing its stream".to_string(),
+                UpstreamExchangeOutcome::Failed(ProxyError::RequestProtocol(
+                    RequestFailure::Http2ResponseStreamNotClosed,
                 )),
                 UpstreamConnectionReuse::Reuse,
             );

@@ -46,20 +46,7 @@ fn execute_deferred_quota_plugin(
     {
         return None;
     }
-    let mut effective_headers = pending_forward.headers.as_ref().clone();
-    crate::runtime::connection::auth::apply_auth_request_mutations(
-        &mut effective_headers,
-        pending_forward
-            .auth_header_mutations
-            .as_deref()
-            .unwrap_or_default(),
-    );
-    let header_lookup = |name: &str| {
-        effective_headers
-            .iter()
-            .find(|header| header.name().eq_ignore_ascii_case(name.as_bytes()))
-            .map(|header| header.value())
-    };
+    let header_lookup = |name: &str| pending_forward.policy_header(name);
     let request = impulse_contracts::PluginRequestView {
         request_id: pending_forward.request_id,
         generation: pending_forward.plugin_plan.generation(),
@@ -105,7 +92,7 @@ impl Http3Service {
                 None,
                 req.start.elapsed(),
                 Some(http::StatusCode::INTERNAL_SERVER_ERROR),
-                &ProxyError::Transport("missing deferred forward snapshot".into()),
+                &ProxyError::RequestTransport(RequestFailure::MissingDeferredForwardSnapshot),
                 None,
             );
             Self::send_simple_response(
@@ -129,7 +116,7 @@ impl Http3Service {
                 None,
                 req.start.elapsed(),
                 Some(http::StatusCode::INTERNAL_SERVER_ERROR),
-                &ProxyError::Transport("missing upstream route".into()),
+                &ProxyError::RequestTransport(RequestFailure::MissingUpstreamRoute),
                 None,
             );
             Self::send_simple_response(
@@ -380,8 +367,7 @@ impl Http3Service {
         if backend_endpoint.scheme() == BackendScheme::Http
             && pending_forward.declares_request_trailers()
         {
-            let error =
-                ProxyError::Protocol("request trailers require an HTTP/2 upstream".to_string());
+            let error = ProxyError::RequestProtocol(RequestFailure::RequestTrailersRequireHttp2);
             let _ = observe_proxy_error_outcome(
                 metrics,
                 RouteOutcomeTarget {
@@ -497,7 +483,7 @@ impl Http3Service {
                     }),
                     req.start.elapsed(),
                     Some(http::StatusCode::SERVICE_UNAVAILABLE),
-                    &ProxyError::Transport("upstream runtime unavailable".into()),
+                    &ProxyError::RequestTransport(RequestFailure::UpstreamRuntimeUnavailable),
                     None,
                 );
                 Self::send_simple_response(
@@ -662,19 +648,19 @@ impl Http3Service {
                             continue;
                         }
                     };
-                    let method = request.method;
-                    let path = request.path;
-                    let authority = request.authority;
+                    let request_head = request.head();
                     let content_length = request.content_length;
                     let websocket_tunnel = request.websocket_tunnel;
-                    let tunnel_mode =
-                        impulse_http3_ingress::classify_tunnel(&method, websocket_tunnel);
+                    let tunnel_mode = impulse_http3_ingress::classify_tunnel(
+                        request_head.method,
+                        websocket_tunnel,
+                    );
 
                     metrics.request_observations().inc_total();
                     let request_start = Instant::now();
 
                     if connection.quic.is_in_early_data() {
-                        if resilience.early_data_allowed_for(&method) {
+                        if resilience.early_data_allowed_for(request_head.method) {
                             metrics.ingress_observations().inc_early_data_accepted();
                         } else {
                             metrics.ingress_observations().inc_early_data_rejected();
@@ -685,9 +671,7 @@ impl Http3Service {
                                 None,
                                 request_start.elapsed(),
                                 Some(http::StatusCode::TOO_EARLY),
-                                &ProxyError::Transport(
-                                    "request blocked by early-data policy".into(),
-                                ),
+                                &ProxyError::RequestTransport(RequestFailure::EarlyDataRejected),
                                 None,
                             );
                             Self::send_simple_response(
@@ -717,7 +701,7 @@ impl Http3Service {
                     }
 
                     let sticky_cid_key = hex::encode(connection.primary_scid.as_ref());
-                    let quic_trace_id = connection.quic.trace_id().to_string();
+                    let quic_trace_seed = trace_id_seed(connection.quic.trace_id());
                     let pre_auth = match Self::prepare_request_for_auth(
                         stream_id,
                         h3,
@@ -726,11 +710,11 @@ impl Http3Service {
                             peer_address: connection.peer_address,
                             sticky_cid_key: sticky_cid_key.as_str(),
                             intake: self::prepare::IntakeRequestDescriptor {
-                                quic_trace_id: &quic_trace_id,
+                                quic_trace_seed,
                                 request_start,
-                                method: &method,
-                                path: &path,
-                                authority: authority.as_deref(),
+                                method: request_head.method,
+                                path: request_head.path,
+                                authority: request_head.authority,
                                 headers: &list,
                                 content_length,
                                 tunnel_mode,
@@ -948,7 +932,9 @@ impl Http3Service {
                                     None,
                                     elapsed,
                                     Some(http::StatusCode::PAYLOAD_TOO_LARGE),
-                                    &ProxyError::Transport("request body too large".into()),
+                                    &ProxyError::RequestTransport(
+                                        RequestFailure::RequestBodyTooLarge,
+                                    ),
                                     None,
                                 );
                                 Self::send_simple_response(

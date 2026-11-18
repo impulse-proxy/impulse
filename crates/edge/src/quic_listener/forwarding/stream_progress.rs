@@ -400,9 +400,13 @@ impl Http3Service {
                     req.error_kind = match &forward_result.forward {
                         Err(ProxyError::Timeout) => Some("timeout"),
                         Err(ProxyError::Tls(_)) => Some("tls"),
-                        Err(ProxyError::Transport(_)) => Some("transport"),
+                        Err(ProxyError::Transport(_) | ProxyError::RequestTransport(_)) => {
+                            Some("transport")
+                        }
                         Err(ProxyError::Pool(_)) => Some("pool"),
-                        Err(ProxyError::Protocol(_)) => Some("protocol"),
+                        Err(ProxyError::Protocol(_) | ProxyError::RequestProtocol(_)) => {
+                            Some("protocol")
+                        }
                         Err(ProxyError::Bridge(_)) => Some("bridge"),
                         Ok(_) => None,
                     };

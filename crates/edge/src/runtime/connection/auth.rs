@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 pub(crate) use impulse_contracts::HeaderMutation as PendingHeaderMutation;
 use impulse_errors::ProxyError;
 use impulse_plugins::{ExternalAuthFailureModeInput, ExternalAuthInput};
@@ -11,6 +13,39 @@ pub(crate) use impulse_policy::{
     merge_external_auth_mutations as merge_auth_request_mutations,
     resolve_external_auth_state_transition,
 };
+
+pub(crate) enum PendingHeaderOverride<'a> {
+    Unchanged,
+    Removed,
+    Value(&'a [u8]),
+}
+
+pub(crate) fn pending_header_override<'a>(
+    mutations: Option<&'a [PendingHeaderMutation]>,
+    name: &[u8],
+) -> PendingHeaderOverride<'a> {
+    let Some(mutations) = mutations else {
+        return PendingHeaderOverride::Unchanged;
+    };
+    for mutation in mutations.iter().rev() {
+        match mutation {
+            PendingHeaderMutation::Upsert {
+                name: mutation_name,
+                value,
+            } if mutation_name.eq_ignore_ascii_case(name) => {
+                return PendingHeaderOverride::Value(value);
+            }
+            PendingHeaderMutation::Remove {
+                name: mutation_name,
+            } if mutation_name.eq_ignore_ascii_case(name) => {
+                return PendingHeaderOverride::Removed;
+            }
+            _ => {}
+        }
+    }
+    PendingHeaderOverride::Unchanged
+}
+
 #[cfg(test)]
 pub(crate) use impulse_policy::{
     ExternalAuthRedirectResponse, allowed_external_auth_headers as allowed_auth_headers,
@@ -78,11 +113,11 @@ pub(crate) fn external_auth_policy_from_plugin(
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct ExternalAuthRequest {
+pub(crate) struct ExternalAuthRequest<'a> {
     pub(crate) method: String,
     pub(crate) path: String,
     pub(crate) authority: Option<String>,
-    pub(crate) headers: http::HeaderMap,
+    pub(crate) headers: Cow<'a, http::HeaderMap>,
     pub(crate) upstream_name: String,
     pub(crate) backend_addr: Option<String>,
 }

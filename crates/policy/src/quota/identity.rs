@@ -253,7 +253,7 @@ fn extract_header_value(
     let Some(value) = header_lookup.and_then(|lookup| lookup(name)) else {
         return RequestKeyExtraction::Missing;
     };
-    bounded_request_key_value(value.as_str())
+    bounded_request_key_value(value)
 }
 
 fn extract_cookie_key_value(

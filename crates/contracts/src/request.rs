@@ -1,5 +1,24 @@
 use http::StatusCode;
 
+/// Borrowed canonical request metadata shared across request-processing layers.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RequestHeadView<'a> {
+    pub method: &'a str,
+    pub path: &'a str,
+    pub authority: Option<&'a str>,
+}
+
+impl<'a> RequestHeadView<'a> {
+    #[must_use]
+    pub const fn new(method: &'a str, path: &'a str, authority: Option<&'a str>) -> Self {
+        Self {
+            method,
+            path,
+            authority,
+        }
+    }
+}
+
 /// Validated mutation applied to an upstream request header.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum HeaderMutation {

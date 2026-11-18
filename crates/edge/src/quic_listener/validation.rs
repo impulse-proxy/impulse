@@ -1,5 +1,5 @@
 pub(super) use impulse_http3_ingress::{
-    extract_header_value, generated_span_id, generated_trace_id, parse_traceparent,
+    extract_header_value, generated_span_id, generated_trace_id, parse_traceparent, trace_id_seed,
 };
 
 use super::*;
