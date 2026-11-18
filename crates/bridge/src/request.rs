@@ -176,7 +176,7 @@ pub(crate) fn apply_request_header_policies(
             continue;
         }
 
-        if should_strip_request_header(&header_name, headers, preserve_upgrade) {
+        if should_strip_request_header(header_name, headers, preserve_upgrade) {
             continue;
         }
         builder = builder.header(header_name.clone(), header_value.clone());
