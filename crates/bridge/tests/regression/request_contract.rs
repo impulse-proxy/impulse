@@ -1,16 +1,94 @@
 //! Canonical request-builder input contracts shared across h1 and h2 outputs.
 
-use http::header::{CONTENT_LENGTH, HOST};
-use impulse_bridge::request::{RequestBodyMode, RequestBuildInput, build_h2_request_for_target};
+use http::{
+    HeaderMap, HeaderValue,
+    header::{CONTENT_LENGTH, HOST},
+};
+use impulse_bridge::request::{
+    RequestBodyMode, RequestBuildInput, build_h1_request, build_h2_request_for_target,
+};
 use impulse_config::{
     backend_endpoint::BackendEndpoint,
     config::{ForwardedHeaderPolicy, UpstreamHostPolicy},
 };
-use quiche::h3::Header;
+use quiche::h3::{Header, NameValue};
 
 use crate::common::{
-    RequestInputMeta, build_h1_and_h2_requests, request_input_with_body_mode, request_target,
+    RequestInputMeta, borrowed_request_input, build_h1_and_h2_requests, request_input,
+    request_input_with_body_mode, request_target,
 };
+
+#[test]
+fn canonical_headers_match_for_translated_http3_and_borrowed_pingora_inputs() {
+    let endpoint = BackendEndpoint::parse("backend.internal:443").expect("endpoint");
+    let host_policy = UpstreamHostPolicy::default();
+    let forwarded_policy = ForwardedHeaderPolicy::default();
+    let h3_headers = vec![
+        Header::new(b"host", b"spoofed.example.com"),
+        Header::new(b"connection", b"keep-alive, x-secret"),
+        Header::new(b"x-secret", b"drop-me"),
+        Header::new(b"x-keep", b"first"),
+        Header::new(b"x-keep", b"second"),
+        Header::new(b"x-forwarded-for", b"192.0.2.1"),
+    ];
+    let mut native_headers = HeaderMap::new();
+    for header in &h3_headers {
+        native_headers.append(
+            http::HeaderName::from_bytes(header.name()).expect("header name"),
+            HeaderValue::from_bytes(header.value()).expect("header value"),
+        );
+    }
+    let meta = RequestInputMeta {
+        authority: Some("api.example.com"),
+        content_length: None,
+        request_id: 92,
+        traceparent: None,
+        client_addr: "203.0.113.22:7002".parse().expect("client"),
+    };
+
+    let h1_from_h3 = build_h1_request(
+        request_target(&endpoint, &host_policy, &forwarded_policy),
+        request_input("GET", "/headers", &h3_headers, meta),
+    )
+    .expect("h1 request from HTTP/3 headers");
+    let h1_from_pingora = build_h1_request(
+        request_target(&endpoint, &host_policy, &forwarded_policy),
+        borrowed_request_input("GET", "/headers", &native_headers, meta),
+    )
+    .expect("h1 request from Pingora headers");
+    let h2_from_h3 = build_h2_request_for_target(
+        request_target(&endpoint, &host_policy, &forwarded_policy),
+        request_input("GET", "/headers", &h3_headers, meta),
+    )
+    .expect("h2 request from HTTP/3 headers");
+    let h2_from_pingora = build_h2_request_for_target(
+        request_target(&endpoint, &host_policy, &forwarded_policy),
+        borrowed_request_input("GET", "/headers", &native_headers, meta),
+    )
+    .expect("h2 request from Pingora headers");
+
+    assert_eq!(h1_from_h3.headers(), h1_from_pingora.headers());
+    assert_eq!(h2_from_h3.headers(), h2_from_pingora.headers());
+    for request in [&h1_from_h3, &h1_from_pingora, &h2_from_h3, &h2_from_pingora] {
+        assert!(request.headers().get("connection").is_none());
+        assert!(request.headers().get("x-secret").is_none());
+        assert_eq!(request.headers().get_all("x-keep").iter().count(), 2);
+        assert_eq!(
+            request
+                .headers()
+                .get(HOST)
+                .and_then(|value| value.to_str().ok()),
+            Some("api.example.com")
+        );
+        assert_eq!(
+            request
+                .headers()
+                .get("x-forwarded-for")
+                .and_then(|value| value.to_str().ok()),
+            Some("203.0.113.22")
+        );
+    }
+}
 
 #[test]
 fn canonical_known_length_inputs_shape_h1_and_h2_requests_consistently() {

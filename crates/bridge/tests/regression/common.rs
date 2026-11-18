@@ -93,11 +93,36 @@ pub(crate) fn request_input<'a>(
         };
         translated_headers.append(name, value);
     }
+    request_input_from_headers(
+        method,
+        path,
+        Cow::Owned(translated_headers),
+        meta,
+        websocket_extended_connect,
+    )
+}
+
+pub(crate) fn borrowed_request_input<'a>(
+    method: &'a str,
+    path: &'a str,
+    headers: &'a http::HeaderMap,
+    meta: RequestInputMeta<'a>,
+) -> RequestBuildInput<'a, BoxBody<Bytes, Infallible>> {
+    request_input_from_headers(method, path, Cow::Borrowed(headers), meta, false)
+}
+
+fn request_input_from_headers<'a>(
+    method: &'a str,
+    path: &'a str,
+    headers: Cow<'a, http::HeaderMap>,
+    meta: RequestInputMeta<'a>,
+    websocket_extended_connect: bool,
+) -> RequestBuildInput<'a, BoxBody<Bytes, Infallible>> {
     RequestBuildInput {
         method,
         path,
         authority: meta.authority,
-        headers: Cow::Owned(translated_headers),
+        headers,
         auth_header_mutations: &[],
         websocket_extended_connect,
         body: Empty::<Bytes>::new().boxed(),
