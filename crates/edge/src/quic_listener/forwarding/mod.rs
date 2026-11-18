@@ -1425,7 +1425,7 @@ mod tests {
     #[test]
     fn pending_forward_request_headers_apply_auth_mutations() {
         let pending_forward = PendingForward {
-            auth_header_mutations: Some(vec![
+            auth_header_mutations: Some(smallvec::smallvec![
                 PendingHeaderMutation::Upsert {
                     name: b"x-user-id".to_vec(),
                     value: b"fresh".to_vec(),

@@ -1,3 +1,4 @@
+use smallvec::SmallVec;
 use std::{future::Future, time::Instant};
 
 #[cfg(feature = "api-key-auth")]
@@ -32,7 +33,7 @@ pub enum AsyncRequestPluginDecision {
 #[derive(Debug, Eq, PartialEq)]
 pub enum AsyncRequestPluginExecution {
     Continue {
-        mutations: Option<Vec<PluginHeaderMutation>>,
+        mutations: Option<SmallVec<[PluginHeaderMutation; 4]>>,
     },
     Reject(PluginRejection),
     AlreadyExecuted,
@@ -50,7 +51,7 @@ pub enum SynchronousRequestPluginDecision {
 #[derive(Debug, Eq, PartialEq)]
 pub enum SynchronousRequestPluginExecution {
     Continue {
-        mutations: Option<Vec<PluginHeaderMutation>>,
+        mutations: Option<SmallVec<[PluginHeaderMutation; 4]>>,
     },
     Reject(PluginRejection),
 }
@@ -126,7 +127,7 @@ pub fn execute_synchronous_request_plugins<'a>(
             SynchronousRequestPluginDecision::Mutate(plugin_mutations) => {
                 if !plugin_mutations.is_empty() {
                     mutations
-                        .get_or_insert_with(Vec::new)
+                        .get_or_insert_with(SmallVec::new)
                         .extend(plugin_mutations);
                 }
             }
@@ -180,7 +181,7 @@ where
             AsyncRequestPluginDecision::Mutate(plugin_mutations) => {
                 if !plugin_mutations.is_empty() {
                     mutations
-                        .get_or_insert_with(Vec::new)
+                        .get_or_insert_with(SmallVec::new)
                         .extend(plugin_mutations);
                 }
             }

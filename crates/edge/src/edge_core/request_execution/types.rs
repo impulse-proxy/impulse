@@ -1,3 +1,4 @@
+use smallvec::SmallVec;
 use std::{net::SocketAddr, sync::Arc};
 
 use impulse_contracts::{
@@ -40,7 +41,7 @@ pub(crate) struct PluginRequestExecutionState<Route> {
 pub(crate) enum PluginRequestExecutionOutcome {
     Admitted {
         admission: RequestDecision,
-        mutations: Option<Vec<PluginHeaderMutation>>,
+        mutations: Option<SmallVec<[PluginHeaderMutation; 4]>>,
     },
     Rejected {
         rejection: PluginRejection,

@@ -1261,7 +1261,7 @@ mod tests {
     #[test]
     fn build_request_injects_auth_mutations_after_configured_headers() {
         let pending_forward = PendingForward {
-            auth_header_mutations: Some(vec![
+            auth_header_mutations: Some(smallvec::smallvec![
                 PendingHeaderMutation::Upsert {
                     name: b"x-auth-user".to_vec(),
                     value: b"alice".to_vec(),
@@ -1311,7 +1311,7 @@ mod tests {
     #[test]
     fn request_headers_materializes_owned_headers_when_auth_mutations_are_pending() {
         let pending_forward = PendingForward {
-            auth_header_mutations: Some(vec![PendingHeaderMutation::Upsert {
+            auth_header_mutations: Some(smallvec::smallvec![PendingHeaderMutation::Upsert {
                 name: b"x-auth-user".to_vec(),
                 value: b"alice".to_vec(),
             }]),

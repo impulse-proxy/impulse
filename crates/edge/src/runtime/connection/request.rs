@@ -12,6 +12,7 @@ use impulse_config::{
 };
 use impulse_lb::upstream_pool::UpstreamPool;
 use impulse_plugins::CompiledPluginPlan;
+use smallvec::SmallVec;
 use tokio::sync::{mpsc, oneshot};
 use tracing::Span;
 
@@ -833,10 +834,16 @@ impl RequestEnvelope {
                 let mut mutations = mutations.into_iter();
                 if let Some(first) = mutations.next() {
                     let pending = Arc::make_mut(&mut state.pending_forward);
+                    let mut existing = pending
+                        .auth_header_mutations
+                        .take()
+                        .unwrap_or_default()
+                        .into_vec();
                     crate::runtime::connection::auth::merge_auth_request_mutations(
-                        pending.auth_header_mutations.get_or_insert_with(Vec::new),
+                        &mut existing,
                         std::iter::once(first).chain(mutations),
                     );
+                    pending.auth_header_mutations = Some(SmallVec::from_vec(existing));
                 }
                 state
             }
@@ -1055,7 +1062,7 @@ pub struct PendingForward {
     pub host_policy: UpstreamHostPolicy,
     pub forwarded_header_policy: ForwardedHeaderPolicy,
     pub plugin_plan: Arc<CompiledPluginPlan>,
-    pub(crate) auth_header_mutations: Option<Vec<PendingHeaderMutation>>,
+    pub(crate) auth_header_mutations: Option<SmallVec<[PendingHeaderMutation; 4]>>,
 }
 
 #[cfg(test)]
