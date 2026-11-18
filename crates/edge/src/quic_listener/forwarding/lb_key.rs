@@ -32,15 +32,19 @@ impl<'a> LbKeyRequestParts<'a> {
 }
 
 #[cfg(test)]
-struct LbKeyResolutionInput<'a> {
-    lb_type: &'a str,
-    lb_key_spec: Option<&'a str>,
-    request: LbKeyRequestParts<'a>,
+struct LbKeyResolutionInput<'config, 'request> {
+    lb_type: &'config str,
+    lb_key_spec: Option<&'config str>,
+    request: LbKeyRequestParts<'request>,
 }
 
 #[cfg(test)]
-impl<'a> LbKeyResolutionInput<'a> {
-    fn new(lb_type: &'a str, lb_key_spec: Option<&'a str>, request: LbKeyRequestParts<'a>) -> Self {
+impl<'config, 'request> LbKeyResolutionInput<'config, 'request> {
+    fn new(
+        lb_type: &'config str,
+        lb_key_spec: Option<&'config str>,
+        request: LbKeyRequestParts<'request>,
+    ) -> Self {
         Self {
             lb_type,
             lb_key_spec,
@@ -234,7 +238,7 @@ impl Http3Service {
     }
 
     #[cfg(test)]
-    fn resolve_lb_key_for_input(input: &LbKeyResolutionInput<'_>) -> ResolvedLbKey {
+    fn resolve_lb_key_for_input(input: &LbKeyResolutionInput<'_, '_>) -> ResolvedLbKey {
         let default_key = Self::default_lb_request_key_for_parts(&input.request);
 
         if let Some(spec) = input.lb_key_spec
