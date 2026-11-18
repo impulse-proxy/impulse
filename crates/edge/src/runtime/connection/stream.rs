@@ -37,15 +37,20 @@ pub(crate) enum ResponseBackpressureState {
 #[derive(Debug, Clone)]
 pub struct RequestContext {
     pub request_id: impulse_contracts::RequestId,
-    pub trace_id: Option<TraceId>,
-    pub span_id: Option<SpanId>,
-    pub trace_span: Option<Span>,
+    pub tracing: Option<RequestTracingState>,
     pub method: String,
     pub path: String,
     pub authority: Option<String>,
     pub start: Instant,
     pub total_request_deadline: Instant,
     pub(crate) completion: RequestCompletion,
+}
+
+#[derive(Debug, Clone)]
+pub struct RequestTracingState {
+    pub trace_id: Option<TraceId>,
+    pub span_id: Option<SpanId>,
+    pub span: Option<Span>,
 }
 
 #[derive(Debug, Clone)]

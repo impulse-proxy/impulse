@@ -1091,9 +1091,7 @@ mod tests {
         TerminalSnapshot {
             context: RequestContext {
                 request_id: 1,
-                trace_id: None,
-                span_id: None,
-                trace_span: None,
+                tracing: None,
                 method: "GET".to_string(),
                 path: "/".to_string(),
                 authority: None,

@@ -77,10 +77,11 @@ impl Http3Service {
             return;
         }
 
-        let trace_id = req.trace_id.as_ref().map_or("-", |id| id.as_str());
-        let span_id = req.span_id.as_ref().map_or("-", |id| id.as_str());
+        let (trace_id, span_id) = req.trace_ids();
+        let trace_id = trace_id.map_or("-", |id| id.as_str());
+        let span_id = span_id.map_or("-", |id| id.as_str());
         let latency_ms = req.start.elapsed().as_millis() as u64;
-        if let Some(span) = req.trace_span.as_ref() {
+        if let Some(span) = req.trace_span() {
             span.in_scope(|| match req.error_kind.as_ref() {
                 Some(e) => tracing::warn!(
                     request_id = req.request_id,

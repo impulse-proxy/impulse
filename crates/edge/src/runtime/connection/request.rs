@@ -30,18 +30,15 @@ use crate::{
             BackendAccountingState, BackendDispatchState, BackendFailureReason, CancellationReason,
             CancelledState, CompletionReason, DispatchReadyState, RequestBodyRuntime,
             RequestBodyState, RequestContext, RequestExecutionState, RequestMode,
-            ResponseBackpressureState, ResponseEmissionState, ResponseStreamingState,
-            StreamAdmissionState, StreamPhase, TerminalReason, TerminalSnapshot, TerminalState,
-            TimeoutReason, TunnelMode,
+            RequestTracingState, ResponseBackpressureState, ResponseEmissionState,
+            ResponseStreamingState, StreamAdmissionState, StreamPhase, TerminalReason,
+            TerminalSnapshot, TerminalState, TimeoutReason, TunnelMode,
         },
     },
 };
 
 pub struct RequestEnvelope {
     pub request_id: impulse_contracts::RequestId,
-    pub trace_id: Option<impulse_contracts::TraceId>,
-    pub span_id: Option<impulse_contracts::SpanId>,
-    pub trace_span: Option<Span>,
 
     pub method: String,
     pub path: String,
@@ -63,7 +60,7 @@ pub struct RequestEnvelope {
     pub total_request_deadline: Instant,
     pub bodyless_mode: bool,
     pub tunnel_mode: TunnelMode,
-    pub plugin_plan: Arc<CompiledPluginPlan>,
+    pub(crate) processing: Option<RequestProcessingState>,
     pub(crate) pinned_generation: Option<crate::runtime::bundle::ActiveRuntimeGeneration>,
 
     pub retry_count: u8,
@@ -72,6 +69,26 @@ pub struct RequestEnvelope {
     pub(crate) completion: RequestCompletion,
     pub(crate) empty_request_body_runtime: RequestBodyRuntime,
     pub execution: RequestExecutionState,
+}
+
+pub(crate) struct RequestProcessingState {
+    pub(crate) response_plugin_plan: Option<Arc<CompiledPluginPlan>>,
+    pub(crate) tracing: Option<RequestTracingState>,
+}
+
+impl RequestProcessingState {
+    fn new(
+        plugin_plan: &Arc<CompiledPluginPlan>,
+        tracing: Option<RequestTracingState>,
+    ) -> Option<Self> {
+        let response_plugin_plan = (!plugin_plan.cache_policy().is_empty()
+            || !plugin_plan.response_policy().is_empty())
+        .then(|| Arc::clone(plugin_plan));
+        (response_plugin_plan.is_some() || tracing.is_some()).then_some(Self {
+            response_plugin_plan,
+            tracing,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -91,6 +108,26 @@ impl RequestStateError {
 }
 
 impl RequestEnvelope {
+    pub(crate) fn trace_span(&self) -> Option<&Span> {
+        self.processing.as_ref()?.tracing.as_ref()?.span.as_ref()
+    }
+
+    pub(crate) fn trace_ids(
+        &self,
+    ) -> (
+        Option<&impulse_contracts::TraceId>,
+        Option<&impulse_contracts::SpanId>,
+    ) {
+        let Some(tracing) = self
+            .processing
+            .as_ref()
+            .and_then(|state| state.tracing.as_ref())
+        else {
+            return (None, None);
+        };
+        (tracing.trace_id.as_ref(), tracing.span_id.as_ref())
+    }
+
     pub fn request_id(&self) -> impulse_contracts::RequestId {
         self.request_id
     }
@@ -119,9 +156,6 @@ impl RequestEnvelope {
 
         Self {
             request_id: context.request_id,
-            trace_id: context.trace_id,
-            span_id: context.span_id,
-            trace_span: context.trace_span.clone(),
             method: context.method.clone(),
             path: context.path.clone(),
             authority: context.authority.clone(),
@@ -141,7 +175,10 @@ impl RequestEnvelope {
             total_request_deadline: context.total_request_deadline,
             bodyless_mode: request_mode.bodyless_mode(),
             tunnel_mode: request_mode.tunnel_mode(),
-            plugin_plan: Arc::clone(&pending_forward.plugin_plan),
+            processing: RequestProcessingState::new(
+                &pending_forward.plugin_plan,
+                context.tracing.clone(),
+            ),
             pinned_generation: None,
             retry_count,
             error_kind,
@@ -177,9 +214,6 @@ impl RequestEnvelope {
 
         Self {
             request_id: context.request_id,
-            trace_id: context.trace_id,
-            span_id: context.span_id,
-            trace_span: context.trace_span.clone(),
             method: context.method.clone(),
             path: context.path.clone(),
             authority: context.authority.clone(),
@@ -199,7 +233,10 @@ impl RequestEnvelope {
             total_request_deadline: context.total_request_deadline,
             bodyless_mode: request_mode.bodyless_mode(),
             tunnel_mode: request_mode.tunnel_mode(),
-            plugin_plan: Arc::clone(&pending_forward.plugin_plan),
+            processing: RequestProcessingState::new(
+                &pending_forward.plugin_plan,
+                context.tracing.clone(),
+            ),
             pinned_generation: None,
             retry_count,
             error_kind,
@@ -954,9 +991,10 @@ impl RequestEnvelope {
         TerminalSnapshot {
             context: RequestContext {
                 request_id: self.request_id,
-                trace_id: self.trace_id,
-                span_id: self.span_id,
-                trace_span: self.trace_span.clone(),
+                tracing: self
+                    .processing
+                    .as_ref()
+                    .and_then(|state| state.tracing.clone()),
                 method: self.method.clone(),
                 path: self.path.clone(),
                 authority: self.authority.clone(),
@@ -1074,9 +1112,7 @@ mod tests {
     fn make_request_context(start: Instant) -> RequestContext {
         RequestContext {
             request_id: 42,
-            trace_id: None,
-            span_id: None,
-            trace_span: None,
+            tracing: None,
             method: "POST".into(),
             path: "/upload".into(),
             authority: Some("example.com".into()),
@@ -1137,9 +1173,6 @@ mod tests {
 
         let req = RequestEnvelope {
             request_id: context.request_id,
-            trace_id: context.trace_id,
-            span_id: context.span_id,
-            trace_span: context.trace_span.clone(),
             method: context.method.clone(),
             path: context.path.clone(),
             authority: context.authority.clone(),
@@ -1159,7 +1192,7 @@ mod tests {
             total_request_deadline: context.total_request_deadline,
             bodyless_mode: false,
             tunnel_mode: TunnelMode::None,
-            plugin_plan: Arc::new(CompiledPluginPlan::default()),
+            processing: None,
             pinned_generation: None,
             retry_count: 0,
             error_kind: None,
@@ -1289,9 +1322,6 @@ mod tests {
         let context = make_request_context(start);
         let mut dispatch_ready = RequestEnvelope {
             request_id: 1,
-            trace_id: None,
-            span_id: None,
-            trace_span: None,
             method: "GET".into(),
             path: "/".into(),
             authority: None,
@@ -1311,7 +1341,7 @@ mod tests {
             total_request_deadline: start,
             bodyless_mode: false,
             tunnel_mode: TunnelMode::None,
-            plugin_plan: Arc::new(CompiledPluginPlan::default()),
+            processing: None,
             pinned_generation: None,
             retry_count: 0,
             error_kind: None,

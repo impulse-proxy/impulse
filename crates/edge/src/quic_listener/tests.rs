@@ -2034,9 +2034,7 @@ fn make_envelope(phase: StreamPhase) -> RequestEnvelope {
 fn make_request_context(start: Instant, method: &str) -> RequestContext {
     RequestContext {
         request_id: REQUEST_ID_COUNTER.fetch_add(1, Ordering::Relaxed),
-        trace_id: None,
-        span_id: None,
-        trace_span: None,
+        tracing: None,
         method: method.into(),
         path: "/".into(),
         authority: None,
@@ -2118,9 +2116,6 @@ fn make_dispatch_ready_envelope(
     let routing = make_routing_snapshot();
     RequestEnvelope {
         request_id: context.request_id,
-        trace_id: context.trace_id,
-        span_id: context.span_id,
-        trace_span: context.trace_span.clone(),
         method: context.method.clone(),
         path: context.path.clone(),
         authority: context.authority.clone(),
@@ -2140,7 +2135,7 @@ fn make_dispatch_ready_envelope(
         total_request_deadline: context.total_request_deadline,
         bodyless_mode: false,
         tunnel_mode: TunnelMode::None,
-        plugin_plan: Arc::new(impulse_plugins::CompiledPluginPlan::default()),
+        processing: None,
         pinned_generation: None,
         retry_count: 0,
         error_kind: None,
@@ -2273,9 +2268,10 @@ fn abort_stream_waiting_for_auth_clears_async_auth_state() {
     req.execution = RequestExecutionState::AwaitingAuth(AwaitingAuthState {
         context: crate::runtime::connection::stream::RequestContext {
             request_id: req.request_id,
-            trace_id: req.trace_id,
-            span_id: req.span_id,
-            trace_span: req.trace_span.clone(),
+            tracing: req
+                .processing
+                .as_ref()
+                .and_then(|state| state.tracing.clone()),
             method: req.method.clone(),
             path: req.path.clone(),
             authority: req.authority.clone(),

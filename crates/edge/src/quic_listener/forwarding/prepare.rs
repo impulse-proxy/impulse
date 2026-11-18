@@ -39,7 +39,7 @@ use crate::{
         request::{PendingForward, RequestEnvelope},
         stream::{
             AwaitingAuthState, DispatchReadyState, RequestBodyRuntime, RequestContext,
-            RequestIntakeState, RequestMode, RoutingSnapshot,
+            RequestIntakeState, RequestMode, RequestTracingState, RoutingSnapshot,
         },
     },
 };
@@ -436,9 +436,11 @@ impl Http3Service {
             state: RequestIntakeState {
                 context: RequestContext {
                     request_id,
-                    trace_id,
-                    span_id,
-                    trace_span,
+                    tracing: trace_id.zip(span_id).map(|_| RequestTracingState {
+                        trace_id,
+                        span_id,
+                        span: trace_span.clone(),
+                    }),
                     method: method.to_string(),
                     path: path.to_string(),
                     authority: authority.map(str::to_string),
@@ -885,8 +887,18 @@ impl Http3Service {
                     lb_key: Arc::<str>::from(lb_key.as_str()),
                     client_addr: peer_address,
                     request_id,
-                    trace_id: intake.state.context.trace_id,
-                    span_id: intake.state.context.span_id,
+                    trace_id: intake
+                        .state
+                        .context
+                        .tracing
+                        .as_ref()
+                        .and_then(|tracing| tracing.trace_id),
+                    span_id: intake
+                        .state
+                        .context
+                        .tracing
+                        .as_ref()
+                        .and_then(|tracing| tracing.span_id),
                     host_policy: resolved_policy.host_policy,
                     forwarded_header_policy: resolved_policy.forwarded_header_policy,
                     plugin_plan: Arc::clone(&plugin_plan),

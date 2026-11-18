@@ -630,7 +630,7 @@ impl Http3Service {
         let alternate_metrics = Arc::clone(&shared_ctx.metrics);
         #[cfg(feature = "response-cache")]
         let response_cache_store = exec_ctx.response_cache;
-        let trace_span_for_upstream = req.trace_span.clone();
+        let trace_span_for_upstream = req.trace_span().cloned();
         let (result_tx, result_rx) = oneshot::channel::<UpstreamResult>();
         let tunnel_mode = req.tunnel_mode;
         let bodyless_mode = req.bodyless_mode;

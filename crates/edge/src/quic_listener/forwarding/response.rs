@@ -389,8 +389,13 @@ impl Http3Service {
             ));
         };
         #[cfg(any(feature = "response-cache", feature = "response-compression"))]
-        let has_response_plugins = !req.plugin_plan.cache_policy().is_empty()
-            || !req.plugin_plan.response_policy().is_empty();
+        let plugin_plan = req
+            .processing
+            .as_ref()
+            .and_then(|state| state.response_plugin_plan.as_deref())
+            .unwrap_or(&pending_forward.plugin_plan);
+        let has_response_plugins =
+            !plugin_plan.cache_policy().is_empty() || !plugin_plan.response_policy().is_empty();
         #[cfg(feature = "response-compression")]
         let request_headers = has_response_plugins.then(|| {
             let mut headers = http::HeaderMap::new();
@@ -410,11 +415,11 @@ impl Http3Service {
             #[cfg(any(feature = "response-cache", feature = "response-compression"))]
             metrics,
             #[cfg(any(feature = "response-cache", feature = "response-compression"))]
-            plugin_plan: &req.plugin_plan,
+            plugin_plan,
             #[cfg(any(feature = "response-cache", feature = "response-compression"))]
             plugin_request: has_response_plugins.then(|| PluginRequestView {
                 request_id: req.request_id,
-                generation: req.plugin_plan.generation(),
+                generation: plugin_plan.generation(),
                 runtime_route_id: pending_forward.route_id,
                 route_id: req.upstream_name.as_deref(),
                 upstream_name: pending_forward.upstream_name.as_ref(),
@@ -456,7 +461,7 @@ impl Http3Service {
         } = processed_response;
         #[cfg(feature = "response-compression")]
         if matches!(compression.action, ResponseCompressionAction::Gzip)
-            && let Some(policy) = req.plugin_plan.response_compression()
+            && let Some(policy) = plugin_plan.response_compression()
         {
             policy.apply_selected_representation_headers(&mut response_headers, compression);
         }
@@ -1323,7 +1328,7 @@ impl Http3Service {
                 }
             }
         };
-        let spawned = match req.trace_span.clone() {
+        let spawned = match req.trace_span().cloned() {
             Some(span) => spawn_async_task(fut.instrument(span), "body-pump"),
             None => spawn_async_task(fut, "body-pump"),
         };
