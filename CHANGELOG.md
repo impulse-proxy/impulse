@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.3] - 2026-11-18
+
+### Changed
+
+- **Plugin timing metrics are now opt-in.** The new `observability.metrics.detailed_plugin_timing` option defaults to `false`, so the per-plugin duration metrics for asynchronous plugins (`impulse_plugin_async_duration_seconds_total` and `impulse_plugin_async_duration_samples_total`) are no longer recorded unless you set it to `true`. Dashboards or alerts that read them must enable the option.
+- Request-path performance work, with no intended behavior change:
+  - Routes are classified once per runtime generation (passthrough, synchronous or asynchronous policy, cache, compression, or full), and routes without plugins skip plugin views, header-mutation state, and cache and compression evaluation.
+  - Route resolution returns one compiled, generation-pinned runtime for the route. The repeated upstream-policy, plugin-plan, selector, upstream-pool and backend-transport lookups after routing are removed, and the runtime generation is read once per request.
+  - Upstreams, routes and backends use compact numeric identities on the request path instead of string-keyed maps. Display names are kept for logs and metrics.
+  - Request and response headers are normalized in place, hop-by-hop headers are filtered directly, and HTTP/3 header translation is isolated. Method, path and authority are normalized once and borrowed during backend selection, quota, external authorization and load-balancing key extraction.
+  - Trace and request identifiers are kept in fixed-size form and formatted only when observations are exported. Successful requests no longer build formatted or error strings, and expected routing, admission and transport failures use static typed errors.
+
+### Added
+
+- Connection reuse metrics: `impulse_downstream_connections_reused_total` and `impulse_downstream_connection_reuse_ratio`, `impulse_upstream_connections_reused_total` and `impulse_upstream_connection_reuse_ratio`, `impulse_h2_streams_reused_total` and `impulse_http2_session_reuse_ratio`.
+- TLS resumption metrics for both sides: `impulse_downstream_tls_handshake_resumed_total` and `impulse_downstream_tls_resumption_ratio`, `impulse_upstream_tls_handshake_resumed_total` and `impulse_upstream_tls_resumption_ratio`.
+
+### Fixed
+
+- Quota request-header extraction and load-balancing key handling now build on stable Rust.
+
+### Compatibility
+
+- One new configuration key, `observability.metrics.detailed_plugin_timing`. No keys were removed or renamed, and existing configurations load unchanged.
+- The only observable default change is that the asynchronous plugin duration metrics above are off until you enable `detailed_plugin_timing`.
+
 ## [0.7.2] - 2026-11-15
 
 ### Changed
