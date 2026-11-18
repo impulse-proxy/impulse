@@ -13,7 +13,10 @@ use impulse_config::{
 use impulse_lb::upstream_pool::UpstreamPool;
 use impulse_plugins::CompiledPluginPlan;
 use smallvec::SmallVec;
-use tokio::sync::{mpsc, oneshot};
+use tokio::{
+    sync::{mpsc, oneshot},
+    task::AbortHandle,
+};
 use tracing::Span;
 
 use crate::{
@@ -830,6 +833,7 @@ impl RequestEnvelope {
                     emission,
                     response_chunk_rx,
                     backpressure: ResponseBackpressureState::Ready,
+                    response_body_pump_abort: None,
                     backend_accounting: state.dispatch.backend_accounting,
                 });
                 Ok(())
@@ -872,7 +876,21 @@ impl RequestEnvelope {
         &mut self,
         terminal: crate::runtime::connection::stream::TerminalState,
     ) {
-        self.execution = RequestExecutionState::Terminal(terminal);
+        let prior_execution = std::mem::replace(
+            &mut self.execution,
+            RequestExecutionState::Terminal(terminal),
+        );
+        if let RequestExecutionState::StreamingResponse(state) = prior_execution {
+            if let Some(abort) = state.response_body_pump_abort {
+                abort.abort();
+            }
+        }
+    }
+
+    pub(crate) fn set_response_body_pump_abort(&mut self, abort: Option<AbortHandle>) {
+        if let RequestExecutionState::StreamingResponse(state) = &mut self.execution {
+            state.response_body_pump_abort = abort;
+        }
     }
 
     pub(crate) fn transition_awaiting_auth_to_dispatch_ready<I>(
@@ -969,6 +987,11 @@ impl RequestEnvelope {
         if let RequestExecutionState::AwaitingAuth(state) = &prior_execution {
             state.auth_abort.abort();
         }
+        if let RequestExecutionState::StreamingResponse(state) = &prior_execution
+            && let Some(abort) = &state.response_body_pump_abort
+        {
+            abort.abort();
+        }
 
         if should_finalize_backend {
             let _ = finalize_backend_request_cleanup(
@@ -988,6 +1011,7 @@ impl RequestEnvelope {
                 .release_request_buffer(buffered_body_bytes);
         }
 
+        drop(prior_execution);
         self.execution = RequestExecutionState::Terminal(terminal_state);
         prior_phase
     }

@@ -188,6 +188,7 @@ pub struct ResponseStreamingState {
     pub emission: ResponseEmissionState,
     pub(crate) response_chunk_rx: mpsc::Receiver<ResponseChunk>,
     pub(crate) backpressure: ResponseBackpressureState,
+    pub(crate) response_body_pump_abort: Option<AbortHandle>,
     pub backend_accounting: BackendAccountingState,
 }
 
