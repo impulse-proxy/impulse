@@ -71,6 +71,8 @@ pub(in crate::quic_listener) struct H3RequestHandlingConfig {
     pub(in crate::quic_listener) request_buffer_global_cap_bytes: usize,
     pub(in crate::quic_listener) tracing_enabled: bool,
     pub(in crate::quic_listener) max_streams_per_connection: usize,
+    pub(in crate::quic_listener) body_buffer_pool:
+        Arc<crate::runtime::body_buffer_pool::BodyBufferPool>,
 }
 
 impl H3RequestHandlingConfig {
@@ -80,6 +82,7 @@ impl H3RequestHandlingConfig {
         request_buffer_global_cap_bytes: usize,
         tracing_enabled: bool,
         max_streams_per_connection: usize,
+        body_buffer_pool: Arc<crate::runtime::body_buffer_pool::BodyBufferPool>,
     ) -> Self {
         Self {
             request_finalization,
@@ -87,6 +90,7 @@ impl H3RequestHandlingConfig {
             request_buffer_global_cap_bytes,
             tracing_enabled,
             max_streams_per_connection,
+            body_buffer_pool,
         }
     }
 }

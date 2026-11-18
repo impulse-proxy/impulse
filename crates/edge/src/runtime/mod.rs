@@ -6,6 +6,7 @@
 
 pub mod activation;
 pub mod backend;
+pub(crate) mod body_buffer_pool;
 pub(crate) mod builder;
 pub mod bundle;
 #[cfg(feature = "response-cache")]

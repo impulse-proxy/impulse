@@ -451,6 +451,7 @@ impl Http3Service {
             self.request_buffer_global_cap_bytes,
             self.config.observability.tracing.enabled,
             self.max_streams_per_connection,
+            Arc::clone(&self.body_buffer_pool),
         );
 
         if !connection.quic.is_closed()

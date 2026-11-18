@@ -843,7 +843,9 @@ impl Http3Service {
                                             for chunk_slice in
                                                 body_buf[..read].chunks(REQUEST_CHUNK_BYTES_LIMIT)
                                             {
-                                                let chunk = Bytes::copy_from_slice(chunk_slice);
+                                                let chunk = request_config
+                                                    .body_buffer_pool
+                                                    .copy_bytes(chunk_slice);
                                                 if let Err(err) = Self::enqueue_request_chunk(
                                                     req,
                                                     chunk,
