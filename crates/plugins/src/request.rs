@@ -29,11 +29,19 @@ pub enum AsyncRequestPluginDecision {
     Reject(PluginRejection),
 }
 
+/// Header mutations produced by request plugins.
+///
+/// Two inline slots cover the common case without a heap allocation. A larger
+/// inline capacity would make the execution-result enums below large enough to
+/// trip `clippy::large_enum_variant`, which costs more than it saves on the
+/// paths that reject or add no mutations.
+pub type PluginHeaderMutations = SmallVec<[PluginHeaderMutation; 2]>;
+
 /// Host-owned result of executing the asynchronous request phase.
 #[derive(Debug, Eq, PartialEq)]
 pub enum AsyncRequestPluginExecution {
     Continue {
-        mutations: Option<SmallVec<[PluginHeaderMutation; 4]>>,
+        mutations: Option<PluginHeaderMutations>,
     },
     Reject(PluginRejection),
     AlreadyExecuted,
@@ -51,7 +59,7 @@ pub enum SynchronousRequestPluginDecision {
 #[derive(Debug, Eq, PartialEq)]
 pub enum SynchronousRequestPluginExecution {
     Continue {
-        mutations: Option<SmallVec<[PluginHeaderMutation; 4]>>,
+        mutations: Option<PluginHeaderMutations>,
     },
     Reject(PluginRejection),
 }

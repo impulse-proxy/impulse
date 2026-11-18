@@ -460,11 +460,11 @@ impl RequestEnvelope {
         }
     }
 
-    pub fn body_buf_mut(&mut self) -> &mut VecDeque<Bytes> {
-        &mut self
-            .request_body_runtime_mut()
-            .expect("request body buffer requires an allocated body runtime")
-            .body_buf
+    /// Mutable access to the request body buffer, or `None` when the request has
+    /// no body runtime (bodyless requests, and the intake and terminal states).
+    pub fn body_buf_mut(&mut self) -> Option<&mut VecDeque<Bytes>> {
+        self.request_body_runtime_mut()
+            .map(|runtime| &mut runtime.body_buf)
     }
 
     pub fn body_buf_bytes(&self) -> usize {
@@ -857,10 +857,10 @@ impl RequestEnvelope {
             &mut self.execution,
             RequestExecutionState::Terminal(terminal),
         );
-        if let RequestExecutionState::StreamingResponse(state) = prior_execution {
-            if let Some(abort) = state.response_body_pump_abort {
-                abort.abort();
-            }
+        if let RequestExecutionState::StreamingResponse(state) = prior_execution
+            && let Some(abort) = state.response_body_pump_abort
+        {
+            abort.abort();
         }
     }
 
@@ -1472,7 +1472,7 @@ mod tests {
     }
 
     #[test]
-    fn terminal_body_runtime_access_uses_empty_fallback() {
+    fn terminal_request_ignores_body_runtime_writes() {
         let metrics = Metrics::default();
         let start = Instant::now();
         let (mut req, ..) = make_admitted_envelope(start, VecDeque::new(), 0, false);
@@ -1482,21 +1482,59 @@ mod tests {
             &metrics,
         );
 
+        // A finished request has no body runtime, so these writes are ignored and
+        // the accessors report neutral defaults.
         req.set_request_fin_received(true);
         req.set_body_buf_bytes(99);
         req.set_body_bytes_received(77);
         req.set_last_body_activity(start + std::time::Duration::from_secs(1));
 
         // Terminal request-body state always derives to `ClosedToUpstream`, which
-        // reports fin-received regardless of the (no-op) runtime flag set above.
+        // reports fin-received regardless of the ignored runtime flag set above.
         assert!(req.request_fin_received());
         assert!(req.body_buf().is_empty());
-        assert_eq!(req.body_buf_bytes(), 99);
-        assert_eq!(req.body_bytes_received(), 77);
-        assert_eq!(
-            req.last_body_activity(),
-            start + std::time::Duration::from_secs(1)
-        );
+        assert_eq!(req.body_buf_bytes(), 0);
+        assert_eq!(req.body_bytes_received(), 0);
+        assert_eq!(req.last_body_activity(), start);
         assert_eq!(req.request_body_state(), RequestBodyState::ClosedToUpstream);
+    }
+
+    #[test]
+    fn body_buf_mut_is_none_without_a_body_runtime() {
+        let metrics = Metrics::default();
+        let start = Instant::now();
+        let (mut req, ..) = make_admitted_envelope(start, VecDeque::new(), 0, false);
+        assert!(req.body_buf_mut().is_some());
+
+        req.transition_to_terminal_with_cleanup(
+            TerminalReason::Cancelled(CancellationReason::ClientReset),
+            &metrics,
+        );
+
+        // Must not panic: a terminal request has no body buffer to hand out.
+        assert!(req.body_buf_mut().is_none());
+    }
+
+    #[test]
+    fn bodyless_request_without_body_runtime_can_poll_upstream() {
+        let start = Instant::now();
+        let (mut req, ..) = make_admitted_envelope(start, VecDeque::new(), 0, true);
+        if let RequestExecutionState::Admitted(state) = &mut req.execution {
+            state.request_body_runtime = None;
+        }
+
+        let (_tx, rx) = oneshot::channel::<crate::runtime::connection::response::UpstreamResult>();
+        req.transition_admitted_to_awaiting_upstream(None, rx)
+            .expect("admitted request transitions to awaiting upstream");
+
+        // Regression: this used to derive `FinReceived`, which is not
+        // forwarding-complete, so the upstream result was never polled and the
+        // request hung until the client gave up.
+        assert_eq!(req.request_body_state(), RequestBodyState::ClosedToUpstream);
+        assert!(req.can_poll_upstream());
+        assert_eq!(
+            req.refresh_request_body_state(),
+            RequestBodyState::ClosedToUpstream
+        );
     }
 }
