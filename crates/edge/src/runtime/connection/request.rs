@@ -358,8 +358,12 @@ impl RequestEnvelope {
         next
     }
 
-    pub fn transition_request_body_forward_closed(&mut self) -> RequestBodyState {
+    pub fn transition_request_body_forward_closed(
+        &mut self,
+        metrics: &Metrics,
+    ) -> RequestBodyState {
         self.clear_body_tx();
+        self.release_request_retry_buffer(metrics);
         self.refresh_request_body_state()
     }
 
@@ -446,6 +450,19 @@ impl RequestEnvelope {
             state.dispatch.body_tx = None;
         }
         self.refresh_request_body_state();
+    }
+
+    pub(crate) fn release_request_retry_buffer(&mut self, metrics: &Metrics) {
+        let Some(runtime) = self.request_body_runtime_mut() else {
+            return;
+        };
+        if runtime.body_buf_bytes > 0 {
+            metrics
+                .request_observations()
+                .release_request_buffer(runtime.body_buf_bytes);
+        }
+        runtime.body_buf = VecDeque::new();
+        runtime.body_buf_bytes = 0;
     }
 
     pub fn body_buf(&self) -> &VecDeque<Bytes> {

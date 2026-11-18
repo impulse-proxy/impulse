@@ -98,7 +98,7 @@ impl Http3Service {
                     }
                     req.body_buf_mut().clear();
                     req.set_body_buf_bytes(0);
-                    req.transition_request_body_forward_closed();
+                    req.transition_request_body_forward_closed(metrics);
                     Ok(())
                 }
             }
@@ -143,14 +143,14 @@ impl Http3Service {
                     }
                     req.body_buf_mut().clear();
                     req.set_body_buf_bytes(0);
-                    req.transition_request_body_forward_closed();
+                    req.transition_request_body_forward_closed(metrics);
                     break;
                 }
             }
         }
 
         if req.should_close_request_body_forwarding() {
-            return req.transition_request_body_forward_closed();
+            return req.transition_request_body_forward_closed(metrics);
         }
 
         let next = req.refresh_request_body_state();
@@ -159,7 +159,7 @@ impl Http3Service {
             // Close the upstream body sender immediately so the backend sees EOF
             // without waiting for another progress pass that may never re-enter
             // the request-body branch.
-            return req.transition_request_body_forward_closed();
+            return req.transition_request_body_forward_closed(metrics);
         }
 
         next
