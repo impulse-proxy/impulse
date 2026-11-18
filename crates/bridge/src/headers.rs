@@ -1,92 +1,8 @@
-use http::{HeaderMap, HeaderName, HeaderValue};
-use quiche::h3::NameValue;
+use http::{HeaderMap, HeaderName};
 
-#[derive(Clone, Copy, Debug)]
-pub enum RequestHeaders<'a> {
-    Http(&'a HeaderMap),
-    Http3(&'a [quiche::h3::Header]),
-}
-
-impl<'a> From<&'a HeaderMap> for RequestHeaders<'a> {
-    fn from(headers: &'a HeaderMap) -> Self {
-        Self::Http(headers)
-    }
-}
-
-impl<'a> From<&'a [quiche::h3::Header]> for RequestHeaders<'a> {
-    fn from(headers: &'a [quiche::h3::Header]) -> Self {
-        Self::Http3(headers)
-    }
-}
-
-pub(crate) enum RequestHeaderIter<'a> {
-    Http(http::header::Iter<'a, HeaderValue>),
-    Http3(std::slice::Iter<'a, quiche::h3::Header>),
-}
-
-pub(crate) enum RequestHeaderRef<'a> {
-    Http(&'a HeaderName, &'a HeaderValue),
-    Http3(&'a quiche::h3::Header),
-}
-
-impl RequestHeaderRef<'_> {
-    pub(crate) fn name(&self) -> &[u8] {
-        match self {
-            Self::Http(name, _) => name.as_str().as_bytes(),
-            Self::Http3(header) => header.name(),
-        }
-    }
-
-    pub(crate) fn value(&self) -> &[u8] {
-        match self {
-            Self::Http(_, value) => value.as_bytes(),
-            Self::Http3(header) => header.value(),
-        }
-    }
-
-    pub(crate) fn header_name(&self) -> Result<HeaderName, http::header::InvalidHeaderName> {
-        match self {
-            Self::Http(name, _) => Ok((*name).clone()),
-            Self::Http3(header) => HeaderName::from_bytes(header.name()),
-        }
-    }
-
-    pub(crate) fn header_value(&self) -> Result<HeaderValue, http::header::InvalidHeaderValue> {
-        match self {
-            Self::Http(_, value) => Ok((*value).clone()),
-            Self::Http3(header) => HeaderValue::from_bytes(header.value()),
-        }
-    }
-}
-
-impl<'a> Iterator for RequestHeaderIter<'a> {
-    type Item = RequestHeaderRef<'a>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        match self {
-            Self::Http(headers) => headers
-                .next()
-                .map(|(name, value)| RequestHeaderRef::Http(name, value)),
-            Self::Http3(headers) => headers.next().map(RequestHeaderRef::Http3),
-        }
-    }
-}
-
-impl<'a> RequestHeaders<'a> {
-    pub(crate) fn iter(self) -> RequestHeaderIter<'a> {
-        match self {
-            Self::Http(headers) => RequestHeaderIter::Http(headers.iter()),
-            Self::Http3(headers) => RequestHeaderIter::Http3(headers.iter()),
-        }
-    }
-}
-
-fn is_connection_header_token(name: &HeaderName, headers: RequestHeaders<'_>) -> bool {
-    for header in headers.iter() {
-        if !header.name().eq_ignore_ascii_case(b"connection") {
-            continue;
-        }
-        let Ok(value) = std::str::from_utf8(header.value()) else {
+fn is_connection_header_token(name: &HeaderName, headers: &HeaderMap) -> bool {
+    for value in headers.get_all(http::header::CONNECTION) {
+        let Ok(value) = value.to_str() else {
             continue;
         };
         for token in value.split(',') {
@@ -100,7 +16,7 @@ fn is_connection_header_token(name: &HeaderName, headers: RequestHeaders<'_>) ->
 
 pub fn should_strip_request_header(
     name: &HeaderName,
-    headers: RequestHeaders<'_>,
+    headers: &HeaderMap,
     preserve_upgrade: bool,
 ) -> bool {
     if preserve_upgrade && (name == http::header::CONNECTION || name == http::header::UPGRADE) {
@@ -136,7 +52,7 @@ pub fn should_strip_request_header(
 /// Client-supplied `Connection` tokens must not be allowed to remove these
 /// headers, so this deliberately excludes the dynamic token set.
 pub fn should_strip_proxy_header(name: &HeaderName, preserve_upgrade: bool) -> bool {
-    should_strip_request_header(name, RequestHeaders::Http3(&[]), preserve_upgrade)
+    should_strip_request_header(name, &HeaderMap::new(), preserve_upgrade)
 }
 
 #[cfg(test)]
@@ -145,14 +61,15 @@ mod tests {
 
     #[test]
     fn client_connection_tokens_do_not_strip_proxy_auth_headers() {
-        let headers = [quiche::h3::Header::new(
-            b"connection",
-            b"authorization, x-identity",
-        )];
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            http::header::CONNECTION,
+            http::HeaderValue::from_static("authorization, x-identity"),
+        );
 
         assert!(should_strip_request_header(
             &HeaderName::from_static("authorization"),
-            headers.as_slice().into(),
+            &headers,
             false,
         ));
         assert!(!should_strip_proxy_header(

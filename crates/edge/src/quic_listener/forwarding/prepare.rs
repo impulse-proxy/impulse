@@ -44,6 +44,23 @@ use crate::{
     },
 };
 
+fn translate_http3_request_headers(
+    headers: &[quiche::h3::Header],
+) -> Result<http::HeaderMap, ProxyError> {
+    let mut translated = http::HeaderMap::with_capacity(headers.len());
+    for header in headers {
+        if header.name().starts_with(b":") {
+            continue;
+        }
+        let name = http::HeaderName::from_bytes(header.name())
+            .map_err(|_| impulse_errors::BridgeError::InvalidHeader)?;
+        let value = http::HeaderValue::from_bytes(header.value())
+            .map_err(|_| impulse_errors::BridgeError::InvalidHeader)?;
+        translated.append(name, value);
+    }
+    Ok(translated)
+}
+
 pub(super) struct IntakeRequestCandidate {
     pub(super) state: RequestIntakeState,
 }
@@ -255,8 +272,9 @@ impl PendingForward {
     fn request_build_input<'a>(
         &'a self,
         method: &'a str,
-        headers: &'a [quiche::h3::Header],
+        headers: http::HeaderMap,
         auth_header_mutations: &'a [impulse_bridge::request::RequestHeaderMutationRef<'a>],
+        websocket_extended_connect: bool,
         body: BoxBody<Bytes, Infallible>,
         content_length: Option<usize>,
     ) -> impulse_bridge::request::RequestBuildInput<'a, BoxBody<Bytes, Infallible>> {
@@ -264,8 +282,9 @@ impl PendingForward {
             method,
             path: &self.path,
             authority: self.authority.as_deref(),
-            headers: headers.into(),
+            headers: Cow::Owned(headers),
             auth_header_mutations,
+            websocket_extended_connect,
             body,
             body_mode:
                 impulse_bridge::request::RequestBuildInput::<BoxBody<Bytes, Infallible>>::body_mode_for_length(content_length),
@@ -312,13 +331,18 @@ impl PendingForward {
         content_length: Option<usize>,
     ) -> Result<Request<BoxBody<Bytes, Infallible>>, ProxyError> {
         let auth_header_mutations = self.request_header_mutation_refs();
+        let source_headers = self.original_request_headers();
+        let websocket_extended_connect =
+            impulse_bridge::websocket::h3_websocket_tunnel_requested(&self.method, source_headers);
+        let headers = translate_http3_request_headers(source_headers)?;
         if endpoint.scheme() == BackendScheme::Http {
             impulse_bridge::request::build_h1_request(
                 self.request_build_target(endpoint),
                 self.request_build_input(
                     &self.method,
-                    self.original_request_headers(),
+                    headers,
                     auth_header_mutations.as_deref().unwrap_or_default(),
+                    websocket_extended_connect,
                     body,
                     content_length,
                 ),
@@ -329,8 +353,9 @@ impl PendingForward {
                 self.request_build_target(endpoint),
                 self.request_build_input(
                     &self.method,
-                    self.original_request_headers(),
+                    headers,
                     auth_header_mutations.as_deref().unwrap_or_default(),
+                    websocket_extended_connect,
                     body,
                     content_length,
                 ),
@@ -351,6 +376,7 @@ impl PendingForward {
         endpoint: &BackendEndpoint,
     ) -> Result<Request<BoxBody<Bytes, Infallible>>, ProxyError> {
         let request_headers = self.request_headers_for_http1_websocket_tunnel();
+        let request_headers = translate_http3_request_headers(request_headers.as_ref())?;
 
         impulse_bridge::request::build_h1_request(
             self.request_build_target(endpoint),
@@ -359,8 +385,9 @@ impl PendingForward {
                     TunnelMode::Websocket,
                     &self.method,
                 ),
-                request_headers.as_ref(),
+                request_headers,
                 &[],
+                false,
                 BoxBody::new(Full::new(Bytes::new())),
                 None,
             ),

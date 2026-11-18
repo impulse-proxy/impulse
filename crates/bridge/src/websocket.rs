@@ -4,8 +4,6 @@
 //! Transport execution and tunnel I/O stay outside this crate; callers should
 //! use these helpers only to decide whether websocket-specific bridging rules apply.
 
-use crate::request::RequestHeaders;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum H3WebsocketRequestKind {
     None,
@@ -16,13 +14,8 @@ pub fn h3_websocket_request_kind(
     method: &str,
     headers: &[quiche::h3::Header],
 ) -> H3WebsocketRequestKind {
-    websocket_request_kind(method, headers.into())
-}
+    use quiche::h3::NameValue;
 
-pub(crate) fn websocket_request_kind(
-    method: &str,
-    headers: RequestHeaders<'_>,
-) -> H3WebsocketRequestKind {
     let protocol_is_websocket = headers.iter().any(|header| {
         header.name().eq_ignore_ascii_case(b":protocol")
             && std::str::from_utf8(header.value())
@@ -42,13 +35,8 @@ pub(crate) fn websocket_request_kind(
 /// This is not a valid HTTP/3 ingress shape; H3 callers must use
 /// [`h3_websocket_request_kind`] and require extended CONNECT.
 pub fn legacy_websocket_upgrade_requested(method: &str, headers: &[quiche::h3::Header]) -> bool {
-    legacy_websocket_upgrade_requested_for_headers(method, headers.into())
-}
+    use quiche::h3::NameValue;
 
-pub(crate) fn legacy_websocket_upgrade_requested_for_headers(
-    method: &str,
-    headers: RequestHeaders<'_>,
-) -> bool {
     method.eq_ignore_ascii_case("GET")
         && headers.iter().any(|header| {
             header.name().eq_ignore_ascii_case(b"upgrade")
@@ -63,6 +51,28 @@ pub(crate) fn legacy_websocket_upgrade_requested_for_headers(
                         .any(|part| part.trim().eq_ignore_ascii_case("upgrade"))
                 })
         })
+}
+
+pub(crate) fn legacy_websocket_upgrade_requested_for_headers(
+    method: &str,
+    headers: &http::HeaderMap,
+) -> bool {
+    method.eq_ignore_ascii_case("GET")
+        && headers.get_all(http::header::UPGRADE).iter().any(|value| {
+            value
+                .to_str()
+                .is_ok_and(|value| value.eq_ignore_ascii_case("websocket"))
+        })
+        && headers
+            .get_all(http::header::CONNECTION)
+            .iter()
+            .any(|value| {
+                value.to_str().is_ok_and(|value| {
+                    value
+                        .split(',')
+                        .any(|part| part.trim().eq_ignore_ascii_case("upgrade"))
+                })
+            })
 }
 
 pub fn h3_websocket_tunnel_requested(method: &str, headers: &[quiche::h3::Header]) -> bool {

@@ -31,11 +31,13 @@ pub(crate) fn build_h1_request(
         authority,
         headers,
         auth_header_mutations,
+        websocket_extended_connect: _,
         body,
         body_mode,
         trace,
         forwarded,
     } = input;
+    let headers = headers.as_ref();
 
     let content_length = body_mode.content_length();
 

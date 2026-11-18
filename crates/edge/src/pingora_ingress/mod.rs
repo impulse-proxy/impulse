@@ -1489,8 +1489,9 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             method,
             path,
             authority: ctx.authority.as_deref(),
-            headers: (&downstream_request.headers).into(),
+            headers: std::borrow::Cow::Borrowed(&downstream_request.headers),
             auth_header_mutations: auth_header_mutations.as_deref().unwrap_or_default(),
+            websocket_extended_connect: false,
             body: BoxBody::new(Full::<Bytes>::new(Bytes::new())),
             body_mode: impulse_bridge::request::RequestBuildInput::<
                 BoxBody<Bytes, Infallible>,

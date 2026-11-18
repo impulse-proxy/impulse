@@ -6,12 +6,9 @@ use http_body_util::combinators::BoxBody;
 use hyper::ext::Protocol;
 use impulse_errors::BridgeError;
 
-use crate::{
-    request::{
-        RequestBuildInput, RequestBuildTarget, RequestHeaderAssembly, RequestHeaderPolicyInput,
-        apply_request_header_assembly, apply_request_header_policies,
-    },
-    websocket::{H3WebsocketRequestKind, websocket_request_kind},
+use crate::request::{
+    RequestBuildInput, RequestBuildTarget, RequestHeaderAssembly, RequestHeaderPolicyInput,
+    apply_request_header_assembly, apply_request_header_policies,
 };
 
 pub(crate) fn build_h2_request_for_target(
@@ -25,18 +22,18 @@ pub(crate) fn build_h2_request_for_target(
         authority,
         headers,
         auth_header_mutations,
+        websocket_extended_connect,
         body,
         body_mode,
         trace,
         forwarded,
     } = input;
+    let headers = headers.as_ref();
 
     let content_length = body_mode.content_length();
 
     let method = Method::from_bytes(method.as_bytes()).map_err(|_| BridgeError::InvalidMethod)?;
-    let websocket_kind = websocket_request_kind(method.as_str(), headers);
     // Extended CONNECT is the H2 websocket path (RFC 8441).
-    let websocket_extended_connect = websocket_kind == H3WebsocketRequestKind::ExtendedConnect;
     let upstream_method = if websocket_extended_connect {
         Method::CONNECT
     } else {

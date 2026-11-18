@@ -4,7 +4,7 @@
 //! application, and the stable entrypoints callers should use. Protocol-specific
 //! H1/H2 encoding details are delegated to internal builder modules.
 
-use std::{convert::Infallible, net::SocketAddr};
+use std::{borrow::Cow, convert::Infallible, net::SocketAddr};
 
 use bytes::Bytes;
 use http::{HeaderName, HeaderValue};
@@ -13,7 +13,6 @@ pub use impulse_contracts::HeaderMutationRef as RequestHeaderMutationRef;
 use impulse_contracts::{RequestId, SpanId, TraceId};
 use impulse_errors::BridgeError;
 
-pub use crate::headers::RequestHeaders;
 use crate::{
     ForwardingPolicyInput, HostPolicyInput, UpstreamTargetInput,
     forwarded::{ForwardedHeaderChains, ForwardedHeaderValues, build_forwarded_header_values},
@@ -72,8 +71,9 @@ pub struct RequestBuildInput<'a, B = BoxBody<Bytes, Infallible>> {
     pub method: &'a str,
     pub path: &'a str,
     pub authority: Option<&'a str>,
-    pub headers: RequestHeaders<'a>,
+    pub headers: Cow<'a, http::HeaderMap>,
     pub auth_header_mutations: &'a [RequestHeaderMutationRef<'a>],
+    pub websocket_extended_connect: bool,
     pub body: B,
     pub body_mode: RequestBodyMode,
     pub trace: RequestTraceContext<'a>,
@@ -84,7 +84,7 @@ pub struct RequestBuildInput<'a, B = BoxBody<Bytes, Infallible>> {
 pub(crate) struct RequestHeaderPolicyInput<'a> {
     pub(crate) target: RequestBuildTarget<'a>,
     pub(crate) authority: Option<&'a str>,
-    pub(crate) headers: RequestHeaders<'a>,
+    pub(crate) headers: &'a http::HeaderMap,
     pub(crate) auth_header_mutations: &'a [RequestHeaderMutationRef<'a>],
     pub(crate) preserve_upgrade: bool,
     pub(crate) forwarded: RequestForwardedContext,
@@ -145,12 +145,9 @@ pub(crate) fn apply_request_header_policies(
     let mut x_forwarded_proto_from_headers = smallvec::SmallVec::<[&[u8]; 4]>::new();
     let mut x_forwarded_host_from_headers = smallvec::SmallVec::<[&[u8]; 4]>::new();
 
-    for header in headers.iter() {
-        let name = header.name();
-        let value = header.value();
-        if name.starts_with(b":") {
-            continue;
-        }
+    for (header_name, header_value) in headers {
+        let name = header_name.as_str().as_bytes();
+        let value = header_value.as_bytes();
         if auth_header_mutations
             .iter()
             .any(|mutation| mutation.name.eq_ignore_ascii_case(name))
@@ -175,23 +172,14 @@ pub(crate) fn apply_request_header_policies(
         }
 
         if name.eq_ignore_ascii_case(b"host") {
-            header
-                .header_value()
-                .map_err(|_| BridgeError::InvalidHeader)?;
             host_from_headers = std::str::from_utf8(value).ok();
             continue;
         }
 
-        let header_name = header
-            .header_name()
-            .map_err(|_| BridgeError::InvalidHeader)?;
         if should_strip_request_header(&header_name, headers, preserve_upgrade) {
             continue;
         }
-        let header_value = header
-            .header_value()
-            .map_err(|_| BridgeError::InvalidHeader)?;
-        builder = builder.header(header_name, header_value);
+        builder = builder.header(header_name.clone(), header_value.clone());
     }
 
     for mutation in auth_header_mutations {
