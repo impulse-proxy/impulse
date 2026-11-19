@@ -63,8 +63,16 @@ impl Http3Service {
                 Ok(_) => unreachable!("handled Ok state before request buffer error mapping"),
             });
         };
+        let Some(body_buf) = req.body_buf_mut() else {
+            // No body runtime exists (bodyless, intake or terminal request), so
+            // there is nowhere to hold the chunk.
+            metrics
+                .request_observations()
+                .release_request_buffer(chunk_len);
+            return Err(RequestBufferError::Stream);
+        };
+        body_buf.push_back(chunk);
         req.set_body_buf_bytes(next_state.buffered_bytes);
-        req.body_buf_mut().push_back(chunk);
         req.transition_request_body_buffered();
         Ok(())
     }
@@ -96,9 +104,11 @@ impl Http3Service {
                             .request_observations()
                             .release_request_buffer(req.body_buf_bytes());
                     }
-                    req.body_buf_mut().clear();
+                    if let Some(body_buf) = req.body_buf_mut() {
+                        body_buf.clear();
+                    }
                     req.set_body_buf_bytes(0);
-                    req.transition_request_body_forward_closed();
+                    req.transition_request_body_forward_closed(metrics);
                     Ok(())
                 }
             }
@@ -122,7 +132,7 @@ impl Http3Service {
         };
 
         loop {
-            let Some(chunk) = req.body_buf_mut().pop_front() else {
+            let Some(chunk) = req.body_buf_mut().and_then(|body_buf| body_buf.pop_front()) else {
                 break;
             };
             let len = chunk.len();
@@ -132,7 +142,9 @@ impl Http3Service {
                     metrics.request_observations().release_request_buffer(len);
                 }
                 Err(TrySendError::Full(chunk)) => {
-                    req.body_buf_mut().push_front(chunk);
+                    if let Some(body_buf) = req.body_buf_mut() {
+                        body_buf.push_front(chunk);
+                    }
                     break;
                 }
                 Err(TrySendError::Closed(_chunk)) => {
@@ -141,16 +153,18 @@ impl Http3Service {
                             .request_observations()
                             .release_request_buffer(req.body_buf_bytes());
                     }
-                    req.body_buf_mut().clear();
+                    if let Some(body_buf) = req.body_buf_mut() {
+                        body_buf.clear();
+                    }
                     req.set_body_buf_bytes(0);
-                    req.transition_request_body_forward_closed();
+                    req.transition_request_body_forward_closed(metrics);
                     break;
                 }
             }
         }
 
         if req.should_close_request_body_forwarding() {
-            return req.transition_request_body_forward_closed();
+            return req.transition_request_body_forward_closed(metrics);
         }
 
         let next = req.refresh_request_body_state();
@@ -159,7 +173,7 @@ impl Http3Service {
             // Close the upstream body sender immediately so the backend sees EOF
             // without waiting for another progress pass that may never re-enter
             // the request-body branch.
-            return req.transition_request_body_forward_closed();
+            return req.transition_request_body_forward_closed(metrics);
         }
 
         next

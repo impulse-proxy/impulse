@@ -400,7 +400,7 @@ impl Http3Service {
 
         let request_mode = req.request_mode();
         let websocket_h1_tunnel = impulse_http3_ingress::requires_h1_websocket_adaptation(
-            req.tunnel_mode,
+            req.tunnel_mode(),
             backend_endpoint.scheme() == BackendScheme::Http,
         );
         let (body_tx, websocket_tunnel_body_rx, request_body) = if request_mode.bodyless_mode() {
@@ -820,7 +820,9 @@ impl Http3Service {
                                             buffered_bytes: 0,
                                             next_chunk_bytes: read,
                                             declared_content_length: None,
-                                            exempt_from_body_size_cap: req.tunnel_mode.is_tunnel(),
+                                            exempt_from_body_size_cap: req
+                                                .tunnel_mode()
+                                                .is_tunnel(),
                                         },
                                     );
                                     match next_state {
@@ -841,7 +843,9 @@ impl Http3Service {
                                             for chunk_slice in
                                                 body_buf[..read].chunks(REQUEST_CHUNK_BYTES_LIMIT)
                                             {
-                                                let chunk = Bytes::copy_from_slice(chunk_slice);
+                                                let chunk = request_config
+                                                    .body_buffer_pool
+                                                    .copy_bytes(chunk_slice);
                                                 if let Err(err) = Self::enqueue_request_chunk(
                                                     req,
                                                     chunk,

@@ -1,5 +1,7 @@
 use std::convert::Infallible;
 
+use bytes::{BufMut, BytesMut};
+
 use impulse_config::{backend_endpoint::BackendEndpoint, runtime::RuntimeBackendTlsPolicy};
 use impulse_contracts::{AlternateBackendFailureReason, BackendId, HedgeOutcomeTelemetryReason};
 #[cfg(feature = "response-cache")]
@@ -406,13 +408,20 @@ impl Http3Service {
                 writer.shutdown().await
             };
             let read_fut = async {
-                let mut buf = [0u8; RESPONSE_CHUNK_BYTES_LIMIT];
+                // Read straight into `BytesMut` and split the filled part off as
+                // `Bytes`: ownership moves to the response channel with no copy
+                // through an intermediate stack buffer.
+                let mut buf = BytesMut::with_capacity(RESPONSE_CHUNK_BYTES_LIMIT);
                 loop {
-                    match reader.read(&mut buf).await {
+                    buf.reserve(RESPONSE_CHUNK_BYTES_LIMIT);
+                    match reader
+                        .read_buf(&mut (&mut buf).limit(RESPONSE_CHUNK_BYTES_LIMIT))
+                        .await
+                    {
                         Ok(0) => return Ok::<(), std::io::Error>(()),
-                        Ok(read) => {
+                        Ok(_) => {
                             if chunk_tx
-                                .send(ResponseChunk::Data(Bytes::copy_from_slice(&buf[..read])))
+                                .send(ResponseChunk::Data(buf.split().freeze()))
                                 .await
                                 .is_err()
                             {
@@ -630,15 +639,15 @@ impl Http3Service {
         let alternate_metrics = Arc::clone(&shared_ctx.metrics);
         #[cfg(feature = "response-cache")]
         let response_cache_store = exec_ctx.response_cache;
-        let trace_span_for_upstream = req.trace_span.clone();
+        let trace_span_for_upstream = req.trace_span().cloned();
         let (result_tx, result_rx) = oneshot::channel::<UpstreamResult>();
-        let tunnel_mode = req.tunnel_mode;
+        let tunnel_mode = req.tunnel_mode();
         let bodyless_mode = req.bodyless_mode;
         let request_id = req.request_id;
         let method_idempotent = is_idempotent_method(&req.method);
         let hedge_method_allowed = resilience.hedging_method_allowed(&req.method);
         let hedge_configured = resilience.hedging_route_enabled_for(pending_forward.route_id);
-        let hedge_tunnel_request = req.tunnel_mode.is_tunnel();
+        let hedge_tunnel_request = tunnel_mode.is_tunnel();
         let needs_alternate_before_primary =
             hedge_configured && hedge_method_allowed && bodyless_mode && !hedge_tunnel_request;
         let policy = RetryCoordinator::new(

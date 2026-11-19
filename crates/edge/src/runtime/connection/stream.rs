@@ -37,15 +37,20 @@ pub(crate) enum ResponseBackpressureState {
 #[derive(Debug, Clone)]
 pub struct RequestContext {
     pub request_id: impulse_contracts::RequestId,
-    pub trace_id: Option<TraceId>,
-    pub span_id: Option<SpanId>,
-    pub trace_span: Option<Span>,
+    pub tracing: Option<RequestTracingState>,
     pub method: String,
     pub path: String,
     pub authority: Option<String>,
     pub start: Instant,
     pub total_request_deadline: Instant,
     pub(crate) completion: RequestCompletion,
+}
+
+#[derive(Debug, Clone)]
+pub struct RequestTracingState {
+    pub trace_id: Option<TraceId>,
+    pub span_id: Option<SpanId>,
+    pub span: Option<Span>,
 }
 
 #[derive(Debug, Clone)]
@@ -73,7 +78,7 @@ pub struct AwaitingAuthState {
     pub routing: RoutingSnapshot,
     pub request_mode: RequestMode,
     pub request_body: RequestBodyState,
-    pub request_body_runtime: RequestBodyRuntime,
+    pub request_body_runtime: Option<RequestBodyRuntime>,
     pub pending_forward: Arc<PendingForward>,
     pub(crate) auth_result_rx: oneshot::Receiver<ExternalAuthResult>,
     pub auth_abort: AbortHandle,
@@ -103,7 +108,7 @@ pub struct DispatchReadyState {
     pub routing: RoutingSnapshot,
     pub request_mode: RequestMode,
     pub request_body: RequestBodyState,
-    pub request_body_runtime: RequestBodyRuntime,
+    pub request_body_runtime: Option<RequestBodyRuntime>,
     pub pending_forward: Arc<PendingForward>,
 }
 
@@ -157,7 +162,7 @@ pub struct AdmittedState {
     pub routing: RoutingSnapshot,
     pub request_mode: RequestMode,
     pub request_body: RequestBodyState,
-    pub request_body_runtime: RequestBodyRuntime,
+    pub request_body_runtime: Option<RequestBodyRuntime>,
     pub pending_forward: Arc<PendingForward>,
     pub permits: AdmissionPermits,
 }
@@ -167,7 +172,7 @@ pub struct AwaitingUpstreamState {
     pub routing: RoutingSnapshot,
     pub request_mode: RequestMode,
     pub request_body: RequestBodyState,
-    pub request_body_runtime: RequestBodyRuntime,
+    pub request_body_runtime: Option<RequestBodyRuntime>,
     pub pending_forward: Arc<PendingForward>,
     pub permits: AdmissionPermits,
     pub dispatch: BackendDispatchState,
@@ -177,12 +182,13 @@ pub struct ResponseStreamingState {
     pub context: RequestContext,
     pub routing: RoutingSnapshot,
     pub request_mode: RequestMode,
-    pub request_body_runtime: RequestBodyRuntime,
+    pub request_body_runtime: Option<RequestBodyRuntime>,
     pub permits: AdmissionPermits,
     pub final_status: StatusCode,
     pub emission: ResponseEmissionState,
     pub(crate) response_chunk_rx: mpsc::Receiver<ResponseChunk>,
     pub(crate) backpressure: ResponseBackpressureState,
+    pub(crate) response_body_pump_abort: Option<AbortHandle>,
     pub backend_accounting: BackendAccountingState,
 }
 

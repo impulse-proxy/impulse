@@ -39,7 +39,7 @@ use crate::{
         request::{PendingForward, RequestEnvelope},
         stream::{
             AwaitingAuthState, DispatchReadyState, RequestBodyRuntime, RequestContext,
-            RequestIntakeState, RequestMode, RoutingSnapshot,
+            RequestIntakeState, RequestMode, RequestTracingState, RoutingSnapshot,
         },
     },
 };
@@ -436,9 +436,11 @@ impl Http3Service {
             state: RequestIntakeState {
                 context: RequestContext {
                     request_id,
-                    trace_id,
-                    span_id,
-                    trace_span,
+                    tracing: trace_id.zip(span_id).map(|_| RequestTracingState {
+                        trace_id,
+                        span_id,
+                        span: trace_span.clone(),
+                    }),
                     method: method.to_string(),
                     path: path.to_string(),
                     authority: authority.map(str::to_string),
@@ -470,13 +472,13 @@ impl Http3Service {
                 routing: routing.clone(),
                 request_mode,
                 request_body,
-                request_body_runtime: RequestBodyRuntime {
+                request_body_runtime: (!request_mode.bodyless_mode()).then(|| RequestBodyRuntime {
                     body_buf: VecDeque::new(),
                     body_buf_bytes: 0,
                     body_bytes_received: 0,
                     last_body_activity,
                     request_fin_received: request_body.request_fin_received(),
-                },
+                }),
                 pending_forward,
             },
             routing,
@@ -885,8 +887,18 @@ impl Http3Service {
                     lb_key: Arc::<str>::from(lb_key.as_str()),
                     client_addr: peer_address,
                     request_id,
-                    trace_id: intake.state.context.trace_id,
-                    span_id: intake.state.context.span_id,
+                    trace_id: intake
+                        .state
+                        .context
+                        .tracing
+                        .as_ref()
+                        .and_then(|tracing| tracing.trace_id),
+                    span_id: intake
+                        .state
+                        .context
+                        .tracing
+                        .as_ref()
+                        .and_then(|tracing| tracing.span_id),
                     host_policy: resolved_policy.host_policy,
                     forwarded_header_policy: resolved_policy.forwarded_header_policy,
                     plugin_plan: Arc::clone(&plugin_plan),
@@ -1249,7 +1261,7 @@ mod tests {
     #[test]
     fn build_request_injects_auth_mutations_after_configured_headers() {
         let pending_forward = PendingForward {
-            auth_header_mutations: Some(vec![
+            auth_header_mutations: Some(smallvec::smallvec![
                 PendingHeaderMutation::Upsert {
                     name: b"x-auth-user".to_vec(),
                     value: b"alice".to_vec(),
@@ -1299,7 +1311,7 @@ mod tests {
     #[test]
     fn request_headers_materializes_owned_headers_when_auth_mutations_are_pending() {
         let pending_forward = PendingForward {
-            auth_header_mutations: Some(vec![PendingHeaderMutation::Upsert {
+            auth_header_mutations: Some(smallvec::smallvec![PendingHeaderMutation::Upsert {
                 name: b"x-auth-user".to_vec(),
                 value: b"alice".to_vec(),
             }]),

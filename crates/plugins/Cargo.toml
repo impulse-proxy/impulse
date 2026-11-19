@@ -31,3 +31,4 @@ http = { workspace = true, optional = true }
 impulse-contracts = { path = "../contracts" }
 impulse-policy = { path = "../policy", optional = true }
 sha2 = { version = "0.10", optional = true }
+smallvec.workspace = true

@@ -17,6 +17,7 @@ use crate::{
     resilience::runtime::RuntimeResilience,
     routing::index::RouteIndex,
     runtime::{
+        body_buffer_pool::BodyBufferPool,
         bundle::{ActiveRuntimeGeneration, RuntimeBundleHandle},
         connection::quic::QuicConnection,
         shared_state::SharedRuntimeState,
@@ -71,6 +72,7 @@ pub struct Http3Service {
     pub upstream_inflight: Arc<[Arc<Semaphore>]>,
     pub global_inflight: Arc<Semaphore>,
     pub(crate) routing_index: Arc<RouteIndex>,
+    pub(crate) body_buffer_pool: Arc<BodyBufferPool>,
     pub metrics: Arc<Metrics>,
     pub resilience: Arc<RuntimeResilience>,
     pub watchdog: Arc<WatchdogCoordinator>,

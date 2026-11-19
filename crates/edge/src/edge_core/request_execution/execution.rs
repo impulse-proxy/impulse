@@ -21,6 +21,7 @@ use impulse_plugins::{
     RouteExecutionClass, SynchronousRequestPluginDecision, SynchronousRequestPluginExecution,
     execute_async_request_plugins, execute_synchronous_request_plugins,
 };
+use smallvec::SmallVec;
 
 use super::{
     PluginRequestExecutionInput, PluginRequestExecutionOutcome, PluginRequestExecutionState,
@@ -245,7 +246,7 @@ impl<'a> EdgeRequestService<'a> {
                 } => {
                     if let Some(async_mutations) = async_mutations {
                         mutations
-                            .get_or_insert_with(Vec::new)
+                            .get_or_insert_with(SmallVec::new)
                             .extend(async_mutations);
                     }
                     #[cfg(feature = "quota")]

@@ -58,7 +58,7 @@ pub use plan::{CompiledConnectionPlan, CompiledPluginPlan, RouteExecutionClass};
 pub use quota::CompiledQuota;
 pub use request::{
     AsyncRequestPluginDecision, AsyncRequestPluginExecution, AsyncRequestPluginExecutionGuard,
-    SynchronousRequestPluginDecision, SynchronousRequestPluginExecution,
+    PluginHeaderMutations, SynchronousRequestPluginDecision, SynchronousRequestPluginExecution,
     execute_async_request_plugins, execute_synchronous_request_plugins,
 };
 pub use response::{

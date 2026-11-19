@@ -1437,7 +1437,6 @@ fn bodyless_request_mode_only_applies_to_empty_get_and_head() {
 fn connect_can_poll_upstream_before_request_fin() {
     let mut req = make_awaiting_upstream_envelope(Instant::now(), "CONNECT", false);
     req.method = "CONNECT".to_string();
-    req.tunnel_mode = TunnelMode::Connect;
     req.set_request_fin_received(false);
     if let RequestExecutionState::AwaitingUpstream(state) = &mut req.execution {
         state.request_mode = RequestMode::ConnectTunnel;
@@ -1468,7 +1467,7 @@ fn non_connect_requires_request_completion_before_upstream_poll() {
         routing: make_routing_snapshot(),
         request_mode: RequestMode::Normal,
         request_body: RequestBodyState::FinReceived,
-        request_body_runtime: make_body_runtime(start, true),
+        request_body_runtime: Some(make_body_runtime(start, true)),
         pending_forward: make_pending_forward("GET"),
         auth_result_rx: oneshot::channel::<crate::runtime::connection::auth::ExternalAuthResult>()
             .1,
@@ -1512,7 +1511,6 @@ fn total_request_timeout_tracks_typed_execution_phase() {
 fn connect_total_request_timeout_prefers_awaiting_upstream_bucket() {
     let mut req = make_awaiting_upstream_envelope(Instant::now(), "CONNECT", false);
     req.method = "CONNECT".to_string();
-    req.tunnel_mode = TunnelMode::Connect;
     req.set_request_fin_received(false);
     if let RequestExecutionState::AwaitingUpstream(state) = &mut req.execution {
         state.request_mode = RequestMode::ConnectTunnel;
@@ -2034,9 +2032,7 @@ fn make_envelope(phase: StreamPhase) -> RequestEnvelope {
 fn make_request_context(start: Instant, method: &str) -> RequestContext {
     RequestContext {
         request_id: REQUEST_ID_COUNTER.fetch_add(1, Ordering::Relaxed),
-        trace_id: None,
-        span_id: None,
-        trace_span: None,
+        tracing: None,
         method: method.into(),
         path: "/".into(),
         authority: None,
@@ -2118,9 +2114,6 @@ fn make_dispatch_ready_envelope(
     let routing = make_routing_snapshot();
     RequestEnvelope {
         request_id: context.request_id,
-        trace_id: context.trace_id,
-        span_id: context.span_id,
-        trace_span: context.trace_span.clone(),
         method: context.method.clone(),
         path: context.path.clone(),
         authority: context.authority.clone(),
@@ -2139,14 +2132,12 @@ fn make_dispatch_ready_envelope(
         start: context.start,
         total_request_deadline: context.total_request_deadline,
         bodyless_mode: false,
-        tunnel_mode: TunnelMode::None,
-        plugin_plan: Arc::new(impulse_plugins::CompiledPluginPlan::default()),
+        processing: None,
         pinned_generation: None,
         retry_count: 0,
         error_kind: None,
         terminal_overload_reason: None,
         completion: context.completion.clone(),
-        empty_request_body_runtime: RequestBodyRuntime::empty(start),
         execution: RequestExecutionState::DispatchReady(DispatchReadyState {
             context,
             routing,
@@ -2156,7 +2147,7 @@ fn make_dispatch_ready_envelope(
             } else {
                 RequestBodyState::Open
             },
-            request_body_runtime: make_body_runtime(start, request_fin_received),
+            request_body_runtime: Some(make_body_runtime(start, request_fin_received)),
             pending_forward: make_pending_forward(method),
         }),
     }
@@ -2185,7 +2176,11 @@ fn make_awaiting_upstream_envelope(
         } else {
             RequestBodyState::Open
         };
-        state.request_body_runtime.request_fin_received = request_fin_received;
+        state
+            .request_body_runtime
+            .as_mut()
+            .expect("request body runtime")
+            .request_fin_received = request_fin_received;
     }
     let (_tx, rx) = oneshot::channel::<crate::runtime::connection::response::UpstreamResult>();
     req.transition_admitted_to_awaiting_upstream(None, rx)
@@ -2273,9 +2268,10 @@ fn abort_stream_waiting_for_auth_clears_async_auth_state() {
     req.execution = RequestExecutionState::AwaitingAuth(AwaitingAuthState {
         context: crate::runtime::connection::stream::RequestContext {
             request_id: req.request_id,
-            trace_id: req.trace_id,
-            span_id: req.span_id,
-            trace_span: req.trace_span.clone(),
+            tracing: req
+                .processing
+                .as_ref()
+                .and_then(|state| state.tracing.clone()),
             method: req.method.clone(),
             path: req.path.clone(),
             authority: req.authority.clone(),
@@ -2297,13 +2293,13 @@ fn abort_stream_waiting_for_auth_clears_async_auth_state() {
         },
         request_mode: RequestMode::Normal,
         request_body: RequestBodyState::Open,
-        request_body_runtime: RequestBodyRuntime {
+        request_body_runtime: Some(RequestBodyRuntime {
             body_buf: std::collections::VecDeque::new(),
             body_buf_bytes: 0,
             body_bytes_received: 0,
             last_body_activity: req.start,
             request_fin_received: false,
-        },
+        }),
         pending_forward: Arc::new(crate::runtime::connection::request::PendingForward {
             method: Arc::<str>::from("POST"),
             path: Arc::<str>::from("/upload"),

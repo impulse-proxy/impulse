@@ -19,6 +19,7 @@ use pingora_core::protocols::http::compression::Algorithm;
 #[cfg(feature = "response-cache")]
 use pingora_http::ResponseHeader;
 use tokio::sync::mpsc::error::TryRecvError;
+use tokio::task::AbortHandle;
 
 use super::*;
 use crate::{
@@ -367,7 +368,7 @@ impl Http3Service {
         };
         let request_mode = req.request_mode();
         let tunnel_response = impulse_http3_ingress::tunnel_response_established(
-            req.tunnel_mode,
+            req.tunnel_mode(),
             &req.method,
             status,
         );
@@ -389,8 +390,13 @@ impl Http3Service {
             ));
         };
         #[cfg(any(feature = "response-cache", feature = "response-compression"))]
-        let has_response_plugins = !req.plugin_plan.cache_policy().is_empty()
-            || !req.plugin_plan.response_policy().is_empty();
+        let plugin_plan = req
+            .processing
+            .as_ref()
+            .and_then(|state| state.response_plugin_plan.as_deref())
+            .unwrap_or(&pending_forward.plugin_plan);
+        let has_response_plugins =
+            !plugin_plan.cache_policy().is_empty() || !plugin_plan.response_policy().is_empty();
         #[cfg(feature = "response-compression")]
         let request_headers = has_response_plugins.then(|| {
             let mut headers = http::HeaderMap::new();
@@ -410,11 +416,11 @@ impl Http3Service {
             #[cfg(any(feature = "response-cache", feature = "response-compression"))]
             metrics,
             #[cfg(any(feature = "response-cache", feature = "response-compression"))]
-            plugin_plan: &req.plugin_plan,
+            plugin_plan,
             #[cfg(any(feature = "response-cache", feature = "response-compression"))]
             plugin_request: has_response_plugins.then(|| PluginRequestView {
                 request_id: req.request_id,
-                generation: req.plugin_plan.generation(),
+                generation: plugin_plan.generation(),
                 runtime_route_id: pending_forward.route_id,
                 route_id: req.upstream_name.as_deref(),
                 upstream_name: pending_forward.upstream_name.as_ref(),
@@ -456,7 +462,7 @@ impl Http3Service {
         } = processed_response;
         #[cfg(feature = "response-compression")]
         if matches!(compression.action, ResponseCompressionAction::Gzip)
-            && let Some(policy) = req.plugin_plan.response_compression()
+            && let Some(policy) = plugin_plan.response_compression()
         {
             policy.apply_selected_representation_headers(&mut response_headers, compression);
         }
@@ -1080,7 +1086,7 @@ impl Http3Service {
         deferred_start: Option<ResponseChunk>,
         pump: ResponseBodyPumpPlan,
         metrics: Arc<Metrics>,
-    ) -> mpsc::Receiver<ResponseChunk> {
+    ) -> (mpsc::Receiver<ResponseChunk>, Option<AbortHandle>) {
         let (chunk_tx, chunk_rx) = mpsc::channel::<ResponseChunk>(RESPONSE_CHUNK_CHANNEL_CAPACITY);
         let fail_tx = chunk_tx.clone();
         let fut = async move {
@@ -1323,16 +1329,17 @@ impl Http3Service {
                 }
             }
         };
-        let spawned = match req.trace_span.clone() {
-            Some(span) => spawn_async_task(fut.instrument(span), "body-pump"),
-            None => spawn_async_task(fut, "body-pump"),
+        let abort = match (runtime_handle(), req.trace_span().cloned()) {
+            (Some(handle), Some(span)) => Some(handle.spawn(fut.instrument(span)).abort_handle()),
+            (Some(handle), None) => Some(handle.spawn(fut).abort_handle()),
+            (None, _) => {
+                let _ = fail_tx.try_send(ResponseChunk::Error(ProxyError::RequestTransport(
+                    RequestFailure::RuntimeUnavailable,
+                )));
+                None
+            }
         };
-        if !spawned {
-            let _ = fail_tx.try_send(ResponseChunk::Error(ProxyError::RequestTransport(
-                RequestFailure::RuntimeUnavailable,
-            )));
-        }
-        chunk_rx
+        (chunk_rx, abort)
     }
 
     fn observe_response_start_transition(
@@ -1485,7 +1492,7 @@ impl Http3Service {
                     Self::send_response_start_headers(h3, quic, stream_id, &metadata, false)?;
                 }
                 let deferred_start = Self::into_deferred_response_start_chunk(metadata);
-                let chunk_rx = Self::spawn_response_body_pump(
+                let (chunk_rx, body_pump_abort) = Self::spawn_response_body_pump(
                     req,
                     response_body,
                     deferred_start,
@@ -1502,6 +1509,9 @@ impl Http3Service {
                     },
                     response_status,
                 ) {
+                    if let Some(abort) = body_pump_abort {
+                        abort.abort();
+                    }
                     return Self::fail_response_start_state_transition(
                         stream_id,
                         req,
@@ -1513,6 +1523,7 @@ impl Http3Service {
                         state_err.attempted(),
                     );
                 }
+                req.set_response_body_pump_abort(body_pump_abort);
                 let _ = req.complete_with(|| {
                     Self::observe_response_start_transition(req, &observation, shared_ctx)
                 });

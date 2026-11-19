@@ -70,6 +70,7 @@ use rustls::{
     server::{ClientHello, ResolvesServerCert},
     sign::CertifiedKey,
 };
+use smallvec::SmallVec;
 
 #[cfg(feature = "external-auth")]
 use crate::edge_core::request_execution::execute_compiled_external_auth;
@@ -136,7 +137,7 @@ pub(crate) struct PingoraEdgeRequestState {
     pub(crate) runtime: Arc<RuntimeBundle>,
     pub(crate) route: Option<ResolvedRouteTarget>,
     pub(crate) policy: Option<ResolvedRequestPolicy>,
-    auth_header_mutations: Option<Vec<PendingHeaderMutation>>,
+    auth_header_mutations: Option<SmallVec<[PendingHeaderMutation; 4]>>,
     pub(crate) completion: RequestCompletion,
     terminal_classification: Option<PingoraTerminalClassification>,
     response_processing: Option<ResponseProcessingResult>,
@@ -966,7 +967,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
                 AsyncRequestPluginDecision::Mutate(mutations) => {
                     if !mutations.is_empty() {
                         plugin_mutations
-                            .get_or_insert_with(Vec::new)
+                            .get_or_insert_with(SmallVec::new)
                             .extend(mutations);
                     }
                 }
@@ -1483,7 +1484,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
                         }
                     }
                 })
-                .collect::<Vec<_>>()
+                .collect::<SmallVec<[_; 4]>>()
         });
         let input = impulse_bridge::request::RequestBuildInput {
             method,

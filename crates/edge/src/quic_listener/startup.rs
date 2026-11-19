@@ -248,6 +248,7 @@ impl Http3Service {
             upstream_inflight: Arc::clone(&generation_state.upstream_inflight),
             global_inflight: Arc::clone(&generation_state.global_inflight),
             routing_index: Arc::clone(&generation_state.routing_index),
+            body_buffer_pool: Arc::new(crate::runtime::body_buffer_pool::BodyBufferPool::default()),
             metrics: Arc::clone(&shared_services.metrics),
             resilience: Arc::clone(&generation_state.resilience),
             watchdog: Arc::clone(&shared_services.watchdog),

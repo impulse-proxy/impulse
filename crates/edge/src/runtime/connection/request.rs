@@ -1,7 +1,7 @@
 use std::{
     collections::VecDeque,
     net::SocketAddr,
-    sync::{Arc, RwLock},
+    sync::{Arc, OnceLock, RwLock},
     time::Instant,
 };
 
@@ -12,7 +12,11 @@ use impulse_config::{
 };
 use impulse_lb::upstream_pool::UpstreamPool;
 use impulse_plugins::CompiledPluginPlan;
-use tokio::sync::{mpsc, oneshot};
+use smallvec::SmallVec;
+use tokio::{
+    sync::{mpsc, oneshot},
+    task::AbortHandle,
+};
 use tracing::Span;
 
 use crate::{
@@ -30,18 +34,15 @@ use crate::{
             BackendAccountingState, BackendDispatchState, BackendFailureReason, CancellationReason,
             CancelledState, CompletionReason, DispatchReadyState, RequestBodyRuntime,
             RequestBodyState, RequestContext, RequestExecutionState, RequestMode,
-            ResponseBackpressureState, ResponseEmissionState, ResponseStreamingState,
-            StreamAdmissionState, StreamPhase, TerminalReason, TerminalSnapshot, TerminalState,
-            TimeoutReason, TunnelMode,
+            RequestTracingState, ResponseBackpressureState, ResponseEmissionState,
+            ResponseStreamingState, StreamAdmissionState, StreamPhase, TerminalReason,
+            TerminalSnapshot, TerminalState, TimeoutReason, TunnelMode,
         },
     },
 };
 
 pub struct RequestEnvelope {
     pub request_id: impulse_contracts::RequestId,
-    pub trace_id: Option<impulse_contracts::TraceId>,
-    pub span_id: Option<impulse_contracts::SpanId>,
-    pub trace_span: Option<Span>,
 
     pub method: String,
     pub path: String,
@@ -62,16 +63,34 @@ pub struct RequestEnvelope {
     pub start: Instant,
     pub total_request_deadline: Instant,
     pub bodyless_mode: bool,
-    pub tunnel_mode: TunnelMode,
-    pub plugin_plan: Arc<CompiledPluginPlan>,
+    pub(crate) processing: Option<RequestProcessingState>,
     pub(crate) pinned_generation: Option<crate::runtime::bundle::ActiveRuntimeGeneration>,
 
     pub retry_count: u8,
     pub error_kind: Option<&'static str>,
     pub terminal_overload_reason: Option<OverloadShedReason>,
     pub(crate) completion: RequestCompletion,
-    pub(crate) empty_request_body_runtime: RequestBodyRuntime,
     pub execution: RequestExecutionState,
+}
+
+pub(crate) struct RequestProcessingState {
+    pub(crate) response_plugin_plan: Option<Arc<CompiledPluginPlan>>,
+    pub(crate) tracing: Option<RequestTracingState>,
+}
+
+impl RequestProcessingState {
+    fn new(
+        plugin_plan: &Arc<CompiledPluginPlan>,
+        tracing: Option<RequestTracingState>,
+    ) -> Option<Self> {
+        let response_plugin_plan = (!plugin_plan.cache_policy().is_empty()
+            || !plugin_plan.response_policy().is_empty())
+        .then(|| Arc::clone(plugin_plan));
+        (response_plugin_plan.is_some() || tracing.is_some()).then_some(Self {
+            response_plugin_plan,
+            tracing,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -90,7 +109,36 @@ impl RequestStateError {
     }
 }
 
+fn empty_body_buf() -> &'static VecDeque<Bytes> {
+    static EMPTY: OnceLock<VecDeque<Bytes>> = OnceLock::new();
+    EMPTY.get_or_init(VecDeque::new)
+}
+
 impl RequestEnvelope {
+    pub(crate) fn trace_span(&self) -> Option<&Span> {
+        self.processing.as_ref()?.tracing.as_ref()?.span.as_ref()
+    }
+
+    pub(crate) fn tunnel_mode(&self) -> TunnelMode {
+        self.request_mode().tunnel_mode()
+    }
+
+    pub(crate) fn trace_ids(
+        &self,
+    ) -> (
+        Option<&impulse_contracts::TraceId>,
+        Option<&impulse_contracts::SpanId>,
+    ) {
+        let Some(tracing) = self
+            .processing
+            .as_ref()
+            .and_then(|state| state.tracing.as_ref())
+        else {
+            return (None, None);
+        };
+        (tracing.trace_id.as_ref(), tracing.span_id.as_ref())
+    }
+
     pub fn request_id(&self) -> impulse_contracts::RequestId {
         self.request_id
     }
@@ -119,9 +167,6 @@ impl RequestEnvelope {
 
         Self {
             request_id: context.request_id,
-            trace_id: context.trace_id,
-            span_id: context.span_id,
-            trace_span: context.trace_span.clone(),
             method: context.method.clone(),
             path: context.path.clone(),
             authority: context.authority.clone(),
@@ -140,14 +185,15 @@ impl RequestEnvelope {
             start: context.start,
             total_request_deadline: context.total_request_deadline,
             bodyless_mode: request_mode.bodyless_mode(),
-            tunnel_mode: request_mode.tunnel_mode(),
-            plugin_plan: Arc::clone(&pending_forward.plugin_plan),
+            processing: RequestProcessingState::new(
+                &pending_forward.plugin_plan,
+                context.tracing.clone(),
+            ),
             pinned_generation: None,
             retry_count,
             error_kind,
             terminal_overload_reason: None,
             completion: context.completion.clone(),
-            empty_request_body_runtime: RequestBodyRuntime::empty(context.start),
             execution: RequestExecutionState::DispatchReady(state),
         }
     }
@@ -177,9 +223,6 @@ impl RequestEnvelope {
 
         Self {
             request_id: context.request_id,
-            trace_id: context.trace_id,
-            span_id: context.span_id,
-            trace_span: context.trace_span.clone(),
             method: context.method.clone(),
             path: context.path.clone(),
             authority: context.authority.clone(),
@@ -198,14 +241,15 @@ impl RequestEnvelope {
             start: context.start,
             total_request_deadline: context.total_request_deadline,
             bodyless_mode: request_mode.bodyless_mode(),
-            tunnel_mode: request_mode.tunnel_mode(),
-            plugin_plan: Arc::clone(&pending_forward.plugin_plan),
+            processing: RequestProcessingState::new(
+                &pending_forward.plugin_plan,
+                context.tracing.clone(),
+            ),
             pinned_generation: None,
             retry_count,
             error_kind,
             terminal_overload_reason: None,
             completion: context.completion.clone(),
-            empty_request_body_runtime: RequestBodyRuntime::empty(context.start),
             execution: RequestExecutionState::AwaitingAuth(state),
         }
     }
@@ -237,7 +281,9 @@ impl RequestEnvelope {
     }
 
     pub fn set_request_fin_received(&mut self, value: bool) {
-        self.request_body_runtime_mut().request_fin_received = value;
+        if let Some(runtime) = self.request_body_runtime_mut() {
+            runtime.request_fin_received = value;
+        }
     }
 
     pub fn request_mode(&self) -> RequestMode {
@@ -259,11 +305,9 @@ impl RequestEnvelope {
             RequestExecutionState::DispatchReady(state) => state.request_body,
             RequestExecutionState::Admitted(state) => state.request_body,
             RequestExecutionState::AwaitingUpstream(state) => state.request_body,
-            RequestExecutionState::StreamingResponse(_) => RequestBodyState::from_runtime(
-                self.request_body_runtime().request_fin_received,
-                !self.request_body_runtime().body_buf.is_empty(),
-                self.body_tx().is_some(),
-            ),
+            RequestExecutionState::StreamingResponse(_) => {
+                self.request_body_state_from_runtime(self.body_tx().is_some())
+            }
             RequestExecutionState::Terminal(state) => terminal_request_mode(state)
                 .initial_body_state()
                 .on_forward_closed(),
@@ -271,7 +315,9 @@ impl RequestEnvelope {
     }
 
     pub fn set_request_body_state(&mut self, next: RequestBodyState) {
-        self.request_body_runtime_mut().request_fin_received = next.request_fin_received();
+        if let Some(runtime) = self.request_body_runtime_mut() {
+            runtime.request_fin_received = next.request_fin_received();
+        }
         match &mut self.execution {
             RequestExecutionState::Intake(state) => state.request_body = next,
             RequestExecutionState::AwaitingAuth(state) => state.request_body = next,
@@ -283,11 +329,7 @@ impl RequestEnvelope {
     }
 
     pub fn refresh_request_body_state(&mut self) -> RequestBodyState {
-        let next = RequestBodyState::from_runtime(
-            self.request_body_runtime().request_fin_received,
-            !self.request_body_runtime().body_buf.is_empty(),
-            self.body_tx().is_some(),
-        );
+        let next = self.request_body_state_from_runtime(self.body_tx().is_some());
         self.set_request_body_state(next);
         next
     }
@@ -304,8 +346,12 @@ impl RequestEnvelope {
         next
     }
 
-    pub fn transition_request_body_forward_closed(&mut self) -> RequestBodyState {
+    pub fn transition_request_body_forward_closed(
+        &mut self,
+        metrics: &Metrics,
+    ) -> RequestBodyState {
         self.clear_body_tx();
+        self.release_request_retry_buffer(metrics);
         self.refresh_request_body_state()
     }
 
@@ -394,36 +440,64 @@ impl RequestEnvelope {
         self.refresh_request_body_state();
     }
 
-    pub fn body_buf(&self) -> &VecDeque<Bytes> {
-        &self.request_body_runtime().body_buf
+    pub(crate) fn release_request_retry_buffer(&mut self, metrics: &Metrics) {
+        let Some(runtime) = self.request_body_runtime_mut() else {
+            return;
+        };
+        if runtime.body_buf_bytes > 0 {
+            metrics
+                .request_observations()
+                .release_request_buffer(runtime.body_buf_bytes);
+        }
+        runtime.body_buf = VecDeque::new();
+        runtime.body_buf_bytes = 0;
     }
 
-    pub fn body_buf_mut(&mut self) -> &mut VecDeque<Bytes> {
-        &mut self.request_body_runtime_mut().body_buf
+    pub fn body_buf(&self) -> &VecDeque<Bytes> {
+        match self.request_body_runtime() {
+            Some(runtime) => &runtime.body_buf,
+            None => empty_body_buf(),
+        }
+    }
+
+    /// Mutable access to the request body buffer, or `None` when the request has
+    /// no body runtime (bodyless requests, and the intake and terminal states).
+    pub fn body_buf_mut(&mut self) -> Option<&mut VecDeque<Bytes>> {
+        self.request_body_runtime_mut()
+            .map(|runtime| &mut runtime.body_buf)
     }
 
     pub fn body_buf_bytes(&self) -> usize {
-        self.request_body_runtime().body_buf_bytes
+        self.request_body_runtime()
+            .map_or(0, |runtime| runtime.body_buf_bytes)
     }
 
     pub fn set_body_buf_bytes(&mut self, value: usize) {
-        self.request_body_runtime_mut().body_buf_bytes = value;
+        if let Some(runtime) = self.request_body_runtime_mut() {
+            runtime.body_buf_bytes = value;
+        }
     }
 
     pub fn body_bytes_received(&self) -> usize {
-        self.request_body_runtime().body_bytes_received
+        self.request_body_runtime()
+            .map_or(0, |runtime| runtime.body_bytes_received)
     }
 
     pub fn set_body_bytes_received(&mut self, value: usize) {
-        self.request_body_runtime_mut().body_bytes_received = value;
+        if let Some(runtime) = self.request_body_runtime_mut() {
+            runtime.body_bytes_received = value;
+        }
     }
 
     pub fn last_body_activity(&self) -> Instant {
-        self.request_body_runtime().last_body_activity
+        self.request_body_runtime()
+            .map_or(self.start, |runtime| runtime.last_body_activity)
     }
 
     pub fn set_last_body_activity(&mut self, value: Instant) {
-        self.request_body_runtime_mut().last_body_activity = value;
+        if let Some(runtime) = self.request_body_runtime_mut() {
+            runtime.last_body_activity = value;
+        }
     }
 
     pub fn pending_forward(&self) -> Option<&Arc<PendingForward>> {
@@ -670,8 +744,10 @@ impl RequestEnvelope {
                 });
             }
         };
-        let dispatch_body_tx = if admitted.request_body_runtime.request_fin_received
-            && admitted.request_body_runtime.body_buf.is_empty()
+        let request_body_runtime = admitted.request_body_runtime;
+        let dispatch_body_tx = if request_body_runtime
+            .as_ref()
+            .is_none_or(|runtime| runtime.request_fin_received && runtime.body_buf.is_empty())
         {
             None
         } else {
@@ -686,15 +762,12 @@ impl RequestEnvelope {
             routing,
             request_mode,
             request_body: _,
-            request_body_runtime,
             pending_forward,
             permits,
+            request_body_runtime: _,
         } = admitted;
-        let request_body = RequestBodyState::from_runtime(
-            request_body_runtime.request_fin_received,
-            !request_body_runtime.body_buf.is_empty(),
-            dispatch_body_tx.is_some(),
-        );
+        let request_body =
+            Self::body_state_for_runtime(request_body_runtime.as_ref(), dispatch_body_tx.is_some());
         self.execution = RequestExecutionState::AwaitingUpstream(AwaitingUpstreamState {
             context,
             routing,
@@ -737,6 +810,7 @@ impl RequestEnvelope {
                     emission,
                     response_chunk_rx,
                     backpressure: ResponseBackpressureState::Ready,
+                    response_body_pump_abort: None,
                     backend_accounting: state.dispatch.backend_accounting,
                 });
                 Ok(())
@@ -779,7 +853,21 @@ impl RequestEnvelope {
         &mut self,
         terminal: crate::runtime::connection::stream::TerminalState,
     ) {
-        self.execution = RequestExecutionState::Terminal(terminal);
+        let prior_execution = std::mem::replace(
+            &mut self.execution,
+            RequestExecutionState::Terminal(terminal),
+        );
+        if let RequestExecutionState::StreamingResponse(state) = prior_execution
+            && let Some(abort) = state.response_body_pump_abort
+        {
+            abort.abort();
+        }
+    }
+
+    pub(crate) fn set_response_body_pump_abort(&mut self, abort: Option<AbortHandle>) {
+        if let RequestExecutionState::StreamingResponse(state) = &mut self.execution {
+            state.response_body_pump_abort = abort;
+        }
     }
 
     pub(crate) fn transition_awaiting_auth_to_dispatch_ready<I>(
@@ -795,10 +883,16 @@ impl RequestEnvelope {
                 let mut mutations = mutations.into_iter();
                 if let Some(first) = mutations.next() {
                     let pending = Arc::make_mut(&mut state.pending_forward);
+                    let mut existing = pending
+                        .auth_header_mutations
+                        .take()
+                        .unwrap_or_default()
+                        .into_vec();
                     crate::runtime::connection::auth::merge_auth_request_mutations(
-                        pending.auth_header_mutations.get_or_insert_with(Vec::new),
+                        &mut existing,
                         std::iter::once(first).chain(mutations),
                     );
+                    pending.auth_header_mutations = Some(SmallVec::from_vec(existing));
                 }
                 state
             }
@@ -870,6 +964,11 @@ impl RequestEnvelope {
         if let RequestExecutionState::AwaitingAuth(state) = &prior_execution {
             state.auth_abort.abort();
         }
+        if let RequestExecutionState::StreamingResponse(state) = &prior_execution
+            && let Some(abort) = &state.response_body_pump_abort
+        {
+            abort.abort();
+        }
 
         if should_finalize_backend {
             let _ = finalize_backend_request_cleanup(
@@ -889,47 +988,75 @@ impl RequestEnvelope {
                 .release_request_buffer(buffered_body_bytes);
         }
 
+        drop(prior_execution);
         self.execution = RequestExecutionState::Terminal(terminal_state);
         prior_phase
     }
 
-    fn request_body_runtime(&self) -> &RequestBodyRuntime {
+    /// Derive the request-body state from an optional body runtime.
+    ///
+    /// A request without an allocated runtime is bodyless: its downstream side is
+    /// already finished and nothing is buffered, so it must derive exactly what an
+    /// empty, finished runtime would. In particular, with no upstream sender that is
+    /// `ClosedToUpstream`, the only state for which forwarding is complete.
+    fn body_state_for_runtime(
+        runtime: Option<&RequestBodyRuntime>,
+        forward_open: bool,
+    ) -> RequestBodyState {
+        let (fin_received, has_buffered_body) = runtime.map_or((true, false), |runtime| {
+            (runtime.request_fin_received, !runtime.body_buf.is_empty())
+        });
+        RequestBodyState::from_runtime(fin_received, has_buffered_body, forward_open)
+    }
+
+    fn request_body_state_from_runtime(&self, forward_open: bool) -> RequestBodyState {
+        Self::body_state_for_runtime(self.request_body_runtime(), forward_open)
+    }
+
+    fn request_body_runtime(&self) -> Option<&RequestBodyRuntime> {
         match &self.execution {
-            RequestExecutionState::Intake(_) => &self.empty_request_body_runtime,
-            RequestExecutionState::AwaitingAuth(state) => &state.request_body_runtime,
-            RequestExecutionState::DispatchReady(state) => &state.request_body_runtime,
-            RequestExecutionState::Admitted(state) => &state.request_body_runtime,
-            RequestExecutionState::AwaitingUpstream(state) => &state.request_body_runtime,
-            RequestExecutionState::StreamingResponse(state) => &state.request_body_runtime,
-            RequestExecutionState::Terminal(_) => &self.empty_request_body_runtime,
+            RequestExecutionState::Intake(_) | RequestExecutionState::Terminal(_) => None,
+            RequestExecutionState::AwaitingAuth(state) => state.request_body_runtime.as_ref(),
+            RequestExecutionState::DispatchReady(state) => state.request_body_runtime.as_ref(),
+            RequestExecutionState::Admitted(state) => state.request_body_runtime.as_ref(),
+            RequestExecutionState::AwaitingUpstream(state) => state.request_body_runtime.as_ref(),
+            RequestExecutionState::StreamingResponse(state) => state.request_body_runtime.as_ref(),
         }
     }
 
-    fn request_body_runtime_mut(&mut self) -> &mut RequestBodyRuntime {
+    fn request_body_runtime_mut(&mut self) -> Option<&mut RequestBodyRuntime> {
         match &mut self.execution {
-            RequestExecutionState::Intake(_) => &mut self.empty_request_body_runtime,
-            RequestExecutionState::AwaitingAuth(state) => &mut state.request_body_runtime,
-            RequestExecutionState::DispatchReady(state) => &mut state.request_body_runtime,
-            RequestExecutionState::Admitted(state) => &mut state.request_body_runtime,
-            RequestExecutionState::AwaitingUpstream(state) => &mut state.request_body_runtime,
-            RequestExecutionState::StreamingResponse(state) => &mut state.request_body_runtime,
-            RequestExecutionState::Terminal(_) => &mut self.empty_request_body_runtime,
+            RequestExecutionState::Intake(_) | RequestExecutionState::Terminal(_) => None,
+            RequestExecutionState::AwaitingAuth(state) => state.request_body_runtime.as_mut(),
+            RequestExecutionState::DispatchReady(state) => state.request_body_runtime.as_mut(),
+            RequestExecutionState::Admitted(state) => state.request_body_runtime.as_mut(),
+            RequestExecutionState::AwaitingUpstream(state) => state.request_body_runtime.as_mut(),
+            RequestExecutionState::StreamingResponse(state) => state.request_body_runtime.as_mut(),
         }
     }
 
     fn buffered_request_body_bytes(execution: &RequestExecutionState) -> usize {
         match execution {
-            RequestExecutionState::AwaitingAuth(state) => state.request_body_runtime.body_buf_bytes,
-            RequestExecutionState::DispatchReady(state) => {
-                state.request_body_runtime.body_buf_bytes
-            }
-            RequestExecutionState::Admitted(state) => state.request_body_runtime.body_buf_bytes,
-            RequestExecutionState::AwaitingUpstream(state) => {
-                state.request_body_runtime.body_buf_bytes
-            }
-            RequestExecutionState::StreamingResponse(state) => {
-                state.request_body_runtime.body_buf_bytes
-            }
+            RequestExecutionState::AwaitingAuth(state) => state
+                .request_body_runtime
+                .as_ref()
+                .map_or(0, |runtime| runtime.body_buf_bytes),
+            RequestExecutionState::DispatchReady(state) => state
+                .request_body_runtime
+                .as_ref()
+                .map_or(0, |runtime| runtime.body_buf_bytes),
+            RequestExecutionState::Admitted(state) => state
+                .request_body_runtime
+                .as_ref()
+                .map_or(0, |runtime| runtime.body_buf_bytes),
+            RequestExecutionState::AwaitingUpstream(state) => state
+                .request_body_runtime
+                .as_ref()
+                .map_or(0, |runtime| runtime.body_buf_bytes),
+            RequestExecutionState::StreamingResponse(state) => state
+                .request_body_runtime
+                .as_ref()
+                .map_or(0, |runtime| runtime.body_buf_bytes),
             RequestExecutionState::Intake(_) | RequestExecutionState::Terminal(_) => 0,
         }
     }
@@ -954,9 +1081,10 @@ impl RequestEnvelope {
         TerminalSnapshot {
             context: RequestContext {
                 request_id: self.request_id,
-                trace_id: self.trace_id,
-                span_id: self.span_id,
-                trace_span: self.trace_span.clone(),
+                tracing: self
+                    .processing
+                    .as_ref()
+                    .and_then(|state| state.tracing.clone()),
                 method: self.method.clone(),
                 path: self.path.clone(),
                 authority: self.authority.clone(),
@@ -965,7 +1093,7 @@ impl RequestEnvelope {
                 completion: self.completion.clone(),
             },
             routing,
-            request_mode: RequestMode::from_intake(self.tunnel_mode, &self.method, None),
+            request_mode: RequestMode::from_intake(self.tunnel_mode(), &self.method, None),
             response_status: self
                 .response_status
                 .and_then(|status| http::StatusCode::from_u16(status).ok()),
@@ -1016,7 +1144,7 @@ pub struct PendingForward {
     pub host_policy: UpstreamHostPolicy,
     pub forwarded_header_policy: ForwardedHeaderPolicy,
     pub plugin_plan: Arc<CompiledPluginPlan>,
-    pub(crate) auth_header_mutations: Option<Vec<PendingHeaderMutation>>,
+    pub(crate) auth_header_mutations: Option<SmallVec<[PendingHeaderMutation; 4]>>,
 }
 
 #[cfg(test)]
@@ -1074,9 +1202,7 @@ mod tests {
     fn make_request_context(start: Instant) -> RequestContext {
         RequestContext {
             request_id: 42,
-            trace_id: None,
-            span_id: None,
-            trace_span: None,
+            tracing: None,
             method: "POST".into(),
             path: "/upload".into(),
             authority: Some("example.com".into()),
@@ -1137,9 +1263,6 @@ mod tests {
 
         let req = RequestEnvelope {
             request_id: context.request_id,
-            trace_id: context.trace_id,
-            span_id: context.span_id,
-            trace_span: context.trace_span.clone(),
             method: context.method.clone(),
             path: context.path.clone(),
             authority: context.authority.clone(),
@@ -1158,26 +1281,24 @@ mod tests {
             start,
             total_request_deadline: context.total_request_deadline,
             bodyless_mode: false,
-            tunnel_mode: TunnelMode::None,
-            plugin_plan: Arc::new(CompiledPluginPlan::default()),
+            processing: None,
             pinned_generation: None,
             retry_count: 0,
             error_kind: None,
             terminal_overload_reason: None,
             completion: context.completion.clone(),
-            empty_request_body_runtime: RequestBodyRuntime::empty(start),
             execution: RequestExecutionState::Admitted(AdmittedState {
                 context,
                 routing,
                 request_mode: RequestMode::Normal,
                 request_body: RequestBodyState::Open,
-                request_body_runtime: RequestBodyRuntime {
+                request_body_runtime: Some(RequestBodyRuntime {
                     body_buf,
                     body_buf_bytes,
                     body_bytes_received: body_buf_bytes,
                     last_body_activity: start,
                     request_fin_received,
-                },
+                }),
                 pending_forward: make_pending_forward(),
                 permits: AdmissionPermits {
                     global: global_sem
@@ -1289,9 +1410,6 @@ mod tests {
         let context = make_request_context(start);
         let mut dispatch_ready = RequestEnvelope {
             request_id: 1,
-            trace_id: None,
-            span_id: None,
-            trace_span: None,
             method: "GET".into(),
             path: "/".into(),
             authority: None,
@@ -1310,20 +1428,18 @@ mod tests {
             start,
             total_request_deadline: start,
             bodyless_mode: false,
-            tunnel_mode: TunnelMode::None,
-            plugin_plan: Arc::new(CompiledPluginPlan::default()),
+            processing: None,
             pinned_generation: None,
             retry_count: 0,
             error_kind: None,
             terminal_overload_reason: None,
             completion: context.completion.clone(),
-            empty_request_body_runtime: RequestBodyRuntime::empty(start),
             execution: RequestExecutionState::DispatchReady(DispatchReadyState {
                 context,
                 routing: make_routing_snapshot(),
                 request_mode: RequestMode::Normal,
                 request_body: RequestBodyState::Open,
-                request_body_runtime: RequestBodyRuntime::empty(start),
+                request_body_runtime: Some(RequestBodyRuntime::empty(start)),
                 pending_forward: make_pending_forward(),
             }),
         };
@@ -1356,7 +1472,7 @@ mod tests {
     }
 
     #[test]
-    fn terminal_body_runtime_access_uses_empty_fallback() {
+    fn terminal_request_ignores_body_runtime_writes() {
         let metrics = Metrics::default();
         let start = Instant::now();
         let (mut req, ..) = make_admitted_envelope(start, VecDeque::new(), 0, false);
@@ -1366,21 +1482,59 @@ mod tests {
             &metrics,
         );
 
+        // A finished request has no body runtime, so these writes are ignored and
+        // the accessors report neutral defaults.
         req.set_request_fin_received(true);
         req.set_body_buf_bytes(99);
         req.set_body_bytes_received(77);
         req.set_last_body_activity(start + std::time::Duration::from_secs(1));
 
         // Terminal request-body state always derives to `ClosedToUpstream`, which
-        // reports fin-received regardless of the (no-op) runtime flag set above.
+        // reports fin-received regardless of the ignored runtime flag set above.
         assert!(req.request_fin_received());
         assert!(req.body_buf().is_empty());
-        assert_eq!(req.body_buf_bytes(), 99);
-        assert_eq!(req.body_bytes_received(), 77);
-        assert_eq!(
-            req.last_body_activity(),
-            start + std::time::Duration::from_secs(1)
-        );
+        assert_eq!(req.body_buf_bytes(), 0);
+        assert_eq!(req.body_bytes_received(), 0);
+        assert_eq!(req.last_body_activity(), start);
         assert_eq!(req.request_body_state(), RequestBodyState::ClosedToUpstream);
+    }
+
+    #[test]
+    fn body_buf_mut_is_none_without_a_body_runtime() {
+        let metrics = Metrics::default();
+        let start = Instant::now();
+        let (mut req, ..) = make_admitted_envelope(start, VecDeque::new(), 0, false);
+        assert!(req.body_buf_mut().is_some());
+
+        req.transition_to_terminal_with_cleanup(
+            TerminalReason::Cancelled(CancellationReason::ClientReset),
+            &metrics,
+        );
+
+        // Must not panic: a terminal request has no body buffer to hand out.
+        assert!(req.body_buf_mut().is_none());
+    }
+
+    #[test]
+    fn bodyless_request_without_body_runtime_can_poll_upstream() {
+        let start = Instant::now();
+        let (mut req, ..) = make_admitted_envelope(start, VecDeque::new(), 0, true);
+        if let RequestExecutionState::Admitted(state) = &mut req.execution {
+            state.request_body_runtime = None;
+        }
+
+        let (_tx, rx) = oneshot::channel::<crate::runtime::connection::response::UpstreamResult>();
+        req.transition_admitted_to_awaiting_upstream(None, rx)
+            .expect("admitted request transitions to awaiting upstream");
+
+        // Regression: this used to derive `FinReceived`, which is not
+        // forwarding-complete, so the upstream result was never polled and the
+        // request hung until the client gave up.
+        assert_eq!(req.request_body_state(), RequestBodyState::ClosedToUpstream);
+        assert!(req.can_poll_upstream());
+        assert_eq!(
+            req.refresh_request_body_state(),
+            RequestBodyState::ClosedToUpstream
+        );
     }
 }
