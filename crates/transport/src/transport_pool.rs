@@ -54,17 +54,12 @@ impl UpstreamTransportPool {
             .map(|backend| backend.identity.health_identity())
     }
 
-    pub fn rotate_pingora_pool(&self, generation: u64) {
-        self.pingora_pool.rotate(generation);
-    }
-
     pub fn drain_pingora_pool(&self) {
         self.pingora_pool.drain();
     }
 
-    pub fn pingora_peer(&self, backend: &str, generation: u64) -> Result<HttpPeer, ProxyError> {
+    pub fn pingora_peer(&self, backend: &str) -> Result<HttpPeer, ProxyError> {
         let mut config = self.resolved_pingora_backend(backend)?;
-        config.identity.generation = generation;
         config.peer.group_key = config.identity.pool_key();
         Ok(config.peer)
     }
@@ -106,8 +101,7 @@ impl UpstreamTransportPool {
             finish_pingora_dispatch_failure(completion, &error);
             return Err(error);
         };
-        let mut identity = config.identity;
-        identity.generation = pool.generation();
+        let identity = config.identity;
         let lifecycle = UpstreamExchangeLifecycle {
             cancellation: UpstreamCancellation {
                 signal: cancellation,
@@ -183,6 +177,7 @@ impl UpstreamTransportPool {
     pub fn new(
         inputs: impl IntoIterator<Item = UpstreamTransportInput>,
         dns_resolver: SharedDnsResolver,
+        generation: u64,
     ) -> Result<Self, String> {
         let mut backend_entries = HashMap::new();
         let mut inflight_limits = HashMap::new();
@@ -202,7 +197,7 @@ impl UpstreamTransportPool {
                 peer.sni.clone(),
                 input.tls.as_ref(),
                 input.proxy.as_ref(),
-                0,
+                generation,
             );
             pingora_backends.insert(
                 backend_addr,
@@ -219,7 +214,7 @@ impl UpstreamTransportPool {
             backend_entries,
             inflight_limits,
             pingora_backends,
-            pingora_pool: PingoraPool::new(0),
+            pingora_pool: PingoraPool::new(generation),
             dns_resolver,
         })
     }

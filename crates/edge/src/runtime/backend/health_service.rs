@@ -52,7 +52,6 @@ struct PingoraProbeSchedule {
 }
 
 struct ImpulsePingoraHealthCheck {
-    generation: u64,
     targets: HashMap<BackendId, PingoraHealthTarget>,
     schedules: Mutex<HashMap<BackendId, PingoraProbeSchedule>>,
     transport_pool: Arc<UpstreamTransportPool>,
@@ -62,7 +61,6 @@ struct ImpulsePingoraHealthCheck {
 }
 
 pub(crate) struct PingoraHealthServiceInput {
-    pub(crate) generation: u64,
     pub(crate) transport_pool: Arc<UpstreamTransportPool>,
     pub(crate) backend_health_checks: Arc<HashMap<String, RuntimeBackendHealthCheck>>,
     pub(crate) pingora_load_balancing:
@@ -74,7 +72,6 @@ pub(crate) struct PingoraHealthServiceInput {
 
 impl ImpulsePingoraHealthCheck {
     fn new(
-        generation: u64,
         upstream_pools: &HashMap<String, Arc<RwLock<UpstreamPool>>>,
         policies: &HashMap<String, RuntimeBackendHealthCheck>,
         transport_pool: Arc<UpstreamTransportPool>,
@@ -125,7 +122,6 @@ impl ImpulsePingoraHealthCheck {
             }
         }
         Self {
-            generation,
             targets,
             schedules: Mutex::new(schedules),
             transport_pool,
@@ -167,12 +163,9 @@ impl ImpulsePingoraHealthCheck {
                 format!("invalid health-check backend '{backend}': {error}"),
             )
         })?;
-        let mut peer = self
-            .transport_pool
-            .pingora_peer(backend, self.generation)
-            .map_err(|error| {
-                Error::explain(ErrorType::Custom("impulse health peer"), error.to_string())
-            })?;
+        let mut peer = self.transport_pool.pingora_peer(backend).map_err(|error| {
+            Error::explain(ErrorType::Custom("impulse health peer"), error.to_string())
+        })?;
         peer.options.connection_timeout = Some(policy.timeout);
         peer.options.read_timeout = Some(policy.timeout);
 
@@ -346,7 +339,6 @@ pub(crate) fn spawn_pingora_health_service(
     input: PingoraHealthServiceInput,
 ) {
     let PingoraHealthServiceInput {
-        generation,
         transport_pool,
         backend_health_checks,
         pingora_load_balancing,
@@ -363,7 +355,6 @@ pub(crate) fn spawn_pingora_health_service(
     };
     let registry = pingora_load_balancing.health_registry();
     registry.set_health_check(Box::new(ImpulsePingoraHealthCheck::new(
-        generation,
         &pingora_load_balancing.upstream_pools(),
         backend_health_checks.as_ref(),
         transport_pool,

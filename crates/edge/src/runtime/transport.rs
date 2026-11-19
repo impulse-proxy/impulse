@@ -6,17 +6,11 @@ use impulse_transport::{SharedDnsResolver, UpstreamTransportInput, UpstreamTrans
 pub(crate) fn create_transport_pool(
     inputs: impl IntoIterator<Item = UpstreamTransportInput>,
     dns_resolver: SharedDnsResolver,
+    generation: u64,
 ) -> Result<Arc<UpstreamTransportPool>, ProxyError> {
-    UpstreamTransportPool::new(inputs, dns_resolver)
+    UpstreamTransportPool::new(inputs, dns_resolver, generation)
         .map(Arc::new)
         .map_err(ProxyError::Tls)
-}
-
-pub(crate) fn activate_transport_pool_generation(
-    transport_pool: &UpstreamTransportPool,
-    generation: u64,
-) {
-    transport_pool.rotate_pingora_pool(generation);
 }
 
 pub(crate) fn drain_transport_pool_generation(transport_pool: &UpstreamTransportPool) {

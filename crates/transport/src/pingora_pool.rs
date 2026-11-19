@@ -1,5 +1,5 @@
 use std::sync::{
-    Arc, Mutex, RwLock,
+    Arc, Mutex,
     atomic::{AtomicBool, Ordering},
 };
 
@@ -33,51 +33,28 @@ impl PingoraPoolLease {
 }
 
 pub(crate) struct PingoraPool {
-    active: RwLock<Option<Arc<PingoraPoolGeneration>>>,
+    generation: Arc<PingoraPoolGeneration>,
 }
 
 impl PingoraPool {
     pub fn new(generation: u64) -> Self {
         Self {
-            active: RwLock::new(Some(Self::generation(generation))),
+            generation: Self::generation(generation),
         }
     }
 
     pub fn acquire(&self) -> Option<PingoraPoolLease> {
-        self.active
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .as_ref()
-            .map(|generation| PingoraPoolLease {
-                generation: Arc::clone(generation),
+        if self.generation.draining.load(Ordering::Acquire) {
+            None
+        } else {
+            Some(PingoraPoolLease {
+                generation: Arc::clone(&self.generation),
             })
-    }
-
-    pub fn rotate(&self, generation: u64) {
-        let mut active = self
-            .active
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if active
-            .as_ref()
-            .is_some_and(|active| active.generation == generation)
-        {
-            return;
-        }
-        if let Some(retired) = active.replace(Self::generation(generation)) {
-            retired.draining.store(true, Ordering::Release);
         }
     }
 
     pub fn drain(&self) {
-        if let Some(retired) = self
-            .active
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take()
-        {
-            retired.draining.store(true, Ordering::Release);
-        }
+        self.generation.draining.store(true, Ordering::Release);
     }
 
     fn generation(generation: u64) -> Arc<PingoraPoolGeneration> {
