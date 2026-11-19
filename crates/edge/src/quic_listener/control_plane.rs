@@ -5,7 +5,7 @@ use impulse_errors::ProxyError;
 use impulse_operations::watchdog::WatchdogCoordinator;
 #[cfg(feature = "quota")]
 use impulse_policy::quota::QuotaRuntime;
-use log::error;
+use log::{error, warn};
 
 use super::{
     Http3Service,
@@ -61,7 +61,6 @@ impl Http3Service {
             Self::configure_expected_workers(runtime.watchdog().as_ref(), startup.worker_count);
         });
         Self::spawn_generation_background_tasks(&startup);
-        Self::spawn_worker_metrics_aggregator(&startup);
         MetricsEndpointService::spawn_metrics_endpoint(&startup)?;
         ControlApiEndpointService::spawn_control_api_endpoint(&startup)?;
         Ok(())
@@ -92,6 +91,11 @@ impl Http3Service {
                             plugin_plans.prune_rate_limit_stores();
                         }
                     },
+                );
+            } else {
+                warn!(
+                    "control-plane runtime is unavailable; rate-limit store pruning is disabled and \
+                     bounded identity stores will not release expired entries"
                 );
             }
             spawn_pingora_discovery_refresh(
@@ -146,28 +150,6 @@ impl Http3Service {
 
     fn configure_expected_workers(watchdog: &WatchdogCoordinator, worker_count: usize) {
         watchdog.set_expected_workers(worker_count.max(1));
-    }
-
-    fn spawn_worker_metrics_aggregator(startup: &ControlPlaneStartup<'_>) {
-        startup.with_runtime_view(|runtime| {
-            let Some(handle) = control_plane_runtime_handle() else {
-                return;
-            };
-            let metrics = runtime.metrics();
-            runtime.process_tasks().spawn_supervised(
-                &handle,
-                "worker-metrics-aggregation",
-                Some(Arc::clone(&metrics)),
-                async move {
-                    let mut interval = tokio::time::interval(Duration::from_secs(1));
-                    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-                    loop {
-                        interval.tick().await;
-                        metrics.aggregate_worker_counters();
-                    }
-                },
-            );
-        });
     }
 
     fn spawn_watchdog_service(service_ctx: WatchdogServiceCtx) {

@@ -121,7 +121,7 @@ pub(crate) use connection::{ConnectionRoutes, sweep_closed_connections};
 #[cfg(feature = "external-auth")]
 pub(crate) use forwarding::execute_external_auth_request;
 pub(crate) use forwarding::{
-    BackendCandidate, ForwardingSelectionService, TargetResolutionRequest,
+    BackendCandidate, ForwardingSelectionService, SelectionScope, TargetResolutionRequest,
 };
 use forwarding::{
     ForwardingExecutionCtx, ForwardingSharedCtx, H3RequestHandlingConfig,

@@ -3,7 +3,7 @@ use std::convert::Infallible;
 use bytes::{BufMut, BytesMut};
 
 use impulse_config::{backend_endpoint::BackendEndpoint, runtime::RuntimeBackendTlsPolicy};
-use impulse_contracts::{AlternateBackendFailureReason, BackendId, HedgeOutcomeTelemetryReason};
+use impulse_contracts::{AlternateBackendFailureReason, HedgeOutcomeTelemetryReason};
 #[cfg(feature = "response-cache")]
 use impulse_contracts::{IngressProtocol, PluginRequestView};
 use impulse_errors::{HedgePolicyDecision, RetryPolicyDecision, is_idempotent_method};
@@ -460,18 +460,14 @@ impl Http3Service {
         upstream_pool: &Arc<RwLock<UpstreamPool>>,
         selector: &GenerationSelector<RuntimeBackendTlsPolicy>,
         backend_transport_identities: &[BackendEndpoint],
-        generation: u64,
-        lb_key: &str,
-        primary_backend_id: BackendId,
-        worker_slot: usize,
+        input: BackendSelectionInput<'_>,
         metrics: &Metrics,
     ) -> ResolvedAlternateBackend {
         match ForwardingSelectionService::select_backend_excluding(
             selector,
             upstream_pool,
             backend_transport_identities,
-            BackendSelectionInput::new(generation, lb_key, &[primary_backend_id], false),
-            worker_slot,
+            input,
             metrics,
         ) {
             Ok(Some(BackendCandidate {
@@ -672,14 +668,18 @@ impl Http3Service {
                             reason: AlternateBackendFailureReason::PoolUnavailable,
                         };
                     };
+                    let excluded = [pending_forward.backend_id];
                     Self::resolve_alternate_backend(
                         upstream_pool,
                         selector,
                         backend_endpoints.as_ref(),
-                        alternate_generation,
-                        pending_forward.lb_key.as_ref(),
-                        pending_forward.backend_id,
-                        alternate_worker_slot,
+                        BackendSelectionInput::new(
+                            alternate_generation,
+                            pending_forward.lb_key.as_ref(),
+                            &excluded,
+                            false,
+                        )
+                        .with_worker_slot(alternate_worker_slot),
                         alternate_metrics.as_ref(),
                     )
                 })

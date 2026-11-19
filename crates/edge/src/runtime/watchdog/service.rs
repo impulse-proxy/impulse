@@ -66,6 +66,7 @@ pub(crate) async fn run_watchdog_service(state: WatchdogServiceState) {
         );
     }
 
+    metrics.aggregate_worker_counters();
     let mut previous_requests = metrics.requests_total.load(Ordering::Relaxed);
     let mut previous_timeouts = metrics.backend_timeouts.load(Ordering::Relaxed);
     let mut degraded_windows = 0u32;
@@ -76,6 +77,9 @@ pub(crate) async fn run_watchdog_service(state: WatchdogServiceState) {
         let stalled = now.saturating_sub(watchdog.last_poll_progress_ms())
             > watchdog_config.poll_stall_timeout_ms;
 
+        // Fold the per-worker counters in right before reading them, so each
+        // window sees exactly the traffic that happened during it.
+        metrics.aggregate_worker_counters();
         let current_requests = metrics.requests_total.load(Ordering::Relaxed);
         let current_timeouts = metrics.backend_timeouts.load(Ordering::Relaxed);
         let request_delta = current_requests.saturating_sub(previous_requests);

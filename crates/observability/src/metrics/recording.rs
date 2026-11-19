@@ -968,8 +968,12 @@ impl Metrics {
             .or_else(|| self.worker_stats.first())
     }
 
-    /// Publish worker-local hot counters to aggregate metrics. Run this from
-    /// a background task so request handling never touches shared totals.
+    /// Fold the worker-local hot counters into the aggregate totals.
+    ///
+    /// Request handling only touches its own worker's shard. Readers (the
+    /// Prometheus scrape, the control-API snapshot and the watchdog) call this
+    /// first, so the totals are current when read and never depend on a
+    /// background task. It is a sum over the worker shards, not a hot-path call.
     pub fn aggregate_worker_counters(&self) {
         let mut totals = WorkerStats::default();
         for worker in &self.worker_stats {

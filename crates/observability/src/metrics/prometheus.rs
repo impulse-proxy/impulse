@@ -443,6 +443,9 @@ impl Metrics {
     }
 
     pub fn render_prometheus(&self) -> String {
+        // Totals are sharded per worker; fold them in here, off the request path,
+        // so a scrape never lags behind traffic.
+        self.aggregate_worker_counters();
         let mut out = String::with_capacity(8 * 1024);
         let request_result_metrics = self.snapshot_request_result_metrics();
         let secret_metrics = self.snapshot_secret_metrics();

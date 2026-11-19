@@ -44,3 +44,62 @@ impl Default for DataPlaneWorkerContext {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+
+    use super::*;
+
+    #[test]
+    fn request_ids_are_sequential_within_a_block() {
+        let mut context = DataPlaneWorkerContext::default();
+        let first = context.next_request_id();
+        for offset in 1..REQUEST_ID_BLOCK_SIZE {
+            assert_eq!(context.next_request_id(), first + offset);
+        }
+    }
+
+    #[test]
+    fn request_ids_stay_unique_across_blocks_and_workers() {
+        let mut workers = [
+            DataPlaneWorkerContext::default(),
+            DataPlaneWorkerContext::default(),
+            DataPlaneWorkerContext::default(),
+        ];
+        let per_worker = (REQUEST_ID_BLOCK_SIZE * 3 + 17) as usize;
+        let mut seen = HashSet::new();
+        // Interleave workers so their blocks are drawn alternately.
+        for _ in 0..per_worker {
+            for worker in &mut workers {
+                assert!(
+                    seen.insert(worker.next_request_id()),
+                    "duplicate request id"
+                );
+            }
+        }
+        assert_eq!(seen.len(), per_worker * 3);
+    }
+
+    #[test]
+    fn a_new_block_is_drawn_when_the_current_one_is_exhausted() {
+        let mut context = DataPlaneWorkerContext::default();
+        let first = context.next_request_id();
+        // Another worker takes the next block while this one is still mid-block.
+        let mut other = DataPlaneWorkerContext::default();
+        let other_first = other.next_request_id();
+        assert_ne!(
+            first / REQUEST_ID_BLOCK_SIZE,
+            other_first / REQUEST_ID_BLOCK_SIZE
+        );
+
+        for _ in 1..REQUEST_ID_BLOCK_SIZE {
+            context.next_request_id();
+        }
+        let after_block = context.next_request_id();
+        assert!(
+            after_block < first || after_block >= first + REQUEST_ID_BLOCK_SIZE,
+            "id {after_block} should come from a fresh block"
+        );
+    }
+}

@@ -48,15 +48,21 @@ fn transport_identity_for_backend(
     })
 }
 
+/// Per-selection scope shared by every backend pick for one request.
+#[derive(Clone, Copy)]
+pub(crate) struct SelectionScope {
+    pub(crate) generation: u64,
+    pub(crate) begin_request: bool,
+    pub(crate) worker_slot: usize,
+}
+
 impl ForwardingSelectionService {
     pub(crate) fn select_backend(
         request: &TargetResolutionRequest<'_>,
         upstream_pool: &Arc<RwLock<UpstreamPool>>,
         selector: &GenerationSelector<RuntimeBackendTlsPolicy>,
         backend_transport_identities: &[BackendEndpoint],
-        generation: u64,
-        begin_request: bool,
-        worker_slot: usize,
+        scope: SelectionScope,
         metrics: &Metrics,
     ) -> Result<BackendSelection, ProxyError> {
         let (lb_key, backend_lb) = {
@@ -78,8 +84,8 @@ impl ForwardingSelectionService {
             selector,
             upstream_pool,
             backend_transport_identities,
-            BackendSelectionInput::new(generation, &lb_key, &[], begin_request),
-            worker_slot,
+            BackendSelectionInput::new(scope.generation, &lb_key, &[], scope.begin_request)
+                .with_worker_slot(scope.worker_slot),
             metrics,
         )?
         else {
@@ -102,7 +108,6 @@ impl ForwardingSelectionService {
         pool: &Arc<RwLock<UpstreamPool>>,
         backend_transport_identities: &[BackendEndpoint],
         input: BackendSelectionInput<'_>,
-        worker_slot: usize,
         metrics: &Metrics,
     ) -> Result<Option<BackendCandidate>, ProxyError> {
         if selector.generation() != input.generation() {
@@ -132,7 +137,7 @@ impl ForwardingSelectionService {
         let Some(selected) = selector.select_excluding_for_worker(
             input.request_key(),
             input.excluded_backend_ids(),
-            worker_slot,
+            input.worker_slot(),
         ) else {
             metrics
                 .runtime_observations()

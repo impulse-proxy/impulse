@@ -369,6 +369,9 @@ impl RouteStatsAtomic {
     }
 }
 
+/// One worker's hot counters. Aligned to a cache line so neighbouring workers'
+/// shards never share a line (false sharing) while each increments its own.
+#[repr(align(64))]
 pub(super) struct WorkerStatsAtomic {
     pub(super) requests_total: AtomicU64,
     pub(super) requests_success: AtomicU64,

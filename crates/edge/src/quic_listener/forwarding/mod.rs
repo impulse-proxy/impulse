@@ -27,7 +27,7 @@ pub(in crate::quic_listener) use self::{
 };
 pub(crate) use self::{
     resolve::TargetResolutionRequest,
-    selection::{BackendCandidate, ForwardingSelectionService},
+    selection::{BackendCandidate, ForwardingSelectionService, SelectionScope},
 };
 use super::*;
 #[cfg(feature = "response-cache")]

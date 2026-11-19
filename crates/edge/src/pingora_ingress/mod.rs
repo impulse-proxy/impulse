@@ -100,7 +100,9 @@ use crate::{
         },
         retry::RetryCoordinator,
     },
-    quic_listener::{BackendCandidate, ForwardingSelectionService, TargetResolutionRequest},
+    quic_listener::{
+        BackendCandidate, ForwardingSelectionService, SelectionScope, TargetResolutionRequest,
+    },
     runtime::{
         bundle::{RuntimeBundle, RuntimeBundleHandle},
         connection::{
@@ -386,13 +388,16 @@ impl PingoraEdgeRequestService {
                     &pool,
                     &route_runtime.selector,
                     &state.backend_endpoints_by_id,
-                    ctx.runtime.generation,
-                    true,
-                    ctx.runtime
-                        .shared_state
-                        .shared_services()
-                        .metrics
-                        .current_worker_slot(),
+                    SelectionScope {
+                        generation: ctx.runtime.generation,
+                        begin_request: true,
+                        worker_slot: ctx
+                            .runtime
+                            .shared_state
+                            .shared_services()
+                            .metrics
+                            .current_worker_slot(),
+                    },
                     ctx.runtime.shared_state.shared_services().metrics.as_ref(),
                 )
                 .map_err(|error| {
@@ -2073,8 +2078,8 @@ fn handle_pingora_proxy_failure(
             ctx.lb_key.as_deref().unwrap_or_default(),
             &[selected.id],
             false,
-        ),
-        metrics.current_worker_slot(),
+        )
+        .with_worker_slot(metrics.current_worker_slot()),
         metrics,
     );
     let (retry_backend, retry_transport_identity, alternate_failure) = match selection {

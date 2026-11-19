@@ -7,7 +7,10 @@ use std::{
 use impulse_config::{backend_endpoint::BackendEndpoint, runtime::RuntimeBackendTlsPolicy};
 use impulse_lb::pingora_backend::{GenerationSelector, PingoraLoadBalancingRuntimeState};
 
-use super::{selection::ForwardingSelectionService, *};
+use super::{
+    selection::{ForwardingSelectionService, SelectionScope},
+    *,
+};
 #[cfg(test)]
 use crate::edge_core::request_execution::resolve_route_match;
 #[cfg(test)]
@@ -477,9 +480,11 @@ impl Http3Service {
             &route.upstream_pool,
             &route.selector,
             context.backend_transport_identities,
-            context.generation,
-            begin_request,
-            context.worker_slot,
+            SelectionScope {
+                generation: context.generation,
+                begin_request,
+                worker_slot: context.worker_slot,
+            },
             context.metrics,
         )?;
 

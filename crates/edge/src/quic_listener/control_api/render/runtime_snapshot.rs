@@ -221,6 +221,8 @@ impl ControlApiRuntimePayload {
         let watchdog = state.watchdog();
         let resilience = state.resilience();
         let metrics = state.metrics();
+        // Totals are sharded per worker; fold them in before reading.
+        metrics.aggregate_worker_counters();
         let listener_tls_store = state.listener_tls_store();
         let listener_tls_states = listener_tls_store.snapshot_states();
         let backend_inventory = state.snapshot_backend_inventory();

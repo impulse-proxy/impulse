@@ -550,3 +550,77 @@ impl ScopedIdentityStore {
             .fetch_sub(before.saturating_sub(shard.len()), Ordering::Relaxed);
     }
 }
+
+#[cfg(all(test, feature = "connection-rate-limit"))]
+mod connection_tests {
+    use super::*;
+
+    fn runtime(exact_global: bool) -> ConnectionRateLimitRuntime {
+        ConnectionRateLimitRuntime::new(ConnectionRateLimitInput {
+            requests_per_second: 1,
+            burst: 2,
+            exact_global,
+        })
+    }
+
+    #[test]
+    fn local_global_buckets_are_independent_per_worker() {
+        let runtime = runtime(false);
+        for worker_slot in [0, 1] {
+            assert!(runtime.admit(None, worker_slot).is_ok());
+            assert!(runtime.admit(None, worker_slot).is_ok());
+            assert!(matches!(
+                runtime.admit(None, worker_slot),
+                Err(ConnectionRateLimitRejection::Global)
+            ));
+        }
+    }
+
+    #[test]
+    fn exact_global_bucket_is_shared_by_every_worker() {
+        let runtime = runtime(true);
+        assert!(runtime.admit(None, 0).is_ok());
+        assert!(runtime.admit(None, 1).is_ok());
+        // The shared burst of two is used up, whichever worker asks next.
+        for worker_slot in [0, 1, 2] {
+            assert!(matches!(
+                runtime.admit(None, worker_slot),
+                Err(ConnectionRateLimitRejection::Global)
+            ));
+        }
+    }
+
+    #[test]
+    fn worker_slots_wrap_around_the_slot_table() {
+        let runtime = runtime(false);
+        assert!(
+            runtime
+                .admit(None, CONNECTION_RATE_LIMIT_WORKER_SLOTS + 1)
+                .is_ok()
+        );
+    }
+}
+
+#[cfg(all(test, feature = "scoped-rate-limit"))]
+mod scoped_tests {
+    use super::*;
+
+    #[test]
+    fn identity_store_keys_are_independent_byte_strings() {
+        let store = ScopedIdentityStore::new(1, 2);
+        assert_eq!(store.try_consume(b"tenant-a"), Some(true));
+        assert_eq!(store.try_consume(b"tenant-a"), Some(true));
+        assert_eq!(store.try_consume(b"tenant-a"), Some(false));
+        // A different identity has its own bucket.
+        assert_eq!(store.try_consume(b"tenant-b"), Some(true));
+    }
+
+    #[test]
+    fn identity_stores_are_independent_per_worker_slot() {
+        let rule_store = |_: usize| ScopedIdentityStore::new(1, 1);
+        let (worker_0, worker_1) = (rule_store(0), rule_store(1));
+        assert_eq!(worker_0.try_consume(b"client"), Some(true));
+        assert_eq!(worker_0.try_consume(b"client"), Some(false));
+        assert_eq!(worker_1.try_consume(b"client"), Some(true));
+    }
+}
