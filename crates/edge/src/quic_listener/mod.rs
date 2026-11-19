@@ -404,6 +404,7 @@ impl Http3Service {
                 .pingora_load_balancing
                 .as_ref(),
             generation: self.runtime_state.generation(),
+            worker_slot: self.metrics.current_worker_slot(),
         };
         let exec_ctx = ForwardingExecutionCtx {
             upstream_executor: UpstreamRequestExecutor::new(Arc::clone(
@@ -524,6 +525,7 @@ impl Http3Service {
                 .pingora_load_balancing
                 .as_ref(),
             generation: self.runtime_state.generation(),
+            worker_slot: self.metrics.current_worker_slot(),
         };
         let exec_ctx = ForwardingExecutionCtx {
             upstream_executor: UpstreamRequestExecutor::new(Arc::clone(

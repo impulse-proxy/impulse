@@ -382,6 +382,11 @@ impl PingoraEdgeRequestService {
                     &state.backend_endpoints_by_id,
                     ctx.runtime.generation,
                     true,
+                    ctx.runtime
+                        .shared_state
+                        .shared_services()
+                        .metrics
+                        .current_worker_slot(),
                     ctx.runtime.shared_state.shared_services().metrics.as_ref(),
                 )
                 .map_err(|error| {
@@ -2056,6 +2061,7 @@ fn handle_pingora_proxy_failure(
             &[selected.id],
             false,
         ),
+        metrics.current_worker_slot(),
         metrics,
     );
     let (retry_backend, retry_transport_identity, alternate_failure) = match selection {

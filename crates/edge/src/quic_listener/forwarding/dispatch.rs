@@ -462,6 +462,7 @@ impl Http3Service {
         generation: u64,
         lb_key: &str,
         primary_backend_id: BackendId,
+        worker_slot: usize,
         metrics: &Metrics,
     ) -> ResolvedAlternateBackend {
         match ForwardingSelectionService::select_backend_excluding(
@@ -469,6 +470,7 @@ impl Http3Service {
             upstream_pool,
             backend_transport_identities,
             BackendSelectionInput::new(generation, lb_key, &[primary_backend_id], false),
+            worker_slot,
             metrics,
         ) {
             Ok(Some(BackendCandidate {
@@ -637,6 +639,7 @@ impl Http3Service {
         let hedge_delay = resilience.hedging_delay;
         let alternate_pool = req.upstream_pool.clone();
         let alternate_metrics = Arc::clone(&shared_ctx.metrics);
+        let alternate_worker_slot = shared_ctx.worker_slot;
         #[cfg(feature = "response-cache")]
         let response_cache_store = exec_ctx.response_cache;
         let trace_span_for_upstream = req.trace_span().cloned();
@@ -675,6 +678,7 @@ impl Http3Service {
                         alternate_generation,
                         pending_forward.lb_key.as_ref(),
                         pending_forward.backend_id,
+                        alternate_worker_slot,
                         alternate_metrics.as_ref(),
                     )
                 })

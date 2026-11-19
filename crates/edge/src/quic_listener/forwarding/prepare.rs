@@ -551,6 +551,7 @@ impl Http3Service {
             &shared_ctx.runtime_generation.backend_endpoints_by_id,
             shared_ctx.generation,
             metrics,
+            shared_ctx.worker_slot,
         );
         let intake = Self::build_request_intake(IntakeRequestDescriptor {
             request_id,

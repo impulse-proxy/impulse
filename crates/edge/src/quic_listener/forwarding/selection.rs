@@ -56,6 +56,7 @@ impl ForwardingSelectionService {
         backend_transport_identities: &[BackendEndpoint],
         generation: u64,
         begin_request: bool,
+        worker_slot: usize,
         metrics: &Metrics,
     ) -> Result<BackendSelection, ProxyError> {
         let (lb_key, backend_lb) = {
@@ -78,6 +79,7 @@ impl ForwardingSelectionService {
             upstream_pool,
             backend_transport_identities,
             BackendSelectionInput::new(generation, &lb_key, &[], begin_request),
+            worker_slot,
             metrics,
         )?
         else {
@@ -100,6 +102,7 @@ impl ForwardingSelectionService {
         pool: &Arc<RwLock<UpstreamPool>>,
         backend_transport_identities: &[BackendEndpoint],
         input: BackendSelectionInput<'_>,
+        worker_slot: usize,
         metrics: &Metrics,
     ) -> Result<Option<BackendCandidate>, ProxyError> {
         if selector.generation() != input.generation() {
@@ -126,9 +129,11 @@ impl ForwardingSelectionService {
                 .inc_pingora_lb_selector_failure();
             ProxyError::RequestTransport(RequestFailure::UpstreamPoolLockPoisoned)
         })?;
-        let Some(selected) =
-            selector.select_excluding(input.request_key(), input.excluded_backend_ids())
-        else {
+        let Some(selected) = selector.select_excluding_for_worker(
+            input.request_key(),
+            input.excluded_backend_ids(),
+            worker_slot,
+        ) else {
             metrics
                 .runtime_observations()
                 .inc_pingora_lb_selector_failure();

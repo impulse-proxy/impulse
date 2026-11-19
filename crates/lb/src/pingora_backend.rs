@@ -4,7 +4,10 @@ use std::{
     collections::HashMap,
     future::Future,
     net::SocketAddr,
-    sync::{Arc, RwLock},
+    sync::{
+        Arc, RwLock,
+        atomic::{AtomicUsize, Ordering},
+    },
     task::{Context, Poll, Waker},
     time::{Duration, Instant},
 };
@@ -25,6 +28,8 @@ use crate::{
     BackendInput, LoadBalancingStrategy, pingora_discovery::ImpulseServiceDiscovery,
     upstream_pool::UpstreamPool,
 };
+
+const WORKER_SELECTION_SLOTS: usize = 256;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BackendSelectionResult<P> {
@@ -309,6 +314,7 @@ struct GenerationWeightedRoundRobin<T> {
     generation: u64,
     upstream_name: String,
     selector: LoadBalancer<PingoraRoundRobin>,
+    worker_cursors: Box<[AtomicUsize]>,
     policy: std::marker::PhantomData<T>,
 }
 
@@ -329,6 +335,9 @@ where
             generation,
             upstream_name,
             selector: LoadBalancer::from_backends(view),
+            worker_cursors: (0..WORKER_SELECTION_SLOTS)
+                .map(|_| AtomicUsize::new(0))
+                .collect(),
             policy: std::marker::PhantomData,
         }
     }
@@ -336,19 +345,35 @@ where
     fn select_excluding(
         &self,
         excluded_backend_ids: &[BackendId],
+        worker_slot: usize,
     ) -> Option<BackendSelectionResult<T>> {
-        let selected = self
-            .selector
-            .select_with(
-                b"",
-                self.selector.backends().get_backend().len(),
-                |backend, healthy| {
-                    candidate_is_available::<T>(backend, healthy, excluded_backend_ids)
-                },
-            )
-            .or_else(|| {
-                first_available_backend::<T>(self.selector.backends(), excluded_backend_ids)
-            })?;
+        let backends = self.selector.backends();
+        let backend_set = backends.get_backend();
+        let available = backend_set
+            .iter()
+            .filter(|backend| {
+                candidate_is_available::<T>(backend, backends.ready(backend), excluded_backend_ids)
+            })
+            .collect::<Vec<_>>();
+        let total_weight = available.iter().fold(0usize, |total, backend| {
+            total.saturating_add(backend.weight)
+        });
+        if total_weight == 0 {
+            return None;
+        }
+
+        let cursor = self.worker_cursors[worker_slot % self.worker_cursors.len()]
+            .fetch_add(1, Ordering::Relaxed);
+        let mut weight_slot = cursor % total_weight;
+        let selected = available.into_iter().find(|backend| {
+            if weight_slot < backend.weight {
+                true
+            } else {
+                weight_slot -= backend.weight;
+                false
+            }
+        })?;
+        let selected = (*selected).clone();
         selection_result(selected, self.generation)
     }
 
@@ -526,9 +551,18 @@ where
         key: &str,
         excluded_backend_ids: &[BackendId],
     ) -> Option<BackendSelectionResult<T>> {
+        self.select_excluding_for_worker(key, excluded_backend_ids, 0)
+    }
+
+    pub fn select_excluding_for_worker(
+        &self,
+        key: &str,
+        excluded_backend_ids: &[BackendId],
+        worker_slot: usize,
+    ) -> Option<BackendSelectionResult<T>> {
         match &self.kind {
             GenerationSelectorKind::WeightedRoundRobin(selector) => {
-                selector.select_excluding(excluded_backend_ids)
+                selector.select_excluding(excluded_backend_ids, worker_slot)
             }
             GenerationSelectorKind::WeightedRandom(selector) => {
                 selector.select_excluding(excluded_backend_ids)

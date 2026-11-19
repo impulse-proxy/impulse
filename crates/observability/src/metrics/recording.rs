@@ -292,6 +292,10 @@ impl Metrics {
         WORKER_METRICS_SLOT.with(|current| current.set(slot.min(max_index)));
     }
 
+    pub fn current_worker_slot(&self) -> usize {
+        WORKER_METRICS_SLOT.with(Cell::get)
+    }
+
     pub fn inc_total(&self) {
         self.inc_worker_requests_total();
     }

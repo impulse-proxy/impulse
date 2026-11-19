@@ -51,6 +51,7 @@ pub(in crate::quic_listener) struct ResolutionContext<'a> {
     generation: u64,
     metrics: &'a Metrics,
     backend_transport_identities: &'a [BackendEndpoint],
+    worker_slot: usize,
 }
 
 impl<'a> ResolutionContext<'a> {
@@ -59,6 +60,7 @@ impl<'a> ResolutionContext<'a> {
         backend_transport_identities: &'a [BackendEndpoint],
         generation: u64,
         metrics: &'a Metrics,
+        worker_slot: usize,
     ) -> Self {
         Self {
             #[cfg(test)]
@@ -66,6 +68,7 @@ impl<'a> ResolutionContext<'a> {
             generation,
             metrics,
             backend_transport_identities,
+            worker_slot,
         }
     }
 }
@@ -476,6 +479,7 @@ impl Http3Service {
             context.backend_transport_identities,
             context.generation,
             begin_request,
+            context.worker_slot,
             context.metrics,
         )?;
 
@@ -499,7 +503,7 @@ impl Http3Service {
         selectors: &PingoraLoadBalancingRuntimeState<RuntimeBackendTlsPolicy>,
         metrics: &Metrics,
     ) -> Result<TargetResolution, ProxyError> {
-        let context = ResolutionContext::new(selectors, &[], selectors.generation(), metrics);
+        let context = ResolutionContext::new(selectors, &[], selectors.generation(), metrics, 0);
         Self::resolve_backend_internal(request, &context, routing_index, true)
     }
 }
@@ -614,7 +618,7 @@ mod tests {
         let routing_index = RouteIndex::from_runtime_upstreams(&runtime.upstreams);
         let selectors = selectors_for_test(&runtime);
         let metrics = Metrics::new(1, vec!["route".to_string()]);
-        let context = ResolutionContext::new(&selectors, &[], selectors.generation(), &metrics);
+        let context = ResolutionContext::new(&selectors, &[], selectors.generation(), &metrics, 0);
         let request = TargetResolutionRequest::new(
             "POST",
             "/api/orders",
@@ -649,7 +653,7 @@ mod tests {
         let routing_index = RouteIndex::from_runtime_upstreams(&runtime.upstreams);
         let selectors = selectors_for_test(&runtime);
         let metrics = Metrics::new(1, vec!["route".to_string()]);
-        let context = ResolutionContext::new(&selectors, &[], selectors.generation(), &metrics);
+        let context = ResolutionContext::new(&selectors, &[], selectors.generation(), &metrics, 0);
 
         let request = TargetResolutionRequest::new(
             "GET",
@@ -703,7 +707,7 @@ mod tests {
         let routing_index = RouteIndex::from_runtime_upstreams(&runtime.upstreams);
         let selectors = selectors_for_test(&runtime);
         let metrics = Metrics::new(1, vec!["route".to_string()]);
-        let context = ResolutionContext::new(&selectors, &[], selectors.generation(), &metrics);
+        let context = ResolutionContext::new(&selectors, &[], selectors.generation(), &metrics, 0);
         let request = TargetResolutionRequest::new(
             "CONNECT",
             "/chat/socket",
