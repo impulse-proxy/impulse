@@ -95,23 +95,6 @@ impl<P> BackendSelectionResult<P> {
     }
 }
 
-fn synchronize_backend_readiness<T>(
-    view: &BackendView,
-    mut is_healthy: impl FnMut(usize) -> bool,
-) -> Result<(), String>
-where
-    T: Clone + Send + Sync + 'static,
-{
-    for backend in view.get_backend().iter() {
-        let identity = backend
-            .ext
-            .get::<PingoraBackendIdentity<T>>()
-            .ok_or_else(|| format!("Pingora backend '{}' has no Impulse identity", backend.addr))?;
-        view.set_enable(backend, is_healthy(identity.index()));
-    }
-    Ok(())
-}
-
 fn selection_result<T>(
     backend: PingoraBackend,
     generation: u64,
@@ -234,10 +217,6 @@ where
             .select_excluding(cid_key.as_bytes(), excluded_backend_ids)
     }
 
-    fn synchronize_readiness(&self, is_healthy: impl FnMut(usize) -> bool) -> Result<(), String> {
-        self.selector.synchronize_readiness(is_healthy)
-    }
-
     fn generation(&self) -> u64 {
         self.selector.generation()
     }
@@ -293,10 +272,6 @@ where
                 first_available_backend::<T>(self.selector.backends(), excluded_backend_ids)
             })?;
         selection_result(selected, self.generation)
-    }
-
-    fn synchronize_readiness(&self, is_healthy: impl FnMut(usize) -> bool) -> Result<(), String> {
-        synchronize_backend_readiness::<T>(self.selector.backends(), is_healthy)
     }
 
     fn generation(&self) -> u64 {
@@ -357,10 +332,6 @@ where
         selection_result(selected, self.generation)
     }
 
-    fn synchronize_readiness(&self, is_healthy: impl FnMut(usize) -> bool) -> Result<(), String> {
-        synchronize_backend_readiness::<T>(self.selector.backends(), is_healthy)
-    }
-
     fn generation(&self) -> u64 {
         self.generation
     }
@@ -414,10 +385,6 @@ where
             |total_weight| cursor.fetch_add(1, Ordering::Relaxed) % total_weight,
         )?;
         selection_result(selected, self.generation)
-    }
-
-    fn synchronize_readiness(&self, is_healthy: impl FnMut(usize) -> bool) -> Result<(), String> {
-        synchronize_backend_readiness::<T>(self.selector.backends(), is_healthy)
     }
 
     fn generation(&self) -> u64 {
@@ -589,28 +556,6 @@ where
 
     pub fn backend_id(&self, index: usize) -> Option<BackendId> {
         self.backend_ids.get(index).copied()
-    }
-
-    pub fn synchronize_readiness(
-        &self,
-        is_healthy: impl FnMut(usize) -> bool,
-    ) -> Result<(), String> {
-        match &self.kind {
-            GenerationSelectorKind::WeightedRoundRobin(selector) => {
-                selector.synchronize_readiness(is_healthy)
-            }
-            GenerationSelectorKind::WeightedRandom(selector) => {
-                selector.synchronize_readiness(is_healthy)
-            }
-            GenerationSelectorKind::Ketama(selector) => selector.synchronize_readiness(is_healthy),
-            GenerationSelectorKind::StickyCid(selector) => {
-                selector.synchronize_readiness(is_healthy)
-            }
-            GenerationSelectorKind::CustomLeastConnections(view)
-            | GenerationSelectorKind::CustomLatencyAware(view) => {
-                view.synchronize_readiness::<T>(is_healthy)
-            }
-        }
     }
 
     pub fn select_excluding(
@@ -1013,16 +958,6 @@ impl GenerationBackendView {
     pub fn upstream_name(&self) -> &str {
         &self.upstream_name
     }
-
-    pub fn synchronize_readiness<T>(
-        &self,
-        is_healthy: impl FnMut(usize) -> bool,
-    ) -> Result<(), String>
-    where
-        T: Clone + Send + Sync + 'static,
-    {
-        synchronize_backend_readiness::<T>(&self.view, is_healthy)
-    }
 }
 
 #[derive(Clone)]
@@ -1220,6 +1155,15 @@ mod tests {
         )])
     }
 
+    fn set_test_readiness(
+        selector: &GenerationSelector<()>,
+        mut is_ready: impl FnMut(usize) -> bool,
+    ) {
+        for (index, backend_id) in selector.backend_ids.iter().copied().enumerate() {
+            selector.set_backend_enabled(backend_id, is_ready(index));
+        }
+    }
+
     #[test]
     fn validated_backend_mapping_preserves_weight() {
         let backend = Backend {
@@ -1246,9 +1190,7 @@ mod tests {
         let selector =
             GenerationSelector::<()>::new(LoadBalancingStrategy::RoundRobin, backend_view(&[1, 1]))
                 .expect("round-robin selector");
-        selector
-            .synchronize_readiness(|index| index == 1)
-            .expect("synchronize readiness");
+        set_test_readiness(&selector, |index| index == 1);
 
         for _ in 0..16 {
             assert_eq!(
@@ -1271,9 +1213,7 @@ mod tests {
         ] {
             let selector = GenerationSelector::<()>::new(strategy, backend_view(&[1, 1]))
                 .expect("Pingora selector");
-            selector
-                .synchronize_readiness(|_| true)
-                .expect("synchronize readiness");
+            set_test_readiness(&selector, |_| true);
 
             for key in ["request-a", "request-b", "request-c"] {
                 assert_eq!(
@@ -1303,9 +1243,8 @@ mod tests {
         let selector = runtime
             .selector_by_id(UpstreamId::new(0))
             .expect("api selector");
-        selector
-            .synchronize_readiness(|_| true)
-            .expect("synchronize readiness");
+        runtime.set_backend_readiness(BackendId::new(0), true);
+        runtime.set_backend_readiness(BackendId::new(1), true);
 
         assert_eq!(runtime.generation(), GENERATION);
         assert_eq!(selector.generation(), GENERATION);
@@ -1414,9 +1353,7 @@ mod tests {
     fn ready_selector(strategy: LoadBalancingStrategy, weights: &[u32]) -> GenerationSelector<()> {
         let selector =
             GenerationSelector::<()>::new(strategy, backend_view(weights)).expect("selector");
-        selector
-            .synchronize_readiness(|_| true)
-            .expect("synchronize readiness");
+        set_test_readiness(&selector, |_| true);
         selector
     }
 
@@ -1478,9 +1415,7 @@ mod tests {
         ] {
             let selector = GenerationSelector::<()>::new(strategy, backend_view(&[1, 1, 1]))
                 .expect("selector");
-            selector
-                .synchronize_readiness(|index| index != 1)
-                .expect("synchronize readiness");
+            set_test_readiness(&selector, |index| index != 1);
             for worker_slot in [0, 1, 7] {
                 for _ in 0..32 {
                     let picked = selector
@@ -1504,9 +1439,7 @@ mod tests {
         ] {
             let selector =
                 GenerationSelector::<()>::new(strategy, backend_view(&[1, 1])).expect("selector");
-            selector
-                .synchronize_readiness(|_| false)
-                .expect("synchronize readiness");
+            set_test_readiness(&selector, |_| false);
             assert!(selector.select_excluding_for_worker("", &[], 0).is_none());
         }
     }
