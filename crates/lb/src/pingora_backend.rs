@@ -3,10 +3,11 @@ use std::collections::BTreeSet;
 use std::{
     collections::HashMap,
     future::Future,
+    hash::{BuildHasher, RandomState},
     net::SocketAddr,
     sync::{
         Arc, RwLock,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicU64, AtomicUsize, Ordering},
     },
     task::{Context, Poll, Waker},
     time::{Duration, Instant},
@@ -30,6 +31,14 @@ use crate::{
 };
 
 const WORKER_SELECTION_SLOTS: usize = 256;
+
+fn next_random(state: &AtomicU64) -> u64 {
+    let value = state.fetch_add(0x9e37_79b9_7f4a_7c15, Ordering::Relaxed);
+    let mut mixed = value;
+    mixed = (mixed ^ (mixed >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    mixed = (mixed ^ (mixed >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    mixed ^ (mixed >> 31)
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BackendSelectionResult<P> {
@@ -254,6 +263,7 @@ struct GenerationWeightedRandom<T> {
     generation: u64,
     upstream_name: String,
     selector: LoadBalancer<PingoraRandom>,
+    worker_random_states: Box<[AtomicU64]>,
     policy: std::marker::PhantomData<T>,
 }
 
@@ -274,6 +284,12 @@ where
             generation,
             upstream_name,
             selector: LoadBalancer::from_backends(view),
+            worker_random_states: (0..WORKER_SELECTION_SLOTS)
+                .map(|slot| {
+                    let seed = RandomState::new().hash_one((slot, generation));
+                    AtomicU64::new(seed)
+                })
+                .collect(),
             policy: std::marker::PhantomData,
         }
     }
@@ -281,19 +297,34 @@ where
     fn select_excluding(
         &self,
         excluded_backend_ids: &[BackendId],
+        worker_slot: usize,
     ) -> Option<BackendSelectionResult<T>> {
-        let selected = self
-            .selector
-            .select_with(
-                b"",
-                self.selector.backends().get_backend().len(),
-                |backend, healthy| {
-                    candidate_is_available::<T>(backend, healthy, excluded_backend_ids)
-                },
-            )
-            .or_else(|| {
-                first_available_backend::<T>(self.selector.backends(), excluded_backend_ids)
-            })?;
+        let backends = self.selector.backends();
+        let backend_set = backends.get_backend();
+        let available = backend_set
+            .iter()
+            .filter(|backend| {
+                candidate_is_available::<T>(backend, backends.ready(backend), excluded_backend_ids)
+            })
+            .collect::<Vec<_>>();
+        let total_weight = available.iter().fold(0usize, |total, backend| {
+            total.saturating_add(backend.weight)
+        });
+        if total_weight == 0 {
+            return None;
+        }
+
+        let state = &self.worker_random_states[worker_slot % self.worker_random_states.len()];
+        let mut weight_slot = (next_random(state) % total_weight as u64) as usize;
+        let selected = available.into_iter().find(|backend| {
+            if weight_slot < backend.weight {
+                true
+            } else {
+                weight_slot -= backend.weight;
+                false
+            }
+        })?;
+        let selected = (*selected).clone();
         selection_result(selected, self.generation)
     }
 
@@ -565,7 +596,7 @@ where
                 selector.select_excluding(excluded_backend_ids, worker_slot)
             }
             GenerationSelectorKind::WeightedRandom(selector) => {
-                selector.select_excluding(excluded_backend_ids)
+                selector.select_excluding(excluded_backend_ids, worker_slot)
             }
             GenerationSelectorKind::Ketama(selector) => {
                 selector.select_excluding(key.as_bytes(), excluded_backend_ids)
