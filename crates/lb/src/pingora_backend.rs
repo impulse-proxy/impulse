@@ -932,20 +932,24 @@ where
             .ok_or_else(|| format!("upstream '{upstream_name}' has no Pingora selector"))?;
         let publication =
             discovery.publish_dns_result(self.generation, backend_index, resolved_addrs)?;
-        let started = Instant::now();
-        selector.rebuild().await?;
-        if let Some(backend_id) = selector.backend_id(backend_index)
-            && let Some(ready) = self.backend_readiness.get(backend_id.get() as usize)
-        {
-            loop {
-                let rebuilt_ready = ready.load(Ordering::Acquire);
-                selector.set_backend_enabled(backend_id, rebuilt_ready);
-                if ready.load(Ordering::Acquire) == rebuilt_ready {
-                    break;
+        let rebuild_duration = if publication.membership_changed() {
+            let started = Instant::now();
+            selector.rebuild().await?;
+            if let Some(backend_id) = selector.backend_id(backend_index)
+                && let Some(ready) = self.backend_readiness.get(backend_id.get() as usize)
+            {
+                loop {
+                    let rebuilt_ready = ready.load(Ordering::Acquire);
+                    selector.set_backend_enabled(backend_id, rebuilt_ready);
+                    if ready.load(Ordering::Acquire) == rebuilt_ready {
+                        break;
+                    }
                 }
             }
-        }
-        let rebuild_duration = started.elapsed();
+            started.elapsed()
+        } else {
+            Duration::ZERO
+        };
         Ok(PingoraDiscoveryUpdate {
             upstream_name: upstream_name.to_string(),
             membership_generation: publication.membership_generation(),
