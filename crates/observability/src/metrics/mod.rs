@@ -3,7 +3,7 @@ use std::{
     collections::{HashMap, HashSet},
     env,
     sync::{
-        RwLock,
+        Mutex, RwLock,
         atomic::{AtomicU64, Ordering},
     },
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -275,6 +275,7 @@ pub struct Metrics {
     unrouted_route_id: usize,
     worker_render_order: Vec<(usize, String)>,
     worker_stats: Vec<WorkerStatsAtomic>,
+    worker_counter_aggregation: Mutex<()>,
     backend_dns_state: RwLock<HashMap<String, BackendDnsState>>,
     backend_rotation_state: RwLock<HashMap<String, BackendRotationState>>,
     backend_connect_attempts: RwLock<HashMap<BackendConnectAttemptKey, u64>>,

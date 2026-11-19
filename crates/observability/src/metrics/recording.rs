@@ -256,6 +256,7 @@ impl Metrics {
             unrouted_route_id,
             worker_render_order,
             worker_stats,
+            worker_counter_aggregation: Mutex::new(()),
             backend_dns_state: RwLock::new(HashMap::new()),
             backend_rotation_state: RwLock::new(HashMap::new()),
             backend_connect_attempts: RwLock::new(HashMap::new()),
@@ -975,6 +976,10 @@ impl Metrics {
     /// first, so the totals are current when read and never depend on a
     /// background task. It is a sum over the worker shards, not a hot-path call.
     pub fn aggregate_worker_counters(&self) {
+        let _aggregation = self
+            .worker_counter_aggregation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut totals = WorkerStats::default();
         for worker in &self.worker_stats {
             let stats = worker.snapshot();
