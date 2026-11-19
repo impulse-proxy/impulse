@@ -168,6 +168,7 @@ performance:
     backend_dns_refresh_interval_ms: 30000   # refresh cadence for hostname-based backends (ms)
     per_backend_inflight_limit: 64
     connection_rate_limit_enabled: true  # set false to disable per-source new-connection rate limiting (requires the connection-rate-limit plugin build otherwise)
+    connection_rate_limit_exact_global: false  # use one exact shared token bucket instead of per-worker local buckets
     new_connections_per_sec: 2000   # max new QUIC connections accepted per second (token-bucket refill rate)
     new_connections_burst: 500      # burst capacity above the steady-state rate; must be >= 1
     max_active_connections: 20000   # hard cap on active QUIC connections per worker

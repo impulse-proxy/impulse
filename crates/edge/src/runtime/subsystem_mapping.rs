@@ -429,6 +429,7 @@ pub(crate) fn plugin_construction_inputs(
                     .then_some(ConnectionRateLimitInput {
                         requests_per_second: config.policies.transport.new_connections_per_sec,
                         burst: config.policies.transport.new_connections_burst,
+                        exact_global: config.policies.transport.connection_rate_limit_exact_global,
                     })
             }
             #[cfg(not(feature = "connection-rate-limit"))]

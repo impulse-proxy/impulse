@@ -59,6 +59,7 @@ pub(crate) enum ConnectionRateLimitRejection {
 #[cfg(feature = "connection-rate-limit")]
 pub(crate) struct ConnectionRateLimitRuntime {
     input: ConnectionRateLimitInput,
+    exact_global: Option<Mutex<TokenBucket>>,
     workers: Box<[OnceLock<ConnectionRateLimitWorker>]>,
 }
 
@@ -83,6 +84,9 @@ impl ConnectionRateLimitRuntime {
     pub(crate) fn new(input: ConnectionRateLimitInput) -> Self {
         Self {
             input,
+            exact_global: input
+                .exact_global
+                .then(|| Mutex::new(TokenBucket::new(input.requests_per_second, input.burst))),
             workers: (0..CONNECTION_RATE_LIMIT_WORKER_SLOTS)
                 .map(|_| OnceLock::new())
                 .collect(),
@@ -100,8 +104,10 @@ impl ConnectionRateLimitRuntime {
     ) -> Result<(), ConnectionRateLimitRejection> {
         let worker = self.workers[worker_slot % self.workers.len()]
             .get_or_init(|| ConnectionRateLimitWorker::new(self.input));
-        let mut global = worker
-            .global
+        let mut global = self
+            .exact_global
+            .as_ref()
+            .unwrap_or(&worker.global)
             .lock()
             .map_err(|_| ConnectionRateLimitRejection::Global)?;
         if !global.try_consume() {

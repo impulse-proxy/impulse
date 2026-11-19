@@ -14,6 +14,7 @@ pub struct PluginConstructionInputs {
 pub struct ConnectionRateLimitInput {
     pub requests_per_second: u32,
     pub burst: u32,
+    pub exact_global: bool,
 }
 
 #[derive(Clone, Eq, PartialEq)]
