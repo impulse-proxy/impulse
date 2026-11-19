@@ -388,11 +388,17 @@ impl Metrics {
     }
 
     pub fn inc_timeout(&self) {
-        self.backend_timeouts.fetch_add(1, Ordering::Relaxed);
+        if let Some(stats) = self.current_worker_stats() {
+            stats.backend_timeouts.fetch_add(1, Ordering::Relaxed);
+            self.mark_route_worker_metrics_stale();
+        }
     }
 
     pub fn inc_backend_error(&self) {
-        self.backend_errors.fetch_add(1, Ordering::Relaxed);
+        if let Some(stats) = self.current_worker_stats() {
+            stats.backend_errors.fetch_add(1, Ordering::Relaxed);
+            self.mark_route_worker_metrics_stale();
+        }
     }
 
     pub fn inc_overload_shed(&self) {

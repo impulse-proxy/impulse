@@ -364,6 +364,14 @@ impl Metrics {
         );
         out.push_str("# TYPE impulse_worker_requests_failure counter\n");
         out.push_str(
+            "# HELP impulse_worker_backend_timeouts Total backend timeouts by worker thread.\n",
+        );
+        out.push_str("# TYPE impulse_worker_backend_timeouts counter\n");
+        out.push_str(
+            "# HELP impulse_worker_backend_errors Total backend errors by worker thread.\n",
+        );
+        out.push_str("# TYPE impulse_worker_backend_errors counter\n");
+        out.push_str(
             "# HELP impulse_worker_ingress_packets_total Total ingress packets by worker thread.\n",
         );
         out.push_str("# TYPE impulse_worker_ingress_packets_total counter\n");
@@ -391,6 +399,14 @@ impl Metrics {
             out.push_str(&format!(
                 "impulse_worker_requests_failure{{worker=\"{}\"}} {}\n",
                 worker, stats.requests_failure
+            ));
+            out.push_str(&format!(
+                "impulse_worker_backend_timeouts{{worker=\"{}\"}} {}\n",
+                worker, stats.backend_timeouts
+            ));
+            out.push_str(&format!(
+                "impulse_worker_backend_errors{{worker=\"{}\"}} {}\n",
+                worker, stats.backend_errors
             ));
             out.push_str(&format!(
                 "impulse_worker_ingress_packets_total{{worker=\"{}\"}} {}\n",
