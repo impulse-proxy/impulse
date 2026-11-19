@@ -60,7 +60,7 @@ use tracing::{Instrument, info_span};
 #[cfg(test)]
 use crate::runtime::bundle::RuntimeBundleHandle;
 use crate::{
-    ChannelBody, Metrics, OverloadShedReason, REQUEST_ID_COUNTER, RouteOutcome,
+    ChannelBody, Metrics, OverloadShedReason, RouteOutcome,
     cid_radix::CidRadix,
     constants::{
         DEFAULT_SCID_LEN_BYTES, MAX_DATAGRAM_SIZE_BYTES, MAX_UDP_PAYLOAD_BYTES, MIN_SCID_LEN_BYTES,
@@ -463,6 +463,7 @@ impl Http3Service {
         if !connection.quic.is_closed()
             && (connection.quic.is_established() || connection.quic.is_in_early_data())
             && let Err(e) = Self::handle_h3(
+                &mut self.worker_context,
                 &mut connection,
                 &shared_ctx,
                 &exec_ctx,

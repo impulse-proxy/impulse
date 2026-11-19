@@ -185,6 +185,7 @@ pub(super) struct StartedRequestEnvelope {
 
 /// The parsed HTTP request-line/header inputs needed to build a request intake.
 pub(super) struct IntakeRequestDescriptor<'a> {
+    pub(super) request_id: u64,
     pub(super) quic_trace_seed: u64,
     pub(super) request_start: Instant,
     pub(super) method: &'a str,
@@ -399,6 +400,7 @@ impl PendingForward {
 impl Http3Service {
     fn build_request_intake(descriptor: IntakeRequestDescriptor<'_>) -> IntakeRequestCandidate {
         let IntakeRequestDescriptor {
+            request_id,
             quic_trace_seed,
             request_start,
             method,
@@ -409,7 +411,6 @@ impl Http3Service {
             tunnel_mode,
             tracing_enabled,
         } = descriptor;
-        let request_id = REQUEST_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
         let request_mode = RequestMode::from_intake(tunnel_mode, method, content_length);
         let incoming_traceparent =
             extract_header_value(headers, b"traceparent").and_then(parse_traceparent);
@@ -532,6 +533,7 @@ impl Http3Service {
             intake,
         } = request;
         let IntakeRequestDescriptor {
+            request_id,
             quic_trace_seed,
             request_start,
             method,
@@ -551,6 +553,7 @@ impl Http3Service {
             metrics,
         );
         let intake = Self::build_request_intake(IntakeRequestDescriptor {
+            request_id,
             quic_trace_seed,
             request_start,
             method,
