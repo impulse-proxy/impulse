@@ -2170,6 +2170,7 @@ fn record_pingora_backend_failure(ctx: &mut PingoraRequestContext, error: &Proxy
         return;
     };
     let upstream_name = Arc::clone(&route.upstream_name);
+    let backend_id = selected.id;
     let backend_addr = selected.address.clone();
     let backend_index = selected.index;
     let upstream_pool = Arc::clone(&selected.pool);
@@ -2192,7 +2193,7 @@ fn record_pingora_backend_failure(ctx: &mut PingoraRequestContext, error: &Proxy
             .generation_state()
             .pingora_load_balancing
             .as_ref(),
-        &backend_addr,
+        backend_id,
         transition,
     );
 }
@@ -2204,6 +2205,7 @@ fn record_pingora_backend_response(ctx: &mut PingoraRequestContext, status: http
     if selected.passive_health_recorded {
         return;
     }
+    let backend_id = selected.id;
     let backend_addr = selected.address.clone();
     let backend_index = selected.index;
     let upstream_pool = Arc::clone(&selected.pool);
@@ -2230,7 +2232,7 @@ fn record_pingora_backend_response(ctx: &mut PingoraRequestContext, status: http
             .generation_state()
             .pingora_load_balancing
             .as_ref(),
-        &backend_addr,
+        backend_id,
         transition,
     );
 }

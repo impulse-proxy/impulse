@@ -2117,6 +2117,7 @@ fn make_dispatch_ready_envelope(
         method: context.method.clone(),
         path: context.path.clone(),
         authority: context.authority.clone(),
+        backend_id: Some(routing.backend_id),
         backend_addr: Some(routing.backend_addr.clone()),
         backend_index: Some(routing.backend_index),
         upstream_name: Some(routing.upstream_name.clone()),

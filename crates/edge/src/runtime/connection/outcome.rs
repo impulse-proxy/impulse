@@ -844,14 +844,14 @@ pub(crate) fn observe_backend_response_status_and_log(
 
 pub(crate) fn apply_passive_readiness_to_pingora(
     pingora_load_balancing: &PingoraLoadBalancingRuntimeState<RuntimeBackendTlsPolicy>,
-    backend_addr: &str,
+    backend_id: impulse_contracts::BackendId,
     transition: Option<HealthTransition>,
 ) {
     let Some(transition) = transition else {
         return;
     };
     pingora_load_balancing.set_backend_readiness(
-        backend_addr,
+        backend_id,
         matches!(transition, HealthTransition::BecameHealthy),
     );
 }
