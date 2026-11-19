@@ -47,6 +47,8 @@ const MAX_SCOPED_IDENTITIES_PER_RULE: usize = 1_024;
 const SCOPED_IDENTITY_PRUNE_INTERVAL: Duration = Duration::from_secs(1);
 #[cfg(feature = "scoped-rate-limit")]
 const SCOPED_IDENTITY_BUCKET_SHARDS: usize = 16;
+#[cfg(feature = "scoped-rate-limit")]
+const SCOPED_RATE_LIMIT_WORKER_SLOTS: usize = 256;
 
 #[cfg(feature = "connection-rate-limit")]
 pub(crate) enum ConnectionRateLimitRejection {
@@ -306,7 +308,7 @@ impl ScopedRateLimitRuntime {
                 }
             };
             if rule
-                .store
+                .worker_store(request.worker_slot)
                 .try_consume(&rule.storage_key(&key), rule.idle_ttl)
                 != Some(true)
             {
@@ -326,7 +328,9 @@ struct ScopedRateLimitRule {
     route_allowlist: HashSet<RouteId>,
     idle_ttl: Duration,
     retry_after_seconds: u32,
-    store: ScopedIdentityStore,
+    requests_per_second: u32,
+    burst: u32,
+    workers: Box<[OnceLock<ScopedIdentityStore>]>,
 }
 
 #[cfg(feature = "scoped-rate-limit")]
@@ -338,12 +342,21 @@ impl ScopedRateLimitRule {
             route_allowlist: input.route_allowlist.into_vec().into_iter().collect(),
             idle_ttl: input.idle_ttl,
             retry_after_seconds: 1,
-            store: ScopedIdentityStore::new(input.requests_per_second, input.burst),
+            requests_per_second: input.requests_per_second,
+            burst: input.burst,
+            workers: (0..SCOPED_RATE_LIMIT_WORKER_SLOTS)
+                .map(|_| OnceLock::new())
+                .collect(),
         }
     }
 
     fn applies_to(&self, route: RouteId) -> bool {
         self.route_allowlist.is_empty() || self.route_allowlist.contains(&route)
+    }
+
+    fn worker_store(&self, worker_slot: usize) -> &ScopedIdentityStore {
+        self.workers[worker_slot % self.workers.len()]
+            .get_or_init(|| ScopedIdentityStore::new(self.requests_per_second, self.burst))
     }
 
     fn identity_key(&self, context: &ScopedRateLimitIdentity<'_>) -> ScopedRateLimitKeyExtraction {

@@ -192,6 +192,7 @@ pub struct PluginConnectionView<'a> {
 pub struct PluginRequestView<'a> {
     pub request_id: RequestId,
     pub generation: u64,
+    pub worker_slot: usize,
     pub runtime_route_id: RouteId,
     pub route_id: Option<&'a str>,
     pub upstream_name: &'a str,

@@ -245,6 +245,12 @@ impl PingoraEdgeRequestService {
             Some(PluginRequestView {
                 request_id: ctx.request_id,
                 generation: plugin_plan.generation(),
+                worker_slot: ctx
+                    .runtime
+                    .shared_state
+                    .shared_services()
+                    .metrics
+                    .current_worker_slot(),
                 runtime_route_id: route.route_id,
                 route_id: Some(route.upstream_name.as_ref()),
                 upstream_name: route.upstream_name.as_ref(),
@@ -1149,6 +1155,12 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             plugin_request: PluginRequestView {
                 request_id: ctx.request_id,
                 generation: plugin_plan.generation(),
+                worker_slot: ctx
+                    .runtime
+                    .shared_state
+                    .shared_services()
+                    .metrics
+                    .current_worker_slot(),
                 runtime_route_id: route.route_id,
                 route_id: Some(route.upstream_name.as_ref()),
                 upstream_name: route.upstream_name.as_ref(),
