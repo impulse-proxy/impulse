@@ -112,7 +112,7 @@ use crate::{
                 ClassifiedBackendFailureInput, RouteOutcomeTarget, observe_admission_outcome,
                 observe_backend_response_status_and_log,
                 observe_classified_backend_failure_and_log, observe_proxy_error_outcome,
-                observe_status_outcome,
+                observe_status_outcome, publish_passive_readiness_transition,
             },
         },
         listener::Http3Service,
@@ -2169,6 +2169,7 @@ fn record_pingora_backend_failure(ctx: &mut PingoraRequestContext, error: &Proxy
         return;
     };
     let upstream_name = Arc::clone(&route.upstream_name);
+    let backend_id = selected.id;
     let backend_addr = selected.address.clone();
     let backend_index = selected.index;
     let upstream_pool = Arc::clone(&selected.pool);
@@ -2176,7 +2177,7 @@ fn record_pingora_backend_failure(ctx: &mut PingoraRequestContext, error: &Proxy
         selected.passive_health_recorded = true;
     }
     let shared = ctx.runtime.shared_state.shared_services();
-    let _ = observe_classified_backend_failure_and_log(ClassifiedBackendFailureInput {
+    let transition = observe_classified_backend_failure_and_log(ClassifiedBackendFailureInput {
         metrics_phase: "pingora_ingress",
         upstream_name: upstream_name.as_ref(),
         backend_addr: &backend_addr,
@@ -2185,6 +2186,15 @@ fn record_pingora_backend_failure(ctx: &mut PingoraRequestContext, error: &Proxy
         metrics: shared.metrics.as_ref(),
         classified: &classified,
     });
+    publish_passive_readiness_transition(
+        ctx.runtime
+            .shared_state
+            .generation_state()
+            .pingora_load_balancing
+            .as_ref(),
+        backend_id,
+        transition,
+    );
 }
 
 fn record_pingora_backend_response(ctx: &mut PingoraRequestContext, status: http::StatusCode) {
@@ -2194,6 +2204,7 @@ fn record_pingora_backend_response(ctx: &mut PingoraRequestContext, status: http
     if selected.passive_health_recorded {
         return;
     }
+    let backend_id = selected.id;
     let backend_addr = selected.address.clone();
     let backend_index = selected.index;
     let upstream_pool = Arc::clone(&selected.pool);
@@ -2208,12 +2219,21 @@ fn record_pingora_backend_response(ctx: &mut PingoraRequestContext, status: http
             .policy_observations()
             .inc_health_failure(HealthFailureReason::HttpStatus5xx);
     }
-    let _ = observe_backend_response_status_and_log(BackendHealthObservationInput {
+    let transition = observe_backend_response_status_and_log(BackendHealthObservationInput {
         backend_addr: &backend_addr,
         backend_index,
         upstream_pool: Some(&upstream_pool),
         status,
     });
+    publish_passive_readiness_transition(
+        ctx.runtime
+            .shared_state
+            .generation_state()
+            .pingora_load_balancing
+            .as_ref(),
+        backend_id,
+        transition,
+    );
 }
 
 fn pingora_response_constraints(preserve_upgrade: bool) -> ResponseProtocolConstraints {
