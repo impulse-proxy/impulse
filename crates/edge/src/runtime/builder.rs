@@ -120,12 +120,12 @@ impl RuntimeBuilder {
         let timeout_policy = &config.policies.timeouts;
         let worker_threads = transport_policy.worker_threads.max(1);
         let shard_count = transport_policy.packet_shards_per_worker.max(1);
-        let active_worker_threads = if worker_threads > 1 && !transport_policy.reuseport {
-            1
-        } else {
-            worker_threads
-        };
-        let worker_slots = active_worker_threads.saturating_mul(shard_count).max(1);
+        let quic_worker_slots = worker_threads
+            .saturating_mul(shard_count)
+            .saturating_mul(config.listeners.len())
+            .max(1);
+        let pingora_worker_slots = transport_policy.control_plane_threads.max(1);
+        let worker_slots = quic_worker_slots.saturating_add(pingora_worker_slots);
         let per_upstream_limit = transport_policy
             .connection_limits
             .per_upstream_inflight
@@ -259,12 +259,16 @@ impl RuntimeBuilder {
             .collect::<Vec<_>>();
         route_labels.push("unrouted".to_string());
         let routing_index = Arc::new(RouteIndex::from_runtime_upstreams(&config.upstreams));
-        let metrics = Arc::new(crate::Metrics::new_with_runtime_labels(
-            worker_slots,
-            route_labels,
-            identities.backend_names().map(str::to_string),
-            config.observability.metrics.detailed_plugin_timing,
-        ));
+        let metrics = Arc::new(
+            crate::Metrics::new_with_runtime_labels_and_automatic_worker_slots(
+                worker_slots,
+                quic_worker_slots,
+                pingora_worker_slots,
+                route_labels,
+                identities.backend_names().map(str::to_string),
+                config.observability.metrics.detailed_plugin_timing,
+            ),
+        );
         // Process-scoped: reuse the active generation's DNS resolver on reload so
         // its cache is preserved; only startup creates a fresh one.
         let backend_dns_resolver = carried

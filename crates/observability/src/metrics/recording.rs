@@ -7,8 +7,12 @@ impl Default for Metrics {
 }
 
 thread_local! {
-    static WORKER_METRICS_SLOT: Cell<usize> = const { Cell::new(0) };
+    static WORKER_METRICS_SLOT: Cell<Option<usize>> = const { Cell::new(None) };
+    static AUTOMATIC_WORKER_INDEX: usize =
+        NEXT_AUTOMATIC_WORKER_INDEX.fetch_add(1, Ordering::Relaxed);
 }
+
+static NEXT_AUTOMATIC_WORKER_INDEX: AtomicUsize = AtomicUsize::new(0);
 
 impl Metrics {
     fn mark_route_worker_metrics_stale(&self) {
@@ -61,6 +65,28 @@ impl Metrics {
         I: IntoIterator<Item = String>,
         B: IntoIterator<Item = String>,
     {
+        Self::new_with_runtime_labels_and_automatic_worker_slots(
+            worker_slots,
+            0,
+            1,
+            route_labels,
+            backend_labels,
+            detailed_plugin_timing,
+        )
+    }
+
+    pub fn new_with_runtime_labels_and_automatic_worker_slots<I, B>(
+        worker_slots: usize,
+        automatic_worker_slot_start: usize,
+        automatic_worker_slot_count: usize,
+        route_labels: I,
+        backend_labels: B,
+        detailed_plugin_timing: bool,
+    ) -> Self
+    where
+        I: IntoIterator<Item = String>,
+        B: IntoIterator<Item = String>,
+    {
         let route_latency_sample_every = env::var(ROUTE_LATENCY_SAMPLE_EVERY_ENV)
             .ok()
             .and_then(|raw| raw.trim().parse::<u64>().ok())
@@ -86,6 +112,10 @@ impl Metrics {
         let unrouted_route_id = route_label_to_id.get("unrouted").copied().unwrap_or(0);
 
         let worker_slots = worker_slots.max(1);
+        let automatic_worker_slot_start = automatic_worker_slot_start.min(worker_slots - 1);
+        let automatic_worker_slot_count = automatic_worker_slot_count
+            .max(1)
+            .min(worker_slots - automatic_worker_slot_start);
         let worker_labels = (0..worker_slots)
             .map(|idx| format!("worker-{idx}"))
             .collect::<Vec<_>>();
@@ -256,6 +286,8 @@ impl Metrics {
             unrouted_route_id,
             worker_render_order,
             worker_stats,
+            automatic_worker_slot_start,
+            automatic_worker_slot_count,
             worker_counter_aggregation: Mutex::new(()),
             backend_dns_state: RwLock::new(HashMap::new()),
             backend_rotation_state: RwLock::new(HashMap::new()),
@@ -290,11 +322,17 @@ impl Metrics {
 
     pub fn bind_worker_slot(&self, slot: usize) {
         let max_index = self.worker_stats.len().saturating_sub(1);
-        WORKER_METRICS_SLOT.with(|current| current.set(slot.min(max_index)));
+        WORKER_METRICS_SLOT.with(|current| current.set(Some(slot.min(max_index))));
     }
 
     pub fn current_worker_slot(&self) -> usize {
-        WORKER_METRICS_SLOT.with(Cell::get)
+        WORKER_METRICS_SLOT.with(|current| {
+            current.get().unwrap_or_else(|| {
+                AUTOMATIC_WORKER_INDEX.with(|index| {
+                    self.automatic_worker_slot_start + *index % self.automatic_worker_slot_count
+                })
+            })
+        })
     }
 
     pub fn inc_total(&self) {
@@ -963,7 +1001,7 @@ impl Metrics {
     }
 
     fn current_worker_stats(&self) -> Option<&WorkerStatsAtomic> {
-        let idx = WORKER_METRICS_SLOT.with(|current| current.get());
+        let idx = self.current_worker_slot();
         self.worker_stats
             .get(idx)
             .or_else(|| self.worker_stats.first())
