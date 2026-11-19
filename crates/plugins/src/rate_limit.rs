@@ -318,9 +318,13 @@ impl ScopedRateLimitRuntime {
                     };
                 }
             };
+            let identity_bytes = key.as_bytes();
+            let digest = (!matches!(rule.scope, ScopedRateLimitScopeInput::Route))
+                .then(|| Sha256::digest(identity_bytes));
+            let store_key = digest.as_ref().map_or(identity_bytes, |digest| &digest[..]);
             if rule
                 .worker_store(request.worker_slot)
-                .try_consume(&rule.storage_key(&key))
+                .try_consume(store_key)
                 != Some(true)
             {
                 return ScopedRateLimitDecision::Deny {
@@ -405,14 +409,6 @@ impl ScopedRateLimitRule {
             ScopedRateLimitKeyExtraction::Missing => legacy_identity_key(context),
         }
     }
-
-    fn storage_key(&self, identity: &str) -> String {
-        if matches!(self.scope, ScopedRateLimitScopeInput::Route) {
-            return identity.to_string();
-        }
-        let digest = Sha256::digest(identity.as_bytes());
-        format!("sha256:{digest:x}")
-    }
 }
 
 #[cfg(feature = "scoped-rate-limit")]
@@ -466,7 +462,7 @@ fn request_key_spec(raw: &str) -> RequestKeySpec {
 }
 
 #[cfg(feature = "scoped-rate-limit")]
-type ScopedIdentityBuckets = HashMap<String, (TokenBucket, Instant)>;
+type ScopedIdentityBuckets = HashMap<Box<[u8]>, (TokenBucket, Instant)>;
 #[cfg(feature = "scoped-rate-limit")]
 type ScopedIdentityShard = Mutex<ScopedIdentityBuckets>;
 
@@ -498,7 +494,7 @@ impl ScopedIdentityStore {
         }
     }
 
-    fn try_consume(&self, key: &str) -> Option<bool> {
+    fn try_consume(&self, key: &[u8]) -> Option<bool> {
         let now = Instant::now();
         let shard_index = (self.hash_builder.hash_one(key) as usize) % self.shards.len();
         let mut shard = self.shards[shard_index].lock().ok()?;
@@ -516,7 +512,7 @@ impl ScopedIdentityStore {
             return None;
         }
         let (bucket, _) = shard
-            .entry(key.to_string())
+            .entry(key.into())
             .or_insert_with(|| (TokenBucket::new(self.rate_per_sec, self.burst), now));
         Some(bucket.try_consume())
     }
