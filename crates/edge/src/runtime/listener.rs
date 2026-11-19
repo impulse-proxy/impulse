@@ -13,14 +13,13 @@ use tokio::sync::Semaphore;
 use crate::{
     Metrics,
     cid_radix::CidRadix,
-    constants::MAX_DATAGRAM_SIZE_BYTES,
     resilience::runtime::RuntimeResilience,
     routing::index::RouteIndex,
     runtime::{
-        body_buffer_pool::BodyBufferPool,
         bundle::{ActiveRuntimeGeneration, RuntimeBundleHandle},
         connection::quic::QuicConnection,
         shared_state::SharedRuntimeState,
+        worker_context::DataPlaneWorkerContext,
     },
 };
 
@@ -72,7 +71,7 @@ pub struct Http3Service {
     pub upstream_inflight: Arc<[Arc<Semaphore>]>,
     pub global_inflight: Arc<Semaphore>,
     pub(crate) routing_index: Arc<RouteIndex>,
-    pub(crate) body_buffer_pool: Arc<BodyBufferPool>,
+    pub(crate) worker_context: DataPlaneWorkerContext,
     pub metrics: Arc<Metrics>,
     pub resilience: Arc<RuntimeResilience>,
     pub watchdog: Arc<WatchdogCoordinator>,
@@ -94,9 +93,6 @@ pub struct Http3Service {
     pub request_buffer_global_cap_bytes: usize,
     pub unknown_length_response_prebuffer_bytes: usize,
     pub require_client_cert: bool,
-
-    pub(crate) recv_buf: Box<[u8; MAX_DATAGRAM_SIZE_BYTES]>,
-    pub(crate) send_buf: Box<[u8; MAX_DATAGRAM_SIZE_BYTES]>,
 
     pub(crate) connections: HashMap<Arc<[u8]>, QuicConnection>, // KEY: SCID(server connection id)
     pub(crate) cid_routes: HashMap<Arc<[u8]>, Arc<[u8]>>, // KEY: alias SCID, VALUE: primary SCID

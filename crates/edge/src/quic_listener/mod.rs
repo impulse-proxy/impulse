@@ -225,7 +225,10 @@ impl Http3Service {
         }
 
         // Read a UDP datagram and feed it into quiche.
-        let (len, peer) = match self.socket.recv_from(self.recv_buf.as_mut_slice()) {
+        let (len, peer) = match self
+            .socket
+            .recv_from(self.worker_context.recv_buf.as_mut_slice())
+        {
             Ok(v) => v,
             Err(ref e)
                 if e.kind() == std::io::ErrorKind::WouldBlock
@@ -239,9 +242,9 @@ impl Http3Service {
 
         debug!("Received UDP datagram ({} bytes)", len);
         let local_addr = self.local_addr;
-        let packet_ptr = self.recv_buf.as_mut_ptr();
-        // SAFETY: `packet_ptr` points into `self.recv_buf` and remains valid for this call.
-        // We do not access `self.recv_buf` again until `process_datagram_inner` returns.
+        let packet_ptr = self.worker_context.recv_buf.as_mut_ptr();
+        // SAFETY: `packet_ptr` points into the worker context's receive buffer and remains valid
+        // for this call. We do not access that buffer again until `process_datagram_inner` returns.
         let packet = unsafe { std::slice::from_raw_parts_mut(packet_ptr, len) };
         self.process_datagram_inner(peer, local_addr, packet);
     }
@@ -289,7 +292,7 @@ impl Http3Service {
             let len = match quiche::negotiate_version(
                 &header.scid,
                 &header.dcid,
-                self.send_buf.as_mut_slice(),
+                self.worker_context.send_buf.as_mut_slice(),
             ) {
                 Ok(len) => len,
                 Err(e) => {
@@ -301,7 +304,10 @@ impl Http3Service {
                 }
             };
 
-            if let Err(e) = self.socket.send_to(&self.send_buf[..len], peer) {
+            if let Err(e) = self
+                .socket
+                .send_to(&self.worker_context.send_buf[..len], peer)
+            {
                 error!("Failed to send version negotiation: {:?}", e);
             }
             return;
@@ -451,7 +457,7 @@ impl Http3Service {
             self.request_buffer_global_cap_bytes,
             self.config.observability.tracing.enabled,
             self.max_streams_per_connection,
-            Arc::clone(&self.body_buffer_pool),
+            Arc::clone(&self.worker_context.body_buffer_pool),
         );
 
         if !connection.quic.is_closed()

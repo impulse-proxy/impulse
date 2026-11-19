@@ -27,3 +27,4 @@ pub(crate) mod tasks;
 pub(crate) mod tls;
 pub(crate) mod transport;
 pub(crate) mod watchdog;
+pub(crate) mod worker_context;
