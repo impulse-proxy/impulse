@@ -1,7 +1,6 @@
 use std::convert::Infallible;
 
 use bytes::{BufMut, BytesMut};
-
 use impulse_config::{backend_endpoint::BackendEndpoint, runtime::RuntimeBackendTlsPolicy};
 use impulse_contracts::{AlternateBackendFailureReason, HedgeOutcomeTelemetryReason};
 #[cfg(feature = "response-cache")]

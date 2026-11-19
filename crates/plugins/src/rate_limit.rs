@@ -2,11 +2,13 @@
 use std::collections::HashSet;
 #[cfg(feature = "connection-rate-limit")]
 use std::net::IpAddr;
+#[cfg(feature = "connection-rate-limit")]
+use std::sync::OnceLock;
 use std::{
     collections::{HashMap, hash_map::RandomState},
     hash::BuildHasher,
     sync::{
-        Mutex, OnceLock,
+        Mutex,
         atomic::{AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
@@ -47,9 +49,6 @@ const MAX_SCOPED_IDENTITIES_PER_RULE: usize = 1_024;
 const SCOPED_IDENTITY_PRUNE_INTERVAL: Duration = Duration::from_secs(1);
 #[cfg(feature = "scoped-rate-limit")]
 const SCOPED_IDENTITY_BUCKET_SHARDS: usize = 16;
-#[cfg(feature = "scoped-rate-limit")]
-const SCOPED_RATE_LIMIT_WORKER_SLOTS: usize = 256;
-
 #[cfg(feature = "connection-rate-limit")]
 pub(crate) enum ConnectionRateLimitRejection {
     Global,
@@ -328,11 +327,7 @@ impl ScopedRateLimitRuntime {
             let digest = (!matches!(rule.scope, ScopedRateLimitScopeInput::Route))
                 .then(|| Sha256::digest(identity_bytes));
             let store_key = digest.as_ref().map_or(identity_bytes, |digest| &digest[..]);
-            if rule
-                .worker_store(request.worker_slot)
-                .try_consume(store_key)
-                != Some(true)
-            {
+            if rule.store.try_consume(store_key) != Some(true) {
                 return ScopedRateLimitDecision::Deny {
                     retry_after_seconds: rule.retry_after_seconds,
                 };
@@ -355,9 +350,7 @@ struct ScopedRateLimitRule {
     route_allowlist: HashSet<RouteId>,
     idle_ttl: Duration,
     retry_after_seconds: u32,
-    requests_per_second: u32,
-    burst: u32,
-    workers: Box<[OnceLock<ScopedIdentityStore>]>,
+    store: ScopedIdentityStore,
 }
 
 #[cfg(feature = "scoped-rate-limit")]
@@ -369,11 +362,7 @@ impl ScopedRateLimitRule {
             route_allowlist: input.route_allowlist.into_vec().into_iter().collect(),
             idle_ttl: input.idle_ttl,
             retry_after_seconds: 1,
-            requests_per_second: input.requests_per_second,
-            burst: input.burst,
-            workers: (0..SCOPED_RATE_LIMIT_WORKER_SLOTS)
-                .map(|_| OnceLock::new())
-                .collect(),
+            store: ScopedIdentityStore::new(input.requests_per_second, input.burst),
         }
     }
 
@@ -381,17 +370,8 @@ impl ScopedRateLimitRule {
         self.route_allowlist.is_empty() || self.route_allowlist.contains(&route)
     }
 
-    fn worker_store(&self, worker_slot: usize) -> &ScopedIdentityStore {
-        self.workers[worker_slot % self.workers.len()]
-            .get_or_init(|| ScopedIdentityStore::new(self.requests_per_second, self.burst))
-    }
-
     fn prune_expired(&self) {
-        for worker in &self.workers {
-            if let Some(store) = worker.get() {
-                store.prune_expired(self.idle_ttl);
-            }
-        }
+        self.store.prune_expired(self.idle_ttl);
     }
 
     fn identity_key(&self, context: &ScopedRateLimitIdentity<'_>) -> ScopedRateLimitKeyExtraction {
@@ -606,21 +586,12 @@ mod scoped_tests {
     use super::*;
 
     #[test]
-    fn identity_store_keys_are_independent_byte_strings() {
+    fn identity_store_enforces_one_budget_per_key() {
         let store = ScopedIdentityStore::new(1, 2);
         assert_eq!(store.try_consume(b"tenant-a"), Some(true));
         assert_eq!(store.try_consume(b"tenant-a"), Some(true));
         assert_eq!(store.try_consume(b"tenant-a"), Some(false));
         // A different identity has its own bucket.
         assert_eq!(store.try_consume(b"tenant-b"), Some(true));
-    }
-
-    #[test]
-    fn identity_stores_are_independent_per_worker_slot() {
-        let rule_store = |_: usize| ScopedIdentityStore::new(1, 1);
-        let (worker_0, worker_1) = (rule_store(0), rule_store(1));
-        assert_eq!(worker_0.try_consume(b"client"), Some(true));
-        assert_eq!(worker_0.try_consume(b"client"), Some(false));
-        assert_eq!(worker_1.try_consume(b"client"), Some(true));
     }
 }

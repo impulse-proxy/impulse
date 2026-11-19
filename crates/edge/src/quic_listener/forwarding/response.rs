@@ -18,8 +18,7 @@ use pingora_cache::{HttpCache, NoCacheReason};
 use pingora_core::protocols::http::compression::Algorithm;
 #[cfg(feature = "response-cache")]
 use pingora_http::ResponseHeader;
-use tokio::sync::mpsc::error::TryRecvError;
-use tokio::task::AbortHandle;
+use tokio::{sync::mpsc::error::TryRecvError, task::AbortHandle};
 
 use super::*;
 use crate::{

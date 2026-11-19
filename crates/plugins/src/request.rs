@@ -1,4 +1,3 @@
-use smallvec::SmallVec;
 use std::{future::Future, time::Instant};
 
 #[cfg(feature = "api-key-auth")]
@@ -9,6 +8,7 @@ use impulse_contracts::{
 };
 #[cfg(feature = "api-key-auth")]
 use impulse_policy::{ApiKeyAuthorization, ApiKeyPolicyInput, evaluate_api_key};
+use smallvec::SmallVec;
 
 #[cfg(feature = "scoped-rate-limit")]
 use crate::rate_limit::ScopedRateLimitDecision;
