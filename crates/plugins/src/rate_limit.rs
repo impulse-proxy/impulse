@@ -114,6 +114,14 @@ impl ConnectionRateLimitRuntime {
         }
         Ok(())
     }
+
+    pub(crate) fn prune_expired(&self) {
+        for worker in &self.workers {
+            if let Some(worker) = worker.get() {
+                worker.per_source.prune_expired();
+            }
+        }
+    }
 }
 
 #[cfg(any(feature = "connection-rate-limit", feature = "scoped-rate-limit"))]
@@ -200,7 +208,6 @@ impl PerSourceTokenBucket {
 
     fn try_consume(&self, source: IpAddr) -> bool {
         let now = Instant::now();
-        self.prune_expired_if_due(now);
         let shard_index = (self.hash_builder.hash_one(source) as usize) % self.shards.len();
         let mut shard = self.shards[shard_index]
             .lock()
@@ -223,6 +230,10 @@ impl PerSourceTokenBucket {
             .entry(source)
             .or_insert_with(|| (TokenBucket::new(self.rate_per_sec, self.burst), now));
         bucket.try_consume()
+    }
+
+    fn prune_expired(&self) {
+        self.prune_expired_if_due(Instant::now());
     }
 
     fn prune_expired_if_due(&self, now: Instant) {
@@ -309,7 +320,7 @@ impl ScopedRateLimitRuntime {
             };
             if rule
                 .worker_store(request.worker_slot)
-                .try_consume(&rule.storage_key(&key), rule.idle_ttl)
+                .try_consume(&rule.storage_key(&key))
                 != Some(true)
             {
                 return ScopedRateLimitDecision::Deny {
@@ -318,6 +329,12 @@ impl ScopedRateLimitRuntime {
             }
         }
         ScopedRateLimitDecision::Admit
+    }
+
+    pub(crate) fn prune_expired(&self) {
+        for rule in &self.rules {
+            rule.prune_expired();
+        }
     }
 }
 
@@ -357,6 +374,14 @@ impl ScopedRateLimitRule {
     fn worker_store(&self, worker_slot: usize) -> &ScopedIdentityStore {
         self.workers[worker_slot % self.workers.len()]
             .get_or_init(|| ScopedIdentityStore::new(self.requests_per_second, self.burst))
+    }
+
+    fn prune_expired(&self) {
+        for worker in &self.workers {
+            if let Some(store) = worker.get() {
+                store.prune_expired(self.idle_ttl);
+            }
+        }
     }
 
     fn identity_key(&self, context: &ScopedRateLimitIdentity<'_>) -> ScopedRateLimitKeyExtraction {
@@ -473,9 +498,8 @@ impl ScopedIdentityStore {
         }
     }
 
-    fn try_consume(&self, key: &str, idle_ttl: Duration) -> Option<bool> {
+    fn try_consume(&self, key: &str) -> Option<bool> {
         let now = Instant::now();
-        self.prune_expired_if_due(now, idle_ttl);
         let shard_index = (self.hash_builder.hash_one(key) as usize) % self.shards.len();
         let mut shard = self.shards[shard_index].lock().ok()?;
         if let Some((bucket, last_seen)) = shard.get_mut(key) {
@@ -495,6 +519,10 @@ impl ScopedIdentityStore {
             .entry(key.to_string())
             .or_insert_with(|| (TokenBucket::new(self.rate_per_sec, self.burst), now));
         Some(bucket.try_consume())
+    }
+
+    fn prune_expired(&self, idle_ttl: Duration) {
+        self.prune_expired_if_due(Instant::now(), idle_ttl);
     }
 
     fn prune_expired_if_due(&self, now: Instant, idle_ttl: Duration) {

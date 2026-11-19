@@ -85,6 +85,12 @@ impl CompiledConnectionPlugin {
             CompiledConnectionPluginInstance::Unavailable(unavailable) => match *unavailable {},
         }
     }
+
+    #[cfg(feature = "connection-rate-limit")]
+    pub(crate) fn prune_expired(&self) {
+        let CompiledConnectionPluginInstance::ConnectionRateLimit(runtime) = &self.instance;
+        runtime.prune_expired();
+    }
 }
 
 impl PartialEq for CompiledConnectionPlugin {
@@ -148,6 +154,10 @@ impl CompiledScopedRateLimit {
         request: impulse_contracts::PluginRequestView<'_>,
     ) -> ScopedRateLimitDecision {
         self.runtime.evaluate(request)
+    }
+
+    pub(crate) fn prune_expired(&self) {
+        self.runtime.prune_expired();
     }
 }
 

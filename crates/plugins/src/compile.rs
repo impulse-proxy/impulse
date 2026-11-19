@@ -77,6 +77,13 @@ impl CompiledGenerationPluginPlans {
             .map(Arc::clone)
     }
 
+    pub fn prune_rate_limit_stores(&self) {
+        self.connection.prune_rate_limit_stores();
+        for plan in &self.upstreams {
+            plan.prune_rate_limit_stores();
+        }
+    }
+
     #[must_use]
     #[cfg(feature = "quota")]
     pub fn quota(&self) -> Option<&crate::CompiledQuota> {

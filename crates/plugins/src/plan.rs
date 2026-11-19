@@ -131,6 +131,15 @@ impl CompiledPluginPlan {
             && self.cache_policy.is_empty()
             && self.response_policy.is_empty()
     }
+
+    pub(crate) fn prune_rate_limit_stores(&self) {
+        #[cfg(feature = "scoped-rate-limit")]
+        for plugin in self.request_gate.iter() {
+            if let CompiledRequestPlugin::ScopedRateLimit(runtime) = plugin {
+                runtime.prune_expired();
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -154,6 +163,13 @@ impl CompiledConnectionPlan {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.connection_admission.is_empty()
+    }
+
+    pub(crate) fn prune_rate_limit_stores(&self) {
+        #[cfg(feature = "connection-rate-limit")]
+        for plugin in &self.connection_admission {
+            plugin.prune_expired();
+        }
     }
 }
 

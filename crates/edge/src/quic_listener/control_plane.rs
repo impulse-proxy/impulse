@@ -78,6 +78,22 @@ impl Http3Service {
             #[cfg(feature = "quota")]
             QuotaRuntime::register_metrics(&runtime.metrics());
             let task_registry = runtime.generation_tasks();
+            if let Some(handle) = control_plane_runtime_handle() {
+                let plugin_plans = runtime.plugin_plans();
+                task_registry.spawn_supervised(
+                    &handle,
+                    "rate-limit-store-pruning",
+                    Some(runtime.metrics()),
+                    async move {
+                        let mut interval = tokio::time::interval(Duration::from_secs(1));
+                        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                        loop {
+                            interval.tick().await;
+                            plugin_plans.prune_rate_limit_stores();
+                        }
+                    },
+                );
+            }
             spawn_pingora_discovery_refresh(
                 control_plane_runtime_handle(),
                 runtime.runtime_config(),
