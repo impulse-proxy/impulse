@@ -23,7 +23,7 @@ use crate::{
     pingora_h1::PingoraH1UpstreamSession,
     pingora_h2::PingoraH2UpstreamSession,
     pingora_peer::build_pingora_http_peer,
-    pingora_pool::PingoraPool,
+    pingora_pool::PingoraPoolGeneration,
     runtime_config::SharedDnsResolver,
 };
 
@@ -40,7 +40,7 @@ pub struct UpstreamTransportPool {
     backend_entries: HashMap<String, UpstreamProtocol>,
     inflight_limits: HashMap<String, Arc<Semaphore>>,
     pingora_backends: HashMap<String, PingoraBackend>,
-    pingora_pool: PingoraPool,
+    pingora_pool: Arc<PingoraPoolGeneration>,
     dns_resolver: SharedDnsResolver,
 }
 
@@ -214,7 +214,7 @@ impl UpstreamTransportPool {
             backend_entries,
             inflight_limits,
             pingora_backends,
-            pingora_pool: PingoraPool::new(generation),
+            pingora_pool: PingoraPoolGeneration::new(generation),
             dns_resolver,
         })
     }

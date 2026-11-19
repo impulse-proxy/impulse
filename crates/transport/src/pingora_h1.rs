@@ -1,5 +1,6 @@
 use std::{
     pin::Pin,
+    sync::Arc,
     task::{Context, Poll},
 };
 
@@ -28,7 +29,7 @@ use crate::{
         UpstreamExchangeLifecycle, UpstreamExchangeOutcome, upstream_response_body_channel,
     },
     pingora_failure::classify_pingora_h1_error,
-    pingora_pool::PingoraPoolLease,
+    pingora_pool::PingoraPoolGeneration,
 };
 
 pub(crate) fn translate_pingora_h1_request_header(
@@ -58,7 +59,7 @@ pub(crate) fn translate_pingora_h1_request_header(
     Ok(Box::new(translated))
 }
 pub(crate) struct PingoraH1UpstreamSession {
-    pool: PingoraPoolLease,
+    pool: Arc<PingoraPoolGeneration>,
     peer: HttpPeer,
     session: Option<HttpSession>,
     state: PingoraH1ExchangeState,
@@ -75,7 +76,7 @@ enum PingoraH1ExchangeState {
 
 impl PingoraH1UpstreamSession {
     pub async fn acquire(
-        pool: PingoraPoolLease,
+        pool: Arc<PingoraPoolGeneration>,
         mut peer: HttpPeer,
         identity: &PingoraUpstreamConnectionIdentity,
     ) -> Result<Self> {
@@ -349,7 +350,7 @@ impl PingoraH1UpstreamSession {
 }
 struct PingoraH1TunnelLease {
     stream: Stream,
-    _pool: PingoraPoolLease,
+    _pool: Arc<PingoraPoolGeneration>,
 }
 
 impl AsyncRead for PingoraH1TunnelLease {

@@ -5,61 +5,42 @@ use std::sync::{
 
 use pingora_core::connectors::http::Connector;
 
-struct PingoraPoolGeneration {
+pub(crate) struct PingoraPoolGeneration {
     generation: u64,
-    connector: Arc<Connector>,
+    connector: Connector,
     draining: AtomicBool,
 }
 
-#[derive(Clone)]
-pub(crate) struct PingoraPoolLease {
-    generation: Arc<PingoraPoolGeneration>,
-}
+impl PingoraPoolGeneration {
+    pub fn new(generation: u64) -> Arc<Self> {
+        Arc::new(Self {
+            generation,
+            connector: Connector::new(None),
+            draining: AtomicBool::new(false),
+        })
+    }
 
-impl PingoraPoolLease {
     pub fn generation(&self) -> u64 {
-        self.generation.generation
+        self.generation
     }
 
     pub fn connector(&self) -> &Connector {
-        &self.generation.connector
+        &self.connector
     }
 
     pub fn is_draining(&self) -> bool {
-        self.generation.draining.load(Ordering::Acquire)
-    }
-}
-
-pub(crate) struct PingoraPool {
-    generation: Arc<PingoraPoolGeneration>,
-}
-
-impl PingoraPool {
-    pub fn new(generation: u64) -> Self {
-        Self {
-            generation: Self::generation(generation),
-        }
+        self.draining.load(Ordering::Acquire)
     }
 
-    pub fn acquire(&self) -> Option<PingoraPoolLease> {
-        if self.generation.draining.load(Ordering::Acquire) {
+    pub fn acquire(self: &Arc<Self>) -> Option<Arc<Self>> {
+        if self.is_draining() {
             None
         } else {
-            Some(PingoraPoolLease {
-                generation: Arc::clone(&self.generation),
-            })
+            Some(Arc::clone(self))
         }
     }
 
     pub fn drain(&self) {
-        self.generation.draining.store(true, Ordering::Release);
-    }
-
-    fn generation(generation: u64) -> Arc<PingoraPoolGeneration> {
-        Arc::new(PingoraPoolGeneration {
-            generation,
-            connector: Arc::new(Connector::new(None)),
-            draining: AtomicBool::new(false),
-        })
+        self.draining.store(true, Ordering::Release);
     }
 }
