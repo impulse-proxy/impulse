@@ -390,14 +390,12 @@ impl Metrics {
     pub fn inc_timeout(&self) {
         if let Some(stats) = self.current_worker_stats() {
             stats.backend_timeouts.fetch_add(1, Ordering::Relaxed);
-            self.mark_route_worker_metrics_stale();
         }
     }
 
     pub fn inc_backend_error(&self) {
         if let Some(stats) = self.current_worker_stats() {
             stats.backend_errors.fetch_add(1, Ordering::Relaxed);
-            self.mark_route_worker_metrics_stale();
         }
     }
 
@@ -966,24 +964,53 @@ impl Metrics {
             .or_else(|| self.worker_stats.first())
     }
 
+    /// Publish worker-local hot counters to aggregate metrics. Run this from
+    /// a background task so request handling never touches shared totals.
+    pub fn aggregate_worker_counters(&self) {
+        let mut totals = WorkerStats::default();
+        for worker in &self.worker_stats {
+            let stats = worker.snapshot();
+            totals.requests_total = totals.requests_total.saturating_add(stats.requests_total);
+            totals.requests_success = totals
+                .requests_success
+                .saturating_add(stats.requests_success);
+            totals.requests_failure = totals
+                .requests_failure
+                .saturating_add(stats.requests_failure);
+            totals.backend_timeouts = totals
+                .backend_timeouts
+                .saturating_add(stats.backend_timeouts);
+            totals.backend_errors = totals.backend_errors.saturating_add(stats.backend_errors);
+        }
+
+        self.requests_total
+            .store(totals.requests_total, Ordering::Relaxed);
+        self.requests_success
+            .store(totals.requests_success, Ordering::Relaxed);
+        self.requests_failure
+            .store(totals.requests_failure, Ordering::Relaxed);
+        self.backend_timeouts
+            .store(totals.backend_timeouts, Ordering::Relaxed);
+        self.backend_errors
+            .store(totals.backend_errors, Ordering::Relaxed);
+        self.mark_route_worker_metrics_stale();
+    }
+
     fn inc_worker_requests_total(&self) {
         if let Some(stats) = self.current_worker_stats() {
             stats.requests_total.fetch_add(1, Ordering::Relaxed);
-            self.mark_route_worker_metrics_stale();
         }
     }
 
     fn inc_worker_requests_success(&self) {
         if let Some(stats) = self.current_worker_stats() {
             stats.requests_success.fetch_add(1, Ordering::Relaxed);
-            self.mark_route_worker_metrics_stale();
         }
     }
 
     fn inc_worker_requests_failure(&self) {
         if let Some(stats) = self.current_worker_stats() {
             stats.requests_failure.fetch_add(1, Ordering::Relaxed);
-            self.mark_route_worker_metrics_stale();
         }
     }
 

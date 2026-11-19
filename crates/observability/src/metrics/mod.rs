@@ -122,7 +122,7 @@ use self::{
         RequestResultMetricsSnapshot, RequestResultMetricsSnapshotCache, RequestResultMetricsStore,
         RouteStats, RouteStatsAtomic, RouteWorkerMetricsRenderCache, SecretLastSuccessKey,
         SecretMetricsSnapshot, SecretMetricsSnapshotCache, SecretReloadKey, SecretResolveKey,
-        UpstreamClientCertExpiryKey, UpstreamTlsFailureKey, WorkerStatsAtomic,
+        UpstreamClientCertExpiryKey, UpstreamTlsFailureKey, WorkerStats, WorkerStatsAtomic,
     },
 };
 
