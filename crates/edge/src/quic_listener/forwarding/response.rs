@@ -645,31 +645,30 @@ impl Http3Service {
         let route_target = Self::request_outcome_route_target(req);
         let backend_target = Self::request_outcome_backend_target(req);
 
-        let (backend_id, backend_addr, backend_index) =
-            match (req.backend_id, &req.backend_addr, req.backend_index) {
-                (Some(id), Some(address), Some(index)) => (id, address.as_str(), index),
-                _ => {
-                    let status = if req.method.is_empty() || req.path.is_empty() {
-                        http::StatusCode::BAD_REQUEST
-                    } else {
-                        http::StatusCode::SERVICE_UNAVAILABLE
-                    };
-                    let _ = crate::runtime::connection::outcome::observe_status_outcome(
-                        metrics,
-                        route_target,
-                        backend_target,
-                        req.start.elapsed(),
-                        status,
-                    );
-                    return Self::send_simple_response(
-                        h3,
-                        quic,
-                        stream_id,
-                        status,
-                        b"no upstream available\n",
-                    );
-                }
-            };
+        let (backend_addr, backend_index) = match (&req.backend_addr, req.backend_index) {
+            (Some(address), Some(index)) => (address.as_str(), index),
+            _ => {
+                let status = if req.method.is_empty() || req.path.is_empty() {
+                    http::StatusCode::BAD_REQUEST
+                } else {
+                    http::StatusCode::SERVICE_UNAVAILABLE
+                };
+                let _ = crate::runtime::connection::outcome::observe_status_outcome(
+                    metrics,
+                    route_target,
+                    backend_target,
+                    req.start.elapsed(),
+                    status,
+                );
+                return Self::send_simple_response(
+                    h3,
+                    quic,
+                    stream_id,
+                    status,
+                    b"no upstream available\n",
+                );
+            }
+        };
 
         let upstream_pool = req.upstream_pool.clone();
 
@@ -821,7 +820,7 @@ impl Http3Service {
                     backend_addr,
                     &classified,
                 );
-                let transition =
+                let _ =
                     crate::runtime::connection::outcome::observe_classified_backend_failure_and_log(
                         crate::runtime::connection::outcome::ClassifiedBackendFailureInput {
                             metrics_phase: "data_plane",
@@ -833,12 +832,6 @@ impl Http3Service {
                             classified: &classified,
                         },
                     );
-                crate::runtime::connection::outcome::apply_passive_readiness_to_pingora(
-                    shared_ctx.pingora_load_balancing,
-                    backend_id,
-                    transition,
-                );
-
                 match classified.kind {
                     UpstreamProxyErrorKind::Timeout => {
                         metrics.request_observations().inc_timeout();
@@ -1356,26 +1349,20 @@ impl Http3Service {
                 backend_used,
             } => {
                 if *backend_used
-                    && let (Some(id), Some(addr), Some(idx)) =
-                        (req.backend_id, &req.backend_addr, req.backend_index)
+                    && let (Some(addr), Some(idx)) = (&req.backend_addr, req.backend_index)
                 {
                     if status.is_server_error() {
                         metrics
                             .policy_observations()
                             .inc_health_failure(HealthFailureReason::HttpStatus5xx);
                     }
-                    let transition = crate::runtime::connection::outcome::observe_backend_response_status_and_log(
+                    let _ = crate::runtime::connection::outcome::observe_backend_response_status_and_log(
                         crate::runtime::connection::outcome::BackendHealthObservationInput {
                             backend_addr: addr,
                             backend_index: idx,
                             upstream_pool: req.upstream_pool.as_ref(),
                             status: *status,
                         },
-                    );
-                    crate::runtime::connection::outcome::apply_passive_readiness_to_pingora(
-                        shared_ctx.pingora_load_balancing,
-                        id,
-                        transition,
                     );
                 }
                 let _ = crate::runtime::connection::outcome::observe_status_outcome(
@@ -1767,13 +1754,12 @@ impl Http3Service {
                     }
                     let upstream_name = req.upstream_name.as_deref();
                     let upstream_pool = req.upstream_pool.as_ref();
-                    if let (Some(id), Some(addr), Some(idx), Some(classified)) = (
-                        req.backend_id,
+                    if let (Some(addr), Some(idx), Some(classified)) = (
                         req.backend_addr.as_deref(),
                         req.backend_index,
                         classified.as_ref(),
                     ) {
-                        let transition = crate::runtime::connection::outcome::observe_classified_backend_failure_and_log(
+                        let _ = crate::runtime::connection::outcome::observe_classified_backend_failure_and_log(
                             crate::runtime::connection::outcome::ClassifiedBackendFailureInput {
                                 metrics_phase: "data_plane",
                                 upstream_name: upstream_name.unwrap_or("unknown"),
@@ -1784,17 +1770,10 @@ impl Http3Service {
                                 classified,
                             },
                         );
-                        crate::runtime::connection::outcome::apply_passive_readiness_to_pingora(
-                            shared_ctx.pingora_load_balancing,
-                            id,
-                            transition,
-                        );
-                    } else if let (Some(id), Some(addr), Some(idx)) = (
-                        req.backend_id,
-                        req.backend_addr.as_deref(),
-                        req.backend_index,
-                    ) {
-                        let transition = crate::runtime::connection::outcome::observe_backend_response_status_and_log(
+                    } else if let (Some(addr), Some(idx)) =
+                        (req.backend_addr.as_deref(), req.backend_index)
+                    {
+                        let _ = crate::runtime::connection::outcome::observe_backend_response_status_and_log(
                             crate::runtime::connection::outcome::BackendHealthObservationInput {
                                 backend_addr: addr,
                                 backend_index: idx,
@@ -1804,11 +1783,6 @@ impl Http3Service {
                                     .and_then(|code| http::StatusCode::from_u16(code).ok())
                                     .unwrap_or(http::StatusCode::INTERNAL_SERVER_ERROR),
                             },
-                        );
-                        crate::runtime::connection::outcome::apply_passive_readiness_to_pingora(
-                            shared_ctx.pingora_load_balancing,
-                            id,
-                            transition,
                         );
                     }
                     match err {

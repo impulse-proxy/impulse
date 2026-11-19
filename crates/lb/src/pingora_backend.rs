@@ -870,6 +870,21 @@ where
             .get(upstream_id.get() as usize)
     }
 
+    pub fn backend_id_by_address(
+        &self,
+        upstream_name: &str,
+        configured_address: &str,
+    ) -> Option<BackendId> {
+        let upstream_index = self
+            .upstream_names
+            .binary_search_by(|name| name.as_str().cmp(upstream_name))
+            .ok()?;
+        let backend_index = self.upstream_memberships_by_id[upstream_index]
+            .backend_addresses()
+            .position(|address| address == configured_address)?;
+        self.selectors_by_id[upstream_index].backend_id(backend_index)
+    }
+
     pub fn upstream_pools(&self) -> HashMap<String, Arc<RwLock<UpstreamPool>>> {
         self.upstream_names
             .iter()

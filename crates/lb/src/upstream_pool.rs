@@ -61,6 +61,10 @@ impl UpstreamPoolMembership {
             .map(|backend| backend.address.as_ref())
     }
 
+    pub(crate) fn backend_addresses(&self) -> impl ExactSizeIterator<Item = &str> {
+        self.backends.iter().map(|backend| backend.address.as_ref())
+    }
+
     pub fn begin_request(&self, index: usize) -> bool {
         let Some(backend) = self.backends.get(index) else {
             return false;
