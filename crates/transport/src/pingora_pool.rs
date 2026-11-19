@@ -1,11 +1,9 @@
 use std::sync::{
-    Arc, Mutex,
+    Arc,
     atomic::{AtomicBool, Ordering},
 };
 
 use pingora_core::connectors::http::Connector;
-
-static CONNECTOR_INITIALIZATION: Mutex<()> = Mutex::new(());
 
 struct PingoraPoolGeneration {
     generation: u64,
@@ -58,9 +56,6 @@ impl PingoraPool {
     }
 
     fn generation(generation: u64) -> Arc<PingoraPoolGeneration> {
-        let _initialization = CONNECTOR_INITIALIZATION
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
         Arc::new(PingoraPoolGeneration {
             generation,
             connector: Arc::new(Connector::new(None)),
