@@ -293,17 +293,14 @@ impl Metrics {
     }
 
     pub fn inc_total(&self) {
-        self.requests_total.fetch_add(1, Ordering::Relaxed);
         self.inc_worker_requests_total();
     }
 
     pub fn inc_success(&self) {
-        self.requests_success.fetch_add(1, Ordering::Relaxed);
         self.inc_worker_requests_success();
     }
 
     pub fn inc_failure(&self) {
-        self.requests_failure.fetch_add(1, Ordering::Relaxed);
         self.inc_worker_requests_failure();
     }
 
