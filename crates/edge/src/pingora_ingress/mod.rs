@@ -457,6 +457,7 @@ impl ConnectionAdmission for PingoraRuntimeConnectionAdmission {
             current.generation,
             &self.listener_label,
             addr.copied(),
+            metrics.current_worker_slot(),
             metrics,
         )
         .is_ok();

@@ -74,10 +74,13 @@ impl CompiledConnectionPlugin {
     pub(crate) fn admit_connection(
         &self,
         source: Option<IpAddr>,
+        worker_slot: usize,
     ) -> Result<(), ConnectionRateLimitRejection> {
         match &self.instance {
             #[cfg(feature = "connection-rate-limit")]
-            CompiledConnectionPluginInstance::ConnectionRateLimit(runtime) => runtime.admit(source),
+            CompiledConnectionPluginInstance::ConnectionRateLimit(runtime) => {
+                runtime.admit(source, worker_slot)
+            }
             #[cfg(not(feature = "connection-rate-limit"))]
             CompiledConnectionPluginInstance::Unavailable(unavailable) => match *unavailable {},
         }

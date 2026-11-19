@@ -6,7 +6,7 @@ use std::{
     collections::{HashMap, hash_map::RandomState},
     hash::BuildHasher,
     sync::{
-        Mutex,
+        Mutex, OnceLock,
         atomic::{AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
@@ -39,6 +39,8 @@ const SOURCE_IDLE_TTL: Duration = Duration::from_secs(300);
 const SOURCE_PRUNE_INTERVAL: Duration = Duration::from_secs(1);
 #[cfg(feature = "connection-rate-limit")]
 const SOURCE_BUCKET_SHARDS: usize = 16;
+#[cfg(feature = "connection-rate-limit")]
+const CONNECTION_RATE_LIMIT_WORKER_SLOTS: usize = 256;
 #[cfg(feature = "scoped-rate-limit")]
 const MAX_SCOPED_IDENTITIES_PER_RULE: usize = 1_024;
 #[cfg(feature = "scoped-rate-limit")]
@@ -55,8 +57,23 @@ pub(crate) enum ConnectionRateLimitRejection {
 #[cfg(feature = "connection-rate-limit")]
 pub(crate) struct ConnectionRateLimitRuntime {
     input: ConnectionRateLimitInput,
+    workers: Box<[OnceLock<ConnectionRateLimitWorker>]>,
+}
+
+#[cfg(feature = "connection-rate-limit")]
+struct ConnectionRateLimitWorker {
     global: Mutex<TokenBucket>,
     per_source: PerSourceTokenBucket,
+}
+
+#[cfg(feature = "connection-rate-limit")]
+impl ConnectionRateLimitWorker {
+    fn new(input: ConnectionRateLimitInput) -> Self {
+        Self {
+            global: Mutex::new(TokenBucket::new(input.requests_per_second, input.burst)),
+            per_source: PerSourceTokenBucket::new(input.requests_per_second, input.burst),
+        }
+    }
 }
 
 #[cfg(feature = "connection-rate-limit")]
@@ -64,8 +81,9 @@ impl ConnectionRateLimitRuntime {
     pub(crate) fn new(input: ConnectionRateLimitInput) -> Self {
         Self {
             input,
-            global: Mutex::new(TokenBucket::new(input.requests_per_second, input.burst)),
-            per_source: PerSourceTokenBucket::new(input.requests_per_second, input.burst),
+            workers: (0..CONNECTION_RATE_LIMIT_WORKER_SLOTS)
+                .map(|_| OnceLock::new())
+                .collect(),
         }
     }
 
@@ -73,8 +91,14 @@ impl ConnectionRateLimitRuntime {
         self.input
     }
 
-    pub(crate) fn admit(&self, source: Option<IpAddr>) -> Result<(), ConnectionRateLimitRejection> {
-        let mut global = self
+    pub(crate) fn admit(
+        &self,
+        source: Option<IpAddr>,
+        worker_slot: usize,
+    ) -> Result<(), ConnectionRateLimitRejection> {
+        let worker = self.workers[worker_slot % self.workers.len()]
+            .get_or_init(|| ConnectionRateLimitWorker::new(self.input));
+        let mut global = worker
             .global
             .lock()
             .map_err(|_| ConnectionRateLimitRejection::Global)?;
@@ -83,7 +107,7 @@ impl ConnectionRateLimitRuntime {
         }
         drop(global);
 
-        if source.is_some_and(|source| !self.per_source.try_consume(source)) {
+        if source.is_some_and(|source| !worker.per_source.try_consume(source)) {
             return Err(ConnectionRateLimitRejection::Source);
         }
         Ok(())
