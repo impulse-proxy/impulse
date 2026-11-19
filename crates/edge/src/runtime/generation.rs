@@ -16,7 +16,7 @@ use impulse_contracts::{BackendId, ListenerId, RouteId, UpstreamId};
 use impulse_errors::ProxyError;
 use impulse_lb::{
     pingora_backend::{GenerationSelector, SharedPingoraLoadBalancingRuntimeState},
-    upstream_pool::UpstreamPool,
+    upstream_pool::{UpstreamPool, UpstreamPoolMembership},
 };
 use impulse_operations::watchdog::WatchdogCoordinator;
 use impulse_plugins::{CompiledGenerationPluginPlans, CompiledPluginPlan, RouteExecutionClass};
@@ -222,6 +222,7 @@ pub(crate) struct RouteRuntime {
     pub(crate) upstream_policy: Arc<RuntimeUpstreamPolicy>,
     pub(crate) selector: Arc<GenerationSelector<RuntimeBackendTlsPolicy>>,
     pub(crate) upstream_pool: Arc<RwLock<UpstreamPool>>,
+    pub(crate) upstream_membership: Arc<UpstreamPoolMembership>,
     #[allow(dead_code)]
     pub(crate) transport_policy: Arc<RuntimeTransportPolicy>,
     pub(crate) retry_policy: Arc<RetryBudget>,

@@ -26,8 +26,9 @@ use pingora_load_balancing::{
 };
 
 use crate::{
-    BackendInput, LoadBalancingStrategy, pingora_discovery::ImpulseServiceDiscovery,
-    upstream_pool::UpstreamPool,
+    BackendInput, LoadBalancingStrategy,
+    pingora_discovery::ImpulseServiceDiscovery,
+    upstream_pool::{UpstreamPool, UpstreamPoolMembership},
 };
 
 const WORKER_SELECTION_SLOTS: usize = 256;
@@ -453,6 +454,17 @@ impl<T> GenerationSelector<T>
 where
     T: Clone + Send + Sync + 'static,
 {
+    fn backends(&self) -> &BackendView {
+        match &self.kind {
+            GenerationSelectorKind::WeightedRoundRobin(selector) => selector.selector.backends(),
+            GenerationSelectorKind::WeightedRandom(selector) => selector.selector.backends(),
+            GenerationSelectorKind::Ketama(selector) => selector.selector.backends(),
+            GenerationSelectorKind::StickyCid(selector) => selector.selector.selector.backends(),
+            GenerationSelectorKind::CustomLeastConnections(view)
+            | GenerationSelectorKind::CustomLatencyAware(view) => &view.view,
+        }
+    }
+
     fn set_backend_enabled(&self, configured_address: &str, enabled: bool) {
         let backends = match &self.kind {
             GenerationSelectorKind::WeightedRoundRobin(selector) => selector.selector.backends(),
@@ -550,6 +562,25 @@ where
             GenerationSelectorKind::CustomLeastConnections(_)
                 | GenerationSelectorKind::CustomLatencyAware(_)
         )
+    }
+
+    pub fn has_available_backend(&self) -> bool {
+        let backends = self.backends();
+        backends
+            .get_backend()
+            .iter()
+            .any(|backend| candidate_is_available::<T>(backend, backends.ready(backend), &[]))
+    }
+
+    pub fn backend_is_available(&self, backend_id: BackendId) -> bool {
+        let backends = self.backends();
+        backends.get_backend().iter().any(|backend| {
+            backends.ready(backend)
+                && backend
+                    .ext
+                    .get::<PingoraBackendIdentity<T>>()
+                    .is_some_and(|identity| identity.runtime_id() == backend_id)
+        })
     }
 
     pub fn custom_backend_runtime_id(&self, index: usize) -> Option<BackendId> {
@@ -672,6 +703,7 @@ pub struct PingoraLoadBalancingRuntimeState<T> {
     generation: u64,
     upstream_names: Box<[String]>,
     upstream_pools_by_id: Box<[Arc<RwLock<UpstreamPool>>]>,
+    upstream_memberships_by_id: Box<[Arc<UpstreamPoolMembership>]>,
     selectors_by_id: Box<[Arc<GenerationSelector<T>>]>,
     discoveries_by_id: Box<[Option<ImpulseServiceDiscovery>]>,
     backend_readiness: RwLock<HashMap<String, bool>>,
@@ -749,6 +781,20 @@ where
             .map(|name| Arc::clone(&upstream_pools[name]))
             .collect::<Vec<_>>()
             .into_boxed_slice();
+        let upstream_memberships_by_id = upstream_pools_by_id
+            .iter()
+            .zip(&upstream_names)
+            .map(|(pool, upstream_name)| {
+                pool.read()
+                    .map(|pool| Arc::new(pool.membership_snapshot()))
+                    .map_err(|_| {
+                        format!(
+                            "upstream pool lock poisoned while snapshotting membership for '{upstream_name}'"
+                        )
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?
+            .into_boxed_slice();
         let selectors_by_id = upstream_names
             .iter()
             .map(|name| Arc::clone(&selectors[name]))
@@ -764,6 +810,7 @@ where
             generation,
             upstream_names: upstream_names.into_boxed_slice(),
             upstream_pools_by_id,
+            upstream_memberships_by_id,
             selectors_by_id,
             discoveries_by_id,
             backend_readiness: RwLock::new(HashMap::new()),
@@ -784,6 +831,14 @@ where
         upstream_id: UpstreamId,
     ) -> Option<&Arc<RwLock<UpstreamPool>>> {
         self.upstream_pools_by_id.get(upstream_id.get() as usize)
+    }
+
+    pub fn upstream_membership_by_id(
+        &self,
+        upstream_id: UpstreamId,
+    ) -> Option<&Arc<UpstreamPoolMembership>> {
+        self.upstream_memberships_by_id
+            .get(upstream_id.get() as usize)
     }
 
     pub fn upstream_pools(&self) -> HashMap<String, Arc<RwLock<UpstreamPool>>> {

@@ -7,7 +7,7 @@ use impulse_lb::{
     BackendSelectionInput,
     alternate_backend::{AlternateBackendDecision, choose_alternate_backend_with_exclusion},
     pingora_backend::GenerationSelector,
-    upstream_pool::UpstreamPool,
+    upstream_pool::{UpstreamPool, UpstreamPoolMembership},
 };
 
 use super::{
@@ -50,10 +50,11 @@ fn transport_identity_for_backend(
 
 /// Per-selection scope shared by every backend pick for one request.
 #[derive(Clone, Copy)]
-pub(crate) struct SelectionScope {
+pub(crate) struct SelectionScope<'a> {
     pub(crate) generation: u64,
     pub(crate) begin_request: bool,
     pub(crate) worker_slot: usize,
+    pub(crate) membership: &'a UpstreamPoolMembership,
 }
 
 impl ForwardingSelectionService {
@@ -62,27 +63,20 @@ impl ForwardingSelectionService {
         upstream_pool: &Arc<RwLock<UpstreamPool>>,
         selector: &GenerationSelector<RuntimeBackendTlsPolicy>,
         backend_transport_identities: &[BackendEndpoint],
-        scope: SelectionScope,
+        scope: SelectionScope<'_>,
         metrics: &Metrics,
     ) -> Result<BackendSelection, ProxyError> {
-        let (lb_key, backend_lb) = {
-            let pool = upstream_pool.read().map_err(|_| {
-                metrics
-                    .runtime_observations()
-                    .inc_pingora_lb_selector_failure();
-                ProxyError::RequestTransport(RequestFailure::UpstreamPoolLockPoisoned)
-            })?;
-            let lb_key = Http3Service::resolve_lb_key_for_runtime_request(
-                pool.lb_strategy(),
-                pool.lb_key_spec(),
-                request,
-            )
-            .value;
-            (lb_key, pool.lb_strategy().canonical_name().to_string())
-        };
+        let lb_key = Http3Service::resolve_lb_key_for_runtime_request(
+            scope.membership.lb_strategy(),
+            scope.membership.lb_key_spec(),
+            request,
+        )
+        .value;
+        let backend_lb = scope.membership.lb_strategy().canonical_name().to_string();
         let Some(selected) = Self::select_backend_excluding(
             selector,
             upstream_pool,
+            scope.membership,
             backend_transport_identities,
             BackendSelectionInput::new(scope.generation, &lb_key, &[], scope.begin_request)
                 .with_worker_slot(scope.worker_slot),
@@ -106,6 +100,7 @@ impl ForwardingSelectionService {
     pub(crate) fn select_backend_excluding(
         selector: &GenerationSelector<RuntimeBackendTlsPolicy>,
         pool: &Arc<RwLock<UpstreamPool>>,
+        membership: &UpstreamPoolMembership,
         backend_transport_identities: &[BackendEndpoint],
         input: BackendSelectionInput<'_>,
         metrics: &Metrics,
@@ -124,16 +119,11 @@ impl ForwardingSelectionService {
             return Self::select_custom_dynamic_backend(
                 selector,
                 pool,
+                membership,
                 backend_transport_identities,
                 input,
             );
         }
-        let pool = pool.read().map_err(|_| {
-            metrics
-                .runtime_observations()
-                .inc_pingora_lb_selector_failure();
-            ProxyError::RequestTransport(RequestFailure::UpstreamPoolLockPoisoned)
-        })?;
         let Some(selected) = selector.select_excluding_for_worker(
             input.request_key(),
             input.excluded_backend_ids(),
@@ -156,7 +146,7 @@ impl ForwardingSelectionService {
         }
         let index = selected.index();
         let id = selected.runtime_id();
-        let Some(address) = pool.backend_address(index).map(str::to_string) else {
+        let Some(address) = membership.backend_address(index).map(str::to_string) else {
             metrics
                 .runtime_observations()
                 .inc_pingora_lb_selector_failure();
@@ -171,11 +161,13 @@ impl ForwardingSelectionService {
                 RequestFailure::UnknownBackendTransportIdentity,
             ));
         };
-        if input.begin_request() && !pool.begin_request_if_healthy(index) {
+        if input.begin_request() && !membership.begin_request(index) {
             metrics
                 .runtime_observations()
                 .inc_pingora_lb_selector_failure();
-            return Ok(None);
+            return Err(ProxyError::RequestTransport(
+                RequestFailure::InvalidBackendIndex,
+            ));
         }
         metrics.runtime_observations().inc_pingora_lb_selection();
         Ok(Some(BackendCandidate {
@@ -189,6 +181,7 @@ impl ForwardingSelectionService {
     fn select_custom_dynamic_backend(
         selector: &GenerationSelector<RuntimeBackendTlsPolicy>,
         pool: &Arc<RwLock<UpstreamPool>>,
+        membership: &UpstreamPoolMembership,
         backend_transport_identities: &[BackendEndpoint],
         input: BackendSelectionInput<'_>,
     ) -> Result<Option<BackendCandidate>, ProxyError> {
@@ -229,7 +222,7 @@ impl ForwardingSelectionService {
                 RequestFailure::InvalidBackendIndex,
             ));
         };
-        let Some(address) = pool.backend_address(index).map(str::to_string) else {
+        let Some(address) = membership.backend_address(index).map(str::to_string) else {
             return Err(ProxyError::RequestTransport(
                 RequestFailure::InvalidBackendIndex,
             ));
