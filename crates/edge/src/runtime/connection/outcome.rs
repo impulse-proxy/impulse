@@ -1353,6 +1353,7 @@ mod tests {
             );
 
             assert_eq!(decision.route_outcome, CanonicalRouteOutcome::Success);
+            metrics.aggregate_worker_counters();
             assert_eq!(
                 metrics
                     .requests_success
@@ -1452,6 +1453,7 @@ mod tests {
                 unrouted.route_outcome,
                 CanonicalRouteOutcome::UpstreamFailure
             );
+            metrics.aggregate_worker_counters();
             assert_eq!(
                 metrics
                     .requests_failure
@@ -1549,6 +1551,7 @@ mod tests {
             );
 
             assert_eq!(observed, decision);
+            metrics.aggregate_worker_counters();
             assert_eq!(
                 metrics
                     .requests_failure

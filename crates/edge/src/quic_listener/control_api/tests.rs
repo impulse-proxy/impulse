@@ -3359,18 +3359,18 @@ async fn control_api_runtime_snapshot_renders_live_generation_listener_and_backe
         .expect("replace runtime bundle");
 
     let live = runtime_handle.current_view();
-    live.shared_services()
-        .metrics
-        .requests_total
-        .store(11, std::sync::atomic::Ordering::Relaxed);
-    live.shared_services()
-        .metrics
-        .requests_success
-        .store(7, std::sync::atomic::Ordering::Relaxed);
-    live.shared_services()
-        .metrics
-        .requests_failure
-        .store(4, std::sync::atomic::Ordering::Relaxed);
+    // Record through the per-worker counters, as real traffic does: the snapshot
+    // folds those shards into the totals before reading them.
+    let live_metrics = &live.shared_services().metrics;
+    for _ in 0..11 {
+        live_metrics.inc_total();
+    }
+    for _ in 0..7 {
+        live_metrics.inc_success();
+    }
+    for _ in 0..4 {
+        live_metrics.inc_failure();
+    }
     live.shared_services()
         .metrics
         .active_connections
