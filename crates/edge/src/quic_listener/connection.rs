@@ -32,6 +32,7 @@ impl impulse_http3_ingress::ConnectionAdmissionAdapter for Http3Service {
                 generation,
                 listener,
                 Some(peer),
+                self.metrics.current_worker_slot(),
                 &self.metrics,
             )
             .map_err(|reason| match reason {

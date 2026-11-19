@@ -421,6 +421,7 @@ impl Http3Service {
             plugin_request: has_response_plugins.then(|| PluginRequestView {
                 request_id: req.request_id,
                 generation: plugin_plan.generation(),
+                worker_slot: 0,
                 runtime_route_id: pending_forward.route_id,
                 route_id: req.upstream_name.as_deref(),
                 upstream_name: pending_forward.upstream_name.as_ref(),

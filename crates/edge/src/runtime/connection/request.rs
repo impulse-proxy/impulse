@@ -1346,6 +1346,7 @@ mod tests {
         assert_eq!(req.phase(), StreamPhase::Terminal);
         assert!(req.request_completed());
         assert_eq!(metrics.request_buffered_bytes.load(Ordering::Relaxed), 0);
+        metrics.aggregate_worker_counters();
         assert_eq!(metrics.requests_failure.load(Ordering::Relaxed), 1);
         assert_eq!(global_sem.available_permits(), 1);
         assert_eq!(upstream_sem.available_permits(), 1);
@@ -1362,6 +1363,7 @@ mod tests {
 
         assert_eq!(second_phase, StreamPhase::Terminal);
         assert_eq!(metrics.request_buffered_bytes.load(Ordering::Relaxed), 0);
+        metrics.aggregate_worker_counters();
         assert_eq!(metrics.requests_failure.load(Ordering::Relaxed), 1);
         assert_eq!(global_sem.available_permits(), 1);
         assert_eq!(upstream_sem.available_permits(), 1);
@@ -1394,6 +1396,7 @@ mod tests {
         assert_eq!(phase, StreamPhase::SendingResponse);
         assert_eq!(req.phase(), StreamPhase::Terminal);
         assert!(req.request_completed());
+        metrics.aggregate_worker_counters();
         assert_eq!(metrics.requests_failure.load(Ordering::Relaxed), 0);
         assert_eq!(global_sem.available_permits(), 1);
         assert_eq!(upstream_sem.available_permits(), 1);

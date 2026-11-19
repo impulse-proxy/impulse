@@ -29,6 +29,7 @@ pub enum ConnectionPluginExecution {
 pub fn execute_connection_plugins<'a>(
     plan: &CompiledConnectionPlan,
     connection: PluginConnectionView<'a>,
+    worker_slot: usize,
     mut observe: impl FnMut(PluginExecutionObservation),
 ) -> ConnectionPluginExecution {
     let plugins = plan.connection_admission();
@@ -37,9 +38,10 @@ pub fn execute_connection_plugins<'a>(
     }
 
     for plugin in plugins {
-        if let Err(reason) =
-            plugin.admit_connection(connection.peer_address.map(|address| address.ip()))
-        {
+        if let Err(reason) = plugin.admit_connection(
+            connection.peer_address.map(|address| address.ip()),
+            worker_slot,
+        ) {
             observe(PluginExecutionObservation {
                 kind: plugin.kind(),
                 phase: PluginPhase::ConnectionAdmission,

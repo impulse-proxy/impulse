@@ -48,14 +48,21 @@ fn transport_identity_for_backend(
     })
 }
 
+/// Per-selection scope shared by every backend pick for one request.
+#[derive(Clone, Copy)]
+pub(crate) struct SelectionScope {
+    pub(crate) generation: u64,
+    pub(crate) begin_request: bool,
+    pub(crate) worker_slot: usize,
+}
+
 impl ForwardingSelectionService {
     pub(crate) fn select_backend(
         request: &TargetResolutionRequest<'_>,
         upstream_pool: &Arc<RwLock<UpstreamPool>>,
         selector: &GenerationSelector<RuntimeBackendTlsPolicy>,
         backend_transport_identities: &[BackendEndpoint],
-        generation: u64,
-        begin_request: bool,
+        scope: SelectionScope,
         metrics: &Metrics,
     ) -> Result<BackendSelection, ProxyError> {
         let (lb_key, backend_lb) = {
@@ -77,7 +84,8 @@ impl ForwardingSelectionService {
             selector,
             upstream_pool,
             backend_transport_identities,
-            BackendSelectionInput::new(generation, &lb_key, &[], begin_request),
+            BackendSelectionInput::new(scope.generation, &lb_key, &[], scope.begin_request)
+                .with_worker_slot(scope.worker_slot),
             metrics,
         )?
         else {
@@ -126,9 +134,11 @@ impl ForwardingSelectionService {
                 .inc_pingora_lb_selector_failure();
             ProxyError::RequestTransport(RequestFailure::UpstreamPoolLockPoisoned)
         })?;
-        let Some(selected) =
-            selector.select_excluding(input.request_key(), input.excluded_backend_ids())
-        else {
+        let Some(selected) = selector.select_excluding_for_worker(
+            input.request_key(),
+            input.excluded_backend_ids(),
+            input.worker_slot(),
+        ) else {
             metrics
                 .runtime_observations()
                 .inc_pingora_lb_selector_failure();

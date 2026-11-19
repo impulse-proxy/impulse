@@ -100,7 +100,9 @@ use crate::{
         },
         retry::RetryCoordinator,
     },
-    quic_listener::{BackendCandidate, ForwardingSelectionService, TargetResolutionRequest},
+    quic_listener::{
+        BackendCandidate, ForwardingSelectionService, SelectionScope, TargetResolutionRequest,
+    },
     runtime::{
         bundle::{RuntimeBundle, RuntimeBundleHandle},
         connection::{
@@ -245,6 +247,12 @@ impl PingoraEdgeRequestService {
             Some(PluginRequestView {
                 request_id: ctx.request_id,
                 generation: plugin_plan.generation(),
+                worker_slot: ctx
+                    .runtime
+                    .shared_state
+                    .shared_services()
+                    .metrics
+                    .current_worker_slot(),
                 runtime_route_id: route.route_id,
                 route_id: Some(route.upstream_name.as_ref()),
                 upstream_name: route.upstream_name.as_ref(),
@@ -380,8 +388,16 @@ impl PingoraEdgeRequestService {
                     &pool,
                     &route_runtime.selector,
                     &state.backend_endpoints_by_id,
-                    ctx.runtime.generation,
-                    true,
+                    SelectionScope {
+                        generation: ctx.runtime.generation,
+                        begin_request: true,
+                        worker_slot: ctx
+                            .runtime
+                            .shared_state
+                            .shared_services()
+                            .metrics
+                            .current_worker_slot(),
+                    },
                     ctx.runtime.shared_state.shared_services().metrics.as_ref(),
                 )
                 .map_err(|error| {
@@ -452,6 +468,7 @@ impl ConnectionAdmission for PingoraRuntimeConnectionAdmission {
             current.generation,
             &self.listener_label,
             addr.copied(),
+            metrics.current_worker_slot(),
             metrics,
         )
         .is_ok();
@@ -1143,6 +1160,12 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             plugin_request: PluginRequestView {
                 request_id: ctx.request_id,
                 generation: plugin_plan.generation(),
+                worker_slot: ctx
+                    .runtime
+                    .shared_state
+                    .shared_services()
+                    .metrics
+                    .current_worker_slot(),
                 runtime_route_id: route.route_id,
                 route_id: Some(route.upstream_name.as_ref()),
                 upstream_name: route.upstream_name.as_ref(),
@@ -2055,7 +2078,8 @@ fn handle_pingora_proxy_failure(
             ctx.lb_key.as_deref().unwrap_or_default(),
             &[selected.id],
             false,
-        ),
+        )
+        .with_worker_slot(metrics.current_worker_slot()),
         metrics,
     );
     let (retry_backend, retry_transport_identity, alternate_failure) = match selection {

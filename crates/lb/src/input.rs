@@ -172,6 +172,7 @@ pub struct BackendSelectionInput<'a> {
     request_key: &'a str,
     excluded_backend_ids: &'a [BackendId],
     begin_request: bool,
+    worker_slot: usize,
 }
 
 impl<'a> BackendSelectionInput<'a> {
@@ -187,7 +188,21 @@ impl<'a> BackendSelectionInput<'a> {
             request_key,
             excluded_backend_ids,
             begin_request,
+            worker_slot: 0,
         }
+    }
+
+    /// Select using the worker-local state of `worker_slot` (round-robin cursor,
+    /// random generator). Defaults to slot 0 when not set.
+    #[must_use]
+    pub const fn with_worker_slot(mut self, worker_slot: usize) -> Self {
+        self.worker_slot = worker_slot;
+        self
+    }
+
+    #[must_use]
+    pub const fn worker_slot(self) -> usize {
+        self.worker_slot
     }
 
     #[must_use]

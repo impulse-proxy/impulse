@@ -66,6 +66,7 @@ pub(crate) async fn run_watchdog_service(state: WatchdogServiceState) {
         );
     }
 
+    metrics.aggregate_worker_counters();
     let mut previous_requests = metrics.requests_total.load(Ordering::Relaxed);
     let mut previous_timeouts = metrics.backend_timeouts.load(Ordering::Relaxed);
     let mut degraded_windows = 0u32;
@@ -76,6 +77,9 @@ pub(crate) async fn run_watchdog_service(state: WatchdogServiceState) {
         let stalled = now.saturating_sub(watchdog.last_poll_progress_ms())
             > watchdog_config.poll_stall_timeout_ms;
 
+        // Fold the per-worker counters in right before reading them, so each
+        // window sees exactly the traffic that happened during it.
+        metrics.aggregate_worker_counters();
         let current_requests = metrics.requests_total.load(Ordering::Relaxed);
         let current_timeouts = metrics.backend_timeouts.load(Ordering::Relaxed);
         let request_delta = current_requests.saturating_sub(previous_requests);
@@ -266,6 +270,22 @@ mod tests {
         )
     }
 
+    /// Bring the cumulative totals to `requests` / `timeouts` by recording the
+    /// difference through the per-worker counters, the way real traffic does. The
+    /// watchdog folds those shards into the totals before every read, so writing
+    /// the global totals directly would be overwritten.
+    fn set_totals(metrics: &Metrics, requests: u64, timeouts: u64) {
+        metrics.aggregate_worker_counters();
+        let have_requests = metrics.requests_total.load(Ordering::Relaxed);
+        let have_timeouts = metrics.backend_timeouts.load(Ordering::Relaxed);
+        for _ in have_requests..requests {
+            metrics.inc_total();
+        }
+        for _ in have_timeouts..timeouts {
+            metrics.inc_timeout();
+        }
+    }
+
     async fn wait_until(timeout: Duration, mut predicate: impl FnMut() -> bool, context: &str) {
         let start = tokio::time::Instant::now();
         while start.elapsed() < timeout {
@@ -284,8 +304,7 @@ mod tests {
         let task = tokio::spawn(run_watchdog_service(state));
         tokio::task::yield_now().await;
 
-        metrics.requests_total.store(10, Ordering::Relaxed);
-        metrics.backend_timeouts.store(6, Ordering::Relaxed);
+        set_totals(&metrics, 10, 6);
         wait_until(
             Duration::from_secs(3),
             || watchdog.is_degraded(),
@@ -294,8 +313,7 @@ mod tests {
         .await;
         assert!(!watchdog.restart_requested());
 
-        metrics.requests_total.store(20, Ordering::Relaxed);
-        metrics.backend_timeouts.store(12, Ordering::Relaxed);
+        set_totals(&metrics, 20, 12);
         wait_until(
             Duration::from_secs(3),
             || watchdog.restart_requested(),
@@ -318,8 +336,7 @@ mod tests {
         let task = tokio::spawn(run_watchdog_service(state));
         tokio::task::yield_now().await;
 
-        metrics.requests_total.store(10, Ordering::Relaxed);
-        metrics.backend_timeouts.store(6, Ordering::Relaxed);
+        set_totals(&metrics, 10, 6);
         wait_until(
             Duration::from_secs(3),
             || watchdog.is_degraded(),
@@ -328,8 +345,7 @@ mod tests {
         .await;
         assert_eq!(metrics.watchdog_degraded_windows.load(Ordering::Relaxed), 1);
 
-        metrics.requests_total.store(10, Ordering::Relaxed);
-        metrics.backend_timeouts.store(6, Ordering::Relaxed);
+        set_totals(&metrics, 10, 6);
         wait_until(
             Duration::from_secs(3),
             || !watchdog.is_degraded(),
@@ -338,8 +354,7 @@ mod tests {
         .await;
         assert!(!watchdog.restart_requested());
 
-        metrics.requests_total.store(20, Ordering::Relaxed);
-        metrics.backend_timeouts.store(12, Ordering::Relaxed);
+        set_totals(&metrics, 20, 12);
         wait_until(
             Duration::from_secs(3),
             || metrics.watchdog_degraded_windows.load(Ordering::Relaxed) >= 2,

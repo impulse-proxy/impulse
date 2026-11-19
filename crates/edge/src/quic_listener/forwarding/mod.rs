@@ -27,7 +27,7 @@ pub(in crate::quic_listener) use self::{
 };
 pub(crate) use self::{
     resolve::TargetResolutionRequest,
-    selection::{BackendCandidate, ForwardingSelectionService},
+    selection::{BackendCandidate, ForwardingSelectionService, SelectionScope},
 };
 use super::*;
 #[cfg(feature = "response-cache")]
@@ -44,6 +44,7 @@ pub(in crate::quic_listener) struct ForwardingSharedCtx<'a> {
     pub(in crate::quic_listener) pingora_load_balancing:
         &'a PingoraLoadBalancingRuntimeState<RuntimeBackendTlsPolicy>,
     pub(in crate::quic_listener) generation: u64,
+    pub(in crate::quic_listener) worker_slot: usize,
 }
 
 pub(in crate::quic_listener) struct ForwardingExecutionCtx<'a> {

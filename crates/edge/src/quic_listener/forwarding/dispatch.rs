@@ -3,7 +3,7 @@ use std::convert::Infallible;
 use bytes::{BufMut, BytesMut};
 
 use impulse_config::{backend_endpoint::BackendEndpoint, runtime::RuntimeBackendTlsPolicy};
-use impulse_contracts::{AlternateBackendFailureReason, BackendId, HedgeOutcomeTelemetryReason};
+use impulse_contracts::{AlternateBackendFailureReason, HedgeOutcomeTelemetryReason};
 #[cfg(feature = "response-cache")]
 use impulse_contracts::{IngressProtocol, PluginRequestView};
 use impulse_errors::{HedgePolicyDecision, RetryPolicyDecision, is_idempotent_method};
@@ -160,6 +160,7 @@ impl Http3Service {
             plugin_request: PluginRequestView {
                 request_id: pending_forward.request_id,
                 generation: pending_forward.plugin_plan.generation(),
+                worker_slot: 0,
                 runtime_route_id: pending_forward.route_id,
                 route_id: Some(pending_forward.upstream_name.as_ref()),
                 upstream_name: pending_forward.upstream_name.as_ref(),
@@ -459,16 +460,14 @@ impl Http3Service {
         upstream_pool: &Arc<RwLock<UpstreamPool>>,
         selector: &GenerationSelector<RuntimeBackendTlsPolicy>,
         backend_transport_identities: &[BackendEndpoint],
-        generation: u64,
-        lb_key: &str,
-        primary_backend_id: BackendId,
+        input: BackendSelectionInput<'_>,
         metrics: &Metrics,
     ) -> ResolvedAlternateBackend {
         match ForwardingSelectionService::select_backend_excluding(
             selector,
             upstream_pool,
             backend_transport_identities,
-            BackendSelectionInput::new(generation, lb_key, &[primary_backend_id], false),
+            input,
             metrics,
         ) {
             Ok(Some(BackendCandidate {
@@ -637,6 +636,7 @@ impl Http3Service {
         let hedge_delay = resilience.hedging_delay;
         let alternate_pool = req.upstream_pool.clone();
         let alternate_metrics = Arc::clone(&shared_ctx.metrics);
+        let alternate_worker_slot = shared_ctx.worker_slot;
         #[cfg(feature = "response-cache")]
         let response_cache_store = exec_ctx.response_cache;
         let trace_span_for_upstream = req.trace_span().cloned();
@@ -668,13 +668,18 @@ impl Http3Service {
                             reason: AlternateBackendFailureReason::PoolUnavailable,
                         };
                     };
+                    let excluded = [pending_forward.backend_id];
                     Self::resolve_alternate_backend(
                         upstream_pool,
                         selector,
                         backend_endpoints.as_ref(),
-                        alternate_generation,
-                        pending_forward.lb_key.as_ref(),
-                        pending_forward.backend_id,
+                        BackendSelectionInput::new(
+                            alternate_generation,
+                            pending_forward.lb_key.as_ref(),
+                            &excluded,
+                            false,
+                        )
+                        .with_worker_slot(alternate_worker_slot),
                         alternate_metrics.as_ref(),
                     )
                 })

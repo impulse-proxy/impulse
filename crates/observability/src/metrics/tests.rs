@@ -455,3 +455,60 @@ fn cached_metric_family_snapshots_refresh_after_targeted_updates() {
         1_700_000_123
     );
 }
+
+#[test]
+fn worker_counters_are_folded_into_totals_when_scraped() {
+    let metrics = Metrics::new(4, vec!["route".to_string()]);
+    std::thread::scope(|scope| {
+        for slot in 0..3usize {
+            let metrics = &metrics;
+            scope.spawn(move || {
+                metrics.bind_worker_slot(slot);
+                for _ in 0..=slot {
+                    metrics.inc_total();
+                    metrics.inc_success();
+                }
+                if slot == 1 {
+                    metrics.inc_failure();
+                    metrics.inc_timeout();
+                    metrics.inc_backend_error();
+                }
+            });
+        }
+    });
+
+    // Request handling only touches its own shard; totals are not updated yet.
+    assert_eq!(metrics.requests_total.load(Ordering::Relaxed), 0);
+
+    // A scrape folds the shards in itself, with no background task involved.
+    let rendered = metrics.render_prometheus();
+    assert!(
+        rendered.contains("impulse_requests_total 6\n"),
+        "{rendered}"
+    );
+    assert!(rendered.contains("impulse_requests_success 6\n"));
+    assert!(rendered.contains("impulse_requests_failure 1\n"));
+    assert!(rendered.contains("impulse_backend_timeouts 1\n"));
+    assert_eq!(metrics.requests_total.load(Ordering::Relaxed), 6);
+    assert_eq!(metrics.backend_errors.load(Ordering::Relaxed), 1);
+}
+
+#[test]
+fn aggregating_worker_counters_is_idempotent_and_tracks_new_traffic() {
+    let metrics = Metrics::new(2, vec!["route".to_string()]);
+    metrics.bind_worker_slot(1);
+    metrics.inc_total();
+    metrics.aggregate_worker_counters();
+    metrics.aggregate_worker_counters();
+    assert_eq!(metrics.requests_total.load(Ordering::Relaxed), 1);
+
+    metrics.inc_total();
+    metrics.aggregate_worker_counters();
+    assert_eq!(metrics.requests_total.load(Ordering::Relaxed), 2);
+}
+
+#[test]
+fn worker_counter_shards_do_not_share_cache_lines() {
+    assert_eq!(std::mem::align_of::<WorkerStatsAtomic>(), 64);
+    assert_eq!(std::mem::size_of::<WorkerStatsAtomic>() % 64, 0);
+}

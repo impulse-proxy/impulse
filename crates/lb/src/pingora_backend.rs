@@ -3,8 +3,12 @@ use std::collections::BTreeSet;
 use std::{
     collections::HashMap,
     future::Future,
+    hash::{BuildHasher, RandomState},
     net::SocketAddr,
-    sync::{Arc, RwLock},
+    sync::{
+        Arc, RwLock,
+        atomic::{AtomicU64, AtomicUsize, Ordering},
+    },
     task::{Context, Poll, Waker},
     time::{Duration, Instant},
 };
@@ -25,6 +29,16 @@ use crate::{
     BackendInput, LoadBalancingStrategy, pingora_discovery::ImpulseServiceDiscovery,
     upstream_pool::UpstreamPool,
 };
+
+const WORKER_SELECTION_SLOTS: usize = 256;
+
+fn next_random(state: &AtomicU64) -> u64 {
+    let value = state.fetch_add(0x9e37_79b9_7f4a_7c15, Ordering::Relaxed);
+    let mut mixed = value;
+    mixed = (mixed ^ (mixed >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    mixed = (mixed ^ (mixed >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    mixed ^ (mixed >> 31)
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BackendSelectionResult<P> {
@@ -130,6 +144,54 @@ where
             .ext
             .get::<PingoraBackendIdentity<T>>()
             .is_some_and(|identity| !excluded_backend_ids.contains(&identity.runtime_id()))
+}
+
+/// Pads a per-worker value to its own cache line so workers that own adjacent
+/// slots do not invalidate each other's line on every update (false sharing).
+#[repr(align(64))]
+struct Padded<T>(T);
+
+/// Weighted pick over the currently available backends without allocating.
+///
+/// `pick_slot` receives the total weight of the available backends and returns a
+/// position in `0..total_weight`. If readiness changes between the two passes and
+/// the position no longer lands on a backend, fall back to the first available one.
+fn select_weighted_backend<T>(
+    backends: &pingora_load_balancing::Backends,
+    excluded_backend_ids: &[BackendId],
+    pick_slot: impl FnOnce(usize) -> usize,
+) -> Option<PingoraBackend>
+where
+    T: Clone + Send + Sync + 'static,
+{
+    let backend_set = backends.get_backend();
+    let is_available = |backend: &&PingoraBackend| {
+        candidate_is_available::<T>(backend, backends.ready(backend), excluded_backend_ids)
+    };
+    let total_weight = backend_set
+        .iter()
+        .filter(&is_available)
+        .fold(0usize, |total, backend| {
+            total.saturating_add(backend.weight)
+        });
+    if total_weight == 0 {
+        return None;
+    }
+
+    let mut weight_slot = pick_slot(total_weight);
+    backend_set
+        .iter()
+        .filter(&is_available)
+        .find(|backend| {
+            if weight_slot < backend.weight {
+                true
+            } else {
+                weight_slot -= backend.weight;
+                false
+            }
+        })
+        .cloned()
+        .or_else(|| first_available_backend::<T>(backends, excluded_backend_ids))
 }
 
 fn first_available_backend<T>(
@@ -249,6 +311,7 @@ struct GenerationWeightedRandom<T> {
     generation: u64,
     upstream_name: String,
     selector: LoadBalancer<PingoraRandom>,
+    worker_random_states: Box<[Padded<AtomicU64>]>,
     policy: std::marker::PhantomData<T>,
 }
 
@@ -269,6 +332,12 @@ where
             generation,
             upstream_name,
             selector: LoadBalancer::from_backends(view),
+            worker_random_states: (0..WORKER_SELECTION_SLOTS)
+                .map(|slot| {
+                    let seed = RandomState::new().hash_one((slot, generation));
+                    Padded(AtomicU64::new(seed))
+                })
+                .collect(),
             policy: std::marker::PhantomData,
         }
     }
@@ -276,19 +345,14 @@ where
     fn select_excluding(
         &self,
         excluded_backend_ids: &[BackendId],
+        worker_slot: usize,
     ) -> Option<BackendSelectionResult<T>> {
-        let selected = self
-            .selector
-            .select_with(
-                b"",
-                self.selector.backends().get_backend().len(),
-                |backend, healthy| {
-                    candidate_is_available::<T>(backend, healthy, excluded_backend_ids)
-                },
-            )
-            .or_else(|| {
-                first_available_backend::<T>(self.selector.backends(), excluded_backend_ids)
-            })?;
+        let state = &self.worker_random_states[worker_slot % self.worker_random_states.len()].0;
+        let selected = select_weighted_backend::<T>(
+            self.selector.backends(),
+            excluded_backend_ids,
+            |total_weight| (next_random(state) % total_weight as u64) as usize,
+        )?;
         selection_result(selected, self.generation)
     }
 
@@ -309,6 +373,7 @@ struct GenerationWeightedRoundRobin<T> {
     generation: u64,
     upstream_name: String,
     selector: LoadBalancer<PingoraRoundRobin>,
+    worker_cursors: Box<[Padded<AtomicUsize>]>,
     policy: std::marker::PhantomData<T>,
 }
 
@@ -329,6 +394,9 @@ where
             generation,
             upstream_name,
             selector: LoadBalancer::from_backends(view),
+            worker_cursors: (0..WORKER_SELECTION_SLOTS)
+                .map(|_| Padded(AtomicUsize::new(0)))
+                .collect(),
             policy: std::marker::PhantomData,
         }
     }
@@ -336,19 +404,14 @@ where
     fn select_excluding(
         &self,
         excluded_backend_ids: &[BackendId],
+        worker_slot: usize,
     ) -> Option<BackendSelectionResult<T>> {
-        let selected = self
-            .selector
-            .select_with(
-                b"",
-                self.selector.backends().get_backend().len(),
-                |backend, healthy| {
-                    candidate_is_available::<T>(backend, healthy, excluded_backend_ids)
-                },
-            )
-            .or_else(|| {
-                first_available_backend::<T>(self.selector.backends(), excluded_backend_ids)
-            })?;
+        let cursor = &self.worker_cursors[worker_slot % self.worker_cursors.len()].0;
+        let selected = select_weighted_backend::<T>(
+            self.selector.backends(),
+            excluded_backend_ids,
+            |total_weight| cursor.fetch_add(1, Ordering::Relaxed) % total_weight,
+        )?;
         selection_result(selected, self.generation)
     }
 
@@ -526,12 +589,21 @@ where
         key: &str,
         excluded_backend_ids: &[BackendId],
     ) -> Option<BackendSelectionResult<T>> {
+        self.select_excluding_for_worker(key, excluded_backend_ids, 0)
+    }
+
+    pub fn select_excluding_for_worker(
+        &self,
+        key: &str,
+        excluded_backend_ids: &[BackendId],
+        worker_slot: usize,
+    ) -> Option<BackendSelectionResult<T>> {
         match &self.kind {
             GenerationSelectorKind::WeightedRoundRobin(selector) => {
-                selector.select_excluding(excluded_backend_ids)
+                selector.select_excluding(excluded_backend_ids, worker_slot)
             }
             GenerationSelectorKind::WeightedRandom(selector) => {
-                selector.select_excluding(excluded_backend_ids)
+                selector.select_excluding(excluded_backend_ids, worker_slot)
             }
             GenerationSelectorKind::Ketama(selector) => {
                 selector.select_excluding(key.as_bytes(), excluded_backend_ids)
@@ -1238,5 +1310,113 @@ mod tests {
             .expect("discovery after stale result")
             .0;
         assert_eq!(after, before);
+    }
+
+    fn ready_selector(strategy: LoadBalancingStrategy, weights: &[u32]) -> GenerationSelector<()> {
+        let selector =
+            GenerationSelector::<()>::new(strategy, backend_view(weights)).expect("selector");
+        selector
+            .synchronize_readiness(|_| true)
+            .expect("synchronize readiness");
+        selector
+    }
+
+    fn picks_for_worker(
+        selector: &GenerationSelector<()>,
+        worker_slot: usize,
+        count: usize,
+    ) -> Vec<usize> {
+        (0..count)
+            .map(|_| {
+                selector
+                    .select_excluding_for_worker("", &[], worker_slot)
+                    .expect("selection")
+                    .index()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn weighted_round_robin_follows_weights_within_a_worker() {
+        let selector = ready_selector(LoadBalancingStrategy::RoundRobin, &[3, 1]);
+        // Two full cycles of total weight 4.
+        let picks = picks_for_worker(&selector, 0, 8);
+        assert_eq!(picks.iter().filter(|index| **index == 0).count(), 6);
+        assert_eq!(picks.iter().filter(|index| **index == 1).count(), 2);
+    }
+
+    #[test]
+    fn round_robin_cursors_are_independent_per_worker() {
+        let selector = ready_selector(LoadBalancingStrategy::RoundRobin, &[1, 1]);
+        assert_eq!(picks_for_worker(&selector, 0, 2), vec![0, 1]);
+        // Worker 0 already advanced; worker 1 still starts from its own cursor.
+        assert_eq!(picks_for_worker(&selector, 1, 2), vec![0, 1]);
+        // Slots wrap around the fixed slot table instead of panicking.
+        assert!(
+            selector
+                .select_excluding_for_worker("", &[], WORKER_SELECTION_SLOTS + 3)
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn weighted_random_respects_weights() {
+        let selector = ready_selector(LoadBalancingStrategy::Random, &[9, 1]);
+        let picks = picks_for_worker(&selector, 0, 4_000);
+        let heavy = picks.iter().filter(|index| **index == 0).count();
+        // Expected 3600 with a standard deviation of about 19; allow a wide margin.
+        assert!(
+            (3_400..=3_800).contains(&heavy),
+            "heavy backend picked {heavy} of 4000 times"
+        );
+    }
+
+    #[test]
+    fn weighted_selection_skips_excluded_and_unhealthy_backends() {
+        for strategy in [
+            LoadBalancingStrategy::RoundRobin,
+            LoadBalancingStrategy::Random,
+        ] {
+            let selector = GenerationSelector::<()>::new(strategy, backend_view(&[1, 1, 1]))
+                .expect("selector");
+            selector
+                .synchronize_readiness(|index| index != 1)
+                .expect("synchronize readiness");
+            for worker_slot in [0, 1, 7] {
+                for _ in 0..32 {
+                    let picked = selector
+                        .select_excluding_for_worker("", &[BackendId::new(0)], worker_slot)
+                        .expect("selection")
+                        .index();
+                    assert_eq!(
+                        picked, 2,
+                        "{strategy:?} picked an excluded or unhealthy backend"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn weighted_selection_returns_none_without_available_backends() {
+        for strategy in [
+            LoadBalancingStrategy::RoundRobin,
+            LoadBalancingStrategy::Random,
+        ] {
+            let selector =
+                GenerationSelector::<()>::new(strategy, backend_view(&[1, 1])).expect("selector");
+            selector
+                .synchronize_readiness(|_| false)
+                .expect("synchronize readiness");
+            assert!(selector.select_excluding_for_worker("", &[], 0).is_none());
+        }
+    }
+
+    #[test]
+    fn per_worker_selection_state_occupies_its_own_cache_line() {
+        assert_eq!(std::mem::align_of::<Padded<AtomicUsize>>(), 64);
+        assert_eq!(std::mem::size_of::<Padded<AtomicUsize>>(), 64);
+        assert_eq!(std::mem::align_of::<Padded<AtomicU64>>(), 64);
+        assert_eq!(std::mem::size_of::<Padded<AtomicU64>>(), 64);
     }
 }

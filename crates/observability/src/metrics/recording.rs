@@ -292,18 +292,19 @@ impl Metrics {
         WORKER_METRICS_SLOT.with(|current| current.set(slot.min(max_index)));
     }
 
+    pub fn current_worker_slot(&self) -> usize {
+        WORKER_METRICS_SLOT.with(Cell::get)
+    }
+
     pub fn inc_total(&self) {
-        self.requests_total.fetch_add(1, Ordering::Relaxed);
         self.inc_worker_requests_total();
     }
 
     pub fn inc_success(&self) {
-        self.requests_success.fetch_add(1, Ordering::Relaxed);
         self.inc_worker_requests_success();
     }
 
     pub fn inc_failure(&self) {
-        self.requests_failure.fetch_add(1, Ordering::Relaxed);
         self.inc_worker_requests_failure();
     }
 
@@ -391,11 +392,15 @@ impl Metrics {
     }
 
     pub fn inc_timeout(&self) {
-        self.backend_timeouts.fetch_add(1, Ordering::Relaxed);
+        if let Some(stats) = self.current_worker_stats() {
+            stats.backend_timeouts.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     pub fn inc_backend_error(&self) {
-        self.backend_errors.fetch_add(1, Ordering::Relaxed);
+        if let Some(stats) = self.current_worker_stats() {
+            stats.backend_errors.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     pub fn inc_overload_shed(&self) {
@@ -963,24 +968,57 @@ impl Metrics {
             .or_else(|| self.worker_stats.first())
     }
 
+    /// Fold the worker-local hot counters into the aggregate totals.
+    ///
+    /// Request handling only touches its own worker's shard. Readers (the
+    /// Prometheus scrape, the control-API snapshot and the watchdog) call this
+    /// first, so the totals are current when read and never depend on a
+    /// background task. It is a sum over the worker shards, not a hot-path call.
+    pub fn aggregate_worker_counters(&self) {
+        let mut totals = WorkerStats::default();
+        for worker in &self.worker_stats {
+            let stats = worker.snapshot();
+            totals.requests_total = totals.requests_total.saturating_add(stats.requests_total);
+            totals.requests_success = totals
+                .requests_success
+                .saturating_add(stats.requests_success);
+            totals.requests_failure = totals
+                .requests_failure
+                .saturating_add(stats.requests_failure);
+            totals.backend_timeouts = totals
+                .backend_timeouts
+                .saturating_add(stats.backend_timeouts);
+            totals.backend_errors = totals.backend_errors.saturating_add(stats.backend_errors);
+        }
+
+        self.requests_total
+            .store(totals.requests_total, Ordering::Relaxed);
+        self.requests_success
+            .store(totals.requests_success, Ordering::Relaxed);
+        self.requests_failure
+            .store(totals.requests_failure, Ordering::Relaxed);
+        self.backend_timeouts
+            .store(totals.backend_timeouts, Ordering::Relaxed);
+        self.backend_errors
+            .store(totals.backend_errors, Ordering::Relaxed);
+        self.mark_route_worker_metrics_stale();
+    }
+
     fn inc_worker_requests_total(&self) {
         if let Some(stats) = self.current_worker_stats() {
             stats.requests_total.fetch_add(1, Ordering::Relaxed);
-            self.mark_route_worker_metrics_stale();
         }
     }
 
     fn inc_worker_requests_success(&self) {
         if let Some(stats) = self.current_worker_stats() {
             stats.requests_success.fetch_add(1, Ordering::Relaxed);
-            self.mark_route_worker_metrics_stale();
         }
     }
 
     fn inc_worker_requests_failure(&self) {
         if let Some(stats) = self.current_worker_stats() {
             stats.requests_failure.fetch_add(1, Ordering::Relaxed);
-            self.mark_route_worker_metrics_stale();
         }
     }
 

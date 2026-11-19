@@ -8,6 +8,7 @@ pub(crate) fn execute_listener_connection_plan(
     generation: u64,
     listener: &str,
     peer_address: Option<std::net::SocketAddr>,
+    worker_slot: usize,
     metrics: &crate::Metrics,
 ) -> Result<(), ConnectionPluginRejection> {
     if plan.is_empty() {
@@ -20,6 +21,7 @@ pub(crate) fn execute_listener_connection_plan(
             listener,
             peer_address,
         },
+        worker_slot,
         |observation| {
             metrics.plugin_observations().record_execution(observation);
         },

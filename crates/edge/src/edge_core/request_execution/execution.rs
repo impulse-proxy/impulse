@@ -133,6 +133,7 @@ impl<'a> EdgeRequestService<'a> {
         let plugin_request = PluginRequestView {
             request_id: input.request_id,
             generation: input.generation,
+            worker_slot: self.metrics.current_worker_slot(),
             runtime_route_id: route.route_id,
             route_id: Some(route.upstream_name.as_ref()),
             upstream_name: route.upstream_name.as_ref(),

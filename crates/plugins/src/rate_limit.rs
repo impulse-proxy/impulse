@@ -6,7 +6,7 @@ use std::{
     collections::{HashMap, hash_map::RandomState},
     hash::BuildHasher,
     sync::{
-        Mutex,
+        Mutex, OnceLock,
         atomic::{AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
@@ -39,12 +39,16 @@ const SOURCE_IDLE_TTL: Duration = Duration::from_secs(300);
 const SOURCE_PRUNE_INTERVAL: Duration = Duration::from_secs(1);
 #[cfg(feature = "connection-rate-limit")]
 const SOURCE_BUCKET_SHARDS: usize = 16;
+#[cfg(feature = "connection-rate-limit")]
+const CONNECTION_RATE_LIMIT_WORKER_SLOTS: usize = 256;
 #[cfg(feature = "scoped-rate-limit")]
 const MAX_SCOPED_IDENTITIES_PER_RULE: usize = 1_024;
 #[cfg(feature = "scoped-rate-limit")]
 const SCOPED_IDENTITY_PRUNE_INTERVAL: Duration = Duration::from_secs(1);
 #[cfg(feature = "scoped-rate-limit")]
 const SCOPED_IDENTITY_BUCKET_SHARDS: usize = 16;
+#[cfg(feature = "scoped-rate-limit")]
+const SCOPED_RATE_LIMIT_WORKER_SLOTS: usize = 256;
 
 #[cfg(feature = "connection-rate-limit")]
 pub(crate) enum ConnectionRateLimitRejection {
@@ -55,8 +59,24 @@ pub(crate) enum ConnectionRateLimitRejection {
 #[cfg(feature = "connection-rate-limit")]
 pub(crate) struct ConnectionRateLimitRuntime {
     input: ConnectionRateLimitInput,
+    exact_global: Option<Mutex<TokenBucket>>,
+    workers: Box<[OnceLock<ConnectionRateLimitWorker>]>,
+}
+
+#[cfg(feature = "connection-rate-limit")]
+struct ConnectionRateLimitWorker {
     global: Mutex<TokenBucket>,
     per_source: PerSourceTokenBucket,
+}
+
+#[cfg(feature = "connection-rate-limit")]
+impl ConnectionRateLimitWorker {
+    fn new(input: ConnectionRateLimitInput) -> Self {
+        Self {
+            global: Mutex::new(TokenBucket::new(input.requests_per_second, input.burst)),
+            per_source: PerSourceTokenBucket::new(input.requests_per_second, input.burst),
+        }
+    }
 }
 
 #[cfg(feature = "connection-rate-limit")]
@@ -64,8 +84,12 @@ impl ConnectionRateLimitRuntime {
     pub(crate) fn new(input: ConnectionRateLimitInput) -> Self {
         Self {
             input,
-            global: Mutex::new(TokenBucket::new(input.requests_per_second, input.burst)),
-            per_source: PerSourceTokenBucket::new(input.requests_per_second, input.burst),
+            exact_global: input
+                .exact_global
+                .then(|| Mutex::new(TokenBucket::new(input.requests_per_second, input.burst))),
+            workers: (0..CONNECTION_RATE_LIMIT_WORKER_SLOTS)
+                .map(|_| OnceLock::new())
+                .collect(),
         }
     }
 
@@ -73,9 +97,17 @@ impl ConnectionRateLimitRuntime {
         self.input
     }
 
-    pub(crate) fn admit(&self, source: Option<IpAddr>) -> Result<(), ConnectionRateLimitRejection> {
+    pub(crate) fn admit(
+        &self,
+        source: Option<IpAddr>,
+        worker_slot: usize,
+    ) -> Result<(), ConnectionRateLimitRejection> {
+        let worker = self.workers[worker_slot % self.workers.len()]
+            .get_or_init(|| ConnectionRateLimitWorker::new(self.input));
         let mut global = self
-            .global
+            .exact_global
+            .as_ref()
+            .unwrap_or(&worker.global)
             .lock()
             .map_err(|_| ConnectionRateLimitRejection::Global)?;
         if !global.try_consume() {
@@ -83,10 +115,18 @@ impl ConnectionRateLimitRuntime {
         }
         drop(global);
 
-        if source.is_some_and(|source| !self.per_source.try_consume(source)) {
+        if source.is_some_and(|source| !worker.per_source.try_consume(source)) {
             return Err(ConnectionRateLimitRejection::Source);
         }
         Ok(())
+    }
+
+    pub(crate) fn prune_expired(&self) {
+        for worker in &self.workers {
+            if let Some(worker) = worker.get() {
+                worker.per_source.prune_expired();
+            }
+        }
     }
 }
 
@@ -174,7 +214,6 @@ impl PerSourceTokenBucket {
 
     fn try_consume(&self, source: IpAddr) -> bool {
         let now = Instant::now();
-        self.prune_expired_if_due(now);
         let shard_index = (self.hash_builder.hash_one(source) as usize) % self.shards.len();
         let mut shard = self.shards[shard_index]
             .lock()
@@ -197,6 +236,10 @@ impl PerSourceTokenBucket {
             .entry(source)
             .or_insert_with(|| (TokenBucket::new(self.rate_per_sec, self.burst), now));
         bucket.try_consume()
+    }
+
+    fn prune_expired(&self) {
+        self.prune_expired_if_due(Instant::now());
     }
 
     fn prune_expired_if_due(&self, now: Instant) {
@@ -281,9 +324,13 @@ impl ScopedRateLimitRuntime {
                     };
                 }
             };
+            let identity_bytes = key.as_bytes();
+            let digest = (!matches!(rule.scope, ScopedRateLimitScopeInput::Route))
+                .then(|| Sha256::digest(identity_bytes));
+            let store_key = digest.as_ref().map_or(identity_bytes, |digest| &digest[..]);
             if rule
-                .store
-                .try_consume(&rule.storage_key(&key), rule.idle_ttl)
+                .worker_store(request.worker_slot)
+                .try_consume(store_key)
                 != Some(true)
             {
                 return ScopedRateLimitDecision::Deny {
@@ -292,6 +339,12 @@ impl ScopedRateLimitRuntime {
             }
         }
         ScopedRateLimitDecision::Admit
+    }
+
+    pub(crate) fn prune_expired(&self) {
+        for rule in &self.rules {
+            rule.prune_expired();
+        }
     }
 }
 
@@ -302,7 +355,9 @@ struct ScopedRateLimitRule {
     route_allowlist: HashSet<RouteId>,
     idle_ttl: Duration,
     retry_after_seconds: u32,
-    store: ScopedIdentityStore,
+    requests_per_second: u32,
+    burst: u32,
+    workers: Box<[OnceLock<ScopedIdentityStore>]>,
 }
 
 #[cfg(feature = "scoped-rate-limit")]
@@ -314,12 +369,29 @@ impl ScopedRateLimitRule {
             route_allowlist: input.route_allowlist.into_vec().into_iter().collect(),
             idle_ttl: input.idle_ttl,
             retry_after_seconds: 1,
-            store: ScopedIdentityStore::new(input.requests_per_second, input.burst),
+            requests_per_second: input.requests_per_second,
+            burst: input.burst,
+            workers: (0..SCOPED_RATE_LIMIT_WORKER_SLOTS)
+                .map(|_| OnceLock::new())
+                .collect(),
         }
     }
 
     fn applies_to(&self, route: RouteId) -> bool {
         self.route_allowlist.is_empty() || self.route_allowlist.contains(&route)
+    }
+
+    fn worker_store(&self, worker_slot: usize) -> &ScopedIdentityStore {
+        self.workers[worker_slot % self.workers.len()]
+            .get_or_init(|| ScopedIdentityStore::new(self.requests_per_second, self.burst))
+    }
+
+    fn prune_expired(&self) {
+        for worker in &self.workers {
+            if let Some(store) = worker.get() {
+                store.prune_expired(self.idle_ttl);
+            }
+        }
     }
 
     fn identity_key(&self, context: &ScopedRateLimitIdentity<'_>) -> ScopedRateLimitKeyExtraction {
@@ -342,14 +414,6 @@ impl ScopedRateLimitRule {
             ScopedRateLimitKeyExtraction::Invalid => ScopedRateLimitKeyExtraction::Invalid,
             ScopedRateLimitKeyExtraction::Missing => legacy_identity_key(context),
         }
-    }
-
-    fn storage_key(&self, identity: &str) -> String {
-        if matches!(self.scope, ScopedRateLimitScopeInput::Route) {
-            return identity.to_string();
-        }
-        let digest = Sha256::digest(identity.as_bytes());
-        format!("sha256:{digest:x}")
     }
 }
 
@@ -404,7 +468,7 @@ fn request_key_spec(raw: &str) -> RequestKeySpec {
 }
 
 #[cfg(feature = "scoped-rate-limit")]
-type ScopedIdentityBuckets = HashMap<String, (TokenBucket, Instant)>;
+type ScopedIdentityBuckets = HashMap<Box<[u8]>, (TokenBucket, Instant)>;
 #[cfg(feature = "scoped-rate-limit")]
 type ScopedIdentityShard = Mutex<ScopedIdentityBuckets>;
 
@@ -436,9 +500,8 @@ impl ScopedIdentityStore {
         }
     }
 
-    fn try_consume(&self, key: &str, idle_ttl: Duration) -> Option<bool> {
+    fn try_consume(&self, key: &[u8]) -> Option<bool> {
         let now = Instant::now();
-        self.prune_expired_if_due(now, idle_ttl);
         let shard_index = (self.hash_builder.hash_one(key) as usize) % self.shards.len();
         let mut shard = self.shards[shard_index].lock().ok()?;
         if let Some((bucket, last_seen)) = shard.get_mut(key) {
@@ -455,9 +518,13 @@ impl ScopedIdentityStore {
             return None;
         }
         let (bucket, _) = shard
-            .entry(key.to_string())
+            .entry(key.into())
             .or_insert_with(|| (TokenBucket::new(self.rate_per_sec, self.burst), now));
         Some(bucket.try_consume())
+    }
+
+    fn prune_expired(&self, idle_ttl: Duration) {
+        self.prune_expired_if_due(Instant::now(), idle_ttl);
     }
 
     fn prune_expired_if_due(&self, now: Instant, idle_ttl: Duration) {
@@ -481,5 +548,79 @@ impl ScopedIdentityStore {
         shard.retain(|_, (_, last_seen)| now.saturating_duration_since(*last_seen) < idle_ttl);
         self.live_buckets
             .fetch_sub(before.saturating_sub(shard.len()), Ordering::Relaxed);
+    }
+}
+
+#[cfg(all(test, feature = "connection-rate-limit"))]
+mod connection_tests {
+    use super::*;
+
+    fn runtime(exact_global: bool) -> ConnectionRateLimitRuntime {
+        ConnectionRateLimitRuntime::new(ConnectionRateLimitInput {
+            requests_per_second: 1,
+            burst: 2,
+            exact_global,
+        })
+    }
+
+    #[test]
+    fn local_global_buckets_are_independent_per_worker() {
+        let runtime = runtime(false);
+        for worker_slot in [0, 1] {
+            assert!(runtime.admit(None, worker_slot).is_ok());
+            assert!(runtime.admit(None, worker_slot).is_ok());
+            assert!(matches!(
+                runtime.admit(None, worker_slot),
+                Err(ConnectionRateLimitRejection::Global)
+            ));
+        }
+    }
+
+    #[test]
+    fn exact_global_bucket_is_shared_by_every_worker() {
+        let runtime = runtime(true);
+        assert!(runtime.admit(None, 0).is_ok());
+        assert!(runtime.admit(None, 1).is_ok());
+        // The shared burst of two is used up, whichever worker asks next.
+        for worker_slot in [0, 1, 2] {
+            assert!(matches!(
+                runtime.admit(None, worker_slot),
+                Err(ConnectionRateLimitRejection::Global)
+            ));
+        }
+    }
+
+    #[test]
+    fn worker_slots_wrap_around_the_slot_table() {
+        let runtime = runtime(false);
+        assert!(
+            runtime
+                .admit(None, CONNECTION_RATE_LIMIT_WORKER_SLOTS + 1)
+                .is_ok()
+        );
+    }
+}
+
+#[cfg(all(test, feature = "scoped-rate-limit"))]
+mod scoped_tests {
+    use super::*;
+
+    #[test]
+    fn identity_store_keys_are_independent_byte_strings() {
+        let store = ScopedIdentityStore::new(1, 2);
+        assert_eq!(store.try_consume(b"tenant-a"), Some(true));
+        assert_eq!(store.try_consume(b"tenant-a"), Some(true));
+        assert_eq!(store.try_consume(b"tenant-a"), Some(false));
+        // A different identity has its own bucket.
+        assert_eq!(store.try_consume(b"tenant-b"), Some(true));
+    }
+
+    #[test]
+    fn identity_stores_are_independent_per_worker_slot() {
+        let rule_store = |_: usize| ScopedIdentityStore::new(1, 1);
+        let (worker_0, worker_1) = (rule_store(0), rule_store(1));
+        assert_eq!(worker_0.try_consume(b"client"), Some(true));
+        assert_eq!(worker_0.try_consume(b"client"), Some(false));
+        assert_eq!(worker_1.try_consume(b"client"), Some(true));
     }
 }

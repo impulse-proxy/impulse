@@ -50,6 +50,7 @@ fn execute_deferred_quota_plugin(
     let request = impulse_contracts::PluginRequestView {
         request_id: pending_forward.request_id,
         generation: pending_forward.plugin_plan.generation(),
+        worker_slot: 0,
         runtime_route_id: pending_forward.route_id,
         route_id: Some(pending_forward.upstream_name.as_ref()),
         upstream_name: pending_forward.upstream_name.as_ref(),
@@ -579,6 +580,7 @@ impl Http3Service {
     }
 
     pub(in crate::quic_listener) fn handle_h3(
+        worker_context: &mut crate::runtime::worker_context::DataPlaneWorkerContext,
         connection: &mut QuicConnection,
         shared_ctx: &ForwardingSharedCtx<'_>,
         exec_ctx: &ForwardingExecutionCtx<'_>,
@@ -702,6 +704,7 @@ impl Http3Service {
 
                     let sticky_cid_key = hex::encode(connection.primary_scid.as_ref());
                     let quic_trace_seed = trace_id_seed(connection.quic.trace_id());
+                    let request_id = worker_context.next_request_id();
                     let pre_auth = match Self::prepare_request_for_auth(
                         stream_id,
                         h3,
@@ -710,6 +713,7 @@ impl Http3Service {
                             peer_address: connection.peer_address,
                             sticky_cid_key: sticky_cid_key.as_str(),
                             intake: self::prepare::IntakeRequestDescriptor {
+                                request_id,
                                 quic_trace_seed,
                                 request_start,
                                 method: request_head.method,
