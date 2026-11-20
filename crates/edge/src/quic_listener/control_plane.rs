@@ -117,7 +117,6 @@ impl Http3Service {
             spawn_pingora_health_service(
                 control_plane_runtime_handle(),
                 PingoraHealthServiceInput {
-                    generation: pingora_load_balancing.generation(),
                     transport_pool: runtime.transport_pool(),
                     backend_health_checks: runtime.backend_health_checks(),
                     pingora_load_balancing,

@@ -15,7 +15,7 @@ use crate::runtime::{
     generation::{RuntimeGenerationView, StartupOwnedRuntimeState},
     policy::RuntimeLifecycleState,
     shared_state::SharedRuntimeState,
-    transport::{activate_transport_pool_generation, drain_transport_pool_generation},
+    transport::drain_transport_pool_generation,
 };
 
 pub type RuntimeBundle =
@@ -465,14 +465,6 @@ impl RuntimeBundleHandle {
                             .response_cache_namespace(),
                     );
             }
-            activate_transport_pool_generation(
-                bundle
-                    .shared_state
-                    .shared_services()
-                    .transport_pool
-                    .as_ref(),
-                generation,
-            );
             // --- old-generation teardown boundary: BEGIN ---
             // The previous bundle's generation-owned state is now unreachable to
             // new readers; existing readers keep their clone until it drains.

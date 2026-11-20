@@ -1,93 +1,46 @@
 use std::sync::{
-    Arc, Mutex, RwLock,
+    Arc,
     atomic::{AtomicBool, Ordering},
 };
 
 use pingora_core::connectors::http::Connector;
 
-static CONNECTOR_INITIALIZATION: Mutex<()> = Mutex::new(());
-
-struct PingoraPoolGeneration {
+pub(crate) struct PingoraPoolGeneration {
     generation: u64,
-    connector: Arc<Connector>,
+    connector: Connector,
     draining: AtomicBool,
 }
 
-#[derive(Clone)]
-pub(crate) struct PingoraPoolLease {
-    generation: Arc<PingoraPoolGeneration>,
-}
+impl PingoraPoolGeneration {
+    pub fn new(generation: u64) -> Arc<Self> {
+        Arc::new(Self {
+            generation,
+            connector: Connector::new(None),
+            draining: AtomicBool::new(false),
+        })
+    }
 
-impl PingoraPoolLease {
     pub fn generation(&self) -> u64 {
-        self.generation.generation
+        self.generation
     }
 
     pub fn connector(&self) -> &Connector {
-        &self.generation.connector
+        &self.connector
     }
 
     pub fn is_draining(&self) -> bool {
-        self.generation.draining.load(Ordering::Acquire)
-    }
-}
-
-pub(crate) struct PingoraPool {
-    active: RwLock<Option<Arc<PingoraPoolGeneration>>>,
-}
-
-impl PingoraPool {
-    pub fn new(generation: u64) -> Self {
-        Self {
-            active: RwLock::new(Some(Self::generation(generation))),
-        }
+        self.draining.load(Ordering::Acquire)
     }
 
-    pub fn acquire(&self) -> Option<PingoraPoolLease> {
-        self.active
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .as_ref()
-            .map(|generation| PingoraPoolLease {
-                generation: Arc::clone(generation),
-            })
-    }
-
-    pub fn rotate(&self, generation: u64) {
-        let mut active = self
-            .active
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if active
-            .as_ref()
-            .is_some_and(|active| active.generation == generation)
-        {
-            return;
-        }
-        if let Some(retired) = active.replace(Self::generation(generation)) {
-            retired.draining.store(true, Ordering::Release);
+    pub fn acquire(self: &Arc<Self>) -> Option<Arc<Self>> {
+        if self.is_draining() {
+            None
+        } else {
+            Some(Arc::clone(self))
         }
     }
 
     pub fn drain(&self) {
-        if let Some(retired) = self
-            .active
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take()
-        {
-            retired.draining.store(true, Ordering::Release);
-        }
-    }
-
-    fn generation(generation: u64) -> Arc<PingoraPoolGeneration> {
-        let _initialization = CONNECTOR_INITIALIZATION
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        Arc::new(PingoraPoolGeneration {
-            generation,
-            connector: Arc::new(Connector::new(None)),
-            draining: AtomicBool::new(false),
-        })
+        self.draining.store(true, Ordering::Release);
     }
 }

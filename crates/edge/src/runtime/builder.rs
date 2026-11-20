@@ -283,6 +283,7 @@ impl RuntimeBuilder {
         let transport_pool = create_transport_pool(
             upstream_transport_inputs(config),
             backend_dns_resolver.clone(),
+            generation,
         )?;
         let mut upstream_pools = HashMap::new();
         let upstream_inflight = Arc::from(
@@ -476,11 +477,20 @@ impl RuntimeBuilder {
                             "upstream '{upstream_name}' has no compiled upstream pool"
                         ))
                     })?;
+                let upstream_membership = pingora_load_balancing
+                    .upstream_membership_by_id(upstream_id)
+                    .cloned()
+                    .ok_or_else(|| {
+                        ProxyError::Transport(format!(
+                            "upstream '{upstream_name}' has no backend membership snapshot"
+                        ))
+                    })?;
                 Ok(RouteRuntime {
                     plugin_plan,
                     upstream_policy: Arc::new(upstream_policy.clone()),
                     selector,
                     upstream_pool,
+                    upstream_membership,
                     transport_policy: Arc::clone(&transport_policy),
                     retry_policy: Arc::clone(&resilience.retry_budget),
                     cache_policy: Arc::new(upstream_policy.response_cache.clone()),

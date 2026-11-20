@@ -109,11 +109,10 @@ use crate::{
             auth::{PendingHeaderMutation, PendingHeaderOverride, pending_header_override},
             outcome::{
                 AdmissionOutcomeClass, BackendHealthObservationInput, BackendOutcomeTarget,
-                ClassifiedBackendFailureInput, RouteOutcomeTarget,
-                apply_passive_readiness_to_pingora, observe_admission_outcome,
+                ClassifiedBackendFailureInput, RouteOutcomeTarget, observe_admission_outcome,
                 observe_backend_response_status_and_log,
                 observe_classified_backend_failure_and_log, observe_proxy_error_outcome,
-                observe_status_outcome,
+                observe_status_outcome, publish_passive_readiness_transition,
             },
         },
         listener::Http3Service,
@@ -338,23 +337,24 @@ impl PingoraEdgeRequestService {
                         "Pingora ingress retry backend has no transport identity",
                     )
                 })?;
-                let pool = pool.read().map_err(|_| {
-                    Error::explain(InternalError, "Pingora ingress upstream pool lock poisoned")
-                })?;
+                let address = route_runtime
+                    .upstream_membership
+                    .backend_address(index)
+                    .ok_or_else(|| {
+                        Error::explain(
+                            InternalError,
+                            "Pingora ingress retry backend has no configured address",
+                        )
+                    })?;
                 if state.identities.backend_id_at(upstream_id, index) != Some(backend_id)
-                    || !pool.begin_request_if_healthy(index)
+                    || !route_runtime.selector.backend_is_available(backend_id)
+                    || !route_runtime.upstream_membership.begin_request(index)
                 {
                     return Error::e_explain(
                         InternalError,
                         "Pingora ingress retry backend is no longer available",
                     );
                 }
-                let address = pool.backend_address(index).ok_or_else(|| {
-                    Error::explain(
-                        InternalError,
-                        "Pingora ingress retry backend has no configured address",
-                    )
-                })?;
                 (backend_id, address.to_string(), index, transport_identity)
             } else {
                 let method = ctx.method.as_deref().ok_or_else(|| {
@@ -397,6 +397,7 @@ impl PingoraEdgeRequestService {
                             .shared_services()
                             .metrics
                             .current_worker_slot(),
+                        membership: &route_runtime.upstream_membership,
                     },
                     ctx.runtime.shared_state.shared_services().metrics.as_ref(),
                 )
@@ -1380,7 +1381,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             .shared_state
             .shared_services()
             .transport_pool
-            .pingora_peer(&backend_addr, ctx.runtime.generation)
+            .pingora_peer(&backend_addr)
             .map_err(|error| {
                 Error::because(InternalError, "backend peer creation failed", error)
             })?;
@@ -2069,6 +2070,7 @@ fn handle_pingora_proxy_failure(
     let selection = ForwardingSelectionService::select_backend_excluding(
         &route_runtime.selector,
         &selected.pool,
+        &route_runtime.upstream_membership,
         &ctx.runtime
             .shared_state
             .generation_state()
@@ -2089,23 +2091,21 @@ fn handle_pingora_proxy_failure(
             transport_identity,
             ..
         })) => (Some((id, index)), Some(transport_identity), None),
-        Ok(None) => match selected.pool.read() {
-            Ok(pool) if pool.membership_summary().healthy_backends == 0 => (
-                None,
-                None,
-                Some(AlternateBackendFailureReason::NoHealthyBackends),
-            ),
-            Ok(_) => (
-                None,
-                None,
-                Some(AlternateBackendFailureReason::OnlyExcludedBackendsHealthy),
-            ),
-            Err(_) => (
-                None,
-                None,
-                Some(AlternateBackendFailureReason::PoolUnavailable),
-            ),
-        },
+        Ok(None) => {
+            if route_runtime.selector.has_available_backend() {
+                (
+                    None,
+                    None,
+                    Some(AlternateBackendFailureReason::OnlyExcludedBackendsHealthy),
+                )
+            } else {
+                (
+                    None,
+                    None,
+                    Some(AlternateBackendFailureReason::NoHealthyBackends),
+                )
+            }
+        }
         Err(_) => (
             None,
             None,
@@ -2169,6 +2169,7 @@ fn record_pingora_backend_failure(ctx: &mut PingoraRequestContext, error: &Proxy
         return;
     };
     let upstream_name = Arc::clone(&route.upstream_name);
+    let backend_id = selected.id;
     let backend_addr = selected.address.clone();
     let backend_index = selected.index;
     let upstream_pool = Arc::clone(&selected.pool);
@@ -2185,13 +2186,13 @@ fn record_pingora_backend_failure(ctx: &mut PingoraRequestContext, error: &Proxy
         metrics: shared.metrics.as_ref(),
         classified: &classified,
     });
-    apply_passive_readiness_to_pingora(
+    publish_passive_readiness_transition(
         ctx.runtime
             .shared_state
             .generation_state()
             .pingora_load_balancing
             .as_ref(),
-        &backend_addr,
+        backend_id,
         transition,
     );
 }
@@ -2203,6 +2204,7 @@ fn record_pingora_backend_response(ctx: &mut PingoraRequestContext, status: http
     if selected.passive_health_recorded {
         return;
     }
+    let backend_id = selected.id;
     let backend_addr = selected.address.clone();
     let backend_index = selected.index;
     let upstream_pool = Arc::clone(&selected.pool);
@@ -2223,13 +2225,13 @@ fn record_pingora_backend_response(ctx: &mut PingoraRequestContext, status: http
         upstream_pool: Some(&upstream_pool),
         status,
     });
-    apply_passive_readiness_to_pingora(
+    publish_passive_readiness_transition(
         ctx.runtime
             .shared_state
             .generation_state()
             .pingora_load_balancing
             .as_ref(),
-        &backend_addr,
+        backend_id,
         transition,
     );
 }

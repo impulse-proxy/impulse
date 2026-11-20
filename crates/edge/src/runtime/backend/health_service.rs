@@ -9,8 +9,9 @@ use impulse_config::{
     backend_endpoint::BackendEndpoint,
     runtime::{RuntimeBackendHealthCheck, RuntimeBackendTlsPolicy},
 };
-use impulse_contracts::HealthFailureReason;
+use impulse_contracts::{BackendId, HealthFailureReason};
 use impulse_lb::{
+    health::HealthTransition,
     pingora_backend::{
         HealthCheckService, PingoraBackend, PingoraBackendIdentity, PingoraHealthCheck,
         PingoraHttpHealthCheck, SharedPingoraLoadBalancingRuntimeState,
@@ -38,6 +39,8 @@ use crate::{
 };
 
 struct PingoraHealthTarget {
+    backend_id: BackendId,
+    configured_address: String,
     upstream_pool: Arc<RwLock<UpstreamPool>>,
     backend_index: usize,
     policy: RuntimeBackendHealthCheck,
@@ -49,16 +52,15 @@ struct PingoraProbeSchedule {
 }
 
 struct ImpulsePingoraHealthCheck {
-    generation: u64,
-    targets: HashMap<String, PingoraHealthTarget>,
-    schedules: Mutex<HashMap<String, PingoraProbeSchedule>>,
+    targets: HashMap<BackendId, PingoraHealthTarget>,
+    schedules: Mutex<HashMap<BackendId, PingoraProbeSchedule>>,
     transport_pool: Arc<UpstreamTransportPool>,
     backend_lifecycle: Arc<BackendLifecycleCoordinator>,
+    pingora_load_balancing: SharedPingoraLoadBalancingRuntimeState<RuntimeBackendTlsPolicy>,
     metrics: Arc<Metrics>,
 }
 
 pub(crate) struct PingoraHealthServiceInput {
-    pub(crate) generation: u64,
     pub(crate) transport_pool: Arc<UpstreamTransportPool>,
     pub(crate) backend_health_checks: Arc<HashMap<String, RuntimeBackendHealthCheck>>,
     pub(crate) pingora_load_balancing:
@@ -70,16 +72,16 @@ pub(crate) struct PingoraHealthServiceInput {
 
 impl ImpulsePingoraHealthCheck {
     fn new(
-        generation: u64,
         upstream_pools: &HashMap<String, Arc<RwLock<UpstreamPool>>>,
         policies: &HashMap<String, RuntimeBackendHealthCheck>,
         transport_pool: Arc<UpstreamTransportPool>,
         backend_lifecycle: Arc<BackendLifecycleCoordinator>,
+        pingora_load_balancing: SharedPingoraLoadBalancingRuntimeState<RuntimeBackendTlsPolicy>,
         metrics: Arc<Metrics>,
     ) -> Self {
         let mut targets = HashMap::new();
         let mut schedules = HashMap::new();
-        for upstream_pool in upstream_pools.values() {
+        for (upstream_name, upstream_pool) in upstream_pools {
             let Ok(pool) = upstream_pool.read() else {
                 continue;
             };
@@ -91,6 +93,11 @@ impl ImpulsePingoraHealthCheck {
                     continue;
                 };
                 let backend = backend.to_string();
+                let Some(backend_id) =
+                    pingora_load_balancing.backend_id_by_address(upstream_name, &backend)
+                else {
+                    continue;
+                };
                 let interval_ms = u64::try_from(policy.interval.as_millis())
                     .unwrap_or(u64::MAX)
                     .max(1);
@@ -100,24 +107,26 @@ impl ImpulsePingoraHealthCheck {
                     0
                 };
                 targets
-                    .entry(backend.clone())
+                    .entry(backend_id)
                     .or_insert_with(|| PingoraHealthTarget {
+                        backend_id,
+                        configured_address: backend.clone(),
                         upstream_pool: Arc::clone(upstream_pool),
                         backend_index,
                         policy: policy.clone(),
                     });
-                schedules.entry(backend).or_insert(PingoraProbeSchedule {
+                schedules.entry(backend_id).or_insert(PingoraProbeSchedule {
                     next_due_at: Instant::now() + Duration::from_millis(initial_jitter_ms),
                     consecutive_failures: 0,
                 });
             }
         }
         Self {
-            generation,
             targets,
             schedules: Mutex::new(schedules),
             transport_pool,
             backend_lifecycle,
+            pingora_load_balancing,
             metrics,
         }
     }
@@ -154,12 +163,9 @@ impl ImpulsePingoraHealthCheck {
                 format!("invalid health-check backend '{backend}': {error}"),
             )
         })?;
-        let mut peer = self
-            .transport_pool
-            .pingora_peer(backend, self.generation)
-            .map_err(|error| {
-                Error::explain(ErrorType::Custom("impulse health peer"), error.to_string())
-            })?;
+        let mut peer = self.transport_pool.pingora_peer(backend).map_err(|error| {
+            Error::explain(ErrorType::Custom("impulse health peer"), error.to_string())
+        })?;
         peer.options.connection_timeout = Some(policy.timeout);
         peer.options.read_timeout = Some(policy.timeout);
 
@@ -232,6 +238,12 @@ impl ImpulsePingoraHealthCheck {
             Some(target.backend_index),
             &evaluation.observation,
         );
+        if let Some(transition) = transition {
+            self.pingora_load_balancing.set_backend_readiness(
+                target.backend_id,
+                matches!(transition, HealthTransition::BecameHealthy),
+            );
+        }
         match evaluation.observation.outcome {
             BackendHealthObservationOutcome::Success => self
                 .metrics
@@ -262,17 +274,18 @@ impl PingoraHealthCheck for ImpulsePingoraHealthCheck {
                     "Pingora backend has no Impulse health identity",
                 )
             })?;
-        let configured_address = identity.configured_address();
-        let Some(target) = self.targets.get(configured_address) else {
+        let backend_id = identity.runtime_id();
+        let Some(target) = self.targets.get(&backend_id) else {
             return Ok(());
         };
+        let configured_address = target.configured_address.as_str();
 
         let consecutive_failures = {
             let mut schedules = self
                 .schedules
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let Some(schedule) = schedules.get_mut(configured_address) else {
+            let Some(schedule) = schedules.get_mut(&backend_id) else {
                 return Err(Error::explain(
                     ErrorType::Custom("impulse health schedule"),
                     "configured backend has no Pingora probe schedule",
@@ -293,7 +306,7 @@ impl PingoraHealthCheck for ImpulsePingoraHealthCheck {
             .schedules
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let Some(schedule) = schedules.get_mut(configured_address) else {
+        let Some(schedule) = schedules.get_mut(&backend_id) else {
             return Err(Error::explain(
                 ErrorType::Custom("impulse health schedule"),
                 "configured backend has no Pingora probe schedule",
@@ -309,9 +322,10 @@ impl PingoraHealthCheck for ImpulsePingoraHealthCheck {
         backend
             .ext
             .get::<PingoraBackendIdentity<RuntimeBackendTlsPolicy>>()
+            .and_then(|identity| self.targets.get(&identity.runtime_id()))
             .map_or_else(
                 || format!("backend={}", backend.addr),
-                |identity| format!("backend={}", identity.configured_address()),
+                |target| format!("backend={}", target.configured_address),
             )
     }
 
@@ -325,7 +339,6 @@ pub(crate) fn spawn_pingora_health_service(
     input: PingoraHealthServiceInput,
 ) {
     let PingoraHealthServiceInput {
-        generation,
         transport_pool,
         backend_health_checks,
         pingora_load_balancing,
@@ -342,11 +355,11 @@ pub(crate) fn spawn_pingora_health_service(
     };
     let registry = pingora_load_balancing.health_registry();
     registry.set_health_check(Box::new(ImpulsePingoraHealthCheck::new(
-        generation,
         &pingora_load_balancing.upstream_pools(),
         backend_health_checks.as_ref(),
         transport_pool,
         backend_lifecycle,
+        Arc::clone(&pingora_load_balancing),
         metrics.clone(),
     )));
 

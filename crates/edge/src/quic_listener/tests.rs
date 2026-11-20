@@ -1060,14 +1060,7 @@ fn resolve_backend_skips_unhealthy_backends() {
         guard.mark_backend_failure_from_active_check(0);
         guard.mark_backend_failure_from_active_check(0);
     }
-    {
-        let guard = pool.read().expect("pool read");
-        selectors
-            .selector_by_id(impulse_contracts::UpstreamId::new(0))
-            .expect("api selector")
-            .synchronize_readiness(|index| guard.is_backend_healthy(index))
-            .expect("synchronize selector readiness");
-    }
+    selectors.set_backend_readiness(impulse_contracts::BackendId::new(0), false);
 
     let request =
         super::forwarding::TestTargetResolutionRequest::new("GET", "/api/items", None, None, None);
@@ -2117,6 +2110,7 @@ fn make_dispatch_ready_envelope(
         method: context.method.clone(),
         path: context.path.clone(),
         authority: context.authority.clone(),
+        backend_id: Some(routing.backend_id),
         backend_addr: Some(routing.backend_addr.clone()),
         backend_index: Some(routing.backend_index),
         upstream_name: Some(routing.upstream_name.clone()),

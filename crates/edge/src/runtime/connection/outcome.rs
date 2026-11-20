@@ -842,18 +842,17 @@ pub(crate) fn observe_backend_response_status_and_log(
     emit_backend_health_transition(input.backend_addr, observe_backend_response_status(input))
 }
 
-pub(crate) fn apply_passive_readiness_to_pingora(
+pub(crate) fn publish_passive_readiness_transition(
     pingora_load_balancing: &PingoraLoadBalancingRuntimeState<RuntimeBackendTlsPolicy>,
-    backend_addr: &str,
+    backend_id: impulse_contracts::BackendId,
     transition: Option<HealthTransition>,
 ) {
-    let Some(transition) = transition else {
-        return;
-    };
-    pingora_load_balancing.set_backend_readiness(
-        backend_addr,
-        matches!(transition, HealthTransition::BecameHealthy),
-    );
+    if let Some(transition) = transition {
+        pingora_load_balancing.set_backend_readiness(
+            backend_id,
+            matches!(transition, HealthTransition::BecameHealthy),
+        );
+    }
 }
 
 pub(crate) fn record_classified_backend_failure_metrics(

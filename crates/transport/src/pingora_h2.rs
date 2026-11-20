@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use hyper::http::Version;
 use impulse_errors::{ProxyError, RequestFailure};
 use pingora_core::{
@@ -16,7 +18,7 @@ use crate::{
         UpstreamExchangeLifecycle, UpstreamExchangeOutcome, upstream_response_body_channel,
     },
     pingora_failure::classify_pingora_h2_error,
-    pingora_pool::PingoraPoolLease,
+    pingora_pool::PingoraPoolGeneration,
 };
 
 pub(crate) fn translate_pingora_h2_request_header(
@@ -36,7 +38,7 @@ pub(crate) fn translate_pingora_h2_request_header(
 }
 
 pub(crate) struct PingoraH2UpstreamSession {
-    pool: PingoraPoolLease,
+    pool: Arc<PingoraPoolGeneration>,
     peer: HttpPeer,
     session: Option<Http2Session>,
     reused: bool,
@@ -53,7 +55,7 @@ enum PingoraH2ExchangeState {
 
 impl PingoraH2UpstreamSession {
     pub async fn acquire(
-        pool: PingoraPoolLease,
+        pool: Arc<PingoraPoolGeneration>,
         mut peer: HttpPeer,
         identity: &PingoraUpstreamConnectionIdentity,
     ) -> Result<Self> {
