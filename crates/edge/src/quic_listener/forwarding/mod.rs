@@ -20,6 +20,8 @@ pub(crate) use self::auth::execute_external_auth_request;
 pub(in crate::quic_listener) use self::resolve::{
     TargetResolutionRequest as TestTargetResolutionRequest, selectors_for_test as test_selectors,
 };
+#[cfg(test)]
+pub(in crate::quic_listener) use self::response::RESPONSE_WRITE_COALESCE_BYTES;
 pub(in crate::quic_listener) use self::{
     outcome::{
         backend_failure_reason_for_proxy_error, rejection_reason_for_status, terminalize_stream,

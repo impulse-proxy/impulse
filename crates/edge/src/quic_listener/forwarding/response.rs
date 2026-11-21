@@ -45,7 +45,7 @@ use crate::{
 };
 
 const RESPONSE_GZIP_LEVEL: u32 = 6;
-const RESPONSE_WRITE_COALESCE_BYTES: usize = 16 * 1024;
+pub(in crate::quic_listener) const RESPONSE_WRITE_COALESCE_BYTES: usize = 16 * 1024;
 
 struct ResponseCompressionByteMetrics {
     metrics: Arc<Metrics>,
@@ -1550,7 +1550,16 @@ impl Http3Service {
         }
     }
 
-    fn coalesce_response_data(req: &mut RequestEnvelope, first: Bytes) -> Bytes {
+    /// Merge `first` with the data chunks that follow it in the channel, up to
+    /// `RESPONSE_WRITE_COALESCE_BYTES`, so several small chunks become one write.
+    ///
+    /// Chunk order is preserved. A chunk that does not fit, and any non-data chunk
+    /// (trailers, end, error), is left queued for the next write. Nothing is copied
+    /// unless at least two chunks are actually merged.
+    pub(in crate::quic_listener) fn coalesce_response_data(
+        req: &mut RequestEnvelope,
+        first: Bytes,
+    ) -> Bytes {
         if first.is_empty()
             || first.len() >= RESPONSE_WRITE_COALESCE_BYTES
             || req.has_pending_chunk()
@@ -1560,6 +1569,12 @@ impl Http3Service {
         let Some(mut next) = Self::next_response_data(req) else {
             return first;
         };
+        if first.len() + next.len() > RESPONSE_WRITE_COALESCE_BYTES {
+            // Nothing to merge with: send `first` untouched and keep `next` for the
+            // following write instead of copying `first` into a fresh buffer.
+            req.set_pending_chunk(Some(ResponseChunk::Data(next)));
+            return first;
+        }
 
         let mut combined = BytesMut::with_capacity(RESPONSE_WRITE_COALESCE_BYTES);
         combined.extend_from_slice(&first);

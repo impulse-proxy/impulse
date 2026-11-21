@@ -736,6 +736,128 @@ fn passthrough_and_full_route_execution_preserve_response_behavior() {
     assert_eq!(plain_pingora, full_pingora);
 }
 
+/// Hop-by-hop response headers from a backend must never reach the client, on
+/// the cheap passthrough route class as well as on routes that run full response
+/// processing. Pingora only strips hop-by-hop headers on requests, so this relies
+/// on Impulse's own response normalization running for every route class.
+#[test]
+fn pingora_response_hop_by_hop_headers_are_stripped_on_every_route_class() {
+    if !local_listener_bind_available() {
+        return;
+    }
+
+    let mut harness = ProtocolParityHarness::new();
+    let backend_handler = |_request: hyper::Request<hyper::body::Incoming>| async move {
+        Ok::<_, std::convert::Infallible>(
+            hyper::Response::builder()
+                .status(http::StatusCode::OK)
+                .header(http::header::CONTENT_TYPE, "text/plain")
+                .header("keep-alive", "timeout=5")
+                .header("proxy-authenticate", "Basic realm=\"upstream\"")
+                .header("x-parity", "same")
+                .body(http_body_util::Full::new(bytes::Bytes::from_static(
+                    b"ok\n",
+                )))
+                .expect("backend response"),
+        )
+    };
+    let plain_backend_addr = harness.start_h1_backend(backend_handler);
+    let full_backend_addr = harness.start_h1_backend(backend_handler);
+    let passthrough = make_upstream(
+        "/plain",
+        vec![make_backend(
+            "backend-plain",
+            plain_backend_addr.to_string(),
+        )],
+        None,
+        "round-robin",
+    );
+    let mut full = make_upstream(
+        "/full",
+        vec![make_backend("backend-full", full_backend_addr.to_string())],
+        None,
+        "round-robin",
+    );
+    full.auth = RouteAuth {
+        api_key: Some(ApiKeyAuth {
+            header_name: "x-api-key".to_string(),
+            keys: vec!["edge-key".to_string()],
+        }),
+        ..RouteAuth::default()
+    };
+    full.cache = ResponseCache {
+        enabled: true,
+        max_bytes: 4096,
+        max_entries: 4,
+        max_object_bytes: 1024,
+        max_ttl_secs: 60,
+    };
+    full.compression = ResponseCompression {
+        enabled: true,
+        minimum_size_bytes: 4096,
+    };
+
+    let config = harness.make_config(HashMap::from([
+        ("passthrough".to_string(), passthrough),
+        ("full".to_string(), full),
+    ]));
+    let mut pingora_config = config;
+    pingora_config.listen.port = reserve_unused_listener_port();
+    let (pingora_service, pingora_addr) =
+        PingoraTestService::start(pingora_config).expect("start Pingora ingress");
+
+    let generation = pingora_service.runtime_bundle.current();
+    let generation_state = generation.shared_state.generation_state();
+    let class_of = |name: &str| {
+        let id = generation_state
+            .identities
+            .upstream_id(name)
+            .expect("upstream identity");
+        generation_state
+            .route_execution_classes
+            .get(id.get() as usize)
+            .copied()
+    };
+    assert_eq!(
+        class_of("passthrough"),
+        Some(RouteExecutionClass::Passthrough)
+    );
+    assert_eq!(class_of("full"), Some(RouteExecutionClass::Full));
+
+    for path in ["/plain/resource", "/full/resource"] {
+        let response = run_http2_request_to(
+            pingora_addr,
+            harness.cert_path(),
+            HttpRequestSpec {
+                method: "GET",
+                authority: "localhost",
+                path,
+                headers: &[("x-api-key", "edge-key")],
+                body: None,
+                user_agent: "impulse-hop-by-hop-test",
+            },
+        )
+        .unwrap_or_else(|err| panic!("{path}: request failed: {err}"));
+
+        let has = |name: &str| {
+            response
+                .headers
+                .iter()
+                .any(|(header, _)| header.eq_ignore_ascii_case(name))
+        };
+        assert_eq!(response.status, http::StatusCode::OK, "{path}: status");
+        assert!(has("x-parity"), "{path}: end-to-end header was dropped");
+        assert!(
+            !has("keep-alive"),
+            "{path}: hop-by-hop `keep-alive` reached the client"
+        );
+        assert!(
+            !has("proxy-authenticate"),
+            "{path}: hop-by-hop `proxy-authenticate` reached the client"
+        );
+    }
+}
+
 #[test]
 fn pingora_and_http3_share_bounded_response_cache_behavior() {
     if !local_listener_bind_available() {

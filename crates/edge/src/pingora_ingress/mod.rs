@@ -1657,58 +1657,10 @@ impl PingoraRequestService for PingoraEdgeRequestService {
                 .and_then(|value| value.to_str().ok())
                 .and_then(|value| value.parse::<usize>().ok())
         });
-        if ctx.passthrough {
-            let body_idle = timeouts.backend_body_idle;
-            let body_total = timeouts.backend_body_total;
-            let max_response_body_bytes = ctx
-                .runtime
-                .runtime_config
-                .policies
-                .transport
-                .max_response_body_bytes;
-            if checked_response_body_guardrails(
-                ResponseBodyGuardrailConfig {
-                    idle_timeout: body_idle,
-                    total_timeout: body_total,
-                    max_body_bytes: max_response_body_bytes,
-                    unknown_length_prebuffer_bytes: max_response_body_bytes,
-                    chunk_bytes: usize::MAX,
-                },
-                ResponseBodyGuardrailInput {
-                    elapsed: Duration::ZERO,
-                    idle_for: Duration::ZERO,
-                    bytes_received: 0,
-                    prebuffered_bytes: 0,
-                    next_chunk_bytes: 0,
-                    declared_content_length: content_length,
-                    headers_emitted: false,
-                    progressive_emission_allowed: true,
-                    body_forwarding_enabled: true,
-                    exempt_from_body_size_cap: tunnel_response,
-                },
-            )
-            .is_err()
-            {
-                ctx.terminal_classification =
-                    Some(PingoraTerminalClassification::Error(ProxyError::Pool(
-                        PoolError::BackendOverloaded("response body limit exceeded".into()),
-                    )));
-                write_error_response(
-                    session,
-                    http::StatusCode::SERVICE_UNAVAILABLE,
-                    Bytes::from_static(RESPONSE_BODY_TOO_LARGE_BODY),
-                )
-                .await?;
-                return Error::e_explain(HTTPStatus(503), "upstream response body too large");
-            }
-            ctx.response_body_bytes_received = 0;
-            ctx.response_body_started_at = Some(now);
-            ctx.response_body_last_progress_at = Some(now);
-            ctx.response_body_suppressed = false;
-            ctx.response_body_limit_exempt = tunnel_response;
-            ctx.response_content_length = content_length;
-            return Ok(());
-        }
+        // Every route class, including passthrough, goes through response head
+        // processing: it normalizes the response headers (hop-by-hop headers, and
+        // `alt-svc` on HTTP/1), which Pingora does not do for responses. For an
+        // empty plugin plan this does no cache or compression work.
         let current_response = Self::process_response_head(session, upstream_response, ctx)?;
         let mut processed = ctx
             .response_processing

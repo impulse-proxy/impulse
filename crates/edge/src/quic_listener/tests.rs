@@ -2557,3 +2557,172 @@ fn inflight_micro_wait_times_out_without_permit() {
     );
     assert!(acquired.is_err());
 }
+
+mod response_coalescing {
+    use bytes::Bytes;
+
+    use super::{super::Http3Service, *};
+    use crate::{
+        quic_listener::forwarding::RESPONSE_WRITE_COALESCE_BYTES,
+        runtime::connection::response::ResponseChunk,
+    };
+
+    type ChunkTx = mpsc::Sender<ResponseChunk>;
+
+    fn streaming_envelope() -> (RequestEnvelope, ChunkTx) {
+        let mut req = make_awaiting_upstream_envelope(Instant::now(), "GET", true);
+        let (tx, rx) = mpsc::channel::<ResponseChunk>(32);
+        req.transition_to_streaming_response(
+            rx,
+            ResponseEmissionState::HeadersSent,
+            StatusCode::OK,
+        )
+        .expect("awaiting upstream to streaming response");
+        (req, tx)
+    }
+
+    fn data(len: usize, fill: u8) -> Bytes {
+        Bytes::from(vec![fill; len])
+    }
+
+    fn send(tx: &ChunkTx, chunk: ResponseChunk) {
+        tx.try_send(chunk).expect("queue chunk");
+    }
+
+    fn as_data(chunk: Option<ResponseChunk>) -> Bytes {
+        match chunk {
+            Some(ResponseChunk::Data(bytes)) => bytes,
+            other => panic!("expected a data chunk, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn adjacent_small_chunks_are_merged_in_order() {
+        let (mut req, tx) = streaming_envelope();
+        send(&tx, ResponseChunk::Data(data(10, b'b')));
+        send(&tx, ResponseChunk::Data(data(5, b'c')));
+
+        let merged = Http3Service::coalesce_response_data(&mut req, data(20, b'a'));
+
+        let mut expected = vec![b'a'; 20];
+        expected.extend(vec![b'b'; 10]);
+        expected.extend(vec![b'c'; 5]);
+        assert_eq!(&merged[..], &expected[..]);
+        assert!(!req.has_pending_chunk());
+    }
+
+    #[test]
+    fn merging_stops_exactly_at_the_limit_and_leaves_the_rest_in_the_channel() {
+        let (mut req, tx) = streaming_envelope();
+        let half = RESPONSE_WRITE_COALESCE_BYTES / 2;
+        send(&tx, ResponseChunk::Data(data(half, b'b')));
+        send(&tx, ResponseChunk::Data(data(half, b'c')));
+
+        let merged = Http3Service::coalesce_response_data(&mut req, data(half, b'a'));
+
+        assert_eq!(merged.len(), RESPONSE_WRITE_COALESCE_BYTES);
+        // The limit was reached before the third chunk was read, so it is still in
+        // the channel, in order, for the next flush.
+        assert!(!req.has_pending_chunk());
+        let leftover = req
+            .response_chunk_rx_mut()
+            .and_then(|rx| rx.try_recv().ok());
+        assert_eq!(&as_data(leftover)[..], &data(half, b'c')[..]);
+    }
+
+    #[test]
+    fn a_chunk_that_overflows_the_limit_is_kept_pending_in_order() {
+        let (mut req, tx) = streaming_envelope();
+        send(&tx, ResponseChunk::Data(data(5_000, b'b')));
+        send(&tx, ResponseChunk::Data(data(5_000, b'c')));
+
+        let merged = Http3Service::coalesce_response_data(&mut req, data(10_000, b'a'));
+
+        // 10_000 + 5_000 fits; adding the second 5_000 would exceed the limit.
+        assert_eq!(merged.len(), 15_000);
+        assert!(req.has_pending_chunk());
+        let leftover = as_data(req.take_pending_chunk());
+        assert_eq!(&leftover[..], &data(5_000, b'c')[..]);
+    }
+
+    #[test]
+    fn a_chunk_that_does_not_fit_leaves_the_first_chunk_uncopied() {
+        let (mut req, tx) = streaming_envelope();
+        send(
+            &tx,
+            ResponseChunk::Data(data(RESPONSE_WRITE_COALESCE_BYTES, b'b')),
+        );
+        let first = data(100, b'a');
+        let first_ptr = first.as_ptr();
+
+        let out = Http3Service::coalesce_response_data(&mut req, first);
+
+        assert_eq!(out.as_ptr(), first_ptr, "first chunk must not be copied");
+        assert_eq!(out.len(), 100);
+        let leftover = as_data(req.take_pending_chunk());
+        assert_eq!(leftover.len(), RESPONSE_WRITE_COALESCE_BYTES);
+    }
+
+    #[test]
+    fn control_chunks_are_deferred_in_order_and_never_merged() {
+        let (mut req, tx) = streaming_envelope();
+        send(&tx, ResponseChunk::Data(data(10, b'b')));
+        send(&tx, ResponseChunk::End);
+
+        let merged = Http3Service::coalesce_response_data(&mut req, data(10, b'a'));
+
+        assert_eq!(merged.len(), 20);
+        assert!(matches!(req.take_pending_chunk(), Some(ResponseChunk::End)));
+        assert!(req.take_pending_chunk().is_none());
+    }
+
+    #[test]
+    fn a_lone_chunk_followed_by_end_is_returned_untouched() {
+        let (mut req, tx) = streaming_envelope();
+        send(&tx, ResponseChunk::End);
+        let first = data(50, b'a');
+        let first_ptr = first.as_ptr();
+
+        let out = Http3Service::coalesce_response_data(&mut req, first);
+
+        assert_eq!(out.as_ptr(), first_ptr);
+        assert!(matches!(req.take_pending_chunk(), Some(ResponseChunk::End)));
+    }
+
+    #[test]
+    fn empty_data_chunks_are_skipped() {
+        let (mut req, tx) = streaming_envelope();
+        send(&tx, ResponseChunk::Data(Bytes::new()));
+        send(&tx, ResponseChunk::Data(data(4, b'b')));
+
+        let merged = Http3Service::coalesce_response_data(&mut req, data(4, b'a'));
+
+        assert_eq!(&merged[..], b"aaaabbbb");
+    }
+
+    #[test]
+    fn large_or_already_blocked_writes_are_not_coalesced() {
+        let (mut req, tx) = streaming_envelope();
+        send(&tx, ResponseChunk::Data(data(10, b'b')));
+
+        // A chunk at the limit is already a full write.
+        let big = data(RESPONSE_WRITE_COALESCE_BYTES, b'a');
+        let out = Http3Service::coalesce_response_data(&mut req, big);
+        assert_eq!(out.len(), RESPONSE_WRITE_COALESCE_BYTES);
+
+        // With a retry already pending, ordering must not be disturbed.
+        req.set_pending_chunk(Some(ResponseChunk::Data(data(3, b'p'))));
+        let out = Http3Service::coalesce_response_data(&mut req, data(10, b'a'));
+        assert_eq!(out.len(), 10);
+    }
+
+    #[test]
+    fn an_empty_channel_returns_the_first_chunk_unchanged() {
+        let (mut req, _tx) = streaming_envelope();
+        let first = data(8, b'a');
+        let first_ptr = first.as_ptr();
+        let out = Http3Service::coalesce_response_data(&mut req, first);
+        assert_eq!(out.as_ptr(), first_ptr);
+        assert!(!req.has_pending_chunk());
+    }
+}
