@@ -136,6 +136,7 @@ impl fmt::Display for AccessLogError<'_> {
 pub(crate) struct PingoraEdgeRequestState {
     pub(crate) runtime: Arc<RuntimeBundle>,
     pub(crate) route: Option<ResolvedRouteTarget>,
+    tunnel: Option<PingoraTunnelState>,
     passthrough: bool,
     pub(crate) policy: Option<ResolvedRequestPolicy>,
     auth_header_mutations: Option<SmallVec<[PendingHeaderMutation; 4]>>,
@@ -152,9 +153,19 @@ pub(crate) struct PingoraEdgeRequestState {
     drain: Arc<PingoraDrainState>,
 }
 
+#[derive(Clone, Copy)]
+struct PingoraTunnelState {
+    mode: TunnelMode,
+}
+
 pub(crate) type PingoraRequestContext = IngressRequestContext<PingoraEdgeRequestState>;
 
 impl PingoraEdgeRequestState {
+    fn tunnel_response_established(&self, method: &str, status: http::StatusCode) -> bool {
+        self.tunnel
+            .is_some_and(|tunnel| tunnel_response_established(tunnel.mode, method, status))
+    }
+
     fn policy_header<'a>(&'a self, headers: &'a http::HeaderMap, name: &str) -> Option<&'a [u8]> {
         match pending_header_override(self.auth_header_mutations.as_deref(), name.as_bytes()) {
             PendingHeaderOverride::Value(value) => Some(value),
@@ -272,8 +283,7 @@ impl PingoraEdgeRequestService {
         } else {
             None
         };
-        let tunnel_response =
-            tunnel_response_established(ctx.tunnel_mode, method, upstream_response.status);
+        let tunnel_response = ctx.tunnel_response_established(method, upstream_response.status);
         let body_mode = if tunnel_response {
             ResponseBodyMode::TunnelSuccess
         } else if method.eq_ignore_ascii_case("HEAD") {
@@ -678,6 +688,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             PingoraEdgeRequestState {
                 runtime,
                 route: None,
+                tunnel: None,
                 passthrough: false,
                 policy: None,
                 auth_header_mutations: None,
@@ -866,7 +877,9 @@ impl PingoraRequestService for PingoraEdgeRequestService {
         ctx.path = Some(validated.path);
         ctx.authority = validated.authority;
         ctx.content_length = validated.content_length;
-        ctx.tunnel_mode = tunnel_mode;
+        ctx.tunnel = tunnel_mode
+            .is_tunnel()
+            .then_some(PingoraTunnelState { mode: tunnel_mode });
 
         let (admission, mut plugin_mutations) = match execution.outcome {
             PluginRequestExecutionOutcome::Admitted {
@@ -1097,7 +1110,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
                 buffered_bytes: 0,
                 next_chunk_bytes: 0,
                 declared_content_length: ctx.content_length,
-                exempt_from_body_size_cap: tunnel_mode.is_tunnel(),
+                exempt_from_body_size_cap: ctx.tunnel.is_some(),
             },
         )
         .is_err()
@@ -1147,7 +1160,9 @@ impl PingoraRequestService for PingoraEdgeRequestService {
         let Some(compiled_cache) = plugin_plan.response_cache() else {
             return Ok(());
         };
-        let (is_upgrade, is_tunnel) = tunnel_cache_flags(ctx.tunnel_mode);
+        let (is_upgrade, is_tunnel) = ctx
+            .tunnel
+            .map_or((false, false), |tunnel| tunnel_cache_flags(tunnel.mode));
         let has_body = !session.is_body_empty();
         let peer_address = session
             .client_addr()
@@ -1312,7 +1327,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
                 buffered_bytes: 0,
                 next_chunk_bytes: body.as_ref().map_or(0, Bytes::len),
                 declared_content_length: ctx.content_length,
-                exempt_from_body_size_cap: ctx.tunnel_mode.is_tunnel(),
+                exempt_from_body_size_cap: ctx.tunnel.is_some(),
             },
         );
         if let RequestBodyGuardrailDecision::Timeout { kind } = timeout {
@@ -1350,7 +1365,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
                 buffered_bytes: 0,
                 next_chunk_bytes: body.as_ref().map_or(0, Bytes::len),
                 declared_content_length: ctx.content_length,
-                exempt_from_body_size_cap: ctx.tunnel_mode.is_tunnel(),
+                exempt_from_body_size_cap: ctx.tunnel.is_some(),
             },
         );
         match next {
@@ -1396,7 +1411,9 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             .map_err(|error| {
                 Error::because(InternalError, "backend peer creation failed", error)
             })?;
-        configure_tunnel_peer(ctx.tunnel_mode, &mut peer);
+        if let Some(tunnel) = ctx.tunnel {
+            configure_tunnel_peer(tunnel.mode, &mut peer);
+        }
         let body_idle = ctx
             .runtime
             .runtime_config
@@ -1632,8 +1649,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
                 "Pingora ingress request filter did not validate a method",
             )
         })?;
-        let tunnel_response =
-            tunnel_response_established(ctx.tunnel_mode, method, upstream_response.status);
+        let tunnel_response = ctx.tunnel_response_established(method, upstream_response.status);
         let content_length = ctx.response_content_length.or_else(|| {
             upstream_response
                 .headers
@@ -1761,11 +1777,14 @@ impl PingoraRequestService for PingoraEdgeRequestService {
         response: &mut ResponseHeader,
         ctx: &mut Self::Context,
     ) -> Result<()> {
-        if response.status == http::StatusCode::SWITCHING_PROTOCOLS
-            && ctx.tunnel_mode == TunnelMode::Websocket
-        {
-            response.insert_header(http::header::CONNECTION, "upgrade")?;
-            response.insert_header(http::header::UPGRADE, "websocket")?;
+        match ctx.tunnel.map(|tunnel| tunnel.mode) {
+            Some(TunnelMode::Websocket)
+                if response.status == http::StatusCode::SWITCHING_PROTOCOLS =>
+            {
+                response.insert_header(http::header::CONNECTION, "upgrade")?;
+                response.insert_header(http::header::UPGRADE, "websocket")?;
+            }
+            Some(TunnelMode::Websocket | TunnelMode::Connect | TunnelMode::None) | None => {}
         }
         Ok(())
     }
@@ -2180,7 +2199,7 @@ fn handle_pingora_proxy_failure(
         ctx.request_body_replayable && retry_safe,
         false,
         false,
-        ctx.tunnel_mode.is_tunnel(),
+        ctx.tunnel.is_some(),
     );
     let decision = retry.retry_after_error(
         &proxy_error,
