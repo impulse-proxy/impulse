@@ -58,9 +58,10 @@ impl UpstreamTransportPool {
         self.pingora_pool.drain();
     }
 
-    /// Returns a peer for Pingora's native `ProxyHttp::upstream_peer` path.
-    /// The `HttpProxy` owns the exchange; this does not enter the generic
-    /// `UpstreamExchangeRequest` contract used by protocol adapters.
+    /// Returns the configured ALPN peer for Pingora's native
+    /// `ProxyHttp::upstream_peer` path, including HTTP/2 backends. Pingora's
+    /// `HttpProxy` owns the exchange; HTTP/3 adapters use the generic
+    /// `UpstreamExchangeRequest` contract instead.
     pub fn pingora_proxy_peer(&self, backend: &str) -> Result<HttpPeer, ProxyError> {
         let mut config = self.resolved_pingora_backend(backend)?;
         config.peer.group_key = config.identity.pool_key();

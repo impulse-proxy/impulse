@@ -1,7 +1,7 @@
 //! Canonical upstream transport façade.
 //!
 //! HTTP/3 adapters use [`UpstreamRequestExecutor`] for backend exchanges.
-//! Pingora `HttpProxy` routes get a configured peer from
+//! Pingora `HttpProxy` routes (HTTP/1 and HTTP/2) get a configured peer from
 //! [`UpstreamTransportPool::pingora_proxy_peer`] and let Pingora own the
 //! exchange. Pool lifecycle operations remain available through
 //! [`UpstreamTransportPool`] to runtime owners.
