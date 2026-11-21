@@ -36,7 +36,6 @@ use impulse_config::{
 use impulse_errors::{PoolError, ProxyError, RequestFailure};
 use impulse_lb::upstream_pool::UpstreamPool;
 use impulse_operations::watchdog::WatchdogCoordinator;
-use impulse_transport::http3::UpstreamRequestExecutor;
 use log::{debug, error, info, warn};
 use quiche::{Config, h3::NameValue};
 use rand::RngCore;
@@ -407,13 +406,13 @@ impl Http3Service {
             worker_slot: self.metrics.current_worker_slot(),
         };
         let exec_ctx = ForwardingExecutionCtx {
-            upstream_executor: UpstreamRequestExecutor::new(Arc::clone(
+            upstream_transport_pool: Arc::clone(
                 &self
                     .runtime_state
                     .shared_state()
                     .shared_services()
                     .transport_pool,
-            )),
+            ),
             backend_endpoints: Arc::clone(
                 &self
                     .runtime_state
@@ -528,13 +527,13 @@ impl Http3Service {
             worker_slot: self.metrics.current_worker_slot(),
         };
         let exec_ctx = ForwardingExecutionCtx {
-            upstream_executor: UpstreamRequestExecutor::new(Arc::clone(
+            upstream_transport_pool: Arc::clone(
                 &self
                     .runtime_state
                     .shared_state()
                     .shared_services()
                     .transport_pool,
-            )),
+            ),
             backend_endpoints: Arc::clone(
                 &self
                     .runtime_state

@@ -1,6 +1,7 @@
 //! Canonical upstream transport façade.
 //!
-//! HTTP/3 adapters use [`http3::UpstreamRequestExecutor`] for backend exchanges.
+//! HTTP/3 adapters use [`UpstreamTransportPool::execute_http3_exchange`] for
+//! backend exchanges.
 //! Pingora `HttpProxy` routes (HTTP/1 and HTTP/2) get a configured peer from
 //! [`UpstreamTransportPool::pingora_proxy_peer`] and let Pingora own the
 //! exchange. Pool lifecycle operations remain available through
@@ -14,7 +15,6 @@ mod pingora_h1;
 mod pingora_h2;
 mod pingora_peer;
 mod pingora_pool;
-mod request_executor;
 mod runtime_config;
 mod transport_pool;
 
@@ -31,12 +31,9 @@ pub use transport_pool::UpstreamTransportPool;
 /// Exchange adaptation for HTTP/3 ingress and cases that transfer ownership
 /// of an upstream body, tunnel, or upgrade across the transport boundary.
 pub mod http3 {
-    pub use crate::{
-        exchange::{
-            UpstreamBody, UpstreamBodyFrame, UpstreamExchangeRequest, UpstreamExchangeResponse,
-            UpstreamRequestHead, UpstreamResponseHead, UpstreamTunnel, UpstreamTunnelCompletion,
-            UpstreamTunnelIo, UpstreamUpgrade,
-        },
-        request_executor::UpstreamRequestExecutor,
+    pub use crate::exchange::{
+        UpstreamBody, UpstreamBodyFrame, UpstreamExchangeRequest, UpstreamExchangeResponse,
+        UpstreamRequestHead, UpstreamResponseHead, UpstreamTunnel, UpstreamTunnelCompletion,
+        UpstreamTunnelIo, UpstreamUpgrade,
     };
 }

@@ -68,7 +68,7 @@ impl UpstreamTransportPool {
         Ok(config.peer)
     }
 
-    pub(crate) async fn send_exchange(
+    pub async fn execute_http3_exchange(
         &self,
         backend: &str,
         request: UpstreamExchangeRequest,

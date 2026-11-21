@@ -12,9 +12,9 @@ use impulse_observability::ResponseCacheOutcome;
 use impulse_observability::{HedgeDecisionReason, RetryDecisionReason};
 #[cfg(feature = "response-cache")]
 use impulse_plugins::ResponseCacheKeyParts;
+use impulse_transport::UpstreamTransportPool;
 use impulse_transport::http3::{
-    UpstreamBodyFrame, UpstreamExchangeRequest, UpstreamExchangeResponse, UpstreamRequestExecutor,
-    UpstreamRequestHead,
+    UpstreamBodyFrame, UpstreamExchangeRequest, UpstreamExchangeResponse, UpstreamRequestHead,
 };
 use pingora_cache::{HitStatus, HttpCache, NoCacheReason, lock::LockWaitOutcome};
 
@@ -111,7 +111,7 @@ struct RetryExecutionCtx<'a> {
     alternate_backend: Option<&'a ResolvedAlternateBackend>,
     pending_forward: &'a PendingForward,
     circuit_breakers: &'a crate::resilience::circuit_breaker::CircuitBreakers,
-    executor: &'a UpstreamRequestExecutor,
+    transport_pool: &'a UpstreamTransportPool,
 }
 
 fn alternate_backend_policy_state(
@@ -291,7 +291,7 @@ impl Http3Service {
         backend: &str,
         request: UpstreamRequest,
         circuit_breakers: &crate::resilience::circuit_breaker::CircuitBreakers,
-        executor: &UpstreamRequestExecutor,
+        transport_pool: &UpstreamTransportPool,
     ) -> Result<UpstreamExchangeResponse, ProxyError> {
         let breaker_permit = ForwardingSelectionService::allow_backend_request(
             circuit_breakers,
@@ -300,7 +300,9 @@ impl Http3Service {
         )?;
 
         let request = Self::into_upstream_exchange_request(request)?;
-        let send_result = executor.execute(backend, request).await;
+        let send_result = transport_pool
+            .execute_http3_exchange(backend, request)
+            .await;
         if send_result.is_ok() {
             breaker_permit.record_success();
         } else {
@@ -352,7 +354,7 @@ impl Http3Service {
     async fn forward_http1_websocket_tunnel(
         input: WebsocketTunnelForwardInput,
         circuit_breakers: &crate::resilience::circuit_breaker::CircuitBreakers,
-        executor: &UpstreamRequestExecutor,
+        transport_pool: &UpstreamTransportPool,
     ) -> ForwardResult {
         let WebsocketTunnelForwardInput {
             backend_id,
@@ -367,7 +369,7 @@ impl Http3Service {
             backend.as_ref(),
             request,
             circuit_breakers,
-            executor,
+            transport_pool,
         )
         .await?;
 
@@ -532,7 +534,7 @@ impl Http3Service {
             alternate_backend,
             pending_forward,
             circuit_breakers,
-            executor,
+            transport_pool,
         } = retry_ctx;
         let (alternate_backend_available, alternate_backend_failure) =
             alternate_backend_policy_state(alternate_backend);
@@ -588,7 +590,7 @@ impl Http3Service {
             retry_backend.as_str(),
             retry_request,
             circuit_breakers,
-            executor,
+            transport_pool,
         )
         .await
     }
@@ -636,7 +638,7 @@ impl Http3Service {
                         shared_ctx.generation,
                     )
                 });
-        let executor = exec_ctx.upstream_executor.clone();
+        let transport_pool = Arc::clone(&exec_ctx.upstream_transport_pool);
         let hedge_delay = resilience.hedging_delay;
         let alternate_pool = req.upstream_pool.clone();
         let alternate_metrics = Arc::clone(&shared_ctx.metrics);
@@ -706,7 +708,7 @@ impl Http3Service {
             let primary_backend = pending_forward.backend_addr.as_ref();
             let circuit_breakers = circuit_breakers.as_ref();
             let retry_budget = retry_budget.as_ref();
-            let upstream_executor = &executor;
+            let transport_pool = transport_pool.as_ref();
             let mut policy_telemetry = ForwardingPolicyTelemetry::default();
             let result: ForwardResult = async {
                 #[cfg(feature = "response-cache")]
@@ -752,7 +754,7 @@ impl Http3Service {
                             body_rx,
                         },
                         circuit_breakers,
-                        upstream_executor,
+                        transport_pool,
                     )
                     .await?
                 } else {
@@ -785,7 +787,7 @@ impl Http3Service {
                                     primary_backend,
                                     request,
                                     circuit_breakers,
-                                    upstream_executor,
+                                    transport_pool,
                                 );
                                 tokio::pin!(primary_fut);
                                 let hedge_sleep = tokio::time::sleep(hedge_delay);
@@ -807,7 +809,7 @@ impl Http3Service {
                                                 hedge_backend.as_str(),
                                                 hedge_request,
                                                 circuit_breakers,
-                                                upstream_executor,
+                                                transport_pool,
                                             );
                                             tokio::pin!(hedge_fut);
                                             tokio::select! {
@@ -874,7 +876,7 @@ impl Http3Service {
                                     primary_backend,
                                     request,
                                     circuit_breakers,
-                                    upstream_executor,
+                                    transport_pool,
                                 )
                                 .await?
                             }
@@ -892,7 +894,7 @@ impl Http3Service {
                                 primary_backend,
                                 request,
                                 circuit_breakers,
-                                upstream_executor,
+                                transport_pool,
                             )
                             .await
                             {
@@ -912,7 +914,7 @@ impl Http3Service {
                                             alternate_backend: alternate_backend.as_ref(),
                                             pending_forward: pending_forward.as_ref(),
                                             circuit_breakers,
-                                            executor: upstream_executor,
+                                            transport_pool,
                                         },
                                     )
                                     .await?
@@ -932,7 +934,7 @@ impl Http3Service {
                                 primary_backend,
                                 request,
                                 circuit_breakers,
-                                upstream_executor,
+                                transport_pool,
                             )
                             .await
                             {
@@ -952,7 +954,7 @@ impl Http3Service {
                                             alternate_backend: alternate_backend.as_ref(),
                                             pending_forward: pending_forward.as_ref(),
                                             circuit_breakers,
-                                            executor: upstream_executor,
+                                            transport_pool,
                                         },
                                     )
                                     .await?
