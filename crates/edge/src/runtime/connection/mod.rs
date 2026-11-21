@@ -6,6 +6,7 @@
 //! in `edge_core`; ingress adapters retain protocol I/O ownership.
 
 pub(crate) mod auth;
+pub(crate) mod direct_response;
 pub(crate) mod outcome;
 #[cfg(feature = "connection-rate-limit")]
 pub(crate) mod plugin;

@@ -16,9 +16,9 @@ use crate::{
     UpstreamTransportInput,
     exchange::{
         UpstreamCancellation, UpstreamConnectionReuse, UpstreamExchangeCompletion,
-        UpstreamExchangeLifecycle, UpstreamExchangeOutcome, UpstreamExchangeRequest,
-        UpstreamExchangeResponse, UpstreamInflightPermit,
+        UpstreamExchangeLifecycle, UpstreamExchangeOutcome, UpstreamInflightPermit,
     },
+    http3::{UpstreamExchangeRequest, UpstreamExchangeResponse},
     pingora_failure::{classify_pingora_h1_error, classify_pingora_h2_error},
     pingora_h1::PingoraH1UpstreamSession,
     pingora_h2::PingoraH2UpstreamSession,
@@ -58,13 +58,17 @@ impl UpstreamTransportPool {
         self.pingora_pool.drain();
     }
 
-    pub fn pingora_peer(&self, backend: &str) -> Result<HttpPeer, ProxyError> {
+    /// Returns the configured ALPN peer for Pingora's native
+    /// `ProxyHttp::upstream_peer` path, including HTTP/2 backends. Pingora's
+    /// `HttpProxy` owns the exchange; HTTP/3 adapters use the generic
+    /// `UpstreamExchangeRequest` contract instead.
+    pub fn pingora_proxy_peer(&self, backend: &str) -> Result<HttpPeer, ProxyError> {
         let mut config = self.resolved_pingora_backend(backend)?;
         config.peer.group_key = config.identity.pool_key();
         Ok(config.peer)
     }
 
-    pub(crate) async fn send_exchange(
+    pub async fn execute_http3_exchange(
         &self,
         backend: &str,
         request: UpstreamExchangeRequest,

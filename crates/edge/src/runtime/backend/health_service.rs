@@ -163,9 +163,12 @@ impl ImpulsePingoraHealthCheck {
                 format!("invalid health-check backend '{backend}': {error}"),
             )
         })?;
-        let mut peer = self.transport_pool.pingora_peer(backend).map_err(|error| {
-            Error::explain(ErrorType::Custom("impulse health peer"), error.to_string())
-        })?;
+        let mut peer = self
+            .transport_pool
+            .pingora_proxy_peer(backend)
+            .map_err(|error| {
+                Error::explain(ErrorType::Custom("impulse health peer"), error.to_string())
+            })?;
         peer.options.connection_timeout = Some(policy.timeout);
         peer.options.read_timeout = Some(policy.timeout);
 
