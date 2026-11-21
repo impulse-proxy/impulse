@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use impulse_contracts::HealthFailureReason;
 #[cfg(any(feature = "response-cache", feature = "response-compression"))]
 use impulse_contracts::{IngressProtocol, PluginRequestView};
@@ -45,6 +45,7 @@ use crate::{
 };
 
 const RESPONSE_GZIP_LEVEL: u32 = 6;
+const RESPONSE_WRITE_COALESCE_BYTES: usize = 16 * 1024;
 
 struct ResponseCompressionByteMetrics {
     metrics: Arc<Metrics>,
@@ -1534,6 +1535,52 @@ impl Http3Service {
         }
     }
 
+    fn next_response_data(req: &mut RequestEnvelope) -> Option<Bytes> {
+        loop {
+            let chunk = req
+                .response_chunk_rx_mut()
+                .and_then(|rx| rx.try_recv().ok());
+            match chunk {
+                Some(ResponseChunk::Data(data)) if data.is_empty() => continue,
+                Some(ResponseChunk::Data(data)) => return Some(data),
+                Some(chunk) => req.defer_pending_chunk(chunk),
+                None => {}
+            }
+            return None;
+        }
+    }
+
+    fn coalesce_response_data(req: &mut RequestEnvelope, first: Bytes) -> Bytes {
+        if first.is_empty()
+            || first.len() >= RESPONSE_WRITE_COALESCE_BYTES
+            || req.has_pending_chunk()
+        {
+            return first;
+        }
+        let Some(mut next) = Self::next_response_data(req) else {
+            return first;
+        };
+
+        let mut combined = BytesMut::with_capacity(RESPONSE_WRITE_COALESCE_BYTES);
+        combined.extend_from_slice(&first);
+        loop {
+            let available = RESPONSE_WRITE_COALESCE_BYTES - combined.len();
+            if next.len() > available {
+                req.set_pending_chunk(Some(ResponseChunk::Data(next)));
+                break;
+            }
+            combined.extend_from_slice(&next);
+            if combined.len() == RESPONSE_WRITE_COALESCE_BYTES {
+                break;
+            }
+            let Some(data) = Self::next_response_data(req) else {
+                break;
+            };
+            next = data;
+        }
+        combined.freeze()
+    }
+
     pub(super) fn flush_response_chunks(
         stream_id: u64,
         req: &mut RequestEnvelope,
@@ -1609,51 +1656,54 @@ impl Http3Service {
                         }
                     }
                 }
-                ResponseChunk::Data(data) => match impulse_http3_ingress::send_response_body(
-                    h3, quic, stream_id, &data, false,
-                ) {
-                    Ok(written) if written < data.len() => {
-                        // Partial write: keep only the unsent tail and retry once the
-                        // stream is writable again.
-                        req.set_response_emission_state(ResponseEmissionState::StreamingBody);
-                        req.set_pending_chunk(Some(ResponseChunk::Data(data.slice(written..))));
-                        break;
+                ResponseChunk::Data(data) => {
+                    let data = Self::coalesce_response_data(req, data);
+                    match impulse_http3_ingress::send_response_body(
+                        h3, quic, stream_id, &data, false,
+                    ) {
+                        Ok(written) if written < data.len() => {
+                            // Partial write: keep only the unsent tail and retry once the
+                            // stream is writable again.
+                            req.set_response_emission_state(ResponseEmissionState::StreamingBody);
+                            req.set_pending_chunk(Some(ResponseChunk::Data(data.slice(written..))));
+                            break;
+                        }
+                        Ok(_) => {
+                            req.set_response_emission_state(ResponseEmissionState::StreamingBody);
+                        }
+                        // `Done` means no bytes could be written yet (flow control); it is
+                        // retryable, like `StreamBlocked`.
+                        Err(quiche::h3::Error::StreamBlocked | quiche::h3::Error::Done) => {
+                            req.set_pending_chunk(Some(ResponseChunk::Data(data)));
+                            break;
+                        }
+                        Err(err) => {
+                            error!(
+                                "HTTP/3 send_body data protocol error on stream {}: {:?}",
+                                stream_id, err
+                            );
+                            metrics.request_observations().inc_backend_error();
+                            let _ = crate::runtime::connection::outcome::observe_status_outcome(
+                                metrics,
+                                Self::request_outcome_route_target(req),
+                                Self::request_outcome_backend_target(req),
+                                req.start.elapsed(),
+                                req.response_status
+                                    .and_then(|status| http::StatusCode::from_u16(status).ok())
+                                    .unwrap_or(http::StatusCode::BAD_GATEWAY),
+                            );
+                            resilience
+                                .adaptive_admission
+                                .observe(req.start.elapsed(), true);
+                            req.transition_streaming_to_backend_failed(
+                                BackendFailureReason::ResponseWriteFailed,
+                                metrics,
+                            );
+                            terminal = true;
+                            break;
+                        }
                     }
-                    Ok(_) => {
-                        req.set_response_emission_state(ResponseEmissionState::StreamingBody);
-                    }
-                    // `Done` means no bytes could be written yet (flow control); it is
-                    // retryable, like `StreamBlocked`.
-                    Err(quiche::h3::Error::StreamBlocked | quiche::h3::Error::Done) => {
-                        req.set_pending_chunk(Some(ResponseChunk::Data(data)));
-                        break;
-                    }
-                    Err(err) => {
-                        error!(
-                            "HTTP/3 send_body data protocol error on stream {}: {:?}",
-                            stream_id, err
-                        );
-                        metrics.request_observations().inc_backend_error();
-                        let _ = crate::runtime::connection::outcome::observe_status_outcome(
-                            metrics,
-                            Self::request_outcome_route_target(req),
-                            Self::request_outcome_backend_target(req),
-                            req.start.elapsed(),
-                            req.response_status
-                                .and_then(|status| http::StatusCode::from_u16(status).ok())
-                                .unwrap_or(http::StatusCode::BAD_GATEWAY),
-                        );
-                        resilience
-                            .adaptive_admission
-                            .observe(req.start.elapsed(), true);
-                        req.transition_streaming_to_backend_failed(
-                            BackendFailureReason::ResponseWriteFailed,
-                            metrics,
-                        );
-                        terminal = true;
-                        break;
-                    }
-                },
+                }
                 ResponseChunk::Trailers { headers } => {
                     match impulse_http3_ingress::send_response_trailers(
                         h3,

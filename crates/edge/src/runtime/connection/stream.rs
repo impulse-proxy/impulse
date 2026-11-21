@@ -28,12 +28,6 @@ use crate::{
     },
 };
 
-#[derive(Debug)]
-pub(crate) enum ResponseBackpressureState {
-    Ready,
-    Blocked(ResponseChunk),
-}
-
 #[derive(Debug, Clone)]
 pub struct RequestContext {
     pub request_id: impulse_contracts::RequestId,
@@ -187,7 +181,7 @@ pub struct ResponseStreamingState {
     pub final_status: StatusCode,
     pub emission: ResponseEmissionState,
     pub(crate) response_chunk_rx: mpsc::Receiver<ResponseChunk>,
-    pub(crate) backpressure: ResponseBackpressureState,
+    pub(crate) pending_chunks: VecDeque<ResponseChunk>,
     pub(crate) response_body_pump_abort: Option<AbortHandle>,
     pub backend_accounting: BackendAccountingState,
 }

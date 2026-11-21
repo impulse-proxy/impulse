@@ -34,9 +34,9 @@ use crate::{
             BackendAccountingState, BackendDispatchState, BackendFailureReason, CancellationReason,
             CancelledState, CompletionReason, DispatchReadyState, RequestBodyRuntime,
             RequestBodyState, RequestContext, RequestExecutionState, RequestMode,
-            RequestTracingState, ResponseBackpressureState, ResponseEmissionState,
-            ResponseStreamingState, StreamAdmissionState, StreamPhase, TerminalReason,
-            TerminalSnapshot, TerminalState, TimeoutReason, TunnelMode,
+            RequestTracingState, ResponseEmissionState, ResponseStreamingState,
+            StreamAdmissionState, StreamPhase, TerminalReason, TerminalSnapshot, TerminalState,
+            TimeoutReason, TunnelMode,
         },
     },
 };
@@ -584,30 +584,30 @@ impl RequestEnvelope {
 
     pub(crate) fn take_pending_chunk(&mut self) -> Option<ResponseChunk> {
         match &mut self.execution {
-            RequestExecutionState::StreamingResponse(state) => {
-                match std::mem::replace(&mut state.backpressure, ResponseBackpressureState::Ready) {
-                    ResponseBackpressureState::Ready => None,
-                    ResponseBackpressureState::Blocked(chunk) => Some(chunk),
-                }
-            }
+            RequestExecutionState::StreamingResponse(state) => state.pending_chunks.pop_front(),
             _ => None,
         }
     }
 
     pub(crate) fn set_pending_chunk(&mut self, chunk: Option<ResponseChunk>) {
         if let RequestExecutionState::StreamingResponse(state) = &mut self.execution {
-            state.backpressure = match chunk {
-                Some(chunk) => ResponseBackpressureState::Blocked(chunk),
-                None => ResponseBackpressureState::Ready,
-            };
+            if let Some(chunk) = chunk {
+                state.pending_chunks.push_front(chunk);
+            } else {
+                state.pending_chunks.clear();
+            }
+        }
+    }
+
+    pub(crate) fn defer_pending_chunk(&mut self, chunk: ResponseChunk) {
+        if let RequestExecutionState::StreamingResponse(state) = &mut self.execution {
+            state.pending_chunks.push_back(chunk);
         }
     }
 
     pub fn has_pending_chunk(&self) -> bool {
         match &self.execution {
-            RequestExecutionState::StreamingResponse(state) => {
-                matches!(state.backpressure, ResponseBackpressureState::Blocked(_))
-            }
+            RequestExecutionState::StreamingResponse(state) => !state.pending_chunks.is_empty(),
             _ => false,
         }
     }
@@ -812,7 +812,7 @@ impl RequestEnvelope {
                     final_status,
                     emission,
                     response_chunk_rx,
-                    backpressure: ResponseBackpressureState::Ready,
+                    pending_chunks: VecDeque::new(),
                     response_body_pump_abort: None,
                     backend_accounting: state.dispatch.backend_accounting,
                 });
