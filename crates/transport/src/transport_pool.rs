@@ -16,9 +16,9 @@ use crate::{
     UpstreamTransportInput,
     exchange::{
         UpstreamCancellation, UpstreamConnectionReuse, UpstreamExchangeCompletion,
-        UpstreamExchangeLifecycle, UpstreamExchangeOutcome, UpstreamExchangeRequest,
-        UpstreamExchangeResponse, UpstreamInflightPermit,
+        UpstreamExchangeLifecycle, UpstreamExchangeOutcome, UpstreamInflightPermit,
     },
+    http3::{UpstreamExchangeRequest, UpstreamExchangeResponse},
     pingora_failure::{classify_pingora_h1_error, classify_pingora_h2_error},
     pingora_h1::PingoraH1UpstreamSession,
     pingora_h2::PingoraH2UpstreamSession,

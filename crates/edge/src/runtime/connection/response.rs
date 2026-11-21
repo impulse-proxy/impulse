@@ -5,7 +5,7 @@ use impulse_contracts::{
     RetryPolicyDenialReason,
 };
 use impulse_errors::ProxyError;
-use impulse_transport::UpstreamBody;
+use impulse_transport::http3::UpstreamBody;
 use pingora_cache::HttpCache;
 use tokio::sync::mpsc;
 

@@ -12,6 +12,7 @@ mod stream_progress;
 
 use impulse_config::runtime::RuntimeBackendTlsPolicy;
 use impulse_lb::pingora_backend::PingoraLoadBalancingRuntimeState;
+use impulse_transport::http3::UpstreamRequestExecutor;
 
 #[cfg(feature = "external-auth")]
 pub(crate) use self::auth::execute_external_auth_request;

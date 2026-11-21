@@ -12,7 +12,7 @@ use impulse_observability::ResponseCacheOutcome;
 use impulse_observability::{HedgeDecisionReason, RetryDecisionReason};
 #[cfg(feature = "response-cache")]
 use impulse_plugins::ResponseCacheKeyParts;
-use impulse_transport::{
+use impulse_transport::http3::{
     UpstreamBodyFrame, UpstreamExchangeRequest, UpstreamExchangeResponse, UpstreamRequestExecutor,
     UpstreamRequestHead,
 };

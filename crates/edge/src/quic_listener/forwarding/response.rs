@@ -11,7 +11,7 @@ use impulse_observability::ResponseCacheOutcome;
 use impulse_observability::ResponseCompressionAction;
 #[cfg(feature = "response-cache")]
 use impulse_plugins::CachePluginFillDecision;
-use impulse_transport::{UpstreamBody, UpstreamBodyFrame};
+use impulse_transport::http3::{UpstreamBody, UpstreamBodyFrame};
 #[cfg(feature = "response-cache")]
 use pingora_cache::CacheMeta;
 use pingora_cache::{HttpCache, NoCacheReason};
