@@ -46,7 +46,6 @@ use impulse_plugins::AsyncRequestPluginExecutionGuard;
 use impulse_plugins::CachePluginFillDecision;
 #[cfg(feature = "response-cache")]
 use impulse_plugins::ResponseCacheKeyParts;
-#[cfg(any(feature = "response-cache", feature = "response-compression"))]
 use impulse_plugins::RouteExecutionClass;
 #[cfg(feature = "external-auth")]
 use impulse_plugins::{AsyncRequestPluginDecision, CompiledAsyncRequestPlugin};
@@ -137,6 +136,7 @@ impl fmt::Display for AccessLogError<'_> {
 pub(crate) struct PingoraEdgeRequestState {
     pub(crate) runtime: Arc<RuntimeBundle>,
     pub(crate) route: Option<ResolvedRouteTarget>,
+    passthrough: bool,
     pub(crate) policy: Option<ResolvedRequestPolicy>,
     auth_header_mutations: Option<SmallVec<[PendingHeaderMutation; 4]>>,
     pub(crate) completion: RequestCompletion,
@@ -678,6 +678,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             PingoraEdgeRequestState {
                 runtime,
                 route: None,
+                passthrough: false,
                 policy: None,
                 auth_header_mutations: None,
                 completion: RequestCompletion::default(),
@@ -858,6 +859,8 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             .policy_observations()
             .set_brownout_active(state.resilience.brownout.is_active());
         let tunnel_mode = classify_tunnel(request_head.method, validated.websocket_tunnel);
+        ctx.passthrough =
+            route.runtime.plugin_plan.execution_class() == RouteExecutionClass::Passthrough;
         ctx.route = Some(route.clone());
         ctx.method = Some(validated.method);
         ctx.path = Some(validated.path);
@@ -1124,6 +1127,9 @@ impl PingoraRequestService for PingoraEdgeRequestService {
 
     #[cfg(feature = "response-cache")]
     fn request_cache_filter(&self, session: &mut Session, ctx: &mut Self::Context) -> Result<()> {
+        if ctx.passthrough {
+            return Ok(());
+        }
         let (Some(cache), Some(method), Some(path)) = (
             self.runtime.response_cache(),
             ctx.method.as_deref(),
@@ -1249,6 +1255,11 @@ impl PingoraRequestService for PingoraEdgeRequestService {
         response: &ResponseHeader,
         ctx: &mut Self::Context,
     ) -> Result<RespCacheable> {
+        if ctx.passthrough {
+            return Ok(RespCacheable::Uncacheable(NoCacheReason::Custom(
+                "impulse_passthrough",
+            )));
+        }
         let processed = match ctx.response_processing.clone() {
             Some(processed) => processed,
             None => Self::process_response_head(session, response, ctx)?,
@@ -1553,7 +1564,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
         _end_of_stream: bool,
         ctx: &mut Self::Context,
     ) -> Result<()> {
-        if upstream_response.status.is_informational() {
+        if ctx.passthrough || upstream_response.status.is_informational() {
             return Ok(());
         }
         ctx.response_content_length = upstream_response
@@ -1630,6 +1641,58 @@ impl PingoraRequestService for PingoraEdgeRequestService {
                 .and_then(|value| value.to_str().ok())
                 .and_then(|value| value.parse::<usize>().ok())
         });
+        if ctx.passthrough {
+            let body_idle = timeouts.backend_body_idle;
+            let body_total = timeouts.backend_body_total;
+            let max_response_body_bytes = ctx
+                .runtime
+                .runtime_config
+                .policies
+                .transport
+                .max_response_body_bytes;
+            if checked_response_body_guardrails(
+                ResponseBodyGuardrailConfig {
+                    idle_timeout: body_idle,
+                    total_timeout: body_total,
+                    max_body_bytes: max_response_body_bytes,
+                    unknown_length_prebuffer_bytes: max_response_body_bytes,
+                    chunk_bytes: usize::MAX,
+                },
+                ResponseBodyGuardrailInput {
+                    elapsed: Duration::ZERO,
+                    idle_for: Duration::ZERO,
+                    bytes_received: 0,
+                    prebuffered_bytes: 0,
+                    next_chunk_bytes: 0,
+                    declared_content_length: content_length,
+                    headers_emitted: false,
+                    progressive_emission_allowed: true,
+                    body_forwarding_enabled: true,
+                    exempt_from_body_size_cap: tunnel_response,
+                },
+            )
+            .is_err()
+            {
+                ctx.terminal_classification =
+                    Some(PingoraTerminalClassification::Error(ProxyError::Pool(
+                        PoolError::BackendOverloaded("response body limit exceeded".into()),
+                    )));
+                write_error_response(
+                    session,
+                    http::StatusCode::SERVICE_UNAVAILABLE,
+                    Bytes::from_static(RESPONSE_BODY_TOO_LARGE_BODY),
+                )
+                .await?;
+                return Error::e_explain(HTTPStatus(503), "upstream response body too large");
+            }
+            ctx.response_body_bytes_received = 0;
+            ctx.response_body_started_at = Some(now);
+            ctx.response_body_last_progress_at = Some(now);
+            ctx.response_body_suppressed = false;
+            ctx.response_body_limit_exempt = tunnel_response;
+            ctx.response_content_length = content_length;
+            return Ok(());
+        }
         let current_response = Self::process_response_head(session, upstream_response, ctx)?;
         let mut processed = ctx
             .response_processing
