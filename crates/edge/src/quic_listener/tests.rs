@@ -2624,9 +2624,12 @@ mod response_coalescing {
         // The limit was reached before the third chunk was read, so it is still in
         // the channel, in order, for the next flush.
         assert!(!req.has_pending_chunk());
-        let leftover = req
-            .response_chunk_rx_mut()
-            .and_then(|rx| rx.try_recv().ok());
+        let leftover = match req.try_next_response_chunk() {
+            Some(crate::runtime::connection::direct_response::ChunkPoll::Chunk(chunk)) => {
+                Some(chunk)
+            }
+            _ => None,
+        };
         assert_eq!(&as_data(leftover)[..], &data(half, b'c')[..]);
     }
 

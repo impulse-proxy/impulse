@@ -18,17 +18,16 @@ use pingora_cache::{HttpCache, NoCacheReason};
 use pingora_core::protocols::http::compression::Algorithm;
 #[cfg(feature = "response-cache")]
 use pingora_http::ResponseHeader;
-use tokio::{sync::mpsc::error::TryRecvError, task::AbortHandle};
+use tokio::task::AbortHandle;
 
 use super::*;
 use crate::{
     edge_core::{
         body_guardrails::{
-            BodyLimitKind, BodyTimeoutKind, ProgressiveEmissionPolicy,
-            RESPONSE_BODY_TOO_LARGE_BODY, ResponseBodyGuardrailConfig,
-            ResponseBodyGuardrailDecision, ResponseBodyGuardrailInput,
+            BodyLimitKind, ProgressiveEmissionPolicy, RESPONSE_BODY_TOO_LARGE_BODY,
+            ResponseBodyGuardrailConfig, ResponseBodyGuardrailDecision, ResponseBodyGuardrailInput,
             checked_response_body_guardrails, is_unknown_length_response_prebuffer_reason,
-            response_body_limit_reason, response_chunk_ranges,
+            response_chunk_ranges,
         },
         response_processing::{
             ResponseProcessingInput, ResponseProcessingResult, process_response,
@@ -36,6 +35,9 @@ use crate::{
     },
     runtime::connection::{
         auth::ExternalAuthDecision,
+        direct_response::{
+            ChunkPoll, DirectResponseBody, ResponseSource, response_body_guardrail_chunk,
+        },
         response::{
             ImmediateResponseStart, ResponseBodyPumpPlan, ResponseChunk, ResponseStartDecision,
             ResponseStartMetadata, ResponseStartObservation,
@@ -156,37 +158,6 @@ async fn finish_response_cache(cache_fill: &mut ResponseCacheFill) {
         let _ = cache.finish_miss_handler().await;
     } else {
         cache.disable(NoCacheReason::StorageError);
-    }
-}
-
-fn response_body_guardrail_chunk(decision: ResponseBodyGuardrailDecision) -> Option<ResponseChunk> {
-    match decision {
-        ResponseBodyGuardrailDecision::Continue { .. } => None,
-        ResponseBodyGuardrailDecision::Timeout {
-            kind: BodyTimeoutKind::Idle,
-        } => Some(ResponseChunk::Timeout(TimeoutReason::ResponseBodyIdle)),
-        ResponseBodyGuardrailDecision::Timeout {
-            kind: BodyTimeoutKind::Total,
-        } => Some(ResponseChunk::Timeout(TimeoutReason::ResponseBodyTotal)),
-        ResponseBodyGuardrailDecision::Reject {
-            kind: BodyLimitKind::BodySize,
-        } => Some(ResponseChunk::Error(ProxyError::Pool(
-            PoolError::BackendOverloaded(
-                response_body_limit_reason(BodyLimitKind::BodySize).into(),
-            ),
-        ))),
-        ResponseBodyGuardrailDecision::Reject {
-            kind: BodyLimitKind::UnknownLengthPrebuffer,
-        } => Some(ResponseChunk::Error(ProxyError::Pool(
-            PoolError::BackendOverloaded(
-                response_body_limit_reason(BodyLimitKind::UnknownLengthPrebuffer).into(),
-            ),
-        ))),
-        ResponseBodyGuardrailDecision::Reject { .. } => Some(ResponseChunk::Error(
-            ProxyError::Pool(PoolError::BackendOverloaded(
-                response_body_limit_reason(BodyLimitKind::BufferedBody).into(),
-            )),
-        )),
     }
 }
 
@@ -1494,16 +1465,31 @@ impl Http3Service {
                     Self::send_response_start_headers(h3, quic, stream_id, &metadata, false)?;
                 }
                 let deferred_start = Self::into_deferred_response_start_chunk(metadata);
-                let (chunk_rx, body_pump_abort) = Self::spawn_response_body_pump(
-                    req,
-                    response_body,
-                    deferred_start,
-                    pump,
-                    Arc::clone(&shared_ctx.metrics),
-                );
+                // Plain pass-through bodies are read by the worker itself; anything
+                // that needs per-chunk work (compression, cache fill, prebuffering)
+                // still gets a pump task.
+                let (response_source, body_pump_abort) = if pump.streams_directly() {
+                    let config = pump.direct_config();
+                    (
+                        ResponseSource::Direct(Box::new(DirectResponseBody::new(
+                            response_body,
+                            config,
+                        ))),
+                        None,
+                    )
+                } else {
+                    let (chunk_rx, abort) = Self::spawn_response_body_pump(
+                        req,
+                        response_body,
+                        deferred_start,
+                        pump,
+                        Arc::clone(&shared_ctx.metrics),
+                    );
+                    (ResponseSource::Pump(chunk_rx), abort)
+                };
                 req.response_status = Some(response_status.as_u16());
                 if let Err(state_err) = req.transition_to_streaming_response(
-                    chunk_rx,
+                    response_source,
                     if response_headers_sent {
                         ResponseEmissionState::HeadersSent
                     } else {
@@ -1537,9 +1523,10 @@ impl Http3Service {
 
     fn next_response_data(req: &mut RequestEnvelope) -> Option<Bytes> {
         loop {
-            let chunk = req
-                .response_chunk_rx_mut()
-                .and_then(|rx| rx.try_recv().ok());
+            let chunk = match req.try_next_response_chunk() {
+                Some(ChunkPoll::Chunk(chunk)) => Some(chunk),
+                Some(ChunkPoll::Empty | ChunkPoll::Disconnected) | None => None,
+            };
             match chunk {
                 Some(ResponseChunk::Data(data)) if data.is_empty() => continue,
                 Some(ResponseChunk::Data(data)) => return Some(data),
@@ -1609,23 +1596,19 @@ impl Http3Service {
         loop {
             let chunk = match req.take_pending_chunk() {
                 Some(c) => c,
-                None => {
-                    let Some(rx) = req.response_chunk_rx_mut() else {
-                        return false;
-                    };
-                    match rx.try_recv() {
-                        Ok(c) => c,
-                        Err(TryRecvError::Empty) => break,
-                        Err(TryRecvError::Disconnected) => {
-                            req.transition_streaming_to_backend_failed(
-                                BackendFailureReason::ResponseStreamAborted,
-                                metrics,
-                            );
-                            terminal = true;
-                            break;
-                        }
+                None => match req.try_next_response_chunk() {
+                    None => return false,
+                    Some(ChunkPoll::Chunk(chunk)) => chunk,
+                    Some(ChunkPoll::Empty) => break,
+                    Some(ChunkPoll::Disconnected) => {
+                        req.transition_streaming_to_backend_failed(
+                            BackendFailureReason::ResponseStreamAborted,
+                            metrics,
+                        );
+                        terminal = true;
+                        break;
                     }
-                }
+                },
             };
             match chunk {
                 ResponseChunk::Start { status, headers } => {

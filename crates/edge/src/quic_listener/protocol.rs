@@ -15,9 +15,7 @@ pub(in crate::quic_listener) fn should_strip_h3_response_header(
     )
 }
 
-pub(in crate::quic_listener) fn collect_h3_trailers(
-    trailers: &http::HeaderMap,
-) -> Vec<(Vec<u8>, Vec<u8>)> {
+pub(crate) fn collect_h3_trailers(trailers: &http::HeaderMap) -> Vec<(Vec<u8>, Vec<u8>)> {
     normalize_response_trailers(
         trailers,
         ResponseProtocolConstraints {

@@ -24,6 +24,7 @@ use crate::{
     edge_core::request_completion::RequestCompletion,
     runtime::connection::{
         auth::{ExternalAuthResult, PendingHeaderMutation},
+        direct_response::{ChunkPoll, ResponseSource},
         outcome::{
             BackendRequestFinishInput, finalize_backend_request_cleanup,
             observe_terminal_request_outcome,
@@ -548,9 +549,13 @@ impl RequestEnvelope {
         }
     }
 
-    pub(crate) fn response_chunk_rx_mut(&mut self) -> Option<&mut mpsc::Receiver<ResponseChunk>> {
+    /// Ask the response source for its next chunk. `None` when the request is not
+    /// streaming a response.
+    pub(crate) fn try_next_response_chunk(&mut self) -> Option<ChunkPoll> {
         match &mut self.execution {
-            RequestExecutionState::StreamingResponse(state) => Some(&mut state.response_chunk_rx),
+            RequestExecutionState::StreamingResponse(state) => {
+                Some(state.response_source.try_next())
+            }
             _ => None,
         }
     }
@@ -790,7 +795,7 @@ impl RequestEnvelope {
 
     pub(crate) fn transition_to_streaming_response(
         &mut self,
-        response_chunk_rx: mpsc::Receiver<ResponseChunk>,
+        response_source: impl Into<ResponseSource>,
         emission: ResponseEmissionState,
         final_status: http::StatusCode,
     ) -> Result<(), RequestStateError> {
@@ -811,7 +816,7 @@ impl RequestEnvelope {
                     permits: state.permits,
                     final_status,
                     emission,
-                    response_chunk_rx,
+                    response_source: response_source.into(),
                     pending_chunks: VecDeque::new(),
                     response_body_pump_abort: None,
                     backend_accounting: state.dispatch.backend_accounting,

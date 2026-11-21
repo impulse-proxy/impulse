@@ -126,7 +126,8 @@ use forwarding::{
     ForwardingExecutionCtx, ForwardingSharedCtx, H3RequestHandlingConfig,
     RequestFinalizationConfig, StreamProgressConfig,
 };
-pub(in crate::quic_listener) use protocol::{can_poll_upstream_result, collect_h3_trailers};
+pub(in crate::quic_listener) use protocol::can_poll_upstream_result;
+pub(crate) use protocol::collect_h3_trailers;
 #[cfg(test)]
 pub(in crate::quic_listener) use protocol::{
     is_bodyless_request_mode, is_connect_tunnel_response, should_strip_h3_response_header,
