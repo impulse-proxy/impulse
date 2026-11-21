@@ -1392,7 +1392,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             .shared_state
             .shared_services()
             .transport_pool
-            .pingora_peer(&backend_addr)
+            .pingora_proxy_peer(&backend_addr)
             .map_err(|error| {
                 Error::because(InternalError, "backend peer creation failed", error)
             })?;

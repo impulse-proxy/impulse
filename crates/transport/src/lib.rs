@@ -1,10 +1,10 @@
 //! Canonical upstream transport façade.
 //!
-//! Callers should depend on this crate for backend request execution, backend
-//! client rotation, DNS cache coordination, and transport-scoped connection
-//! policy application. Protocol-specific Pingora sessions remain internal
-//! details behind [`UpstreamRequestExecutor`]. Pool lifecycle operations remain
-//! available through [`UpstreamTransportPool`] to runtime owners.
+//! HTTP/3 adapters use [`UpstreamRequestExecutor`] for backend exchanges.
+//! Pingora `HttpProxy` routes get a configured peer from
+//! [`UpstreamTransportPool::pingora_proxy_peer`] and let Pingora own the
+//! exchange. Pool lifecycle operations remain available through
+//! [`UpstreamTransportPool`] to runtime owners.
 
 mod connection_identity;
 mod exchange;
