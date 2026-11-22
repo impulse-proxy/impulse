@@ -24,6 +24,7 @@ use crate::{
     edge_core::request_completion::RequestCompletion,
     runtime::connection::{
         auth::{ExternalAuthResult, PendingHeaderMutation},
+        direct_response::{ChunkPoll, ResponseSource},
         outcome::{
             BackendRequestFinishInput, finalize_backend_request_cleanup,
             observe_terminal_request_outcome,
@@ -34,9 +35,9 @@ use crate::{
             BackendAccountingState, BackendDispatchState, BackendFailureReason, CancellationReason,
             CancelledState, CompletionReason, DispatchReadyState, RequestBodyRuntime,
             RequestBodyState, RequestContext, RequestExecutionState, RequestMode,
-            RequestTracingState, ResponseBackpressureState, ResponseEmissionState,
-            ResponseStreamingState, StreamAdmissionState, StreamPhase, TerminalReason,
-            TerminalSnapshot, TerminalState, TimeoutReason, TunnelMode,
+            RequestTracingState, ResponseEmissionState, ResponseStreamingState,
+            StreamAdmissionState, StreamPhase, TerminalReason, TerminalSnapshot, TerminalState,
+            TimeoutReason, TunnelMode,
         },
     },
 };
@@ -548,9 +549,13 @@ impl RequestEnvelope {
         }
     }
 
-    pub(crate) fn response_chunk_rx_mut(&mut self) -> Option<&mut mpsc::Receiver<ResponseChunk>> {
+    /// Ask the response source for its next chunk. `None` when the request is not
+    /// streaming a response.
+    pub(crate) fn try_next_response_chunk(&mut self) -> Option<ChunkPoll> {
         match &mut self.execution {
-            RequestExecutionState::StreamingResponse(state) => Some(&mut state.response_chunk_rx),
+            RequestExecutionState::StreamingResponse(state) => {
+                Some(state.response_source.try_next())
+            }
             _ => None,
         }
     }
@@ -584,30 +589,30 @@ impl RequestEnvelope {
 
     pub(crate) fn take_pending_chunk(&mut self) -> Option<ResponseChunk> {
         match &mut self.execution {
-            RequestExecutionState::StreamingResponse(state) => {
-                match std::mem::replace(&mut state.backpressure, ResponseBackpressureState::Ready) {
-                    ResponseBackpressureState::Ready => None,
-                    ResponseBackpressureState::Blocked(chunk) => Some(chunk),
-                }
-            }
+            RequestExecutionState::StreamingResponse(state) => state.pending_chunks.pop_front(),
             _ => None,
         }
     }
 
     pub(crate) fn set_pending_chunk(&mut self, chunk: Option<ResponseChunk>) {
         if let RequestExecutionState::StreamingResponse(state) = &mut self.execution {
-            state.backpressure = match chunk {
-                Some(chunk) => ResponseBackpressureState::Blocked(chunk),
-                None => ResponseBackpressureState::Ready,
-            };
+            if let Some(chunk) = chunk {
+                state.pending_chunks.push_front(chunk);
+            } else {
+                state.pending_chunks.clear();
+            }
+        }
+    }
+
+    pub(crate) fn defer_pending_chunk(&mut self, chunk: ResponseChunk) {
+        if let RequestExecutionState::StreamingResponse(state) = &mut self.execution {
+            state.pending_chunks.push_back(chunk);
         }
     }
 
     pub fn has_pending_chunk(&self) -> bool {
         match &self.execution {
-            RequestExecutionState::StreamingResponse(state) => {
-                matches!(state.backpressure, ResponseBackpressureState::Blocked(_))
-            }
+            RequestExecutionState::StreamingResponse(state) => !state.pending_chunks.is_empty(),
             _ => false,
         }
     }
@@ -790,7 +795,7 @@ impl RequestEnvelope {
 
     pub(crate) fn transition_to_streaming_response(
         &mut self,
-        response_chunk_rx: mpsc::Receiver<ResponseChunk>,
+        response_source: impl Into<ResponseSource>,
         emission: ResponseEmissionState,
         final_status: http::StatusCode,
     ) -> Result<(), RequestStateError> {
@@ -811,8 +816,8 @@ impl RequestEnvelope {
                     permits: state.permits,
                     final_status,
                     emission,
-                    response_chunk_rx,
-                    backpressure: ResponseBackpressureState::Ready,
+                    response_source: response_source.into(),
+                    pending_chunks: VecDeque::new(),
                     response_body_pump_abort: None,
                     backend_accounting: state.dispatch.backend_accounting,
                 });

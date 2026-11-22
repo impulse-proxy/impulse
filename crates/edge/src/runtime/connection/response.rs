@@ -5,13 +5,14 @@ use impulse_contracts::{
     RetryPolicyDenialReason,
 };
 use impulse_errors::ProxyError;
-use impulse_transport::UpstreamBody;
+use impulse_transport::http3::UpstreamBody;
 use pingora_cache::HttpCache;
 use tokio::sync::mpsc;
 
 use crate::{
-    OverloadShedReason, edge_core::body_guardrails::ResponseBodyGuardrailConfig,
-    runtime::connection::stream::TimeoutReason,
+    OverloadShedReason,
+    edge_core::body_guardrails::ResponseBodyGuardrailConfig,
+    runtime::connection::{direct_response::DirectResponseConfig, stream::TimeoutReason},
 };
 
 pub(crate) enum ForwardSuccess {
@@ -107,6 +108,27 @@ pub(crate) struct ResponseBodyPumpPlan {
     pub(crate) tunnel_response: bool,
     pub(crate) compress_response: bool,
     pub(crate) response_cache: Option<HttpCache>,
+}
+
+impl ResponseBodyPumpPlan {
+    /// Whether the worker can convert upstream frames itself instead of spawning a
+    /// pump task: no compression, no cache fill, no deferred headers, and a body
+    /// that is actually forwarded.
+    pub(crate) fn streams_directly(&self) -> bool {
+        !self.compress_response
+            && self.response_cache.is_none()
+            && !self.defer_headers_until_body_validated
+            && self.body_forwarding_enabled
+    }
+
+    pub(crate) fn direct_config(&self) -> DirectResponseConfig {
+        DirectResponseConfig {
+            guardrails: self.guardrails,
+            declared_content_length: self.upstream_content_length,
+            progressive_emission_allowed: self.progressive_emission_allowed,
+            exempt_from_body_size_cap: self.tunnel_response,
+        }
+    }
 }
 
 pub(crate) enum ResponseStartObservation {
@@ -254,5 +276,77 @@ mod tests {
                 Some(HedgeOutcomeTelemetryReason::HedgeWon)
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod pump_plan_tests {
+    use std::time::Duration;
+
+    use super::*;
+
+    fn plan() -> ResponseBodyPumpPlan {
+        ResponseBodyPumpPlan {
+            guardrails: ResponseBodyGuardrailConfig {
+                idle_timeout: Duration::from_secs(1),
+                total_timeout: Duration::from_secs(2),
+                max_body_bytes: 1024,
+                unknown_length_prebuffer_bytes: 1024,
+                chunk_bytes: usize::MAX,
+            },
+            upstream_content_length: Some(10),
+            body_forwarding_enabled: true,
+            progressive_emission_allowed: true,
+            defer_headers_until_body_validated: false,
+            tunnel_response: false,
+            compress_response: false,
+            response_cache: None,
+        }
+    }
+
+    #[test]
+    fn a_plain_streaming_response_is_read_directly() {
+        assert!(plan().streams_directly());
+    }
+
+    #[test]
+    fn compression_needs_the_pump() {
+        let plan = ResponseBodyPumpPlan {
+            compress_response: true,
+            ..plan()
+        };
+        assert!(!plan.streams_directly());
+    }
+
+    #[test]
+    fn deferred_headers_need_the_pump() {
+        let plan = ResponseBodyPumpPlan {
+            defer_headers_until_body_validated: true,
+            ..plan()
+        };
+        assert!(!plan.streams_directly());
+    }
+
+    #[test]
+    fn a_suppressed_body_is_not_read_directly() {
+        let plan = ResponseBodyPumpPlan {
+            body_forwarding_enabled: false,
+            ..plan()
+        };
+        assert!(!plan.streams_directly());
+    }
+
+    #[test]
+    fn the_direct_config_carries_the_plan_limits() {
+        let plan = ResponseBodyPumpPlan {
+            tunnel_response: true,
+            upstream_content_length: Some(42),
+            ..plan()
+        };
+        let config = plan.direct_config();
+        assert_eq!(config.declared_content_length, Some(42));
+        assert!(config.exempt_from_body_size_cap);
+        assert!(config.progressive_emission_allowed);
+        assert_eq!(config.guardrails.max_body_bytes, 1024);
     }
 }

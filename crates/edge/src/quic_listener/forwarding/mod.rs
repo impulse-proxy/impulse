@@ -12,6 +12,7 @@ mod stream_progress;
 
 use impulse_config::runtime::RuntimeBackendTlsPolicy;
 use impulse_lb::pingora_backend::PingoraLoadBalancingRuntimeState;
+use impulse_transport::UpstreamTransportPool;
 
 #[cfg(feature = "external-auth")]
 pub(crate) use self::auth::execute_external_auth_request;
@@ -19,6 +20,8 @@ pub(crate) use self::auth::execute_external_auth_request;
 pub(in crate::quic_listener) use self::resolve::{
     TargetResolutionRequest as TestTargetResolutionRequest, selectors_for_test as test_selectors,
 };
+#[cfg(test)]
+pub(in crate::quic_listener) use self::response::RESPONSE_WRITE_COALESCE_BYTES;
 pub(in crate::quic_listener) use self::{
     outcome::{
         backend_failure_reason_for_proxy_error, rejection_reason_for_status, terminalize_stream,
@@ -48,7 +51,7 @@ pub(in crate::quic_listener) struct ForwardingSharedCtx<'a> {
 }
 
 pub(in crate::quic_listener) struct ForwardingExecutionCtx<'a> {
-    pub(in crate::quic_listener) upstream_executor: UpstreamRequestExecutor,
+    pub(in crate::quic_listener) upstream_transport_pool: Arc<UpstreamTransportPool>,
     pub(in crate::quic_listener) backend_endpoints: Arc<[BackendEndpoint]>,
     pub(in crate::quic_listener) upstream_inflight: &'a [Arc<Semaphore>],
     pub(in crate::quic_listener) global_inflight: Arc<Semaphore>,

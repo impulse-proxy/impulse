@@ -11,11 +11,14 @@ use pingora_http::RequestHeader;
 use tokio::sync::mpsc;
 
 use crate::{
-    PingoraUpstreamConnectionIdentity, UpstreamBody, UpstreamBodyFrame, UpstreamExchangeResponse,
-    UpstreamProtocol, UpstreamRequestHead, UpstreamResponseHead,
+    PingoraUpstreamConnectionIdentity, UpstreamProtocol,
     exchange::{
         UpstreamCancellation, UpstreamConnectionReuse, UpstreamExchangeCompletion,
         UpstreamExchangeLifecycle, UpstreamExchangeOutcome, upstream_response_body_channel,
+    },
+    http3::{
+        UpstreamBody, UpstreamBodyFrame, UpstreamExchangeResponse, UpstreamRequestHead,
+        UpstreamResponseHead,
     },
     pingora_failure::classify_pingora_h2_error,
     pingora_pool::PingoraPoolGeneration,

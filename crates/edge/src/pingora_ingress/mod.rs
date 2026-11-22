@@ -46,7 +46,6 @@ use impulse_plugins::AsyncRequestPluginExecutionGuard;
 use impulse_plugins::CachePluginFillDecision;
 #[cfg(feature = "response-cache")]
 use impulse_plugins::ResponseCacheKeyParts;
-#[cfg(any(feature = "response-cache", feature = "response-compression"))]
 use impulse_plugins::RouteExecutionClass;
 #[cfg(feature = "external-auth")]
 use impulse_plugins::{AsyncRequestPluginDecision, CompiledAsyncRequestPlugin};
@@ -137,6 +136,8 @@ impl fmt::Display for AccessLogError<'_> {
 pub(crate) struct PingoraEdgeRequestState {
     pub(crate) runtime: Arc<RuntimeBundle>,
     pub(crate) route: Option<ResolvedRouteTarget>,
+    tunnel: Option<PingoraTunnelState>,
+    passthrough: bool,
     pub(crate) policy: Option<ResolvedRequestPolicy>,
     auth_header_mutations: Option<SmallVec<[PendingHeaderMutation; 4]>>,
     pub(crate) completion: RequestCompletion,
@@ -152,9 +153,19 @@ pub(crate) struct PingoraEdgeRequestState {
     drain: Arc<PingoraDrainState>,
 }
 
+#[derive(Clone, Copy)]
+struct PingoraTunnelState {
+    mode: TunnelMode,
+}
+
 pub(crate) type PingoraRequestContext = IngressRequestContext<PingoraEdgeRequestState>;
 
 impl PingoraEdgeRequestState {
+    fn tunnel_response_established(&self, method: &str, status: http::StatusCode) -> bool {
+        self.tunnel
+            .is_some_and(|tunnel| tunnel_response_established(tunnel.mode, method, status))
+    }
+
     fn policy_header<'a>(&'a self, headers: &'a http::HeaderMap, name: &str) -> Option<&'a [u8]> {
         match pending_header_override(self.auth_header_mutations.as_deref(), name.as_bytes()) {
             PendingHeaderOverride::Value(value) => Some(value),
@@ -272,8 +283,7 @@ impl PingoraEdgeRequestService {
         } else {
             None
         };
-        let tunnel_response =
-            tunnel_response_established(ctx.tunnel_mode, method, upstream_response.status);
+        let tunnel_response = ctx.tunnel_response_established(method, upstream_response.status);
         let body_mode = if tunnel_response {
             ResponseBodyMode::TunnelSuccess
         } else if method.eq_ignore_ascii_case("HEAD") {
@@ -678,6 +688,8 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             PingoraEdgeRequestState {
                 runtime,
                 route: None,
+                tunnel: None,
+                passthrough: false,
                 policy: None,
                 auth_header_mutations: None,
                 completion: RequestCompletion::default(),
@@ -858,12 +870,16 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             .policy_observations()
             .set_brownout_active(state.resilience.brownout.is_active());
         let tunnel_mode = classify_tunnel(request_head.method, validated.websocket_tunnel);
+        ctx.passthrough =
+            route.runtime.plugin_plan.execution_class() == RouteExecutionClass::Passthrough;
         ctx.route = Some(route.clone());
         ctx.method = Some(validated.method);
         ctx.path = Some(validated.path);
         ctx.authority = validated.authority;
         ctx.content_length = validated.content_length;
-        ctx.tunnel_mode = tunnel_mode;
+        ctx.tunnel = tunnel_mode
+            .is_tunnel()
+            .then_some(PingoraTunnelState { mode: tunnel_mode });
 
         let (admission, mut plugin_mutations) = match execution.outcome {
             PluginRequestExecutionOutcome::Admitted {
@@ -1094,7 +1110,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
                 buffered_bytes: 0,
                 next_chunk_bytes: 0,
                 declared_content_length: ctx.content_length,
-                exempt_from_body_size_cap: tunnel_mode.is_tunnel(),
+                exempt_from_body_size_cap: ctx.tunnel.is_some(),
             },
         )
         .is_err()
@@ -1124,6 +1140,9 @@ impl PingoraRequestService for PingoraEdgeRequestService {
 
     #[cfg(feature = "response-cache")]
     fn request_cache_filter(&self, session: &mut Session, ctx: &mut Self::Context) -> Result<()> {
+        if ctx.passthrough {
+            return Ok(());
+        }
         let (Some(cache), Some(method), Some(path)) = (
             self.runtime.response_cache(),
             ctx.method.as_deref(),
@@ -1141,7 +1160,9 @@ impl PingoraRequestService for PingoraEdgeRequestService {
         let Some(compiled_cache) = plugin_plan.response_cache() else {
             return Ok(());
         };
-        let (is_upgrade, is_tunnel) = tunnel_cache_flags(ctx.tunnel_mode);
+        let (is_upgrade, is_tunnel) = ctx
+            .tunnel
+            .map_or((false, false), |tunnel| tunnel_cache_flags(tunnel.mode));
         let has_body = !session.is_body_empty();
         let peer_address = session
             .client_addr()
@@ -1249,6 +1270,11 @@ impl PingoraRequestService for PingoraEdgeRequestService {
         response: &ResponseHeader,
         ctx: &mut Self::Context,
     ) -> Result<RespCacheable> {
+        if ctx.passthrough {
+            return Ok(RespCacheable::Uncacheable(NoCacheReason::Custom(
+                "impulse_passthrough",
+            )));
+        }
         let processed = match ctx.response_processing.clone() {
             Some(processed) => processed,
             None => Self::process_response_head(session, response, ctx)?,
@@ -1301,7 +1327,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
                 buffered_bytes: 0,
                 next_chunk_bytes: body.as_ref().map_or(0, Bytes::len),
                 declared_content_length: ctx.content_length,
-                exempt_from_body_size_cap: ctx.tunnel_mode.is_tunnel(),
+                exempt_from_body_size_cap: ctx.tunnel.is_some(),
             },
         );
         if let RequestBodyGuardrailDecision::Timeout { kind } = timeout {
@@ -1339,7 +1365,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
                 buffered_bytes: 0,
                 next_chunk_bytes: body.as_ref().map_or(0, Bytes::len),
                 declared_content_length: ctx.content_length,
-                exempt_from_body_size_cap: ctx.tunnel_mode.is_tunnel(),
+                exempt_from_body_size_cap: ctx.tunnel.is_some(),
             },
         );
         match next {
@@ -1381,11 +1407,13 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             .shared_state
             .shared_services()
             .transport_pool
-            .pingora_peer(&backend_addr)
+            .pingora_proxy_peer(&backend_addr)
             .map_err(|error| {
                 Error::because(InternalError, "backend peer creation failed", error)
             })?;
-        configure_tunnel_peer(ctx.tunnel_mode, &mut peer);
+        if let Some(tunnel) = ctx.tunnel {
+            configure_tunnel_peer(tunnel.mode, &mut peer);
+        }
         let body_idle = ctx
             .runtime
             .runtime_config
@@ -1553,7 +1581,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
         _end_of_stream: bool,
         ctx: &mut Self::Context,
     ) -> Result<()> {
-        if upstream_response.status.is_informational() {
+        if ctx.passthrough || upstream_response.status.is_informational() {
             return Ok(());
         }
         ctx.response_content_length = upstream_response
@@ -1621,8 +1649,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
                 "Pingora ingress request filter did not validate a method",
             )
         })?;
-        let tunnel_response =
-            tunnel_response_established(ctx.tunnel_mode, method, upstream_response.status);
+        let tunnel_response = ctx.tunnel_response_established(method, upstream_response.status);
         let content_length = ctx.response_content_length.or_else(|| {
             upstream_response
                 .headers
@@ -1630,6 +1657,10 @@ impl PingoraRequestService for PingoraEdgeRequestService {
                 .and_then(|value| value.to_str().ok())
                 .and_then(|value| value.parse::<usize>().ok())
         });
+        // Every route class, including passthrough, goes through response head
+        // processing: it normalizes the response headers (hop-by-hop headers, and
+        // `alt-svc` on HTTP/1), which Pingora does not do for responses. For an
+        // empty plugin plan this does no cache or compression work.
         let current_response = Self::process_response_head(session, upstream_response, ctx)?;
         let mut processed = ctx
             .response_processing
@@ -1698,11 +1729,14 @@ impl PingoraRequestService for PingoraEdgeRequestService {
         response: &mut ResponseHeader,
         ctx: &mut Self::Context,
     ) -> Result<()> {
-        if response.status == http::StatusCode::SWITCHING_PROTOCOLS
-            && ctx.tunnel_mode == TunnelMode::Websocket
-        {
-            response.insert_header(http::header::CONNECTION, "upgrade")?;
-            response.insert_header(http::header::UPGRADE, "websocket")?;
+        match ctx.tunnel.map(|tunnel| tunnel.mode) {
+            Some(TunnelMode::Websocket)
+                if response.status == http::StatusCode::SWITCHING_PROTOCOLS =>
+            {
+                response.insert_header(http::header::CONNECTION, "upgrade")?;
+                response.insert_header(http::header::UPGRADE, "websocket")?;
+            }
+            Some(TunnelMode::Websocket | TunnelMode::Connect | TunnelMode::None) | None => {}
         }
         Ok(())
     }
@@ -2117,7 +2151,7 @@ fn handle_pingora_proxy_failure(
         ctx.request_body_replayable && retry_safe,
         false,
         false,
-        ctx.tunnel_mode.is_tunnel(),
+        ctx.tunnel.is_some(),
     );
     let decision = retry.retry_after_error(
         &proxy_error,

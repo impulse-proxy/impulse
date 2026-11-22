@@ -736,6 +736,240 @@ fn passthrough_and_full_route_execution_preserve_response_behavior() {
     assert_eq!(plain_pingora, full_pingora);
 }
 
+/// A Pingora ingress with two routes backed by the same handler: `/plain` is a
+/// passthrough route (no plugins) and `/full` runs full response processing
+/// (API-key auth, cache and compression).
+struct RouteClassIngress {
+    harness: ProtocolParityHarness,
+    // Keeps the ingress and its runtime alive for the duration of the test.
+    _service: PingoraTestService,
+    addr: SocketAddr,
+}
+
+fn start_route_class_ingress<F, Fut>(backend_handler: F) -> RouteClassIngress
+where
+    F: Fn(hyper::Request<hyper::body::Incoming>) -> Fut + Copy + Send + Sync + 'static,
+    Fut: std::future::Future<
+            Output = Result<
+                hyper::Response<http_body_util::Full<bytes::Bytes>>,
+                std::convert::Infallible,
+            >,
+        > + Send
+        + 'static,
+{
+    let mut harness = ProtocolParityHarness::new();
+    // Each upstream needs its own backend address; the validator rejects sharing one.
+    let plain_backend_addr = harness.start_h1_backend(backend_handler);
+    let full_backend_addr = harness.start_h1_backend(backend_handler);
+    let passthrough = make_upstream(
+        "/plain",
+        vec![make_backend(
+            "backend-plain",
+            plain_backend_addr.to_string(),
+        )],
+        None,
+        "round-robin",
+    );
+    let mut full = make_upstream(
+        "/full",
+        vec![make_backend("backend-full", full_backend_addr.to_string())],
+        None,
+        "round-robin",
+    );
+    full.auth = RouteAuth {
+        api_key: Some(ApiKeyAuth {
+            header_name: "x-api-key".to_string(),
+            keys: vec!["edge-key".to_string()],
+        }),
+        ..RouteAuth::default()
+    };
+    full.cache = ResponseCache {
+        enabled: true,
+        max_bytes: 4096,
+        max_entries: 4,
+        max_object_bytes: 1024,
+        max_ttl_secs: 60,
+    };
+    full.compression = ResponseCompression {
+        enabled: true,
+        minimum_size_bytes: 4096,
+    };
+
+    let config = harness.make_config(HashMap::from([
+        ("passthrough".to_string(), passthrough),
+        ("full".to_string(), full),
+    ]));
+    let mut pingora_config = config;
+    pingora_config.listen.port = reserve_unused_listener_port();
+    let (service, addr) = PingoraTestService::start(pingora_config).expect("start Pingora ingress");
+
+    let generation = service.runtime_bundle.current();
+    let generation_state = generation.shared_state.generation_state();
+    let class_of = |name: &str| {
+        let id = generation_state
+            .identities
+            .upstream_id(name)
+            .expect("upstream identity");
+        generation_state
+            .route_execution_classes
+            .get(id.get() as usize)
+            .copied()
+    };
+    assert_eq!(
+        class_of("passthrough"),
+        Some(RouteExecutionClass::Passthrough)
+    );
+    assert_eq!(class_of("full"), Some(RouteExecutionClass::Full));
+    drop(generation);
+
+    RouteClassIngress {
+        harness,
+        _service: service,
+        addr,
+    }
+}
+
+impl RouteClassIngress {
+    fn get_over_http2(&self, path: &str) -> support::request_path::HttpResponse {
+        run_http2_request_to(
+            self.addr,
+            self.harness.cert_path(),
+            HttpRequestSpec {
+                method: "GET",
+                authority: "localhost",
+                path,
+                headers: &[("x-api-key", "edge-key")],
+                body: None,
+                user_agent: "impulse-route-class-test",
+            },
+        )
+        .unwrap_or_else(|err| panic!("{path}: request failed: {err}"))
+    }
+}
+
+fn has_response_header(response: &support::request_path::HttpResponse, name: &str) -> bool {
+    response
+        .headers
+        .iter()
+        .any(|(header, _)| header.eq_ignore_ascii_case(name))
+}
+
+/// Hop-by-hop response headers from a backend must never reach the client, on
+/// the cheap passthrough route class as well as on routes that run full response
+/// processing. Pingora only strips hop-by-hop headers on requests, so this relies
+/// on Impulse's own response normalization running for every route class.
+#[test]
+fn pingora_response_hop_by_hop_headers_are_stripped_on_every_route_class() {
+    if !local_listener_bind_available() {
+        return;
+    }
+
+    let ingress = start_route_class_ingress(
+        |_request: hyper::Request<hyper::body::Incoming>| async move {
+            Ok::<_, std::convert::Infallible>(
+                hyper::Response::builder()
+                    .status(http::StatusCode::OK)
+                    .header(http::header::CONTENT_TYPE, "text/plain")
+                    .header("keep-alive", "timeout=5")
+                    .header("proxy-authenticate", "Basic realm=\"upstream\"")
+                    .header("x-parity", "same")
+                    .body(http_body_util::Full::new(bytes::Bytes::from_static(
+                        b"ok\n",
+                    )))
+                    .expect("backend response"),
+            )
+        },
+    );
+
+    for path in ["/plain/resource", "/full/resource"] {
+        let response = ingress.get_over_http2(path);
+        assert_eq!(response.status, http::StatusCode::OK, "{path}: status");
+        assert!(
+            has_response_header(&response, "x-parity"),
+            "{path}: end-to-end header was dropped"
+        );
+        assert!(
+            !has_response_header(&response, "keep-alive"),
+            "{path}: hop-by-hop `keep-alive` reached the client"
+        );
+        assert!(
+            !has_response_header(&response, "proxy-authenticate"),
+            "{path}: hop-by-hop `proxy-authenticate` reached the client"
+        );
+    }
+}
+
+/// A backend must not be able to advertise its own alternative service to
+/// clients. Pingora serves HTTP/1.1 and HTTP/2 alike, so the `alt-svc` strip has
+/// to hold for an HTTP/2 client on every route class, not just for HTTP/1.
+#[test]
+fn pingora_http2_response_strips_backend_alt_svc_on_every_route_class() {
+    if !local_listener_bind_available() {
+        return;
+    }
+
+    const BACKEND_ALT_SVC: &str = "h3=\":8443\"; ma=60; backend-advertised";
+    let ingress = start_route_class_ingress(
+        |_request: hyper::Request<hyper::body::Incoming>| async move {
+            Ok::<_, std::convert::Infallible>(
+                hyper::Response::builder()
+                    .status(http::StatusCode::OK)
+                    .header(http::header::CONTENT_TYPE, "text/plain")
+                    .header("alt-svc", BACKEND_ALT_SVC)
+                    .header("x-parity", "same")
+                    .body(http_body_util::Full::new(bytes::Bytes::from_static(
+                        b"ok\n",
+                    )))
+                    .expect("backend response"),
+            )
+        },
+    );
+
+    for path in ["/plain/resource", "/full/resource"] {
+        let response = ingress.get_over_http2(path);
+        assert_eq!(response.status, http::StatusCode::OK, "{path}: status");
+        assert!(
+            has_response_header(&response, "x-parity"),
+            "{path}: end-to-end header was dropped"
+        );
+        // Checked by value, so a future Impulse-owned `alt-svc` advertisement would
+        // not trip this test; only the backend's own value must never get through.
+        assert!(
+            !response.headers.iter().any(|(name, value)| {
+                name.eq_ignore_ascii_case("alt-svc") && value.contains("backend-advertised")
+            }),
+            "{path}: the backend's `alt-svc` reached an HTTP/2 client"
+        );
+    }
+}
+
+/// Pingora normalizes every downstream response, HTTP/1.1 and HTTP/2 alike, with
+/// one shared set of constraints. `alt-svc` is only stripped when those constraints
+/// name the HTTP/1 protocol, so this pins that choice: switching HTTP/2 to its own
+/// protocol value must keep stripping `alt-svc`.
+#[test]
+fn pingora_response_constraints_strip_alt_svc_for_every_downstream_protocol() {
+    let alt_svc = http::HeaderName::from_static("alt-svc");
+    let end_to_end = http::HeaderName::from_static("x-parity");
+    let headers = http::HeaderMap::new();
+
+    for preserve_upgrade in [false, true] {
+        let constraints = super::pingora_response_constraints(preserve_upgrade);
+        assert!(
+            impulse_bridge::response::should_strip_response_header(&alt_svc, &headers, constraints),
+            "alt-svc must be stripped (preserve_upgrade={preserve_upgrade})"
+        );
+        assert!(
+            !impulse_bridge::response::should_strip_response_header(
+                &end_to_end,
+                &headers,
+                constraints
+            ),
+            "end-to-end headers must be kept (preserve_upgrade={preserve_upgrade})"
+        );
+    }
+}
+
 #[test]
 fn pingora_and_http3_share_bounded_response_cache_behavior() {
     if !local_listener_bind_available() {

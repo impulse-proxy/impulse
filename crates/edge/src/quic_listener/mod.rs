@@ -36,7 +36,6 @@ use impulse_config::{
 use impulse_errors::{PoolError, ProxyError, RequestFailure};
 use impulse_lb::upstream_pool::UpstreamPool;
 use impulse_operations::watchdog::WatchdogCoordinator;
-use impulse_transport::UpstreamRequestExecutor;
 use log::{debug, error, info, warn};
 use quiche::{Config, h3::NameValue};
 use rand::RngCore;
@@ -127,7 +126,8 @@ use forwarding::{
     ForwardingExecutionCtx, ForwardingSharedCtx, H3RequestHandlingConfig,
     RequestFinalizationConfig, StreamProgressConfig,
 };
-pub(in crate::quic_listener) use protocol::{can_poll_upstream_result, collect_h3_trailers};
+pub(in crate::quic_listener) use protocol::can_poll_upstream_result;
+pub(crate) use protocol::collect_h3_trailers;
 #[cfg(test)]
 pub(in crate::quic_listener) use protocol::{
     is_bodyless_request_mode, is_connect_tunnel_response, should_strip_h3_response_header,
@@ -407,13 +407,13 @@ impl Http3Service {
             worker_slot: self.metrics.current_worker_slot(),
         };
         let exec_ctx = ForwardingExecutionCtx {
-            upstream_executor: UpstreamRequestExecutor::new(Arc::clone(
+            upstream_transport_pool: Arc::clone(
                 &self
                     .runtime_state
                     .shared_state()
                     .shared_services()
                     .transport_pool,
-            )),
+            ),
             backend_endpoints: Arc::clone(
                 &self
                     .runtime_state
@@ -528,13 +528,13 @@ impl Http3Service {
             worker_slot: self.metrics.current_worker_slot(),
         };
         let exec_ctx = ForwardingExecutionCtx {
-            upstream_executor: UpstreamRequestExecutor::new(Arc::clone(
+            upstream_transport_pool: Arc::clone(
                 &self
                     .runtime_state
                     .shared_state()
                     .shared_services()
                     .transport_pool,
-            )),
+            ),
             backend_endpoints: Arc::clone(
                 &self
                     .runtime_state

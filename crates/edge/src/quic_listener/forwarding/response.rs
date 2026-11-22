@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use impulse_contracts::HealthFailureReason;
 #[cfg(any(feature = "response-cache", feature = "response-compression"))]
 use impulse_contracts::{IngressProtocol, PluginRequestView};
@@ -11,24 +11,23 @@ use impulse_observability::ResponseCacheOutcome;
 use impulse_observability::ResponseCompressionAction;
 #[cfg(feature = "response-cache")]
 use impulse_plugins::CachePluginFillDecision;
-use impulse_transport::{UpstreamBody, UpstreamBodyFrame};
+use impulse_transport::http3::{UpstreamBody, UpstreamBodyFrame};
 #[cfg(feature = "response-cache")]
 use pingora_cache::CacheMeta;
 use pingora_cache::{HttpCache, NoCacheReason};
 use pingora_core::protocols::http::compression::Algorithm;
 #[cfg(feature = "response-cache")]
 use pingora_http::ResponseHeader;
-use tokio::{sync::mpsc::error::TryRecvError, task::AbortHandle};
+use tokio::task::AbortHandle;
 
 use super::*;
 use crate::{
     edge_core::{
         body_guardrails::{
-            BodyLimitKind, BodyTimeoutKind, ProgressiveEmissionPolicy,
-            RESPONSE_BODY_TOO_LARGE_BODY, ResponseBodyGuardrailConfig,
-            ResponseBodyGuardrailDecision, ResponseBodyGuardrailInput,
+            BodyLimitKind, ProgressiveEmissionPolicy, RESPONSE_BODY_TOO_LARGE_BODY,
+            ResponseBodyGuardrailConfig, ResponseBodyGuardrailDecision, ResponseBodyGuardrailInput,
             checked_response_body_guardrails, is_unknown_length_response_prebuffer_reason,
-            response_body_limit_reason, response_chunk_ranges,
+            response_chunk_ranges,
         },
         response_processing::{
             ResponseProcessingInput, ResponseProcessingResult, process_response,
@@ -36,6 +35,9 @@ use crate::{
     },
     runtime::connection::{
         auth::ExternalAuthDecision,
+        direct_response::{
+            ChunkPoll, DirectResponseBody, ResponseSource, response_body_guardrail_chunk,
+        },
         response::{
             ImmediateResponseStart, ResponseBodyPumpPlan, ResponseChunk, ResponseStartDecision,
             ResponseStartMetadata, ResponseStartObservation,
@@ -45,6 +47,7 @@ use crate::{
 };
 
 const RESPONSE_GZIP_LEVEL: u32 = 6;
+pub(in crate::quic_listener) const RESPONSE_WRITE_COALESCE_BYTES: usize = 16 * 1024;
 
 struct ResponseCompressionByteMetrics {
     metrics: Arc<Metrics>,
@@ -155,37 +158,6 @@ async fn finish_response_cache(cache_fill: &mut ResponseCacheFill) {
         let _ = cache.finish_miss_handler().await;
     } else {
         cache.disable(NoCacheReason::StorageError);
-    }
-}
-
-fn response_body_guardrail_chunk(decision: ResponseBodyGuardrailDecision) -> Option<ResponseChunk> {
-    match decision {
-        ResponseBodyGuardrailDecision::Continue { .. } => None,
-        ResponseBodyGuardrailDecision::Timeout {
-            kind: BodyTimeoutKind::Idle,
-        } => Some(ResponseChunk::Timeout(TimeoutReason::ResponseBodyIdle)),
-        ResponseBodyGuardrailDecision::Timeout {
-            kind: BodyTimeoutKind::Total,
-        } => Some(ResponseChunk::Timeout(TimeoutReason::ResponseBodyTotal)),
-        ResponseBodyGuardrailDecision::Reject {
-            kind: BodyLimitKind::BodySize,
-        } => Some(ResponseChunk::Error(ProxyError::Pool(
-            PoolError::BackendOverloaded(
-                response_body_limit_reason(BodyLimitKind::BodySize).into(),
-            ),
-        ))),
-        ResponseBodyGuardrailDecision::Reject {
-            kind: BodyLimitKind::UnknownLengthPrebuffer,
-        } => Some(ResponseChunk::Error(ProxyError::Pool(
-            PoolError::BackendOverloaded(
-                response_body_limit_reason(BodyLimitKind::UnknownLengthPrebuffer).into(),
-            ),
-        ))),
-        ResponseBodyGuardrailDecision::Reject { .. } => Some(ResponseChunk::Error(
-            ProxyError::Pool(PoolError::BackendOverloaded(
-                response_body_limit_reason(BodyLimitKind::BufferedBody).into(),
-            )),
-        )),
     }
 }
 
@@ -1493,16 +1465,31 @@ impl Http3Service {
                     Self::send_response_start_headers(h3, quic, stream_id, &metadata, false)?;
                 }
                 let deferred_start = Self::into_deferred_response_start_chunk(metadata);
-                let (chunk_rx, body_pump_abort) = Self::spawn_response_body_pump(
-                    req,
-                    response_body,
-                    deferred_start,
-                    pump,
-                    Arc::clone(&shared_ctx.metrics),
-                );
+                // Plain pass-through bodies are read by the worker itself; anything
+                // that needs per-chunk work (compression, cache fill, prebuffering)
+                // still gets a pump task.
+                let (response_source, body_pump_abort) = if pump.streams_directly() {
+                    let config = pump.direct_config();
+                    (
+                        ResponseSource::Direct(Box::new(DirectResponseBody::new(
+                            response_body,
+                            config,
+                        ))),
+                        None,
+                    )
+                } else {
+                    let (chunk_rx, abort) = Self::spawn_response_body_pump(
+                        req,
+                        response_body,
+                        deferred_start,
+                        pump,
+                        Arc::clone(&shared_ctx.metrics),
+                    );
+                    (ResponseSource::Pump(chunk_rx), abort)
+                };
                 req.response_status = Some(response_status.as_u16());
                 if let Err(state_err) = req.transition_to_streaming_response(
-                    chunk_rx,
+                    response_source,
                     if response_headers_sent {
                         ResponseEmissionState::HeadersSent
                     } else {
@@ -1534,6 +1521,68 @@ impl Http3Service {
         }
     }
 
+    fn next_response_data(req: &mut RequestEnvelope) -> Option<Bytes> {
+        loop {
+            let chunk = match req.try_next_response_chunk() {
+                Some(ChunkPoll::Chunk(chunk)) => Some(chunk),
+                Some(ChunkPoll::Empty | ChunkPoll::Disconnected) | None => None,
+            };
+            match chunk {
+                Some(ResponseChunk::Data(data)) if data.is_empty() => continue,
+                Some(ResponseChunk::Data(data)) => return Some(data),
+                Some(chunk) => req.defer_pending_chunk(chunk),
+                None => {}
+            }
+            return None;
+        }
+    }
+
+    /// Merge `first` with the data chunks that follow it in the channel, up to
+    /// `RESPONSE_WRITE_COALESCE_BYTES`, so several small chunks become one write.
+    ///
+    /// Chunk order is preserved. A chunk that does not fit, and any non-data chunk
+    /// (trailers, end, error), is left queued for the next write. Nothing is copied
+    /// unless at least two chunks are actually merged.
+    pub(in crate::quic_listener) fn coalesce_response_data(
+        req: &mut RequestEnvelope,
+        first: Bytes,
+    ) -> Bytes {
+        if first.is_empty()
+            || first.len() >= RESPONSE_WRITE_COALESCE_BYTES
+            || req.has_pending_chunk()
+        {
+            return first;
+        }
+        let Some(mut next) = Self::next_response_data(req) else {
+            return first;
+        };
+        if first.len() + next.len() > RESPONSE_WRITE_COALESCE_BYTES {
+            // Nothing to merge with: send `first` untouched and keep `next` for the
+            // following write instead of copying `first` into a fresh buffer.
+            req.set_pending_chunk(Some(ResponseChunk::Data(next)));
+            return first;
+        }
+
+        let mut combined = BytesMut::with_capacity(RESPONSE_WRITE_COALESCE_BYTES);
+        combined.extend_from_slice(&first);
+        loop {
+            let available = RESPONSE_WRITE_COALESCE_BYTES - combined.len();
+            if next.len() > available {
+                req.set_pending_chunk(Some(ResponseChunk::Data(next)));
+                break;
+            }
+            combined.extend_from_slice(&next);
+            if combined.len() == RESPONSE_WRITE_COALESCE_BYTES {
+                break;
+            }
+            let Some(data) = Self::next_response_data(req) else {
+                break;
+            };
+            next = data;
+        }
+        combined.freeze()
+    }
+
     pub(super) fn flush_response_chunks(
         stream_id: u64,
         req: &mut RequestEnvelope,
@@ -1547,23 +1596,19 @@ impl Http3Service {
         loop {
             let chunk = match req.take_pending_chunk() {
                 Some(c) => c,
-                None => {
-                    let Some(rx) = req.response_chunk_rx_mut() else {
-                        return false;
-                    };
-                    match rx.try_recv() {
-                        Ok(c) => c,
-                        Err(TryRecvError::Empty) => break,
-                        Err(TryRecvError::Disconnected) => {
-                            req.transition_streaming_to_backend_failed(
-                                BackendFailureReason::ResponseStreamAborted,
-                                metrics,
-                            );
-                            terminal = true;
-                            break;
-                        }
+                None => match req.try_next_response_chunk() {
+                    None => return false,
+                    Some(ChunkPoll::Chunk(chunk)) => chunk,
+                    Some(ChunkPoll::Empty) => break,
+                    Some(ChunkPoll::Disconnected) => {
+                        req.transition_streaming_to_backend_failed(
+                            BackendFailureReason::ResponseStreamAborted,
+                            metrics,
+                        );
+                        terminal = true;
+                        break;
                     }
-                }
+                },
             };
             match chunk {
                 ResponseChunk::Start { status, headers } => {
@@ -1609,51 +1654,54 @@ impl Http3Service {
                         }
                     }
                 }
-                ResponseChunk::Data(data) => match impulse_http3_ingress::send_response_body(
-                    h3, quic, stream_id, &data, false,
-                ) {
-                    Ok(written) if written < data.len() => {
-                        // Partial write: keep only the unsent tail and retry once the
-                        // stream is writable again.
-                        req.set_response_emission_state(ResponseEmissionState::StreamingBody);
-                        req.set_pending_chunk(Some(ResponseChunk::Data(data.slice(written..))));
-                        break;
+                ResponseChunk::Data(data) => {
+                    let data = Self::coalesce_response_data(req, data);
+                    match impulse_http3_ingress::send_response_body(
+                        h3, quic, stream_id, &data, false,
+                    ) {
+                        Ok(written) if written < data.len() => {
+                            // Partial write: keep only the unsent tail and retry once the
+                            // stream is writable again.
+                            req.set_response_emission_state(ResponseEmissionState::StreamingBody);
+                            req.set_pending_chunk(Some(ResponseChunk::Data(data.slice(written..))));
+                            break;
+                        }
+                        Ok(_) => {
+                            req.set_response_emission_state(ResponseEmissionState::StreamingBody);
+                        }
+                        // `Done` means no bytes could be written yet (flow control); it is
+                        // retryable, like `StreamBlocked`.
+                        Err(quiche::h3::Error::StreamBlocked | quiche::h3::Error::Done) => {
+                            req.set_pending_chunk(Some(ResponseChunk::Data(data)));
+                            break;
+                        }
+                        Err(err) => {
+                            error!(
+                                "HTTP/3 send_body data protocol error on stream {}: {:?}",
+                                stream_id, err
+                            );
+                            metrics.request_observations().inc_backend_error();
+                            let _ = crate::runtime::connection::outcome::observe_status_outcome(
+                                metrics,
+                                Self::request_outcome_route_target(req),
+                                Self::request_outcome_backend_target(req),
+                                req.start.elapsed(),
+                                req.response_status
+                                    .and_then(|status| http::StatusCode::from_u16(status).ok())
+                                    .unwrap_or(http::StatusCode::BAD_GATEWAY),
+                            );
+                            resilience
+                                .adaptive_admission
+                                .observe(req.start.elapsed(), true);
+                            req.transition_streaming_to_backend_failed(
+                                BackendFailureReason::ResponseWriteFailed,
+                                metrics,
+                            );
+                            terminal = true;
+                            break;
+                        }
                     }
-                    Ok(_) => {
-                        req.set_response_emission_state(ResponseEmissionState::StreamingBody);
-                    }
-                    // `Done` means no bytes could be written yet (flow control); it is
-                    // retryable, like `StreamBlocked`.
-                    Err(quiche::h3::Error::StreamBlocked | quiche::h3::Error::Done) => {
-                        req.set_pending_chunk(Some(ResponseChunk::Data(data)));
-                        break;
-                    }
-                    Err(err) => {
-                        error!(
-                            "HTTP/3 send_body data protocol error on stream {}: {:?}",
-                            stream_id, err
-                        );
-                        metrics.request_observations().inc_backend_error();
-                        let _ = crate::runtime::connection::outcome::observe_status_outcome(
-                            metrics,
-                            Self::request_outcome_route_target(req),
-                            Self::request_outcome_backend_target(req),
-                            req.start.elapsed(),
-                            req.response_status
-                                .and_then(|status| http::StatusCode::from_u16(status).ok())
-                                .unwrap_or(http::StatusCode::BAD_GATEWAY),
-                        );
-                        resilience
-                            .adaptive_admission
-                            .observe(req.start.elapsed(), true);
-                        req.transition_streaming_to_backend_failed(
-                            BackendFailureReason::ResponseWriteFailed,
-                            metrics,
-                        );
-                        terminal = true;
-                        break;
-                    }
-                },
+                }
                 ResponseChunk::Trailers { headers } => {
                     match impulse_http3_ingress::send_response_trailers(
                         h3,

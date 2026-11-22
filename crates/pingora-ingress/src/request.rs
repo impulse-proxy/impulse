@@ -3,7 +3,7 @@ use std::{
     time::Instant,
 };
 
-use impulse_contracts::{BackendId, RequestId, TunnelMode};
+use impulse_contracts::{BackendId, RequestId};
 use pingora_core::Result;
 use pingora_http::RequestHeader;
 
@@ -16,7 +16,6 @@ pub struct PingoraRequestContext<T> {
     pub content_length: Option<usize>,
     pub body_bytes_received: usize,
     pub request_body_last_progress_at: Instant,
-    pub tunnel_mode: TunnelMode,
     pub response_body_bytes_received: usize,
     pub response_body_started_at: Option<Instant>,
     pub response_body_last_progress_at: Option<Instant>,
@@ -42,7 +41,6 @@ impl<T> PingoraRequestContext<T> {
             content_length: None,
             body_bytes_received: 0,
             request_body_last_progress_at: now,
-            tunnel_mode: TunnelMode::None,
             response_body_bytes_received: 0,
             response_body_started_at: None,
             response_body_last_progress_at: None,
