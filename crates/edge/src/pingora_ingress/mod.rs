@@ -554,6 +554,26 @@ impl ResolvesServerCert for RotatingServerCertResolver {
     }
 }
 
+#[cfg(unix)]
+fn file_descriptor_limit() -> Option<usize> {
+    let mut limit = std::mem::MaybeUninit::<libc::rlimit>::uninit();
+    // SAFETY: `getrlimit` initializes the provided `rlimit` on success.
+    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, limit.as_mut_ptr()) } != 0 {
+        return None;
+    }
+    // SAFETY: the successful call above initialized `limit`.
+    let limit = unsafe { limit.assume_init() }.rlim_cur;
+    if limit == libc::RLIM_INFINITY {
+        return None;
+    }
+    usize::try_from(limit).ok()
+}
+
+#[cfg(not(unix))]
+fn file_descriptor_limit() -> Option<usize> {
+    None
+}
+
 pub fn spawn_pingora_ingress_listener(
     runtime: Arc<RuntimeBundleHandle>,
     listener: ListenerRuntimeConfig,
@@ -568,20 +588,25 @@ pub fn spawn_pingora_ingress_listener(
     } else {
         1
     };
-    let backend_count = runtime
-        .current()
+    let current = runtime.current();
+    let backend_count = current
         .runtime_config
         .upstreams
         .values()
         .map(|upstream| upstream.backends.len())
         .sum::<usize>()
         .max(1);
-    let total_idle_capacity = listener
+    let configured_idle_capacity = listener
         .policies
         .transport
         .backend_connections
         .max_idle_per_backend
         .saturating_mul(backend_count);
+    let descriptor_idle_capacity = file_descriptor_limit()
+        .map(|limit| limit / 2 / current.runtime_config.listeners.len().max(1))
+        .unwrap_or(usize::MAX)
+        .max(1);
+    let total_idle_capacity = configured_idle_capacity.min(descriptor_idle_capacity);
     let per_worker_idle_capacity =
         total_idle_capacity / worker_count + usize::from(total_idle_capacity % worker_count != 0);
     let configuration = Arc::new(ServerConf {
