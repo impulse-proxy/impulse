@@ -134,11 +134,13 @@ impl PingoraH2UpstreamSession {
         let header = match translate_pingora_h2_request_header(head) {
             Ok(header) => header,
             Err(error) => {
+                self.mark_connection_draining_on_goaway(&error);
                 self.close().await;
                 return Err(classify_pingora_h2_error(&error, self.reused));
             }
         };
         if let Err(error) = self.session_mut().write_request_header(header, false) {
+            self.mark_connection_draining_on_goaway(&error);
             self.close().await;
             return Err(classify_pingora_h2_error(&error, self.reused));
         }
@@ -155,6 +157,7 @@ impl PingoraH2UpstreamSession {
                 Ok(UpstreamBodyFrame::Data(data)) if data.is_empty() => {}
                 Ok(UpstreamBodyFrame::Data(data)) => {
                     if let Err(error) = self.session_mut().write_request_body(data, false).await {
+                        self.mark_connection_draining_on_goaway(&error);
                         self.close().await;
                         return Err(classify_pingora_h2_error(&error, self.reused));
                     }
@@ -167,6 +170,9 @@ impl PingoraH2UpstreamSession {
                         ));
                     };
                     if let Err(error) = writer.send_trailers(trailers) {
+                        if error.is_go_away() {
+                            self.session().conn.mark_shutdown();
+                        }
                         self.close().await;
                         return Err(ProxyError::Protocol(error.to_string()));
                     }
@@ -180,6 +186,7 @@ impl PingoraH2UpstreamSession {
         }
 
         if !ended && let Err(error) = self.session_mut().finish_request_body() {
+            self.mark_connection_draining_on_goaway(&error);
             self.close().await;
             return Err(classify_pingora_h2_error(&error, self.reused));
         }
@@ -222,6 +229,7 @@ impl PingoraH2UpstreamSession {
             let outcome_error = classify_pingora_h2_error(&error, self.reused);
             let return_error = classify_pingora_h2_error(&error, self.reused);
             let connection_reuse = pingora_h2_error_reuse(&error);
+            self.mark_connection_draining_on_goaway(&error);
             self.close().await;
             finish_pingora_h2_exchange(
                 lifecycle,
@@ -279,6 +287,16 @@ impl PingoraH2UpstreamSession {
 
     pub async fn shutdown(mut self) {
         self.close().await;
+    }
+
+    fn mark_connection_draining_on_goaway(&self, error: &Error) {
+        if error
+            .root_cause()
+            .downcast_ref::<h2::Error>()
+            .is_some_and(h2::Error::is_go_away)
+        {
+            self.session().conn.mark_shutdown();
+        }
     }
 
     async fn close(&mut self) {
@@ -359,6 +377,7 @@ async fn fail_pingora_h2_response(
     let frame_error = classify_pingora_h2_error(&error, session.reused);
     let outcome_error = classify_pingora_h2_error(&error, session.reused);
     let connection_reuse = pingora_h2_error_reuse(&error);
+    session.mark_connection_draining_on_goaway(&error);
     let mut lifecycle = lifecycle;
     let delivered = send_pingora_h2_response_frame(
         frames,
