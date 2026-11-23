@@ -4,12 +4,12 @@ use hyper::http::Version;
 use impulse_errors::{ProxyError, RequestFailure};
 use pingora_core::{
     Error, ErrorType, InternalError, Result,
-    connectors::http::Connector,
+    connectors::http::v2::Connector,
     protocols::http::{client::HttpSession as PingoraHttpSession, v2::client::Http2Session},
     upstreams::peer::{ALPN, HttpPeer},
 };
 use pingora_http::RequestHeader;
-use tokio::sync::mpsc;
+use tokio::sync::{RwLock, mpsc};
 
 use crate::{
     PingoraUpstreamConnectionIdentity, UpstreamProtocol,
@@ -61,6 +61,7 @@ impl PingoraH2UpstreamSession {
         connector: Arc<Connector>,
         mut peer: HttpPeer,
         identity: &PingoraUpstreamConnectionIdentity,
+        acquire_lock: Arc<RwLock<()>>,
     ) -> Result<Self> {
         if identity.protocol != UpstreamProtocol::Http2 {
             return Err(Error::explain(
@@ -70,7 +71,20 @@ impl PingoraH2UpstreamSession {
         }
         peer.options.alpn = ALPN::H2;
         peer.group_key = identity.pool_key();
-        let (mut session, reused) = connector.get_http_session(&peer).await?;
+        let reused_session = {
+            let _reuse_guard = acquire_lock.read().await;
+            connector.reused_http_session(&peer).await?
+        };
+        let (mut session, reused) = if let Some(session) = reused_session {
+            (PingoraHttpSession::H2(session), true)
+        } else {
+            let _connect_guard = acquire_lock.write().await;
+            if let Some(session) = connector.reused_http_session(&peer).await? {
+                (PingoraHttpSession::H2(session), true)
+            } else {
+                (connector.new_http_session::<_, ()>(&peer).await?, false)
+            }
+        };
         session.set_read_timeout(peer.options.read_timeout);
         session.set_write_timeout(peer.options.write_timeout);
         let session = match session {
@@ -255,12 +269,7 @@ impl PingoraH2UpstreamSession {
             session.conn.mark_shutdown();
         }
         self.connector
-            .release_http_session(
-                PingoraHttpSession::H2(session),
-                &self.peer,
-                self.peer.options.idle_timeout,
-            )
-            .await;
+            .release_http_session(session, &self.peer, self.peer.options.idle_timeout);
         if reusable {
             UpstreamConnectionReuse::Reuse
         } else {
@@ -276,13 +285,11 @@ impl PingoraH2UpstreamSession {
         self.state = PingoraH2ExchangeState::Closed;
         if let Some(mut session) = self.session.take() {
             session.shutdown();
-            self.connector
-                .release_http_session(
-                    PingoraHttpSession::H2(session),
-                    &self.peer,
-                    self.peer.options.idle_timeout,
-                )
-                .await;
+            self.connector.release_http_session(
+                session,
+                &self.peer,
+                self.peer.options.idle_timeout,
+            );
         }
     }
 }

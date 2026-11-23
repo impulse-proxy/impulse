@@ -8,8 +8,11 @@
 use std::{collections::HashMap, sync::Arc};
 
 use impulse_errors::{PoolError, ProxyError, RequestFailure};
-use pingora_core::{connectors::http::Connector, upstreams::peer::HttpPeer};
-use tokio::sync::{Semaphore, TryAcquireError};
+use pingora_core::{
+    connectors::http::{Connector, v2::Connector as H2Connector},
+    upstreams::peer::HttpPeer,
+};
+use tokio::sync::{RwLock, Semaphore, TryAcquireError};
 
 use crate::{
     PingoraBackendHealthIdentity, PingoraUpstreamConnectionIdentity, UpstreamProtocol,
@@ -32,6 +35,7 @@ struct PingoraBackend {
     port: u16,
     peer: HttpPeer,
     identity: PingoraUpstreamConnectionIdentity,
+    h2_acquire_lock: Arc<RwLock<()>>,
 }
 
 /// Canonical transport façade used by edge/runtime code for backend execution.
@@ -40,6 +44,7 @@ pub struct UpstreamTransportPool {
     inflight_limits: HashMap<String, Arc<Semaphore>>,
     pingora_backends: HashMap<String, PingoraBackend>,
     pingora_connector: Arc<Connector>,
+    pingora_h2_connector: Arc<H2Connector>,
     dns_resolver: SharedDnsResolver,
 }
 
@@ -129,9 +134,10 @@ impl UpstreamTransportPool {
             }
             Some(UpstreamProtocol::Http2) => {
                 let mut session = match PingoraH2UpstreamSession::acquire(
-                    connector,
+                    Arc::clone(&self.pingora_h2_connector),
                     config.peer,
                     &identity,
+                    config.h2_acquire_lock,
                 )
                 .await
                 {
@@ -211,6 +217,7 @@ impl UpstreamTransportPool {
                     port: input.endpoint.authority_port,
                     peer,
                     identity,
+                    h2_acquire_lock: Arc::new(RwLock::new(())),
                 },
             );
         }
@@ -220,6 +227,7 @@ impl UpstreamTransportPool {
             inflight_limits,
             pingora_backends,
             pingora_connector: Arc::new(Connector::new(None)),
+            pingora_h2_connector: Arc::new(H2Connector::new(None)),
             dns_resolver,
         })
     }
