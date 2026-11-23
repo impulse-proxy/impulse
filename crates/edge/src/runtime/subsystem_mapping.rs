@@ -659,7 +659,6 @@ pub(crate) fn upstream_transport_inputs(config: &RuntimeConfig) -> Vec<UpstreamT
     };
     let connection_limits = UpstreamConnectionLimitsInput {
         max_inflight: connection.max_inflight,
-        max_idle: connection.max_idle_per_backend,
     };
 
     config

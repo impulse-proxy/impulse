@@ -68,7 +68,6 @@ pub struct UpstreamProxyInput {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct UpstreamConnectionLimitsInput {
     pub max_inflight: usize,
-    pub max_idle: usize,
 }
 
 /// Complete validated input required to construct one upstream transport.
