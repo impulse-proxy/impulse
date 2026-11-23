@@ -14,3 +14,4 @@ pingora-http.workspace = true
 rustls-pki-types.workspace = true
 impulse-errors = { path = "../errors" }
 impulse-contracts = { path = "../contracts" }
+impulse-observability = { path = "../observability" }

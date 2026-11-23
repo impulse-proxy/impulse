@@ -8,6 +8,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use impulse_errors::{PoolError, ProxyError, RequestFailure};
+use impulse_observability::Metrics;
 use pingora_core::{
     connectors::http::{Connector, v2::Connector as H2Connector},
     upstreams::peer::HttpPeer,
@@ -45,6 +46,7 @@ pub struct UpstreamTransportPool {
     pingora_backends: HashMap<String, PingoraBackend>,
     pingora_connector: Arc<Connector>,
     pingora_h2_connector: Arc<H2Connector>,
+    metrics: Arc<Metrics>,
     dns_resolver: SharedDnsResolver,
 }
 
@@ -138,6 +140,7 @@ impl UpstreamTransportPool {
                     config.peer,
                     &identity,
                     config.h2_acquire_lock,
+                    self.metrics.as_ref(),
                 )
                 .await
                 {
@@ -189,6 +192,7 @@ impl UpstreamTransportPool {
         inputs: impl IntoIterator<Item = UpstreamTransportInput>,
         dns_resolver: SharedDnsResolver,
         generation: u64,
+        metrics: Arc<Metrics>,
     ) -> Result<Self, String> {
         let mut backend_entries = HashMap::new();
         let mut inflight_limits = HashMap::new();
@@ -228,6 +232,7 @@ impl UpstreamTransportPool {
             pingora_backends,
             pingora_connector: Arc::new(Connector::new(None)),
             pingora_h2_connector: Arc::new(H2Connector::new(None)),
+            metrics,
             dns_resolver,
         })
     }

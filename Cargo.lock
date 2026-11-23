@@ -1717,6 +1717,7 @@ dependencies = [
  "hyper",
  "impulse-contracts",
  "impulse-errors",
+ "impulse-observability",
  "pingora-core",
  "pingora-http",
  "rustls-pki-types",

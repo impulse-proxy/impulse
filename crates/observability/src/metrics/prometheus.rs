@@ -882,6 +882,22 @@ impl Metrics {
             self.h2_capacity_saturation_total.load(Ordering::Relaxed)
         ));
         out.push_str(
+            "# HELP impulse_pingora_pool_saturation_total Total times Pingora opened an HTTP/2 connection because existing sessions had no usable stream capacity.\n",
+        );
+        out.push_str("# TYPE impulse_pingora_pool_saturation_total counter\n");
+        out.push_str(&format!(
+            "impulse_pingora_pool_saturation_total {}\n",
+            self.pingora_pool_saturation_total.load(Ordering::Relaxed)
+        ));
+        out.push_str(
+            "# HELP impulse_pingora_h2_stream_capacity Available stream slots on the most recently selected Pingora HTTP/2 session.\n",
+        );
+        out.push_str("# TYPE impulse_pingora_h2_stream_capacity gauge\n");
+        out.push_str(&format!(
+            "impulse_pingora_h2_stream_capacity {}\n",
+            self.pingora_h2_stream_capacity.load(Ordering::Relaxed)
+        ));
+        out.push_str(
             "# HELP impulse_h2_stream_resets_total Total HTTP/2 upstream stream reset errors.\n",
         );
         out.push_str("# TYPE impulse_h2_stream_resets_total counter\n");

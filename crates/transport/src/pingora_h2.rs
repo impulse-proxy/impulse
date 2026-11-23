@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use hyper::http::Version;
 use impulse_errors::{ProxyError, RequestFailure};
+use impulse_observability::Metrics;
 use pingora_core::{
     Error, ErrorType, InternalError, Result,
     connectors::http::v2::Connector,
@@ -62,6 +63,7 @@ impl PingoraH2UpstreamSession {
         mut peer: HttpPeer,
         identity: &PingoraUpstreamConnectionIdentity,
         acquire_lock: Arc<RwLock<()>>,
+        metrics: &Metrics,
     ) -> Result<Self> {
         if identity.protocol != UpstreamProtocol::Http2 {
             return Err(Error::explain(
@@ -82,6 +84,7 @@ impl PingoraH2UpstreamSession {
             if let Some(session) = connector.reused_http_session(&peer).await? {
                 (PingoraHttpSession::H2(session), true)
             } else {
+                metrics.ingress_observations().inc_pingora_pool_saturation();
                 (connector.new_http_session::<_, ()>(&peer).await?, false)
             }
         };
@@ -97,6 +100,9 @@ impl PingoraH2UpstreamSession {
                 ));
             }
         };
+        metrics
+            .ingress_observations()
+            .record_pingora_h2_stream_capacity(session.conn.free_stream_slots());
         Ok(Self {
             connector,
             peer,

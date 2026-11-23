@@ -288,6 +288,7 @@ impl RuntimeBuilder {
             upstream_transport_inputs(config),
             backend_dns_resolver.clone(),
             generation,
+            Arc::clone(&metrics),
         )?;
         let mut upstream_pools = HashMap::new();
         let upstream_inflight = Arc::from(
