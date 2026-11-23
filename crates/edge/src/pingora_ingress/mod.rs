@@ -562,17 +562,36 @@ pub fn spawn_pingora_ingress_listener(
         "{}:{}",
         listener.listen.listen.address, listener.listen.listen.port
     );
+    let worker_count = listener.policies.transport.worker_threads.max(1);
     let socket_shards = if listener.performance.reuseport {
-        listener.performance.worker_threads.max(1)
+        worker_count
     } else {
         1
     };
-    let (service, drain) = pingora_ingress_service_for_listener(
-        &Arc::new(ServerConf::default()),
-        runtime.as_ref().clone(),
-        listener,
-    )
-    .map_err(|error| format!("Failed to create Pingora listener {address}: {error}"))?;
+    let backend_count = runtime
+        .current()
+        .runtime_config
+        .upstreams
+        .values()
+        .map(|upstream| upstream.backends.len())
+        .sum::<usize>()
+        .max(1);
+    let total_idle_capacity = listener
+        .policies
+        .transport
+        .backend_connections
+        .max_idle_per_backend
+        .saturating_mul(backend_count);
+    let per_worker_idle_capacity =
+        total_idle_capacity / worker_count + usize::from(total_idle_capacity % worker_count != 0);
+    let configuration = Arc::new(ServerConf {
+        threads: worker_count,
+        upstream_keepalive_pool_size: per_worker_idle_capacity.max(1),
+        ..ServerConf::default()
+    });
+    let (service, drain) =
+        pingora_ingress_service_for_listener(&configuration, runtime.as_ref().clone(), listener)
+            .map_err(|error| format!("Failed to create Pingora listener {address}: {error}"))?;
     Ok(spawn_listener(address, service, drain, socket_shards))
 }
 
