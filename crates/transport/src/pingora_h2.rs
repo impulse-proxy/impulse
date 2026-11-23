@@ -4,6 +4,7 @@ use hyper::http::Version;
 use impulse_errors::{ProxyError, RequestFailure};
 use pingora_core::{
     Error, ErrorType, InternalError, Result,
+    connectors::http::Connector,
     protocols::http::{client::HttpSession as PingoraHttpSession, v2::client::Http2Session},
     upstreams::peer::{ALPN, HttpPeer},
 };
@@ -21,7 +22,6 @@ use crate::{
         UpstreamResponseHead,
     },
     pingora_failure::classify_pingora_h2_error,
-    pingora_pool::PingoraPoolGeneration,
 };
 
 pub(crate) fn translate_pingora_h2_request_header(
@@ -41,7 +41,7 @@ pub(crate) fn translate_pingora_h2_request_header(
 }
 
 pub(crate) struct PingoraH2UpstreamSession {
-    pool: Arc<PingoraPoolGeneration>,
+    connector: Arc<Connector>,
     peer: HttpPeer,
     session: Option<Http2Session>,
     reused: bool,
@@ -58,7 +58,7 @@ enum PingoraH2ExchangeState {
 
 impl PingoraH2UpstreamSession {
     pub async fn acquire(
-        pool: Arc<PingoraPoolGeneration>,
+        connector: Arc<Connector>,
         mut peer: HttpPeer,
         identity: &PingoraUpstreamConnectionIdentity,
     ) -> Result<Self> {
@@ -68,25 +68,12 @@ impl PingoraH2UpstreamSession {
                 "HTTP/2 session acquisition requires an HTTP/2 connection identity",
             ));
         }
-        if pool.generation() != identity.generation {
-            return Err(Error::explain(
-                InternalError,
-                "Pingora pool generation does not match the upstream connection identity",
-            ));
-        }
-        if pool.is_draining() {
-            return Err(Error::explain(
-                InternalError,
-                "Pingora pool generation is draining",
-            ));
-        }
-
         peer.options.alpn = ALPN::H2;
         peer.group_key = identity.pool_key();
-        let (mut session, reused) = pool.connector().get_http_session(&peer).await?;
+        let (mut session, reused) = connector.get_http_session(&peer).await?;
         session.set_read_timeout(peer.options.read_timeout);
         session.set_write_timeout(peer.options.write_timeout);
-        let mut session = match session {
+        let session = match session {
             PingoraHttpSession::H2(session) => session,
             mut session => {
                 session.shutdown().await;
@@ -96,24 +83,8 @@ impl PingoraH2UpstreamSession {
                 ));
             }
         };
-        if pool.is_draining() {
-            session.shutdown();
-            session.conn.mark_shutdown();
-            pool.connector()
-                .release_http_session(
-                    PingoraHttpSession::H2(session),
-                    &peer,
-                    peer.options.idle_timeout,
-                )
-                .await;
-            return Err(Error::explain(
-                InternalError,
-                "Pingora pool generation began draining during HTTP/2 session acquisition",
-            ));
-        }
-
         Ok(Self {
-            pool,
+            connector,
             peer,
             session: Some(session),
             reused,
@@ -279,14 +250,11 @@ impl PingoraH2UpstreamSession {
         let Some(session) = self.session.take() else {
             return UpstreamConnectionReuse::Close;
         };
-        let reusable = !self.pool.is_draining()
-            && !session.conn.is_closed()
-            && !session.conn.is_shutting_down();
+        let reusable = !session.conn.is_closed() && !session.conn.is_shutting_down();
         if !reusable {
             session.conn.mark_shutdown();
         }
-        self.pool
-            .connector()
+        self.connector
             .release_http_session(
                 PingoraHttpSession::H2(session),
                 &self.peer,
@@ -308,11 +276,7 @@ impl PingoraH2UpstreamSession {
         self.state = PingoraH2ExchangeState::Closed;
         if let Some(mut session) = self.session.take() {
             session.shutdown();
-            if self.pool.is_draining() {
-                session.conn.mark_shutdown();
-            }
-            self.pool
-                .connector()
+            self.connector
                 .release_http_session(
                     PingoraHttpSession::H2(session),
                     &self.peer,

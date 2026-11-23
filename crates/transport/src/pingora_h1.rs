@@ -9,6 +9,7 @@ use impulse_contracts::TunnelMode;
 use impulse_errors::{ProxyError, RequestFailure};
 use pingora_core::{
     Error, InternalError, Result,
+    connectors::http::Connector,
     protocols::{
         Stream,
         http::{client::HttpSession as PingoraHttpSession, v1::client::HttpSession},
@@ -32,7 +33,6 @@ use crate::{
         UpstreamResponseHead, UpstreamTunnel, UpstreamUpgrade,
     },
     pingora_failure::classify_pingora_h1_error,
-    pingora_pool::PingoraPoolGeneration,
 };
 
 pub(crate) fn translate_pingora_h1_request_header(
@@ -62,7 +62,7 @@ pub(crate) fn translate_pingora_h1_request_header(
     Ok(Box::new(translated))
 }
 pub(crate) struct PingoraH1UpstreamSession {
-    pool: Arc<PingoraPoolGeneration>,
+    connector: Arc<Connector>,
     peer: HttpPeer,
     session: Option<HttpSession>,
     state: PingoraH1ExchangeState,
@@ -79,7 +79,7 @@ enum PingoraH1ExchangeState {
 
 impl PingoraH1UpstreamSession {
     pub async fn acquire(
-        pool: Arc<PingoraPoolGeneration>,
+        connector: Arc<Connector>,
         mut peer: HttpPeer,
         identity: &PingoraUpstreamConnectionIdentity,
     ) -> Result<Self> {
@@ -89,16 +89,9 @@ impl PingoraH1UpstreamSession {
                 "HTTP/1 session acquisition requires an HTTP/1 connection identity",
             ));
         }
-        if pool.generation() != identity.generation {
-            return Err(Error::explain(
-                InternalError,
-                "Pingora pool generation does not match the upstream connection identity",
-            ));
-        }
-
         peer.options.alpn = pingora_core::upstreams::peer::ALPN::H1;
         peer.group_key = identity.pool_key();
-        let (mut session, _) = pool.connector().get_http_session(&peer).await?;
+        let (mut session, _) = connector.get_http_session(&peer).await?;
         session.set_read_timeout(peer.options.read_timeout);
         session.set_write_timeout(peer.options.write_timeout);
         let session = match session {
@@ -113,7 +106,7 @@ impl PingoraH1UpstreamSession {
         };
 
         Ok(Self {
-            pool,
+            connector,
             peer,
             session: Some(session),
             state: PingoraH1ExchangeState::Acquired,
@@ -318,8 +311,7 @@ impl PingoraH1UpstreamSession {
         } else {
             UpstreamConnectionReuse::Close
         };
-        self.pool
-            .connector()
+        self.connector
             .release_http_session(
                 PingoraHttpSession::H1(session),
                 &self.peer,
@@ -347,13 +339,13 @@ impl PingoraH1UpstreamSession {
         let stream = session.into_inner();
         PingoraH1TunnelLease {
             stream,
-            _pool: self.pool,
+            _connector: self.connector,
         }
     }
 }
 struct PingoraH1TunnelLease {
     stream: Stream,
-    _pool: Arc<PingoraPoolGeneration>,
+    _connector: Arc<Connector>,
 }
 
 impl AsyncRead for PingoraH1TunnelLease {

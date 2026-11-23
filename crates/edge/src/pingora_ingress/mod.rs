@@ -41,14 +41,13 @@ use impulse_pingora_ingress::{
     pingora_peer_protocol, spawn_listener, tunnel_cache_flags, tunnel_response_established,
     write_downstream_response, write_error_response, write_local_response,
 };
-use impulse_plugins::AsyncRequestPluginExecutionGuard;
 #[cfg(feature = "response-cache")]
 use impulse_plugins::CachePluginFillDecision;
 #[cfg(feature = "response-cache")]
 use impulse_plugins::ResponseCacheKeyParts;
-use impulse_plugins::RouteExecutionClass;
 #[cfg(feature = "external-auth")]
 use impulse_plugins::{AsyncRequestPluginDecision, CompiledAsyncRequestPlugin};
+use impulse_plugins::{AsyncRequestPluginExecutionGuard, RouteExecutionClass};
 #[cfg(feature = "response-cache")]
 use impulse_policy::ResponseCacheRepresentation;
 #[cfg(feature = "response-cache")]

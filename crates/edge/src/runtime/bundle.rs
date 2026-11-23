@@ -15,7 +15,6 @@ use crate::runtime::{
     generation::{RuntimeGenerationView, StartupOwnedRuntimeState},
     policy::RuntimeLifecycleState,
     shared_state::SharedRuntimeState,
-    transport::drain_transport_pool_generation,
 };
 
 pub type RuntimeBundle =
@@ -480,13 +479,6 @@ impl RuntimeBundleHandle {
             .generation_state()
             .generation_tasks
             .drain(Duration::from_secs(5));
-        drain_transport_pool_generation(
-            previous
-                .shared_state
-                .shared_services()
-                .transport_pool
-                .as_ref(),
-        );
         // --- old-generation teardown boundary: END ---
         info!(
             "runtime generation swap committed: {} -> {} (lifecycle phase {:?})",

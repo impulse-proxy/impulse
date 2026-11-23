@@ -12,7 +12,3 @@ pub(crate) fn create_transport_pool(
         .map(Arc::new)
         .map_err(ProxyError::Tls)
 }
-
-pub(crate) fn drain_transport_pool_generation(transport_pool: &UpstreamTransportPool) {
-    transport_pool.drain_pingora_pool();
-}

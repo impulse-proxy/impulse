@@ -4,8 +4,7 @@
 //! backend exchanges.
 //! Pingora `HttpProxy` routes (HTTP/1 and HTTP/2) get a configured peer from
 //! [`UpstreamTransportPool::pingora_proxy_peer`] and let Pingora own the
-//! exchange. Pool lifecycle operations remain available through
-//! [`UpstreamTransportPool`] to runtime owners.
+//! exchange and its idle connection lifecycle.
 
 mod connection_identity;
 mod exchange;
@@ -14,7 +13,6 @@ mod pingora_failure;
 mod pingora_h1;
 mod pingora_h2;
 mod pingora_peer;
-mod pingora_pool;
 mod runtime_config;
 mod transport_pool;
 
