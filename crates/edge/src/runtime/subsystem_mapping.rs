@@ -65,8 +65,8 @@ use impulse_plugins::{ScopedRateLimitInput, ScopedRateLimitScopeInput};
 #[cfg(feature = "jwt-auth")]
 use impulse_policy::{JwtAllowedAlgorithms, JwtPolicyInput};
 use impulse_transport::{
-    UpstreamConnectionLimitsInput, UpstreamEndpointInput, UpstreamProtocol, UpstreamTimeoutInput,
-    UpstreamTlsInput, UpstreamTransportInput,
+    UpstreamConnectionLimitsInput, UpstreamEndpointInput, UpstreamH2FlowControlInput,
+    UpstreamProtocol, UpstreamTimeoutInput, UpstreamTlsInput, UpstreamTransportInput,
 };
 
 use crate::runtime::generation::RuntimeIdentities;
@@ -660,6 +660,10 @@ pub(crate) fn upstream_transport_inputs(config: &RuntimeConfig) -> Vec<UpstreamT
     let connection_limits = UpstreamConnectionLimitsInput {
         max_inflight: connection.max_inflight,
     };
+    let h2_flow_control = UpstreamH2FlowControlInput {
+        stream_window_bytes: connection.h2_stream_window_bytes,
+        connection_window_bytes: connection.h2_connection_window_bytes,
+    };
 
     config
         .upstreams
@@ -683,6 +687,7 @@ pub(crate) fn upstream_transport_inputs(config: &RuntimeConfig) -> Vec<UpstreamT
                     timeouts,
                     proxy: None,
                     connection_limits,
+                    h2_flow_control,
                 }
             })
         })

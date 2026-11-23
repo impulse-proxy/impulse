@@ -42,6 +42,8 @@ pub(crate) fn build_pingora_http_peer(
         UpstreamProtocol::Http2 => ALPN::H2,
     };
     peer.options.max_h2_streams = input.connection_limits.max_inflight;
+    peer.options.h2_stream_window_size = Some(input.h2_flow_control.stream_window_bytes);
+    peer.options.h2_connection_window_size = Some(input.h2_flow_control.connection_window_bytes);
     peer.proxy = input.proxy.as_ref().map(|proxy| Proxy {
         next_hop: proxy.next_hop.clone().into_boxed_path(),
         host: proxy.host.clone(),

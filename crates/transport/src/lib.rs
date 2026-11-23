@@ -19,8 +19,9 @@ mod transport_pool;
 pub use connection_identity::PingoraBackendHealthIdentity;
 pub(crate) use connection_identity::PingoraUpstreamConnectionIdentity;
 pub use input::{
-    UpstreamConnectionLimitsInput, UpstreamEndpointInput, UpstreamProtocol, UpstreamProxyInput,
-    UpstreamTimeoutInput, UpstreamTlsInput, UpstreamTransportInput,
+    UpstreamConnectionLimitsInput, UpstreamEndpointInput, UpstreamH2FlowControlInput,
+    UpstreamProtocol, UpstreamProxyInput, UpstreamTimeoutInput, UpstreamTlsInput,
+    UpstreamTransportInput,
 };
 pub use pingora_failure::{classify_pingora_h1_error, classify_pingora_h2_error};
 pub use runtime_config::SharedDnsResolver;

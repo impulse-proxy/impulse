@@ -224,6 +224,23 @@ fn validate_performance(config: &Config) -> bool {
         validation_error!("performance.h2_pool_idle_timeout_ms must be greater than 0");
         return false;
     }
+    const H2_MAX_WINDOW_BYTES: u32 = (1 << 31) - 1;
+    if config.performance.h2_stream_window_bytes == 0
+        || config.performance.h2_stream_window_bytes > H2_MAX_WINDOW_BYTES
+    {
+        validation_error!(
+            "performance.h2_stream_window_bytes must be between 1 and {H2_MAX_WINDOW_BYTES}"
+        );
+        return false;
+    }
+    if config.performance.h2_connection_window_bytes == 0
+        || config.performance.h2_connection_window_bytes > H2_MAX_WINDOW_BYTES
+    {
+        validation_error!(
+            "performance.h2_connection_window_bytes must be between 1 and {H2_MAX_WINDOW_BYTES}"
+        );
+        return false;
+    }
     if config.performance.backend_dns_refresh_interval_ms == 0 {
         validation_error!("performance.backend_dns_refresh_interval_ms must be greater than 0");
         return false;

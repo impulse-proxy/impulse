@@ -24,6 +24,8 @@ fn require_nonzero_u32(name: &str, value: u32) -> Result<(), RuntimeConfigError>
     Ok(())
 }
 
+const H2_MAX_WINDOW_BYTES: u32 = (1 << 31) - 1;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeTransportPolicy {
     pub worker_threads: usize,
@@ -68,6 +70,8 @@ pub struct RuntimeBackendConnectionPolicy {
     pub pool_idle_timeout: Duration,
     pub connect_timeout: Duration,
     pub execution_timeout: Duration,
+    pub h2_stream_window_bytes: u32,
+    pub h2_connection_window_bytes: u32,
 }
 
 impl RuntimeTransportPolicy {
@@ -136,6 +140,26 @@ impl RuntimeTransportPolicy {
             "performance.h2_pool_max_idle_per_backend",
             performance.h2_pool_max_idle_per_backend,
         )?;
+        require_nonzero_u32(
+            "performance.h2_stream_window_bytes",
+            performance.h2_stream_window_bytes,
+        )?;
+        require_nonzero_u32(
+            "performance.h2_connection_window_bytes",
+            performance.h2_connection_window_bytes,
+        )?;
+        if performance.h2_stream_window_bytes > H2_MAX_WINDOW_BYTES {
+            return Err(config_invalid(format!(
+                "performance.h2_stream_window_bytes={} exceeds the HTTP/2 maximum of {H2_MAX_WINDOW_BYTES}",
+                performance.h2_stream_window_bytes
+            )));
+        }
+        if performance.h2_connection_window_bytes > H2_MAX_WINDOW_BYTES {
+            return Err(config_invalid(format!(
+                "performance.h2_connection_window_bytes={} exceeds the HTTP/2 maximum of {H2_MAX_WINDOW_BYTES}",
+                performance.h2_connection_window_bytes
+            )));
+        }
         if performance.connection_rate_limit_enabled {
             require_nonzero_u32(
                 "performance.new_connections_per_sec",
@@ -249,6 +273,8 @@ impl RuntimeTransportPolicy {
                 pool_idle_timeout: Duration::from_millis(performance.h2_pool_idle_timeout_ms),
                 connect_timeout: Duration::from_millis(performance.backend_connect_timeout_ms),
                 execution_timeout: Duration::from_millis(performance.backend_timeout_ms),
+                h2_stream_window_bytes: performance.h2_stream_window_bytes,
+                h2_connection_window_bytes: performance.h2_connection_window_bytes,
             },
             backend_dns: RuntimeBackendDnsPolicy::from_performance(performance),
         })

@@ -163,7 +163,7 @@ impl RuntimeBuilder {
             transport_policy.unknown_length_response_prebuffer_bytes,
         );
         info!(
-            "Runtime performance transport_buffers udp_recv_buffer_bytes={} udp_send_buffer_bytes={} h2_pool_max_idle_per_backend={} h2_pool_idle_timeout_ms={}",
+            "Runtime performance transport_buffers udp_recv_buffer_bytes={} udp_send_buffer_bytes={} h2_pool_max_idle_per_backend={} h2_pool_idle_timeout_ms={} h2_stream_window_bytes={} h2_connection_window_bytes={}",
             transport_policy.udp_recv_buffer_bytes,
             transport_policy.udp_send_buffer_bytes,
             transport_policy.backend_connections.max_idle_per_backend,
@@ -171,6 +171,10 @@ impl RuntimeBuilder {
                 .backend_connections
                 .pool_idle_timeout
                 .as_millis(),
+            transport_policy.backend_connections.h2_stream_window_bytes,
+            transport_policy
+                .backend_connections
+                .h2_connection_window_bytes,
         );
 
         let listener_runtime_configs = config
