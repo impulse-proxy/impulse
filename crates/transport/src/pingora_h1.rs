@@ -303,9 +303,14 @@ impl PingoraH1UpstreamSession {
             self.close().await;
             return UpstreamConnectionReuse::Close;
         }
-        let Some(session) = self.session.take() else {
+        let Some(mut session) = self.session.take() else {
             return UpstreamConnectionReuse::Close;
         };
+        if !session.is_body_done() {
+            session.shutdown().await;
+            return UpstreamConnectionReuse::Close;
+        }
+        session.respect_keepalive();
         let connection_reuse = if session.will_keepalive() {
             UpstreamConnectionReuse::Reuse
         } else {
