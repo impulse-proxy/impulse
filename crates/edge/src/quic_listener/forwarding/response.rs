@@ -1392,6 +1392,9 @@ impl Http3Service {
         shared_ctx: &ForwardingSharedCtx<'_>,
     ) -> Result<bool, ProxyError> {
         let metrics = shared_ctx.metrics.as_ref();
+        if !matches!(&decision, ResponseStartDecision::BackendFailure(_)) {
+            req.transition_request_body_forward_closed(metrics);
+        }
         match decision {
             ResponseStartDecision::ImmediateTerminal {
                 metadata,

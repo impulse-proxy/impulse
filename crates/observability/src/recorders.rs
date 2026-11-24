@@ -584,6 +584,14 @@ impl IngressObservationRecorder<'_> {
         self.metrics.inc_h2_capacity_saturation();
     }
 
+    pub fn inc_pingora_pool_saturation(self) {
+        self.metrics.inc_pingora_pool_saturation();
+    }
+
+    pub fn record_pingora_h2_stream_capacity(self, available: usize) {
+        self.metrics.record_pingora_h2_stream_capacity(available);
+    }
+
     pub fn inc_h2_stream_reset(self) {
         self.metrics.inc_h2_stream_reset();
     }

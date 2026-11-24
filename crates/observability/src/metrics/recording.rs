@@ -191,6 +191,8 @@ impl Metrics {
             h2_connections_created_total: AtomicU64::new(0),
             h2_streams_reused_total: AtomicU64::new(0),
             h2_capacity_saturation_total: AtomicU64::new(0),
+            pingora_pool_saturation_total: AtomicU64::new(0),
+            pingora_h2_stream_capacity: AtomicU64::new(0),
             h2_stream_resets_total: AtomicU64::new(0),
             h2_goaway_total: AtomicU64::new(0),
             hedge_triggered: AtomicU64::new(0),
@@ -563,6 +565,16 @@ impl Metrics {
     pub fn inc_h2_capacity_saturation(&self) {
         self.h2_capacity_saturation_total
             .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn inc_pingora_pool_saturation(&self) {
+        self.pingora_pool_saturation_total
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_pingora_h2_stream_capacity(&self, available: usize) {
+        self.pingora_h2_stream_capacity
+            .store(available as u64, Ordering::Relaxed);
     }
 
     pub fn inc_h2_stream_reset(&self) {

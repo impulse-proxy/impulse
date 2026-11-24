@@ -2,13 +2,15 @@ use std::sync::Arc;
 
 use hyper::http::Version;
 use impulse_errors::{ProxyError, RequestFailure};
+use impulse_observability::Metrics;
 use pingora_core::{
     Error, ErrorType, InternalError, Result,
+    connectors::http::v2::Connector,
     protocols::http::{client::HttpSession as PingoraHttpSession, v2::client::Http2Session},
     upstreams::peer::{ALPN, HttpPeer},
 };
 use pingora_http::RequestHeader;
-use tokio::sync::mpsc;
+use tokio::sync::{RwLock, mpsc};
 
 use crate::{
     PingoraUpstreamConnectionIdentity, UpstreamProtocol,
@@ -21,7 +23,6 @@ use crate::{
         UpstreamResponseHead,
     },
     pingora_failure::classify_pingora_h2_error,
-    pingora_pool::PingoraPoolGeneration,
 };
 
 pub(crate) fn translate_pingora_h2_request_header(
@@ -41,7 +42,7 @@ pub(crate) fn translate_pingora_h2_request_header(
 }
 
 pub(crate) struct PingoraH2UpstreamSession {
-    pool: Arc<PingoraPoolGeneration>,
+    connector: Arc<Connector>,
     peer: HttpPeer,
     session: Option<Http2Session>,
     reused: bool,
@@ -58,9 +59,11 @@ enum PingoraH2ExchangeState {
 
 impl PingoraH2UpstreamSession {
     pub async fn acquire(
-        pool: Arc<PingoraPoolGeneration>,
+        connector: Arc<Connector>,
         mut peer: HttpPeer,
         identity: &PingoraUpstreamConnectionIdentity,
+        acquire_lock: Arc<RwLock<()>>,
+        metrics: &Metrics,
     ) -> Result<Self> {
         if identity.protocol != UpstreamProtocol::Http2 {
             return Err(Error::explain(
@@ -68,25 +71,26 @@ impl PingoraH2UpstreamSession {
                 "HTTP/2 session acquisition requires an HTTP/2 connection identity",
             ));
         }
-        if pool.generation() != identity.generation {
-            return Err(Error::explain(
-                InternalError,
-                "Pingora pool generation does not match the upstream connection identity",
-            ));
-        }
-        if pool.is_draining() {
-            return Err(Error::explain(
-                InternalError,
-                "Pingora pool generation is draining",
-            ));
-        }
-
         peer.options.alpn = ALPN::H2;
         peer.group_key = identity.pool_key();
-        let (mut session, reused) = pool.connector().get_http_session(&peer).await?;
+        let reused_session = {
+            let _reuse_guard = acquire_lock.read().await;
+            connector.reused_http_session(&peer).await?
+        };
+        let (mut session, reused) = if let Some(session) = reused_session {
+            (PingoraHttpSession::H2(session), true)
+        } else {
+            let _connect_guard = acquire_lock.write().await;
+            if let Some(session) = connector.reused_http_session(&peer).await? {
+                (PingoraHttpSession::H2(session), true)
+            } else {
+                metrics.ingress_observations().inc_pingora_pool_saturation();
+                (connector.new_http_session::<_, ()>(&peer).await?, false)
+            }
+        };
         session.set_read_timeout(peer.options.read_timeout);
         session.set_write_timeout(peer.options.write_timeout);
-        let mut session = match session {
+        let session = match session {
             PingoraHttpSession::H2(session) => session,
             mut session => {
                 session.shutdown().await;
@@ -96,24 +100,11 @@ impl PingoraH2UpstreamSession {
                 ));
             }
         };
-        if pool.is_draining() {
-            session.shutdown();
-            session.conn.mark_shutdown();
-            pool.connector()
-                .release_http_session(
-                    PingoraHttpSession::H2(session),
-                    &peer,
-                    peer.options.idle_timeout,
-                )
-                .await;
-            return Err(Error::explain(
-                InternalError,
-                "Pingora pool generation began draining during HTTP/2 session acquisition",
-            ));
-        }
-
+        metrics
+            .ingress_observations()
+            .record_pingora_h2_stream_capacity(session.conn.free_stream_slots());
         Ok(Self {
-            pool,
+            connector,
             peer,
             session: Some(session),
             reused,
@@ -149,11 +140,13 @@ impl PingoraH2UpstreamSession {
         let header = match translate_pingora_h2_request_header(head) {
             Ok(header) => header,
             Err(error) => {
+                self.mark_connection_draining_on_goaway(&error);
                 self.close().await;
                 return Err(classify_pingora_h2_error(&error, self.reused));
             }
         };
         if let Err(error) = self.session_mut().write_request_header(header, false) {
+            self.mark_connection_draining_on_goaway(&error);
             self.close().await;
             return Err(classify_pingora_h2_error(&error, self.reused));
         }
@@ -170,6 +163,7 @@ impl PingoraH2UpstreamSession {
                 Ok(UpstreamBodyFrame::Data(data)) if data.is_empty() => {}
                 Ok(UpstreamBodyFrame::Data(data)) => {
                     if let Err(error) = self.session_mut().write_request_body(data, false).await {
+                        self.mark_connection_draining_on_goaway(&error);
                         self.close().await;
                         return Err(classify_pingora_h2_error(&error, self.reused));
                     }
@@ -182,6 +176,9 @@ impl PingoraH2UpstreamSession {
                         ));
                     };
                     if let Err(error) = writer.send_trailers(trailers) {
+                        if error.is_go_away() {
+                            self.session().conn.mark_shutdown();
+                        }
                         self.close().await;
                         return Err(ProxyError::Protocol(error.to_string()));
                     }
@@ -195,6 +192,7 @@ impl PingoraH2UpstreamSession {
         }
 
         if !ended && let Err(error) = self.session_mut().finish_request_body() {
+            self.mark_connection_draining_on_goaway(&error);
             self.close().await;
             return Err(classify_pingora_h2_error(&error, self.reused));
         }
@@ -237,6 +235,7 @@ impl PingoraH2UpstreamSession {
             let outcome_error = classify_pingora_h2_error(&error, self.reused);
             let return_error = classify_pingora_h2_error(&error, self.reused);
             let connection_reuse = pingora_h2_error_reuse(&error);
+            self.mark_connection_draining_on_goaway(&error);
             self.close().await;
             finish_pingora_h2_exchange(
                 lifecycle,
@@ -279,20 +278,12 @@ impl PingoraH2UpstreamSession {
         let Some(session) = self.session.take() else {
             return UpstreamConnectionReuse::Close;
         };
-        let reusable = !self.pool.is_draining()
-            && !session.conn.is_closed()
-            && !session.conn.is_shutting_down();
+        let reusable = !session.conn.is_closed() && !session.conn.is_shutting_down();
         if !reusable {
             session.conn.mark_shutdown();
         }
-        self.pool
-            .connector()
-            .release_http_session(
-                PingoraHttpSession::H2(session),
-                &self.peer,
-                self.peer.options.idle_timeout,
-            )
-            .await;
+        self.connector
+            .release_http_session(session, &self.peer, self.peer.options.idle_timeout);
         if reusable {
             UpstreamConnectionReuse::Reuse
         } else {
@@ -304,21 +295,25 @@ impl PingoraH2UpstreamSession {
         self.close().await;
     }
 
+    fn mark_connection_draining_on_goaway(&self, error: &Error) {
+        if error
+            .root_cause()
+            .downcast_ref::<h2::Error>()
+            .is_some_and(h2::Error::is_go_away)
+        {
+            self.session().conn.mark_shutdown();
+        }
+    }
+
     async fn close(&mut self) {
         self.state = PingoraH2ExchangeState::Closed;
         if let Some(mut session) = self.session.take() {
             session.shutdown();
-            if self.pool.is_draining() {
-                session.conn.mark_shutdown();
-            }
-            self.pool
-                .connector()
-                .release_http_session(
-                    PingoraHttpSession::H2(session),
-                    &self.peer,
-                    self.peer.options.idle_timeout,
-                )
-                .await;
+            self.connector.release_http_session(
+                session,
+                &self.peer,
+                self.peer.options.idle_timeout,
+            );
         }
     }
 }
@@ -388,6 +383,7 @@ async fn fail_pingora_h2_response(
     let frame_error = classify_pingora_h2_error(&error, session.reused);
     let outcome_error = classify_pingora_h2_error(&error, session.reused);
     let connection_reuse = pingora_h2_error_reuse(&error);
+    session.mark_connection_draining_on_goaway(&error);
     let mut lifecycle = lifecycle;
     let delivered = send_pingora_h2_response_frame(
         frames,

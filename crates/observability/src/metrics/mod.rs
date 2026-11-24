@@ -181,6 +181,8 @@ pub struct Metrics {
     pub h2_connections_created_total: AtomicU64,
     pub h2_streams_reused_total: AtomicU64,
     pub h2_capacity_saturation_total: AtomicU64,
+    pub pingora_pool_saturation_total: AtomicU64,
+    pub pingora_h2_stream_capacity: AtomicU64,
     pub h2_stream_resets_total: AtomicU64,
     pub h2_goaway_total: AtomicU64,
     pub hedge_triggered: AtomicU64,

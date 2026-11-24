@@ -8,8 +8,12 @@
 use std::{collections::HashMap, sync::Arc};
 
 use impulse_errors::{PoolError, ProxyError, RequestFailure};
-use pingora_core::upstreams::peer::HttpPeer;
-use tokio::sync::{Semaphore, TryAcquireError};
+use impulse_observability::Metrics;
+use pingora_core::{
+    connectors::http::{Connector, v2::Connector as H2Connector},
+    upstreams::peer::HttpPeer,
+};
+use tokio::sync::{RwLock, Semaphore, TryAcquireError};
 
 use crate::{
     PingoraBackendHealthIdentity, PingoraUpstreamConnectionIdentity, UpstreamProtocol,
@@ -23,7 +27,6 @@ use crate::{
     pingora_h1::PingoraH1UpstreamSession,
     pingora_h2::PingoraH2UpstreamSession,
     pingora_peer::build_pingora_http_peer,
-    pingora_pool::PingoraPoolGeneration,
     runtime_config::SharedDnsResolver,
 };
 
@@ -33,6 +36,7 @@ struct PingoraBackend {
     port: u16,
     peer: HttpPeer,
     identity: PingoraUpstreamConnectionIdentity,
+    h2_acquire_lock: Arc<RwLock<()>>,
 }
 
 /// Canonical transport façade used by edge/runtime code for backend execution.
@@ -40,7 +44,9 @@ pub struct UpstreamTransportPool {
     backend_entries: HashMap<String, UpstreamProtocol>,
     inflight_limits: HashMap<String, Arc<Semaphore>>,
     pingora_backends: HashMap<String, PingoraBackend>,
-    pingora_pool: Arc<PingoraPoolGeneration>,
+    pingora_connector: Arc<Connector>,
+    pingora_h2_connector: Arc<H2Connector>,
+    metrics: Arc<Metrics>,
     dns_resolver: SharedDnsResolver,
 }
 
@@ -52,10 +58,6 @@ impl UpstreamTransportPool {
         self.pingora_backends
             .get(backend)
             .map(|backend| backend.identity.health_identity())
-    }
-
-    pub fn drain_pingora_pool(&self) {
-        self.pingora_pool.drain();
     }
 
     /// Returns the configured ALPN peer for Pingora's native
@@ -100,11 +102,7 @@ impl UpstreamTransportPool {
                 return Err(error);
             }
         };
-        let Some(pool) = self.pingora_pool.acquire() else {
-            let error = ProxyError::RequestTransport(RequestFailure::UpstreamPoolDraining);
-            finish_pingora_dispatch_failure(completion, &error);
-            return Err(error);
-        };
+        let connector = Arc::clone(&self.pingora_connector);
         let identity = config.identity;
         let lifecycle = UpstreamExchangeLifecycle {
             cancellation: UpstreamCancellation {
@@ -116,15 +114,20 @@ impl UpstreamTransportPool {
 
         match self.backend_entry(backend) {
             Some(UpstreamProtocol::Http1) => {
-                let mut session =
-                    match PingoraH1UpstreamSession::acquire(pool, config.peer, &identity).await {
-                        Ok(session) => session,
-                        Err(error) => {
-                            let error = classify_pingora_h1_error(&error);
-                            finish_pingora_dispatch_failure(lifecycle.completion, &error);
-                            return Err(error);
-                        }
-                    };
+                let mut session = match PingoraH1UpstreamSession::acquire(
+                    connector,
+                    config.peer,
+                    &identity,
+                )
+                .await
+                {
+                    Ok(session) => session,
+                    Err(error) => {
+                        let error = classify_pingora_h1_error(&error);
+                        finish_pingora_dispatch_failure(lifecycle.completion, &error);
+                        return Err(error);
+                    }
+                };
                 if let Err(error) = session.write_request(&head, body).await {
                     finish_pingora_dispatch_failure(lifecycle.completion, &error);
                     return Err(error);
@@ -132,15 +135,22 @@ impl UpstreamTransportPool {
                 session.read_response(lifecycle).await
             }
             Some(UpstreamProtocol::Http2) => {
-                let mut session =
-                    match PingoraH2UpstreamSession::acquire(pool, config.peer, &identity).await {
-                        Ok(session) => session,
-                        Err(error) => {
-                            let error = classify_pingora_h2_error(&error, false);
-                            finish_pingora_dispatch_failure(lifecycle.completion, &error);
-                            return Err(error);
-                        }
-                    };
+                let mut session = match PingoraH2UpstreamSession::acquire(
+                    Arc::clone(&self.pingora_h2_connector),
+                    config.peer,
+                    &identity,
+                    config.h2_acquire_lock,
+                    self.metrics.as_ref(),
+                )
+                .await
+                {
+                    Ok(session) => session,
+                    Err(error) => {
+                        let error = classify_pingora_h2_error(&error, false);
+                        finish_pingora_dispatch_failure(lifecycle.completion, &error);
+                        return Err(error);
+                    }
+                };
                 if let Err(error) = session.write_request(&head, body).await {
                     finish_pingora_dispatch_failure(lifecycle.completion, &error);
                     return Err(error);
@@ -182,6 +192,7 @@ impl UpstreamTransportPool {
         inputs: impl IntoIterator<Item = UpstreamTransportInput>,
         dns_resolver: SharedDnsResolver,
         generation: u64,
+        metrics: Arc<Metrics>,
     ) -> Result<Self, String> {
         let mut backend_entries = HashMap::new();
         let mut inflight_limits = HashMap::new();
@@ -210,6 +221,7 @@ impl UpstreamTransportPool {
                     port: input.endpoint.authority_port,
                     peer,
                     identity,
+                    h2_acquire_lock: Arc::new(RwLock::new(())),
                 },
             );
         }
@@ -218,7 +230,9 @@ impl UpstreamTransportPool {
             backend_entries,
             inflight_limits,
             pingora_backends,
-            pingora_pool: PingoraPoolGeneration::new(generation),
+            pingora_connector: Arc::new(Connector::new(None)),
+            pingora_h2_connector: Arc::new(H2Connector::new(None)),
+            metrics,
             dns_resolver,
         })
     }

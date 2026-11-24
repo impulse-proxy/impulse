@@ -41,14 +41,13 @@ use impulse_pingora_ingress::{
     pingora_peer_protocol, spawn_listener, tunnel_cache_flags, tunnel_response_established,
     write_downstream_response, write_error_response, write_local_response,
 };
-use impulse_plugins::AsyncRequestPluginExecutionGuard;
 #[cfg(feature = "response-cache")]
 use impulse_plugins::CachePluginFillDecision;
 #[cfg(feature = "response-cache")]
 use impulse_plugins::ResponseCacheKeyParts;
-use impulse_plugins::RouteExecutionClass;
 #[cfg(feature = "external-auth")]
 use impulse_plugins::{AsyncRequestPluginDecision, CompiledAsyncRequestPlugin};
+use impulse_plugins::{AsyncRequestPluginExecutionGuard, RouteExecutionClass};
 #[cfg(feature = "response-cache")]
 use impulse_policy::ResponseCacheRepresentation;
 #[cfg(feature = "response-cache")]
@@ -555,6 +554,26 @@ impl ResolvesServerCert for RotatingServerCertResolver {
     }
 }
 
+#[cfg(unix)]
+fn file_descriptor_limit() -> Option<usize> {
+    let mut limit = std::mem::MaybeUninit::<libc::rlimit>::uninit();
+    // SAFETY: `getrlimit` initializes the provided `rlimit` on success.
+    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, limit.as_mut_ptr()) } != 0 {
+        return None;
+    }
+    // SAFETY: the successful call above initialized `limit`.
+    let limit = unsafe { limit.assume_init() }.rlim_cur;
+    if limit == libc::RLIM_INFINITY {
+        return None;
+    }
+    usize::try_from(limit).ok()
+}
+
+#[cfg(not(unix))]
+fn file_descriptor_limit() -> Option<usize> {
+    None
+}
+
 pub fn spawn_pingora_ingress_listener(
     runtime: Arc<RuntimeBundleHandle>,
     listener: ListenerRuntimeConfig,
@@ -563,17 +582,41 @@ pub fn spawn_pingora_ingress_listener(
         "{}:{}",
         listener.listen.listen.address, listener.listen.listen.port
     );
+    let worker_count = listener.policies.transport.worker_threads.max(1);
     let socket_shards = if listener.performance.reuseport {
-        listener.performance.worker_threads.max(1)
+        worker_count
     } else {
         1
     };
-    let (service, drain) = pingora_ingress_service_for_listener(
-        &Arc::new(ServerConf::default()),
-        runtime.as_ref().clone(),
-        listener,
-    )
-    .map_err(|error| format!("Failed to create Pingora listener {address}: {error}"))?;
+    let current = runtime.current();
+    let backend_count = current
+        .runtime_config
+        .upstreams
+        .values()
+        .map(|upstream| upstream.backends.len())
+        .sum::<usize>()
+        .max(1);
+    let configured_idle_capacity = listener
+        .policies
+        .transport
+        .backend_connections
+        .max_idle_per_backend
+        .saturating_mul(backend_count);
+    let descriptor_idle_capacity = file_descriptor_limit()
+        .map(|limit| limit / 2 / current.runtime_config.listeners.len().max(1))
+        .unwrap_or(usize::MAX)
+        .max(1);
+    let total_idle_capacity = configured_idle_capacity.min(descriptor_idle_capacity);
+    let per_worker_idle_capacity =
+        total_idle_capacity / worker_count + usize::from(total_idle_capacity % worker_count != 0);
+    let configuration = Arc::new(ServerConf {
+        threads: worker_count,
+        upstream_keepalive_pool_size: per_worker_idle_capacity.max(1),
+        ..ServerConf::default()
+    });
+    let (service, drain) =
+        pingora_ingress_service_for_listener(&configuration, runtime.as_ref().clone(), listener)
+            .map_err(|error| format!("Failed to create Pingora listener {address}: {error}"))?;
     Ok(spawn_listener(address, service, drain, socket_shards))
 }
 

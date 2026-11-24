@@ -12,9 +12,11 @@ use impulse_observability::ResponseCacheOutcome;
 use impulse_observability::{HedgeDecisionReason, RetryDecisionReason};
 #[cfg(feature = "response-cache")]
 use impulse_plugins::ResponseCacheKeyParts;
-use impulse_transport::UpstreamTransportPool;
-use impulse_transport::http3::{
-    UpstreamBodyFrame, UpstreamExchangeRequest, UpstreamExchangeResponse, UpstreamRequestHead,
+use impulse_transport::{
+    UpstreamTransportPool,
+    http3::{
+        UpstreamBodyFrame, UpstreamExchangeRequest, UpstreamExchangeResponse, UpstreamRequestHead,
+    },
 };
 use pingora_cache::{HitStatus, HttpCache, NoCacheReason, lock::LockWaitOutcome};
 

@@ -68,7 +68,13 @@ pub struct UpstreamProxyInput {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct UpstreamConnectionLimitsInput {
     pub max_inflight: usize,
-    pub max_idle: usize,
+}
+
+/// HTTP/2 receive flow-control windows advertised to one upstream backend.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct UpstreamH2FlowControlInput {
+    pub stream_window_bytes: u32,
+    pub connection_window_bytes: u32,
 }
 
 /// Complete validated input required to construct one upstream transport.
@@ -79,4 +85,5 @@ pub struct UpstreamTransportInput {
     pub timeouts: UpstreamTimeoutInput,
     pub proxy: Option<UpstreamProxyInput>,
     pub connection_limits: UpstreamConnectionLimitsInput,
+    pub h2_flow_control: UpstreamH2FlowControlInput,
 }
