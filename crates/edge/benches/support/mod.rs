@@ -1,36 +1,44 @@
 use std::collections::HashMap;
 
-use impulse_config::config::{Backend, RouteMatch, Upstream};
+use impulse_config::{
+    config::{Backend, Config, Listen, RouteMatch, Tls, Upstream},
+    runtime::{RuntimeConfig, RuntimeUpstream},
+};
 use impulse_edge::routing::index::RouteIndex;
 
 pub const ROUTE_SCALES: [usize; 4] = [10, 100, 1_000, 10_000];
 
 pub struct RouteIndexFixture {
-    pub upstreams: HashMap<String, Upstream>,
+    pub runtime_upstreams: HashMap<String, RuntimeUpstream>,
     pub index: RouteIndex,
-    pub path_hit: String,
-    pub path_miss: String,
-    pub host_hit_path: String,
-    pub host_miss_path: String,
-    pub host: String,
+    pub default_hit: String,
+    pub default_miss: String,
+    pub exact_host_path: String,
+    pub exact_host: String,
+    pub exact_host_miss: String,
+    pub wildcard_host_path: String,
+    pub wildcard_host: String,
+    pub wildcard_host_miss: String,
     pub method_path: String,
     pub method: String,
+    pub method_miss: String,
 }
 
 impl RouteIndexFixture {
     pub fn new(route_count: usize) -> Self {
         assert!(
-            route_count >= 3,
-            "route benchmark needs at least three routes"
+            route_count >= 4,
+            "route benchmark needs at least four routes"
         );
 
-        let mut upstreams = HashMap::with_capacity(route_count);
+        let mut config_upstreams = HashMap::with_capacity(route_count);
         for index in 0..route_count {
             let name = format!("route-{index:05}");
-            upstreams.insert(
+            config_upstreams.insert(
                 name.clone(),
                 upstream(
                     name,
+                    index,
                     RouteMatch {
                         host: None,
                         path_prefix: Some(format!("/routes/{index:05}")),
@@ -40,51 +48,95 @@ impl RouteIndexFixture {
             );
         }
 
-        let host = "routes.bench.example".to_string();
-        let host_hit_path = "/host/constrained".to_string();
+        let exact_host = "routes.bench.example".to_string();
+        let exact_host_path = "/exact/constrained".to_string();
+        let wildcard_host = "tenant.wildcard.bench.example".to_string();
+        let wildcard_host_path = "/wildcard/constrained".to_string();
         let method_path = "/method/constrained".to_string();
-        let host_route = format!("route-{:05}", route_count - 1);
-        let method_route = format!("route-{:05}", route_count - 2);
+        let exact_index = route_count - 1;
+        let wildcard_index = route_count - 2;
+        let method_index = route_count - 3;
 
-        upstreams.insert(
-            host_route.clone(),
-            upstream(
-                host_route,
-                RouteMatch {
-                    host: Some(host.clone()),
-                    path_prefix: Some(host_hit_path.clone()),
-                    method: None,
-                },
-            ),
+        replace_route(
+            &mut config_upstreams,
+            exact_index,
+            RouteMatch {
+                host: Some(exact_host.clone()),
+                path_prefix: Some(exact_host_path.clone()),
+                method: None,
+            },
         );
-        upstreams.insert(
-            method_route.clone(),
-            upstream(
-                method_route,
-                RouteMatch {
-                    host: None,
-                    path_prefix: Some(method_path.clone()),
-                    method: Some("POST".to_string()),
-                },
-            ),
+        replace_route(
+            &mut config_upstreams,
+            wildcard_index,
+            RouteMatch {
+                host: Some("*.wildcard.bench.example".to_string()),
+                path_prefix: Some(wildcard_host_path.clone()),
+                method: None,
+            },
+        );
+        replace_route(
+            &mut config_upstreams,
+            method_index,
+            RouteMatch {
+                host: None,
+                path_prefix: Some(method_path.clone()),
+                method: Some("POST".to_string()),
+            },
         );
 
-        let index = RouteIndex::from_upstreams(&upstreams);
+        let runtime_config = match RuntimeConfig::from_config(&Config {
+            version: 1,
+            listen: Listen {
+                protocol: "http1".to_string(),
+                tls: Tls {
+                    cert: "/tmp/benchmark-cert.pem".to_string(),
+                    key: "/tmp/benchmark-key.pem".to_string(),
+                    ..Tls::default()
+                },
+                ..Listen::default()
+            },
+            listeners: Vec::new(),
+            upstream: config_upstreams,
+            load_balancing: None,
+            upstream_tls: Default::default(),
+            secrets: Default::default(),
+            log: Default::default(),
+            performance: Default::default(),
+            observability: Default::default(),
+            resilience: Default::default(),
+            security: Default::default(),
+        }) {
+            Ok(runtime_config) => runtime_config,
+            Err(error) => panic!("benchmark route configuration must normalize: {error}"),
+        };
+        let runtime_upstreams = runtime_config.upstreams;
+        let index = RouteIndex::from_runtime_upstreams(&runtime_upstreams);
+
         Self {
-            upstreams,
+            runtime_upstreams,
             index,
-            path_hit: "/routes/00000/resource".to_string(),
-            path_miss: "/not-found".to_string(),
-            host_hit_path,
-            host_miss_path: "/host/not-found".to_string(),
-            host,
+            default_hit: "/routes/00000/resource".to_string(),
+            default_miss: "/not-found".to_string(),
+            exact_host_path,
+            exact_host,
+            exact_host_miss: "other.bench.example".to_string(),
+            wildcard_host_path,
+            wildcard_host,
+            wildcard_host_miss: "wildcard.bench.example".to_string(),
             method_path,
             method: "POST".to_string(),
+            method_miss: "GET".to_string(),
         }
     }
 }
 
-fn upstream(id: String, route: RouteMatch) -> Upstream {
+fn replace_route(upstreams: &mut HashMap<String, Upstream>, index: usize, route: RouteMatch) {
+    let name = format!("route-{index:05}");
+    upstreams.insert(name.clone(), upstream(name, index, route));
+}
+
+fn upstream(id: String, index: usize, route: RouteMatch) -> Upstream {
     Upstream {
         load_balancing: Default::default(),
         auth: Default::default(),
@@ -96,7 +148,7 @@ fn upstream(id: String, route: RouteMatch) -> Upstream {
         route,
         backends: vec![Backend {
             id,
-            address: "127.0.0.1:1".to_string(),
+            address: format!("127.0.0.1:{}", 10_000 + index),
             weight: 100,
             health_check: None,
         }],
