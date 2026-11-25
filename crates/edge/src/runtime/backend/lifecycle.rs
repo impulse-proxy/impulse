@@ -46,6 +46,7 @@ mod test_support {
                 backends: vec![Backend {
                     id: "backend-a".to_string(),
                     address: backend_addr.to_string(),
+                    protocol: Default::default(),
                     weight: 1,
                     health_check: (interval > 0).then_some(HealthCheck {
                         path: "/health".to_string(),

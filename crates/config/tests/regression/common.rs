@@ -66,6 +66,7 @@ pub(crate) fn sample_config() -> Config {
             backends: vec![Backend {
                 id: "api-1".to_string(),
                 address: "https://api.internal:8443".to_string(),
+                protocol: Default::default(),
                 weight: 100,
                 health_check: None,
             }],

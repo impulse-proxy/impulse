@@ -111,6 +111,7 @@ mod tests {
             backends: vec![Backend {
                 id: "backend".to_string(),
                 address: "http://127.0.0.1:7001".to_string(),
+                protocol: Default::default(),
                 weight: 1,
                 health_check: None,
             }],

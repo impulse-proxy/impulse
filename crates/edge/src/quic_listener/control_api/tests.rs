@@ -85,6 +85,7 @@ fn test_config(cert: String, key: String) -> ImpulseConfigConfig {
             backends: vec![Backend {
                 id: "b1".to_string(),
                 address: "http://127.0.0.1:7001".to_string(),
+                protocol: Default::default(),
                 weight: 1,
                 health_check: None,
             }],
@@ -3706,6 +3707,7 @@ fn live_reloadable_upstream_change_is_accepted() {
         .push(Backend {
             id: "b2".to_string(),
             address: "http://127.0.0.1:7002".to_string(),
+            protocol: Default::default(),
             weight: 1,
             health_check: None,
         });

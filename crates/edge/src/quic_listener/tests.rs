@@ -80,12 +80,14 @@ fn test_upstream_with(lb_type: &str, lb_key: Option<&str>, method: Option<&str>)
             Backend {
                 id: "b1".to_string(),
                 address: "127.0.0.1:7001".to_string(),
+                protocol: Default::default(),
                 weight: 1,
                 health_check: None,
             },
             Backend {
                 id: "b2".to_string(),
                 address: "127.0.0.1:7002".to_string(),
+                protocol: Default::default(),
                 weight: 1,
                 health_check: None,
             },
@@ -204,12 +206,14 @@ fn dns_resolution_test_config(cert: String, key: String) -> ImpulseConfigConfig 
                 Backend {
                     id: "dns".to_string(),
                     address: "backend.internal:8443".to_string(),
+                    protocol: Default::default(),
                     weight: 1,
                     health_check: None,
                 },
                 Backend {
                     id: "ip".to_string(),
                     address: "10.0.0.10:9443".to_string(),
+                    protocol: Default::default(),
                     weight: 1,
                     health_check: None,
                 },
@@ -1118,6 +1122,7 @@ fn resolve_backend_prefers_method_specific_route() {
     post_only.backends = vec![Backend {
         id: "post".to_string(),
         address: "127.0.0.1:7010".to_string(),
+        protocol: Default::default(),
         weight: 1,
         health_check: None,
     }];

@@ -39,6 +39,7 @@ pub fn runtime_upstream(backend_count: usize, strategy: &str) -> RuntimeUpstream
                 .map(|index| Backend {
                     id: format!("backend-{index:05}"),
                     address: format!("127.0.0.1:{}", 10_000 + index),
+                    protocol: Default::default(),
                     weight: 100,
                     health_check: Some(HealthCheck {
                         path: "/health".to_string(),

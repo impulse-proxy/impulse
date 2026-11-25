@@ -400,6 +400,7 @@ pub(crate) fn make_backend(id: &str, address: impl Into<String>) -> Backend {
     Backend {
         id: id.to_string(),
         address: normalize_backend_address(address.into()),
+        protocol: Default::default(),
         weight: 1,
         health_check: None,
     }

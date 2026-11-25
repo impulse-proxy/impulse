@@ -1115,6 +1115,7 @@ mod tests {
                 let backend = Backend {
                     id: format!("backend-{index}"),
                     address: address.to_string(),
+                    protocol: Default::default(),
                     weight: *weight,
                     health_check: None,
                 };
@@ -1169,6 +1170,7 @@ mod tests {
         let backend = Backend {
             id: "backend".to_string(),
             address: "127.0.0.1:8000".to_string(),
+            protocol: Default::default(),
             weight: 3,
             health_check: None,
         };

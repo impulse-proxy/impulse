@@ -494,6 +494,7 @@ mod tests {
             vec![Backend {
                 id: "backend-0".to_string(),
                 address: "http://127.0.0.1:7001".to_string(),
+                protocol: Default::default(),
                 weight: 1,
                 health_check: Some(HealthCheck {
                     path: "/health".to_string(),

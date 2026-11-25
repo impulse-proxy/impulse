@@ -33,6 +33,7 @@ fn backend_config(id: &str, addr: SocketAddr, health_check: Option<HealthCheck>)
     Backend {
         id: id.to_string(),
         address: backend_identity(addr),
+        protocol: Default::default(),
         weight: 1,
         health_check,
     }

@@ -45,6 +45,7 @@ mod tests {
         crate::test_support::backend_state(&Backend {
             id: format!("backend-{address}"),
             address: address.to_string(),
+            protocol: Default::default(),
             weight: 1,
             health_check: Some(HealthCheck {
                 path: "/health".to_string(),

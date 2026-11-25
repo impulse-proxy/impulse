@@ -52,6 +52,7 @@ fn base_config(cert: &str, key: &str) -> Config {
             backends: vec![Backend {
                 id: "backend-1".to_string(),
                 address: "127.0.0.1:8080".to_string(),
+                protocol: Default::default(),
                 weight: 1,
                 health_check: Some(HealthCheck {
                     path: "/health".to_string(),
@@ -1451,6 +1452,7 @@ fn rejects_ambiguous_route_matchers_with_same_host_path_and_method() {
         backends: vec![Backend {
             id: "backend-2".to_string(),
             address: "127.0.0.1:9002".to_string(),
+            protocol: Default::default(),
             weight: 1,
             health_check: None,
         }],
@@ -1520,6 +1522,7 @@ fn allows_same_host_and_path_when_methods_differ() {
         backends: vec![Backend {
             id: "backend-2".to_string(),
             address: "127.0.0.1:9002".to_string(),
+            protocol: Default::default(),
             weight: 1,
             health_check: None,
         }],
@@ -1625,6 +1628,7 @@ fn accepts_supported_load_balancers_with_mixed_backend_weights() {
         upstream.backends.push(Backend {
             id: "backend-2".to_string(),
             address: "127.0.0.1:8081".to_string(),
+            protocol: Default::default(),
             weight: 200,
             health_check: None,
         });
