@@ -8,8 +8,7 @@ use impulse_config::{
     config::Log,
     runtime::{
         ListenerRuntimeConfig, RuntimeBackendHealthCheck, RuntimeBackendTlsPolicy, RuntimeConfig,
-        RuntimeResponseCachePolicy, RuntimeResponseCompressionPolicy, RuntimeTransportPolicy,
-        RuntimeUpstreamPolicy,
+        RuntimeTransportPolicy, RuntimeUpstreamPolicy,
     },
 };
 use impulse_contracts::{BackendId, ListenerId, RouteId, UpstreamId};
@@ -223,13 +222,7 @@ pub(crate) struct RouteRuntime {
     pub(crate) selector: Arc<GenerationSelector<RuntimeBackendTlsPolicy>>,
     pub(crate) upstream_pool: Arc<RwLock<UpstreamPool>>,
     pub(crate) upstream_membership: Arc<UpstreamPoolMembership>,
-    #[allow(dead_code)]
-    pub(crate) transport_policy: Arc<RuntimeTransportPolicy>,
     pub(crate) retry_policy: Arc<RetryBudget>,
-    #[allow(dead_code)]
-    pub(crate) cache_policy: Arc<RuntimeResponseCachePolicy>,
-    #[allow(dead_code)]
-    pub(crate) compression_policy: Arc<RuntimeResponseCompressionPolicy>,
     pub(crate) observation_flags: Arc<RuntimeObservationFlags>,
 }
 
