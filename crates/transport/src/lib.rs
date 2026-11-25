@@ -32,7 +32,7 @@ pub use transport_pool::UpstreamTransportPool;
 pub mod http3 {
     pub use crate::exchange::{
         UpstreamBody, UpstreamBodyFrame, UpstreamExchangeRequest, UpstreamExchangeResponse,
-        UpstreamRequestHead, UpstreamResponseHead, UpstreamTunnel, UpstreamTunnelCompletion,
-        UpstreamTunnelIo, UpstreamUpgrade,
+        UpstreamRequestHead, UpstreamResponseHead, UpstreamTunnel, UpstreamTunnelIo,
+        UpstreamUpgrade,
     };
 }
