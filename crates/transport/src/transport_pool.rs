@@ -183,7 +183,6 @@ impl UpstreamTransportPool {
                 input.endpoint.protocol,
                 peer.sni.clone(),
                 input.tls.as_ref(),
-                input.proxy.as_ref(),
                 generation,
             );
             pingora_backends.insert(

@@ -4,7 +4,7 @@ use std::{
 };
 
 use pingora_core::{
-    upstreams::peer::{ALPN, HttpPeer, Proxy},
+    upstreams::peer::{ALPN, HttpPeer},
     utils::tls::{CertKey, WrappedX509, parse_x509},
 };
 use rustls_pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
@@ -44,12 +44,6 @@ pub(crate) fn build_pingora_http_peer(
     peer.options.max_h2_streams = input.connection_limits.max_inflight;
     peer.options.h2_stream_window_size = Some(input.h2_flow_control.stream_window_bytes);
     peer.options.h2_connection_window_size = Some(input.h2_flow_control.connection_window_bytes);
-    peer.proxy = input.proxy.as_ref().map(|proxy| Proxy {
-        next_hop: proxy.next_hop.clone().into_boxed_path(),
-        host: proxy.host.clone(),
-        port: proxy.port,
-        headers: proxy.headers.clone(),
-    });
     if tls {
         let tls_config = input.tls.as_ref();
         peer.options.verify_cert = tls_config.is_none_or(|tls| tls.verify_certificates);

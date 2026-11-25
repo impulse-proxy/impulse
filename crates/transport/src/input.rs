@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, path::PathBuf, time::Duration};
+use std::time::Duration;
 
 /// Upstream HTTP protocol selected for one backend.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -55,15 +55,6 @@ pub struct UpstreamTimeoutInput {
     pub pool_idle: Duration,
 }
 
-/// Optional HTTP CONNECT proxy used to reach an upstream backend.
-#[derive(Clone, Eq, PartialEq)]
-pub struct UpstreamProxyInput {
-    pub next_hop: PathBuf,
-    pub host: String,
-    pub port: u16,
-    pub headers: BTreeMap<String, Vec<u8>>,
-}
-
 /// Bounded connection ownership for one upstream backend.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct UpstreamConnectionLimitsInput {
@@ -83,7 +74,6 @@ pub struct UpstreamTransportInput {
     pub endpoint: UpstreamEndpointInput,
     pub tls: Option<UpstreamTlsInput>,
     pub timeouts: UpstreamTimeoutInput,
-    pub proxy: Option<UpstreamProxyInput>,
     pub connection_limits: UpstreamConnectionLimitsInput,
     pub h2_flow_control: UpstreamH2FlowControlInput,
 }

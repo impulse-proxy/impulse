@@ -685,7 +685,6 @@ pub(crate) fn upstream_transport_inputs(config: &RuntimeConfig) -> Vec<UpstreamT
                     },
                     tls: uses_tls.then(|| tls.clone()),
                     timeouts,
-                    proxy: None,
                     connection_limits,
                     h2_flow_control,
                 }
