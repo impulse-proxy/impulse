@@ -42,9 +42,15 @@ pub(crate) fn build_pingora_http_peer(
         UpstreamProtocol::Http1 => ALPN::H1,
         UpstreamProtocol::Http2 => ALPN::H2,
     };
-    peer.options.max_h2_streams = input.connection_limits.max_inflight;
-    peer.options.h2_stream_window_size = Some(input.h2_flow_control.stream_window_bytes);
-    peer.options.h2_connection_window_size = Some(input.h2_flow_control.connection_window_bytes);
+    if matches!(
+        endpoint.protocol,
+        UpstreamProtocol::Auto | UpstreamProtocol::Http2
+    ) {
+        peer.options.max_h2_streams = input.connection_limits.max_inflight;
+        peer.options.h2_stream_window_size = Some(input.h2_flow_control.stream_window_bytes);
+        peer.options.h2_connection_window_size =
+            Some(input.h2_flow_control.connection_window_bytes);
+    }
     if tls {
         let tls_config = input.tls.as_ref();
         peer.options.verify_cert = tls_config.is_none_or(|tls| tls.verify_certificates);
