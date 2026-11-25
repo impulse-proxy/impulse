@@ -7,7 +7,7 @@ use std::{
 use impulse_config::runtime::{RuntimeBackendAddressKind, RuntimeBackendTlsPolicy, RuntimeConfig};
 use impulse_lb::pingora_backend::SharedPingoraLoadBalancingRuntimeState;
 use impulse_observability::{DiscoveryRefreshUpdate, PingoraDiscoveryRefreshOutcome};
-use impulse_transport::{SharedDnsResolver, UpstreamTransportPool};
+use impulse_transport::SharedDnsResolver;
 use log::{debug, error, info, warn};
 
 use crate::{Metrics, runtime::tasks::RuntimeTaskRegistry};
@@ -24,7 +24,6 @@ struct PingoraDnsRefreshTarget {
 pub(crate) fn spawn_pingora_discovery_refresh(
     runtime_handle: Option<tokio::runtime::Handle>,
     config: &RuntimeConfig,
-    transport_pool: Arc<UpstreamTransportPool>,
     backend_dns_resolver: SharedDnsResolver,
     pingora_load_balancing: SharedPingoraLoadBalancingRuntimeState<RuntimeBackendTlsPolicy>,
     metrics: Arc<Metrics>,
@@ -82,7 +81,6 @@ pub(crate) fn spawn_pingora_discovery_refresh(
                 refresh_pingora_backends(
                     &backends,
                     lookup_timeout,
-                    Arc::clone(&transport_pool),
                     backend_dns_resolver.clone(),
                     Arc::clone(&pingora_load_balancing),
                     Arc::clone(&task_metrics),
@@ -96,7 +94,6 @@ pub(crate) fn spawn_pingora_discovery_refresh(
 async fn refresh_pingora_backends(
     backends: &[PingoraDnsRefreshTarget],
     lookup_timeout: Duration,
-    transport_pool: Arc<UpstreamTransportPool>,
     backend_dns_resolver: SharedDnsResolver,
     pingora_load_balancing: SharedPingoraLoadBalancingRuntimeState<RuntimeBackendTlsPolicy>,
     metrics: Arc<Metrics>,
@@ -109,7 +106,6 @@ async fn refresh_pingora_backends(
             let Some(backend) = backends.next() else {
                 break;
             };
-            let transport_pool = Arc::clone(&transport_pool);
             let backend_dns_resolver = backend_dns_resolver.clone();
             let pingora_load_balancing = Arc::clone(&pingora_load_balancing);
             let metrics = Arc::clone(&metrics);
@@ -117,7 +113,6 @@ async fn refresh_pingora_backends(
                 refresh_pingora_backend(
                     &backend,
                     lookup_timeout,
-                    transport_pool.as_ref(),
                     &backend_dns_resolver,
                     &pingora_load_balancing,
                     metrics.as_ref(),
@@ -138,7 +133,6 @@ async fn refresh_pingora_backends(
 async fn refresh_pingora_backend(
     backend: &PingoraDnsRefreshTarget,
     lookup_timeout: Duration,
-    transport_pool: &UpstreamTransportPool,
     backend_dns_resolver: &SharedDnsResolver,
     pingora_load_balancing: &SharedPingoraLoadBalancingRuntimeState<RuntimeBackendTlsPolicy>,
     metrics: &Metrics,
@@ -213,11 +207,6 @@ async fn refresh_pingora_backend(
                 metrics
                     .runtime_observations()
                     .record_pingora_lb_selector_rebuild(pingora_load_balancing.generation(), 1);
-                if transport_pool.rotate_backend_client(&backend.configured_address) {
-                    metrics
-                        .runtime_observations()
-                        .inc_backend_client_rotation(&backend.configured_address);
-                }
                 info!(
                     "Pingora discovery updated '{}' (backend '{}') to {:?} generation={}",
                     backend.authority_host,

@@ -101,7 +101,6 @@ impl Http3Service {
             spawn_pingora_discovery_refresh(
                 control_plane_runtime_handle(),
                 runtime.runtime_config(),
-                runtime.transport_pool(),
                 runtime.backend_dns_resolver(),
                 runtime.pingora_load_balancing(),
                 runtime.metrics(),

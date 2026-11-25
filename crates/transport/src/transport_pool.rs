@@ -269,8 +269,4 @@ impl UpstreamTransportPool {
             Err(TryAcquireError::Closed) => Err(PoolError::InflightLimiterClosed),
         }
     }
-
-    pub fn rotate_backend_client(&self, backend: &str) -> bool {
-        self.backend_entry(backend).is_some()
-    }
 }
