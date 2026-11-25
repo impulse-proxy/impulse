@@ -450,11 +450,6 @@ groups:
         expr: >-
           rate(impulse_backend_dns_address_set_changes_total[5m])
 
-      - record: impulse:backend_connect_attempts_by_backend:rate5m
-        expr: >-
-          sum by (backend)
-          (rate(impulse_backend_connect_attempt_total[5m]))
-
       - record: impulse:backend_dns_refresh_failure_ratio:rate5m
         expr: >-
           impulse:backend_dns_refresh_failures:rate5m

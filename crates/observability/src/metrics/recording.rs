@@ -289,7 +289,6 @@ impl Metrics {
             automatic_worker_slot_count,
             worker_counter_aggregation: Mutex::new(()),
             backend_dns_state: RwLock::new(HashMap::new()),
-            backend_connect_attempts: RwLock::new(HashMap::new()),
             request_result_metrics: RwLock::new(RequestResultMetricsStore::default()),
             request_result_metrics_version: AtomicU64::new(0),
             request_result_metrics_cache: RwLock::new(RequestResultMetricsSnapshotCache::default()),
@@ -846,9 +845,6 @@ impl Metrics {
         if let Ok(mut guard) = self.backend_dns_state.write() {
             guard.retain(|backend, _| active_backends.contains(backend));
         }
-        if let Ok(mut guard) = self.backend_connect_attempts.write() {
-            guard.retain(|key, _| active_backends.contains(&key.backend));
-        }
         if let Ok(mut guard) = self.request_result_metrics.write() {
             guard
                 .upstream_request_counts
@@ -892,33 +888,6 @@ impl Metrics {
         self.request_result_metrics_version
             .fetch_add(1, Ordering::Relaxed);
         self.mark_secret_metrics_stale();
-    }
-
-    pub fn record_backend_connect(
-        &self,
-        backend: &str,
-        hostname: &str,
-        resolved_addr: std::net::SocketAddr,
-    ) {
-        if let Ok(mut guard) = self.backend_connect_attempts.write() {
-            let key = BackendConnectAttemptKey {
-                backend: backend.to_string(),
-                hostname: hostname.to_string(),
-                resolved_addr: resolved_addr.to_string(),
-            };
-            if guard.contains_key(&key) || guard.len() < BACKEND_CONNECT_ATTEMPT_LABEL_CAP {
-                *guard.entry(key).or_default() += 1;
-            } else {
-                *guard
-                    .entry(BackendConnectAttemptKey {
-                        backend: backend.to_string(),
-                        hostname: METRIC_LABEL_OVER_CAP.to_string(),
-                        resolved_addr: METRIC_LABEL_OVER_CAP.to_string(),
-                    })
-                    .or_default() += 1;
-            }
-            self.mark_backend_metrics_stale();
-        }
     }
 
     pub fn record_request_result(

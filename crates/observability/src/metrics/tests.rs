@@ -373,11 +373,6 @@ fn prometheus_render_is_stable_across_repeated_cached_family_renders() {
     metrics.record_jwks_unknown_kid("jwks:example");
     metrics.record_jwks_refresh_success("jwks:example", "fresh", 2, now, Some(now));
     metrics.record_backend_dns_refresh_success("backend-a", now, 2, false);
-    metrics.record_backend_connect(
-        "backend-a",
-        "origin.internal",
-        "127.0.0.1:443".parse().expect("socket address"),
-    );
     metrics.record_secret_reload("listeners", "success", "cert_reload_applied");
     metrics.set_secret_last_success_unixtime("upstreams", 1_700_000_123);
     metrics.replace_upstream_client_cert_expiry([("payments".to_string(), 1_800_000_000)]);

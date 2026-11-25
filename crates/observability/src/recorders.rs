@@ -1,7 +1,4 @@
-use std::{
-    net::SocketAddr,
-    time::{Duration, SystemTime},
-};
+use std::time::{Duration, SystemTime};
 
 use impulse_contracts::{
     BackendId, HealthFailureReason, HedgeOutcomeTelemetryReason, HedgeTriggerTelemetryReason,
@@ -334,11 +331,6 @@ impl RuntimeObservationRecorder<'_> {
 
     pub fn inc_backend_dns_refresh_failure(self) {
         self.metrics.inc_backend_dns_refresh_failure();
-    }
-
-    pub fn record_backend_connect(self, backend: &str, hostname: &str, resolved_addr: SocketAddr) {
-        self.metrics
-            .record_backend_connect(backend, hostname, resolved_addr);
     }
 
     pub fn record_pingora_discovery_refresh(

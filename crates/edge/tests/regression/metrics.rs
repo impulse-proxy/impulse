@@ -389,16 +389,6 @@ fn metrics_render_includes_backend_dns_refresh_telemetry() {
         true,
     );
     metrics.inc_backend_dns_refresh_failure();
-    metrics.record_backend_connect(
-        "backend.internal:443",
-        "backend.internal",
-        "10.0.0.10:443".parse().expect("addr one"),
-    );
-    metrics.record_backend_connect(
-        "backend.internal:443",
-        "backend.internal",
-        "10.0.0.11:443".parse().expect("addr two"),
-    );
 
     let output = metrics.render_prometheus();
     assert!(output.contains("impulse_backend_dns_refresh_success_total 1"));
@@ -411,12 +401,6 @@ fn metrics_render_includes_backend_dns_refresh_telemetry() {
         output
             .contains("impulse_backend_dns_resolved_addresses{backend=\"backend.internal:443\"} 2")
     );
-    assert!(output.contains(
-        "impulse_backend_connect_attempt_total{backend=\"backend.internal:443\",hostname=\"backend.internal\",resolved_addr=\"10.0.0.10:443\"} 1"
-    ));
-    assert!(output.contains(
-        "impulse_backend_connect_attempt_total{backend=\"backend.internal:443\",hostname=\"backend.internal\",resolved_addr=\"10.0.0.11:443\"} 1"
-    ));
 }
 
 #[test]
@@ -486,36 +470,4 @@ fn metrics_render_includes_downstream_tls_certificate_expiry() {
     assert!(output.contains(
         "impulse_downstream_tls_certificate_days_remaining{listener=\"127.0.0.1:9889\",server_name=\"api.example.com\"}"
     ));
-}
-
-#[test]
-fn backend_connect_attempt_labels_are_cardinality_bounded() {
-    // obs Phase 2 (step 7): resolved_addr/hostname are otherwise unbounded across
-    // DNS churn. Emitting far more distinct addresses than the cap must not create
-    // an unbounded number of series — overflow folds into a stable sentinel.
-    let metrics = Metrics::default();
-    for i in 0..5_000u32 {
-        let octet_a = (i / 256) % 256;
-        let octet_b = i % 256;
-        let addr = format!("10.{octet_a}.{octet_b}.1:443");
-        metrics.record_backend_connect(
-            "backend.internal:443",
-            "backend.internal",
-            addr.parse().expect("addr"),
-        );
-    }
-
-    let output = metrics.render_prometheus();
-    let series = output
-        .lines()
-        .filter(|line| line.starts_with("impulse_backend_connect_attempt_total{"))
-        .count();
-    assert!(
-        series <= 600,
-        "connect-attempt series must be bounded, got {series}"
-    );
-    assert!(
-        output.contains("resolved_addr=\"__over_cap__\""),
-        "overflow beyond the cap must fold into the stable sentinel series"
-    );
 }

@@ -112,11 +112,10 @@ pub use self::types::{
 use self::{
     support::*,
     types::{
-        BACKEND_CONNECT_ATTEMPT_LABEL_CAP, BackendConnectAttemptKey, BackendDnsState,
-        BackendMetricsSnapshot, BackendMetricsSnapshotCache, ControlPlaneCertReloadKey,
-        DownstreamTlsAlpnKey, DownstreamTlsCertExpiryKey, DownstreamTlsCertSelectionKey,
-        DownstreamTlsHandshakeFailureKey, JwksSourceState, JwtJwksMetricsSnapshot,
-        JwtJwksMetricsSnapshotCache, LATENCY_BUCKETS_MS, METRIC_LABEL_OVER_CAP,
+        BackendDnsState, BackendMetricsSnapshot, BackendMetricsSnapshotCache,
+        ControlPlaneCertReloadKey, DownstreamTlsAlpnKey, DownstreamTlsCertExpiryKey,
+        DownstreamTlsCertSelectionKey, DownstreamTlsHandshakeFailureKey, JwksSourceState,
+        JwtJwksMetricsSnapshot, JwtJwksMetricsSnapshotCache, LATENCY_BUCKETS_MS,
         QuotaBackendHealthKey, QuotaMetricsSnapshot, QuotaMetricsSnapshotCache,
         QuotaPolicyOutcomeKey, ROUTE_LATENCY_SAMPLE_EVERY_ENV, RequestResultMetricsSnapshot,
         RequestResultMetricsSnapshotCache, RequestResultMetricsStore, RouteStats, RouteStatsAtomic,
@@ -278,7 +277,6 @@ pub struct Metrics {
     automatic_worker_slot_count: usize,
     worker_counter_aggregation: Mutex<()>,
     backend_dns_state: RwLock<HashMap<String, BackendDnsState>>,
-    backend_connect_attempts: RwLock<HashMap<BackendConnectAttemptKey, u64>>,
     request_result_metrics: RwLock<RequestResultMetricsStore>,
     request_result_metrics_version: AtomicU64,
     request_result_metrics_cache: RwLock<RequestResultMetricsSnapshotCache>,

@@ -156,10 +156,6 @@ fn render_backend_metrics_families(snapshot: &BackendMetricsSnapshot) -> String 
         "# HELP impulse_backend_dns_resolved_addresses Current number of resolved addresses retained for a backend identity.\n",
     );
     out.push_str("# TYPE impulse_backend_dns_resolved_addresses gauge\n");
-    out.push_str(
-        "# HELP impulse_backend_connect_attempt_total Observed upstream socket connects grouped by backend identity, hostname, and resolved address.\n",
-    );
-    out.push_str("# TYPE impulse_backend_connect_attempt_total counter\n");
     for (backend, state) in &snapshot.backend_dns_state {
         let backend = escape_prometheus_label(backend);
         out.push_str(&format!(
@@ -169,15 +165,6 @@ fn render_backend_metrics_families(snapshot: &BackendMetricsSnapshot) -> String 
         out.push_str(&format!(
             "impulse_backend_dns_resolved_addresses{{backend=\"{}\"}} {}\n",
             backend, state.resolved_address_count
-        ));
-    }
-    for (key, count) in &snapshot.backend_connect_attempts {
-        let backend = escape_prometheus_label(&key.backend);
-        let hostname = escape_prometheus_label(&key.hostname);
-        let resolved_addr = escape_prometheus_label(&key.resolved_addr);
-        out.push_str(&format!(
-            "impulse_backend_connect_attempt_total{{backend=\"{}\",hostname=\"{}\",resolved_addr=\"{}\"}} {}\n",
-            backend, hostname, resolved_addr, count
         ));
     }
     out
