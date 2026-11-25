@@ -4,7 +4,7 @@ use hyper::http::Version;
 use impulse_errors::{ProxyError, RequestFailure};
 use impulse_observability::Metrics;
 use pingora_core::{
-    Error, ErrorType, InternalError, Result,
+    Error, InternalError, Result,
     connectors::http::v2::Connector,
     protocols::http::{client::HttpSession as PingoraHttpSession, v2::client::Http2Session},
     upstreams::peer::{ALPN, HttpPeer},
@@ -14,10 +14,7 @@ use tokio::sync::{RwLock, mpsc};
 
 use crate::{
     PingoraUpstreamConnectionIdentity, UpstreamProtocol,
-    exchange::{
-        UpstreamCancellation, UpstreamConnectionReuse, UpstreamExchangeCompletion,
-        UpstreamExchangeLifecycle, UpstreamExchangeOutcome, upstream_response_body_channel,
-    },
+    exchange::{UpstreamCancellation, UpstreamExchangeLifecycle, upstream_response_body_channel},
     http3::{
         UpstreamBody, UpstreamBodyFrame, UpstreamExchangeResponse, UpstreamRequestHead,
         UpstreamResponseHead,
@@ -207,22 +204,12 @@ impl PingoraH2UpstreamSession {
         if self.state != PingoraH2ExchangeState::RequestComplete {
             self.close().await;
             let detail = "Pingora HTTP/2 response read before request completion".to_string();
-            finish_pingora_h2_exchange(
-                lifecycle,
-                UpstreamExchangeOutcome::Failed(ProxyError::Protocol(detail.clone())),
-                UpstreamConnectionReuse::Close,
-            );
             return Err(ProxyError::Protocol(detail));
         }
         let response_header = tokio::select! {
             cancellation_result = &mut lifecycle.cancellation.signal => {
                 if cancellation_result.is_ok() {
                     self.close().await;
-                    finish_pingora_h2_exchange(
-                        lifecycle,
-                        UpstreamExchangeOutcome::Cancelled,
-                        UpstreamConnectionReuse::Reuse,
-                    );
                     return Err(ProxyError::Transport(
                         "upstream exchange cancelled".to_string(),
                     ));
@@ -232,28 +219,16 @@ impl PingoraH2UpstreamSession {
             response_header = self.session_mut().read_response_header() => response_header,
         };
         if let Err(error) = response_header {
-            let outcome_error = classify_pingora_h2_error(&error, self.reused);
-            let return_error = classify_pingora_h2_error(&error, self.reused);
-            let connection_reuse = pingora_h2_error_reuse(&error);
+            let classified = classify_pingora_h2_error(&error, self.reused);
             self.mark_connection_draining_on_goaway(&error);
             self.close().await;
-            finish_pingora_h2_exchange(
-                lifecycle,
-                UpstreamExchangeOutcome::Failed(outcome_error),
-                connection_reuse,
-            );
-            return Err(return_error);
+            return Err(classified);
         }
 
         let Some(response) = self.session().response_header() else {
             let detail =
                 "Pingora HTTP/2 response header is unavailable after reading it".to_string();
             self.close().await;
-            finish_pingora_h2_exchange(
-                lifecycle,
-                UpstreamExchangeOutcome::Failed(ProxyError::Protocol(detail.clone())),
-                UpstreamConnectionReuse::Close,
-            );
             return Err(ProxyError::Protocol(detail));
         };
         let head = UpstreamResponseHead {
@@ -270,13 +245,13 @@ impl PingoraH2UpstreamSession {
         })
     }
 
-    pub async fn release(mut self) -> UpstreamConnectionReuse {
+    pub async fn release(mut self) {
         if self.state != PingoraH2ExchangeState::ResponseComplete {
             self.close().await;
-            return UpstreamConnectionReuse::Close;
+            return;
         }
         let Some(session) = self.session.take() else {
-            return UpstreamConnectionReuse::Close;
+            return;
         };
         let reusable = !session.conn.is_closed() && !session.conn.is_shutting_down();
         if !reusable {
@@ -284,11 +259,6 @@ impl PingoraH2UpstreamSession {
         }
         self.connector
             .release_http_session(session, &self.peer, self.peer.options.idle_timeout);
-        if reusable {
-            UpstreamConnectionReuse::Reuse
-        } else {
-            UpstreamConnectionReuse::Close
-        }
     }
 
     pub async fn shutdown(mut self) {
@@ -316,33 +286,6 @@ impl PingoraH2UpstreamSession {
             );
         }
     }
-}
-
-fn pingora_h2_error_reuse(error: &Error) -> UpstreamConnectionReuse {
-    if let Some(error) = error.root_cause().downcast_ref::<h2::Error>() {
-        return if error.is_reset() {
-            UpstreamConnectionReuse::Reuse
-        } else {
-            UpstreamConnectionReuse::Close
-        };
-    }
-    match &error.etype {
-        ErrorType::ReadTimedout | ErrorType::WriteTimedout | ErrorType::InvalidHTTPHeader => {
-            UpstreamConnectionReuse::Reuse
-        }
-        _ => UpstreamConnectionReuse::Close,
-    }
-}
-
-fn finish_pingora_h2_exchange(
-    lifecycle: UpstreamExchangeLifecycle,
-    outcome: UpstreamExchangeOutcome,
-    connection_reuse: UpstreamConnectionReuse,
-) {
-    let _ = lifecycle.completion.send(UpstreamExchangeCompletion {
-        outcome,
-        connection_reuse,
-    });
 }
 
 async fn send_pingora_h2_response_frame(
@@ -381,11 +324,9 @@ async fn fail_pingora_h2_response(
     cancellation_open: &mut bool,
 ) {
     let frame_error = classify_pingora_h2_error(&error, session.reused);
-    let outcome_error = classify_pingora_h2_error(&error, session.reused);
-    let connection_reuse = pingora_h2_error_reuse(&error);
     session.mark_connection_draining_on_goaway(&error);
     let mut lifecycle = lifecycle;
-    let delivered = send_pingora_h2_response_frame(
+    let _ = send_pingora_h2_response_frame(
         frames,
         Err(frame_error),
         &mut lifecycle.cancellation,
@@ -393,15 +334,6 @@ async fn fail_pingora_h2_response(
     )
     .await;
     session.shutdown().await;
-    finish_pingora_h2_exchange(
-        lifecycle,
-        if delivered {
-            UpstreamExchangeOutcome::Failed(outcome_error)
-        } else {
-            UpstreamExchangeOutcome::Cancelled
-        },
-        connection_reuse,
-    );
 }
 
 async fn pump_pingora_h2_response(
@@ -416,11 +348,6 @@ async fn pump_pingora_h2_response(
                 cancellation_result = &mut lifecycle.cancellation.signal => {
                     if cancellation_result.is_ok() {
                         session.shutdown().await;
-                        finish_pingora_h2_exchange(
-                            lifecycle,
-                            UpstreamExchangeOutcome::Cancelled,
-                            UpstreamConnectionReuse::Reuse,
-                        );
                         return;
                     }
                     cancellation_open = false;
@@ -443,11 +370,6 @@ async fn pump_pingora_h2_response(
                 .await
                 {
                     session.shutdown().await;
-                    finish_pingora_h2_exchange(
-                        lifecycle,
-                        UpstreamExchangeOutcome::Cancelled,
-                        UpstreamConnectionReuse::Reuse,
-                    );
                     return;
                 }
             }
@@ -471,11 +393,6 @@ async fn pump_pingora_h2_response(
             cancellation_result = &mut lifecycle.cancellation.signal => {
                 if cancellation_result.is_ok() {
                     session.shutdown().await;
-                    finish_pingora_h2_exchange(
-                        lifecycle,
-                        UpstreamExchangeOutcome::Cancelled,
-                        UpstreamConnectionReuse::Reuse,
-                    );
                     return;
                 }
                 cancellation_open = false;
@@ -497,11 +414,6 @@ async fn pump_pingora_h2_response(
             .await
             {
                 session.shutdown().await;
-                finish_pingora_h2_exchange(
-                    lifecycle,
-                    UpstreamExchangeOutcome::Cancelled,
-                    UpstreamConnectionReuse::Reuse,
-                );
                 return;
             }
         }
@@ -517,13 +429,6 @@ async fn pump_pingora_h2_response(
         Ok(true) => {}
         Ok(false) => {
             session.shutdown().await;
-            finish_pingora_h2_exchange(
-                lifecycle,
-                UpstreamExchangeOutcome::Failed(ProxyError::RequestProtocol(
-                    RequestFailure::Http2ResponseStreamNotClosed,
-                )),
-                UpstreamConnectionReuse::Reuse,
-            );
             return;
         }
         Err(error) => {
@@ -534,10 +439,5 @@ async fn pump_pingora_h2_response(
     }
 
     session.state = PingoraH2ExchangeState::ResponseComplete;
-    let connection_reuse = session.release().await;
-    finish_pingora_h2_exchange(
-        lifecycle,
-        UpstreamExchangeOutcome::Completed,
-        connection_reuse,
-    );
+    session.release().await;
 }

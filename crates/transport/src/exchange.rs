@@ -42,34 +42,12 @@ pub(crate) struct UpstreamCancellation {
     pub signal: oneshot::Receiver<()>,
 }
 
-#[derive(Debug)]
-#[allow(dead_code)]
-pub(crate) enum UpstreamExchangeOutcome {
-    Completed,
-    Cancelled,
-    Failed(ProxyError),
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum UpstreamConnectionReuse {
-    Reuse,
-    Close,
-}
-
-#[derive(Debug)]
-#[allow(dead_code)]
-pub(crate) struct UpstreamExchangeCompletion {
-    pub outcome: UpstreamExchangeOutcome,
-    pub connection_reuse: UpstreamConnectionReuse,
-}
-
 pub(crate) struct UpstreamInflightPermit {
     pub(crate) _permit: OwnedSemaphorePermit,
 }
 
 pub(crate) struct UpstreamExchangeLifecycle {
     pub cancellation: UpstreamCancellation,
-    pub completion: oneshot::Sender<UpstreamExchangeCompletion>,
     pub _inflight_permit: UpstreamInflightPermit,
 }
 
@@ -107,31 +85,20 @@ impl UpstreamTunnel {
             self.mode,
             self.io,
             UpstreamTunnelCompletion {
-                lifecycle: self.lifecycle,
+                _lifecycle: self.lifecycle,
             },
         )
     }
 }
 
 pub struct UpstreamTunnelCompletion {
-    lifecycle: UpstreamExchangeLifecycle,
+    _lifecycle: UpstreamExchangeLifecycle,
 }
 
 impl UpstreamTunnelCompletion {
-    pub fn complete(self) {
-        self.finish(UpstreamExchangeOutcome::Completed);
-    }
+    pub fn complete(self) {}
 
-    pub fn fail(self, error: ProxyError) {
-        self.finish(UpstreamExchangeOutcome::Failed(error));
-    }
-
-    fn finish(self, outcome: UpstreamExchangeOutcome) {
-        let _ = self.lifecycle.completion.send(UpstreamExchangeCompletion {
-            outcome,
-            connection_reuse: UpstreamConnectionReuse::Close,
-        });
-    }
+    pub fn fail(self, _error: ProxyError) {}
 }
 
 pub struct UpstreamUpgrade {

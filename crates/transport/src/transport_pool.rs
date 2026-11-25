@@ -18,10 +18,7 @@ use tokio::sync::{RwLock, Semaphore, TryAcquireError};
 use crate::{
     PingoraBackendHealthIdentity, PingoraUpstreamConnectionIdentity, UpstreamProtocol,
     UpstreamTransportInput,
-    exchange::{
-        UpstreamCancellation, UpstreamConnectionReuse, UpstreamExchangeCompletion,
-        UpstreamExchangeLifecycle, UpstreamExchangeOutcome, UpstreamInflightPermit,
-    },
+    exchange::{UpstreamCancellation, UpstreamExchangeLifecycle, UpstreamInflightPermit},
     http3::{UpstreamExchangeRequest, UpstreamExchangeResponse},
     pingora_failure::{classify_pingora_h1_error, classify_pingora_h2_error},
     pingora_h1::PingoraH1UpstreamSession,
@@ -77,38 +74,23 @@ impl UpstreamTransportPool {
     ) -> Result<UpstreamExchangeResponse, ProxyError> {
         let UpstreamExchangeRequest { head, body } = request;
         let (_cancellation_signal, cancellation) = tokio::sync::oneshot::channel();
-        let (completion, _completion_observer) = tokio::sync::oneshot::channel();
         if self.backend_entry(backend) == Some(UpstreamProtocol::Http1)
             && head.headers.contains_key(hyper::header::TRAILER)
         {
-            let error = ProxyError::RequestProtocol(RequestFailure::RequestTrailersRequireHttp2);
-            finish_pingora_dispatch_failure(completion, &error);
-            return Err(error);
+            return Err(ProxyError::RequestProtocol(
+                RequestFailure::RequestTrailersRequireHttp2,
+            ));
         }
-        let config = match self.resolved_pingora_backend(backend) {
-            Ok(config) => config,
-            Err(error) => {
-                finish_pingora_dispatch_failure(completion, &error);
-                return Err(error);
-            }
-        };
+        let config = self.resolved_pingora_backend(backend)?;
         let permit = self
             .acquire_exchange_permit(backend)
-            .map_err(ProxyError::Pool);
-        let permit = match permit {
-            Ok(permit) => permit,
-            Err(error) => {
-                finish_pingora_dispatch_failure(completion, &error);
-                return Err(error);
-            }
-        };
+            .map_err(ProxyError::Pool)?;
         let connector = Arc::clone(&self.pingora_connector);
         let identity = config.identity;
         let lifecycle = UpstreamExchangeLifecycle {
             cancellation: UpstreamCancellation {
                 signal: cancellation,
             },
-            completion,
             _inflight_permit: UpstreamInflightPermit { _permit: permit },
         };
 
@@ -123,13 +105,10 @@ impl UpstreamTransportPool {
                 {
                     Ok(session) => session,
                     Err(error) => {
-                        let error = classify_pingora_h1_error(&error);
-                        finish_pingora_dispatch_failure(lifecycle.completion, &error);
-                        return Err(error);
+                        return Err(classify_pingora_h1_error(&error));
                     }
                 };
                 if let Err(error) = session.write_request(&head, body).await {
-                    finish_pingora_dispatch_failure(lifecycle.completion, &error);
                     return Err(error);
                 }
                 session.read_response(lifecycle).await
@@ -146,13 +125,10 @@ impl UpstreamTransportPool {
                 {
                     Ok(session) => session,
                     Err(error) => {
-                        let error = classify_pingora_h2_error(&error, false);
-                        finish_pingora_dispatch_failure(lifecycle.completion, &error);
-                        return Err(error);
+                        return Err(classify_pingora_h2_error(&error, false));
                     }
                 };
                 if let Err(error) = session.write_request(&head, body).await {
-                    finish_pingora_dispatch_failure(lifecycle.completion, &error);
                     return Err(error);
                 }
                 session.read_response(lifecycle).await
@@ -261,23 +237,4 @@ impl UpstreamTransportPool {
     pub fn rotate_backend_client(&self, backend: &str) -> bool {
         self.backend_entry(backend).is_some()
     }
-}
-
-fn finish_pingora_dispatch_failure(
-    completion: tokio::sync::oneshot::Sender<UpstreamExchangeCompletion>,
-    error: &ProxyError,
-) {
-    let outcome_error = match error {
-        ProxyError::Transport(detail) => ProxyError::Transport(detail.clone()),
-        ProxyError::RequestTransport(failure) => ProxyError::RequestTransport(*failure),
-        ProxyError::Protocol(detail) => ProxyError::Protocol(detail.clone()),
-        ProxyError::RequestProtocol(failure) => ProxyError::RequestProtocol(*failure),
-        ProxyError::Timeout => ProxyError::Timeout,
-        ProxyError::Tls(detail) => ProxyError::Tls(detail.clone()),
-        ProxyError::Bridge(_) | ProxyError::Pool(_) => ProxyError::Transport(error.to_string()),
-    };
-    let _ = completion.send(UpstreamExchangeCompletion {
-        outcome: UpstreamExchangeOutcome::Failed(outcome_error),
-        connection_reuse: UpstreamConnectionReuse::Close,
-    });
 }
