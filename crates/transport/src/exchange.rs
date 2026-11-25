@@ -38,16 +38,11 @@ pub(crate) fn upstream_response_body_channel() -> (
     mpsc::channel(16)
 }
 
-pub(crate) struct UpstreamCancellation {
-    pub signal: oneshot::Receiver<()>,
-}
-
 pub(crate) struct UpstreamInflightPermit {
     pub(crate) _permit: OwnedSemaphorePermit,
 }
 
 pub(crate) struct UpstreamExchangeLifecycle {
-    pub cancellation: UpstreamCancellation,
     pub _inflight_permit: UpstreamInflightPermit,
 }
 

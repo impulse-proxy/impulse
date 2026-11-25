@@ -24,7 +24,7 @@ use tokio::{
 
 use crate::{
     PingoraUpstreamConnectionIdentity, UpstreamProtocol,
-    exchange::{UpstreamCancellation, UpstreamExchangeLifecycle, upstream_response_body_channel},
+    exchange::{UpstreamExchangeLifecycle, upstream_response_body_channel},
     http3::{
         UpstreamBody, UpstreamBodyFrame, UpstreamExchangeResponse, UpstreamRequestHead,
         UpstreamResponseHead, UpstreamTunnel, UpstreamUpgrade,
@@ -346,66 +346,18 @@ impl AsyncWrite for PingoraH1TunnelLease {
     }
 }
 
-async fn send_pingora_h1_response_frame(
-    frames: &mpsc::Sender<Result<UpstreamBodyFrame, ProxyError>>,
-    frame: Result<UpstreamBodyFrame, ProxyError>,
-    cancellation: &mut UpstreamCancellation,
-    cancellation_open: &mut bool,
-) -> bool {
-    if !*cancellation_open {
-        return frames.send(frame).await.is_ok();
-    }
-    tokio::select! {
-        cancellation_result = &mut cancellation.signal => {
-            if cancellation_result.is_ok() {
-                false
-            } else {
-                *cancellation_open = false;
-                frames.send(frame).await.is_ok()
-            }
-        }
-        permit = frames.reserve() => match permit {
-            Ok(permit) => {
-                permit.send(frame);
-                true
-            }
-            Err(_) => false,
-        },
-    }
-}
-
 async fn pump_pingora_h1_response(
     mut session: PingoraH1UpstreamSession,
     frames: mpsc::Sender<Result<UpstreamBodyFrame, ProxyError>>,
-    mut lifecycle: UpstreamExchangeLifecycle,
+    _lifecycle: UpstreamExchangeLifecycle,
 ) {
-    let mut cancellation_open = true;
     loop {
-        let next = if cancellation_open {
-            tokio::select! {
-                cancellation_result = &mut lifecycle.cancellation.signal => {
-                    if cancellation_result.is_ok() {
-                        session.shutdown().await;
-                        return;
-                    }
-                    cancellation_open = false;
-                    continue;
-                }
-                body = session.session_mut().read_body_bytes() => body,
-            }
-        } else {
-            session.session_mut().read_body_bytes().await
-        };
-
-        match next {
+        match session.session_mut().read_body_bytes().await {
             Ok(Some(data)) => {
-                if !send_pingora_h1_response_frame(
-                    &frames,
-                    Ok(UpstreamBodyFrame::Data(data)),
-                    &mut lifecycle.cancellation,
-                    &mut cancellation_open,
-                )
-                .await
+                if frames
+                    .send(Ok(UpstreamBodyFrame::Data(data)))
+                    .await
+                    .is_err()
                 {
                     session.shutdown().await;
                     return;
@@ -418,13 +370,7 @@ async fn pump_pingora_h1_response(
             }
             Err(error) => {
                 let frame_error = classify_pingora_h1_error(&error);
-                let _ = send_pingora_h1_response_frame(
-                    &frames,
-                    Err(frame_error),
-                    &mut lifecycle.cancellation,
-                    &mut cancellation_open,
-                )
-                .await;
+                let _ = frames.send(Err(frame_error)).await;
                 session.shutdown().await;
                 return;
             }

@@ -14,7 +14,7 @@ use tokio::sync::{RwLock, mpsc};
 
 use crate::{
     PingoraUpstreamConnectionIdentity, UpstreamProtocol,
-    exchange::{UpstreamCancellation, UpstreamExchangeLifecycle, upstream_response_body_channel},
+    exchange::{UpstreamExchangeLifecycle, upstream_response_body_channel},
     http3::{
         UpstreamBody, UpstreamBodyFrame, UpstreamExchangeResponse, UpstreamRequestHead,
         UpstreamResponseHead,
@@ -199,25 +199,14 @@ impl PingoraH2UpstreamSession {
 
     pub async fn read_response(
         mut self,
-        mut lifecycle: UpstreamExchangeLifecycle,
+        lifecycle: UpstreamExchangeLifecycle,
     ) -> Result<UpstreamExchangeResponse, ProxyError> {
         if self.state != PingoraH2ExchangeState::RequestComplete {
             self.close().await;
             let detail = "Pingora HTTP/2 response read before request completion".to_string();
             return Err(ProxyError::Protocol(detail));
         }
-        let response_header = tokio::select! {
-            cancellation_result = &mut lifecycle.cancellation.signal => {
-                if cancellation_result.is_ok() {
-                    self.close().await;
-                    return Err(ProxyError::Transport(
-                        "upstream exchange cancelled".to_string(),
-                    ));
-                }
-                self.session_mut().read_response_header().await
-            }
-            response_header = self.session_mut().read_response_header() => response_header,
-        };
+        let response_header = self.session_mut().read_response_header().await;
         if let Err(error) = response_header {
             let classified = classify_pingora_h2_error(&error, self.reused);
             self.mark_connection_draining_on_goaway(&error);
@@ -288,86 +277,30 @@ impl PingoraH2UpstreamSession {
     }
 }
 
-async fn send_pingora_h2_response_frame(
-    frames: &mpsc::Sender<Result<UpstreamBodyFrame, ProxyError>>,
-    frame: Result<UpstreamBodyFrame, ProxyError>,
-    cancellation: &mut UpstreamCancellation,
-    cancellation_open: &mut bool,
-) -> bool {
-    if !*cancellation_open {
-        return frames.send(frame).await.is_ok();
-    }
-    tokio::select! {
-        cancellation_result = &mut cancellation.signal => {
-            if cancellation_result.is_ok() {
-                false
-            } else {
-                *cancellation_open = false;
-                frames.send(frame).await.is_ok()
-            }
-        }
-        permit = frames.reserve() => match permit {
-            Ok(permit) => {
-                permit.send(frame);
-                true
-            }
-            Err(_) => false,
-        },
-    }
-}
-
 async fn fail_pingora_h2_response(
     session: PingoraH2UpstreamSession,
     frames: &mpsc::Sender<Result<UpstreamBodyFrame, ProxyError>>,
-    lifecycle: UpstreamExchangeLifecycle,
+    _lifecycle: UpstreamExchangeLifecycle,
     error: Box<Error>,
-    cancellation_open: &mut bool,
 ) {
     let frame_error = classify_pingora_h2_error(&error, session.reused);
     session.mark_connection_draining_on_goaway(&error);
-    let mut lifecycle = lifecycle;
-    let _ = send_pingora_h2_response_frame(
-        frames,
-        Err(frame_error),
-        &mut lifecycle.cancellation,
-        cancellation_open,
-    )
-    .await;
+    let _ = frames.send(Err(frame_error)).await;
     session.shutdown().await;
 }
 
 async fn pump_pingora_h2_response(
     mut session: PingoraH2UpstreamSession,
     frames: mpsc::Sender<Result<UpstreamBodyFrame, ProxyError>>,
-    mut lifecycle: UpstreamExchangeLifecycle,
+    lifecycle: UpstreamExchangeLifecycle,
 ) {
-    let mut cancellation_open = true;
     loop {
-        let next = if cancellation_open {
-            tokio::select! {
-                cancellation_result = &mut lifecycle.cancellation.signal => {
-                    if cancellation_result.is_ok() {
-                        session.shutdown().await;
-                        return;
-                    }
-                    cancellation_open = false;
-                    continue;
-                }
-                body = session.session_mut().read_response_body() => body,
-            }
-        } else {
-            session.session_mut().read_response_body().await
-        };
-
-        match next {
+        match session.session_mut().read_response_body().await {
             Ok(Some(data)) => {
-                if !send_pingora_h2_response_frame(
-                    &frames,
-                    Ok(UpstreamBodyFrame::Data(data)),
-                    &mut lifecycle.cancellation,
-                    &mut cancellation_open,
-                )
-                .await
+                if frames
+                    .send(Ok(UpstreamBodyFrame::Data(data)))
+                    .await
+                    .is_err()
                 {
                     session.shutdown().await;
                     return;
@@ -375,43 +308,19 @@ async fn pump_pingora_h2_response(
             }
             Ok(None) => break,
             Err(error) => {
-                fail_pingora_h2_response(
-                    session,
-                    &frames,
-                    lifecycle,
-                    error,
-                    &mut cancellation_open,
-                )
-                .await;
+                fail_pingora_h2_response(session, &frames, lifecycle, error).await;
                 return;
             }
         }
     }
 
-    let trailers = if cancellation_open {
-        tokio::select! {
-            cancellation_result = &mut lifecycle.cancellation.signal => {
-                if cancellation_result.is_ok() {
-                    session.shutdown().await;
-                    return;
-                }
-                cancellation_open = false;
-                session.session_mut().read_trailers().await
-            }
-            trailers = session.session_mut().read_trailers() => trailers,
-        }
-    } else {
-        session.session_mut().read_trailers().await
-    };
+    let trailers = session.session_mut().read_trailers().await;
     match trailers {
         Ok(Some(headers)) => {
-            if !send_pingora_h2_response_frame(
-                &frames,
-                Ok(UpstreamBodyFrame::Trailers(headers)),
-                &mut lifecycle.cancellation,
-                &mut cancellation_open,
-            )
-            .await
+            if frames
+                .send(Ok(UpstreamBodyFrame::Trailers(headers)))
+                .await
+                .is_err()
             {
                 session.shutdown().await;
                 return;
@@ -419,8 +328,7 @@ async fn pump_pingora_h2_response(
         }
         Ok(None) => {}
         Err(error) => {
-            fail_pingora_h2_response(session, &frames, lifecycle, error, &mut cancellation_open)
-                .await;
+            fail_pingora_h2_response(session, &frames, lifecycle, error).await;
             return;
         }
     }
@@ -432,8 +340,7 @@ async fn pump_pingora_h2_response(
             return;
         }
         Err(error) => {
-            fail_pingora_h2_response(session, &frames, lifecycle, error, &mut cancellation_open)
-                .await;
+            fail_pingora_h2_response(session, &frames, lifecycle, error).await;
             return;
         }
     }

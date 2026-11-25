@@ -18,7 +18,7 @@ use tokio::sync::{RwLock, Semaphore, TryAcquireError};
 use crate::{
     PingoraBackendHealthIdentity, PingoraUpstreamConnectionIdentity, UpstreamProtocol,
     UpstreamTransportInput,
-    exchange::{UpstreamCancellation, UpstreamExchangeLifecycle, UpstreamInflightPermit},
+    exchange::{UpstreamExchangeLifecycle, UpstreamInflightPermit},
     http3::{UpstreamExchangeRequest, UpstreamExchangeResponse},
     pingora_failure::{classify_pingora_h1_error, classify_pingora_h2_error},
     pingora_h1::PingoraH1UpstreamSession,
@@ -73,7 +73,6 @@ impl UpstreamTransportPool {
         request: UpstreamExchangeRequest,
     ) -> Result<UpstreamExchangeResponse, ProxyError> {
         let UpstreamExchangeRequest { head, body } = request;
-        let (_cancellation_signal, cancellation) = tokio::sync::oneshot::channel();
         if self.backend_entry(backend) == Some(UpstreamProtocol::Http1)
             && head.headers.contains_key(hyper::header::TRAILER)
         {
@@ -88,9 +87,6 @@ impl UpstreamTransportPool {
         let connector = Arc::clone(&self.pingora_connector);
         let identity = config.identity;
         let lifecycle = UpstreamExchangeLifecycle {
-            cancellation: UpstreamCancellation {
-                signal: cancellation,
-            },
             _inflight_permit: UpstreamInflightPermit { _permit: permit },
         };
 
