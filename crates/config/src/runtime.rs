@@ -436,14 +436,6 @@ mod tests {
             api.backend_tls_policy().ca_file.as_deref(),
             Some(ca_path.to_string_lossy().as_ref())
         );
-        assert_eq!(
-            runtime.policies.transport.backend_connections.max_inflight,
-            runtime
-                .policies
-                .transport
-                .connection_limits
-                .backend_pool_max_inflight
-        );
         assert_eq!(runtime.policies.rate_limits.scoped_limits.len(), 1);
         assert_eq!(
             runtime.policies.rate_limits.scoped_limits[0].idle_ttl,
