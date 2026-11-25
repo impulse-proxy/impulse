@@ -144,7 +144,7 @@ pub(crate) async fn run_watchdog_service(state: WatchdogServiceState) {
             );
         } else {
             warn!(
-                "Watchdog restart drain grace elapsed; executing hook without full drain: {}",
+                "Watchdog restart drain grace elapsed; executing restart command without full drain: {}",
                 restart_reason
             );
         }
@@ -172,20 +172,20 @@ pub(crate) async fn run_watchdog_service(state: WatchdogServiceState) {
                     .unwrap_or_else(|| "signal".to_string());
                 if status.success() {
                     info!(
-                        "Watchdog restart hook exited successfully with status {}",
+                        "Watchdog restart command exited successfully with status {}",
                         exit_status
                     );
                     watchdog.complete_restart_cycle();
                 } else {
                     log::error!(
-                        "Watchdog restart hook exited unsuccessfully with status {}; keeping restart pending",
+                        "Watchdog restart command exited unsuccessfully with status {}; keeping restart pending",
                         exit_status
                     );
                 }
             }
             Err(err) => {
                 log::error!(
-                    "Watchdog restart hook execution failed: {}; keeping restart pending",
+                    "Watchdog restart command execution failed: {}; keeping restart pending",
                     err
                 );
             }
