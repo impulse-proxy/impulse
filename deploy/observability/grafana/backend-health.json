@@ -312,12 +312,12 @@
       },
       "targets": [
         {
-          "expr": "100 * sum(impulse:backend_dns_refresh_failure_ratio:rate5m)",
+          "expr": "100 * sum(impulse:pingora_discovery_refresh_failure_ratio:rate5m)",
           "legendFormat": "dns refresh failure ratio",
           "refId": "A"
         }
       ],
-      "title": "DNS Refresh Failure Ratio",
+      "title": "Pingora Discovery Failure Ratio",
       "type": "stat"
     },
     {
@@ -635,22 +635,22 @@
       },
       "targets": [
         {
-          "expr": "sum(impulse:backend_dns_refresh_successes:rate5m)",
+          "expr": "sum(impulse:pingora_discovery_refresh_successes:rate5m)",
           "legendFormat": "refresh success",
           "refId": "A"
         },
         {
-          "expr": "sum(impulse:backend_dns_refresh_failures:rate5m)",
+          "expr": "sum(impulse:pingora_discovery_refresh_failures:rate5m)",
           "legendFormat": "refresh failure",
           "refId": "B"
         },
         {
-          "expr": "sum(impulse:backend_dns_address_set_changes:rate5m)",
-          "legendFormat": "address-set changes",
+          "expr": "sum(impulse:pingora_discovery_membership_updates:rate5m)",
+          "legendFormat": "membership updates",
           "refId": "C"
         }
       ],
-      "title": "DNS Refresh Outcomes and Address-Set Changes",
+      "title": "Pingora Discovery Refresh Outcomes",
       "type": "timeseries"
     },
     {

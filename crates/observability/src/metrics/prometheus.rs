@@ -1625,31 +1625,6 @@ impl Metrics {
                 value
             ));
         }
-        out.push_str(
-            "# HELP impulse_backend_dns_refresh_success_total Total successful backend DNS refreshes.\n",
-        );
-        out.push_str("# TYPE impulse_backend_dns_refresh_success_total counter\n");
-        out.push_str(&format!(
-            "impulse_backend_dns_refresh_success_total {}\n",
-            self.backend_dns_refresh_success.load(Ordering::Relaxed)
-        ));
-        out.push_str(
-            "# HELP impulse_backend_dns_refresh_failure_total Total failed backend DNS refreshes.\n",
-        );
-        out.push_str("# TYPE impulse_backend_dns_refresh_failure_total counter\n");
-        out.push_str(&format!(
-            "impulse_backend_dns_refresh_failure_total {}\n",
-            self.backend_dns_refresh_failure.load(Ordering::Relaxed)
-        ));
-        out.push_str(
-            "# HELP impulse_backend_dns_address_set_changes_total Total successful backend DNS refreshes that changed the resolved address set.\n",
-        );
-        out.push_str("# TYPE impulse_backend_dns_address_set_changes_total counter\n");
-        out.push_str(&format!(
-            "impulse_backend_dns_address_set_changes_total {}\n",
-            self.backend_dns_refresh_address_changes
-                .load(Ordering::Relaxed)
-        ));
         self.append_cached_jwt_jwks_metrics_families(&mut out);
         self.append_cached_backend_metrics_families(&mut out);
         out.push_str(

@@ -314,23 +314,14 @@ impl RuntimeObservationRecorder<'_> {
         self.metrics.bind_worker_slot(slot);
     }
 
-    pub fn record_backend_dns_refresh_success(
+    pub fn record_backend_dns_state(
         self,
         backend: &str,
         refreshed_at: SystemTime,
         resolved_address_count: usize,
-        changed: bool,
     ) {
-        self.metrics.record_backend_dns_refresh_success(
-            backend,
-            refreshed_at,
-            resolved_address_count,
-            changed,
-        );
-    }
-
-    pub fn inc_backend_dns_refresh_failure(self) {
-        self.metrics.inc_backend_dns_refresh_failure();
+        self.metrics
+            .record_backend_dns_state(backend, refreshed_at, resolved_address_count);
     }
 
     pub fn record_pingora_discovery_refresh(

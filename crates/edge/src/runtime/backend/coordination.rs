@@ -195,14 +195,11 @@ async fn refresh_pingora_backend(
                     .iter()
                     .map(|address| SocketAddr::new(address.ip(), 0)),
             );
-            metrics
-                .runtime_observations()
-                .record_backend_dns_refresh_success(
-                    &backend.configured_address,
-                    SystemTime::now(),
-                    resolved_addrs.len(),
-                    changed,
-                );
+            metrics.runtime_observations().record_backend_dns_state(
+                &backend.configured_address,
+                SystemTime::now(),
+                resolved_addrs.len(),
+            );
             if changed {
                 metrics
                     .runtime_observations()
@@ -243,9 +240,6 @@ async fn refresh_pingora_backend(
         Err(error) => {
             metrics
                 .runtime_observations()
-                .inc_backend_dns_refresh_failure();
-            metrics
-                .runtime_observations()
                 .inc_pingora_lb_selector_failure();
             metrics
                 .runtime_observations()
@@ -267,9 +261,6 @@ async fn record_pingora_discovery_failure(
     pingora_load_balancing: &SharedPingoraLoadBalancingRuntimeState<RuntimeBackendTlsPolicy>,
     metrics: &Metrics,
 ) {
-    metrics
-        .runtime_observations()
-        .inc_backend_dns_refresh_failure();
     let _ = pingora_load_balancing
         .publish_dns_result(&backend.configured_address, Err(error.clone()))
         .await;

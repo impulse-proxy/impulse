@@ -7,7 +7,10 @@ use impulse_contracts::{
     RetryAttemptTelemetryReason, RetryPolicyDenialReason, UpstreamTerminalErrorKind,
 };
 use impulse_edge::runtime::activation::{RuntimeOperationOutcomeReason, RuntimeRejectionReason};
-use impulse_observability::{Metrics, OverloadShedReason, RouteOutcome};
+use impulse_observability::{
+    DiscoveryRefreshUpdate, Metrics, OverloadShedReason, PingoraDiscoveryRefreshOutcome,
+    RouteOutcome,
+};
 
 #[test]
 fn metrics_render_includes_route_percentiles() {
@@ -380,26 +383,38 @@ fn metrics_render_includes_worker_labels() {
 }
 
 #[test]
-fn metrics_render_includes_backend_dns_refresh_telemetry() {
-    let metrics = Metrics::default();
-    metrics.record_backend_dns_refresh_success(
+fn metrics_render_includes_backend_discovery_telemetry() {
+    let metrics = Metrics::new(1, ["api_pool".to_string()]);
+    metrics.record_backend_dns_state(
         "backend.internal:443",
         std::time::UNIX_EPOCH + Duration::from_secs(42),
         2,
-        true,
     );
-    metrics.inc_backend_dns_refresh_failure();
+    metrics.record_pingora_discovery_refresh(
+        PingoraDiscoveryRefreshOutcome::Updated,
+        Some(DiscoveryRefreshUpdate {
+            upstream_name: "api_pool",
+            membership_generation: 7,
+            membership_changed: true,
+            rebuild_duration: Duration::from_millis(2),
+        }),
+    );
+    metrics.record_pingora_discovery_refresh(PingoraDiscoveryRefreshOutcome::RetainedFailure, None);
 
     let output = metrics.render_prometheus();
-    assert!(output.contains("impulse_backend_dns_refresh_success_total 1"));
-    assert!(output.contains("impulse_backend_dns_refresh_failure_total 1"));
-    assert!(output.contains("impulse_backend_dns_address_set_changes_total 1"));
     assert!(output.contains(
         "impulse_backend_dns_last_refresh_success_seconds{backend=\"backend.internal:443\"} 42"
     ));
     assert!(
         output
             .contains("impulse_backend_dns_resolved_addresses{backend=\"backend.internal:443\"} 2")
+    );
+    assert!(output.contains("impulse_pingora_discovery_refresh_total{outcome=\"updated\"} 1"));
+    assert!(
+        output.contains("impulse_pingora_discovery_refresh_total{outcome=\"retained_failure\"} 1")
+    );
+    assert!(
+        output.contains("impulse_pingora_discovery_membership_generation{upstream=\"api_pool\"} 7")
     );
 }
 

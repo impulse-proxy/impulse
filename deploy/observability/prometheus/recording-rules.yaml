@@ -438,24 +438,24 @@ groups:
         expr: >-
           rate(impulse_request_rate_limited[5m])
 
-      - record: impulse:backend_dns_refresh_failures:rate5m
+      - record: impulse:pingora_discovery_refresh_failures:rate5m
         expr: >-
-          rate(impulse_backend_dns_refresh_failure_total[5m])
+          sum(rate(impulse_pingora_discovery_refresh_total{outcome=~"retained_failure|publish_failed"}[5m]))
 
-      - record: impulse:backend_dns_refresh_successes:rate5m
+      - record: impulse:pingora_discovery_refresh_successes:rate5m
         expr: >-
-          rate(impulse_backend_dns_refresh_success_total[5m])
+          sum(rate(impulse_pingora_discovery_refresh_total{outcome=~"updated|unchanged"}[5m]))
 
-      - record: impulse:backend_dns_address_set_changes:rate5m
+      - record: impulse:pingora_discovery_membership_updates:rate5m
         expr: >-
-          rate(impulse_backend_dns_address_set_changes_total[5m])
+          sum(rate(impulse_pingora_discovery_refresh_total{outcome="updated"}[5m]))
 
-      - record: impulse:backend_dns_refresh_failure_ratio:rate5m
+      - record: impulse:pingora_discovery_refresh_failure_ratio:rate5m
         expr: >-
-          impulse:backend_dns_refresh_failures:rate5m
+          impulse:pingora_discovery_refresh_failures:rate5m
           / clamp_min(
-            impulse:backend_dns_refresh_failures:rate5m
-            + impulse:backend_dns_refresh_successes:rate5m,
+            impulse:pingora_discovery_refresh_failures:rate5m
+            + impulse:pingora_discovery_refresh_successes:rate5m,
             0.000001
           )
 

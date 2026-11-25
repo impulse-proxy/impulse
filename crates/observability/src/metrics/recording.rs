@@ -268,9 +268,6 @@ impl Metrics {
             downstream_tls_handshake_success: AtomicU64::new(0),
             downstream_tls_handshake_full: AtomicU64::new(0),
             downstream_tls_handshake_resumed: AtomicU64::new(0),
-            backend_dns_refresh_success: AtomicU64::new(0),
-            backend_dns_refresh_failure: AtomicU64::new(0),
-            backend_dns_refresh_address_changes: AtomicU64::new(0),
             jwt_validation_failures: RwLock::new(HashMap::new()),
             jwt_algorithm_rejections: RwLock::new(HashMap::new()),
             jwks_unknown_kid_events: RwLock::new(HashMap::new()),
@@ -665,20 +662,12 @@ impl Metrics {
             .fetch_add(1, Ordering::Relaxed);
     }
 
-    pub fn record_backend_dns_refresh_success(
+    pub fn record_backend_dns_state(
         &self,
         backend: &str,
         refreshed_at: SystemTime,
         resolved_address_count: usize,
-        changed: bool,
     ) {
-        self.backend_dns_refresh_success
-            .fetch_add(1, Ordering::Relaxed);
-        if changed {
-            self.backend_dns_refresh_address_changes
-                .fetch_add(1, Ordering::Relaxed);
-        }
-
         let last_success_unix_seconds = refreshed_at
             .duration_since(UNIX_EPOCH)
             .ok()
@@ -694,11 +683,6 @@ impl Metrics {
             );
             self.mark_backend_metrics_stale();
         }
-    }
-
-    pub fn inc_backend_dns_refresh_failure(&self) {
-        self.backend_dns_refresh_failure
-            .fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn record_jwt_validation_failure(&self, reason: &str) {
