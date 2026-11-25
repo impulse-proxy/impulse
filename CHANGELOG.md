@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.4] - 2026-11-25
+
+### Changed
+
+- **Connection admission limits are now per worker by default.** Each data-plane worker keeps its own global and per-source connection token buckets, so on HTTP/3 with N workers the configured `new_connections_per_sec` and `new_connections_burst` can admit up to N times that rate in total. Set `performance.connection_rate_limit_exact_global: true` to use one exact shared bucket. Scoped request rate limits keep one shared budget per rule, and HTTP/1.1 and HTTP/2 are unaffected.
+- **Pingora ingress sizing follows the configuration.** Pingora's server thread count now comes from `performance.worker_threads` (Pingora's own default is one), and its upstream keep-alive pool is sized from the configured per-backend idle connection limit, split across workers and bounded by the process file-descriptor limit (Pingora's default is 128).
+- Upstream pooling is centralized in Pingora and the duplicate pool state is removed. HTTP/1 connections are reused where that is safe, redundant HTTP/2 connections are avoided, and draining HTTP/2 connections keep their in-flight streams.
+- Backend membership, active and passive health transitions, and discovery changes are published as snapshots, and the request-path health synchronization and connector locking were removed.
+- Request IDs are allocated in per-worker blocks of 1024, so they stay unique but are no longer globally ordered, and each worker can leave a gap of up to 1023 unused IDs.
+- High-frequency request and backend counters are kept per worker and folded into the totals whenever `/metrics`, the control-API runtime snapshot or the watchdog reads them, so totals are current at read time. Round-robin and random backend selection use worker-local state.
+- Request-path memory use is reduced: tracing, tunnel and response-plugin state are only allocated for requests that need them, header mutations use inline storage, bodyless requests allocate no request-body buffer, request replay and response buffers are released as soon as they are no longer needed, and HTTP/3 request chunks come from a bounded per-worker buffer pool.
+- HTTP/3 responses that need no compression, cache fill or deferred headers are read by the worker directly instead of through a pump task and a second channel, and small adjacent response chunks are coalesced into writes of at most 16 KiB. Routes without plugins skip the Pingora cache hooks and response-module setup, while response headers are still normalized.
+
+### Added
+
+- `performance.h2_stream_window_bytes` and `performance.h2_connection_window_bytes` set the HTTP/2 flow-control windows for upstream HTTP/2 connections. Both default to 8 MiB and must be between 1 and 2147483647.
+- `performance.connection_rate_limit_exact_global` (default `false`), described above.
+- Metrics: `impulse_worker_backend_timeouts` and `impulse_worker_backend_errors` per worker, `impulse_pingora_pool_saturation_total`, and `impulse_pingora_h2_stream_capacity`.
+
+### Compatibility
+
+- Three new optional configuration keys. No keys were removed or renamed, and existing configurations load unchanged.
+- The behavior changes to review before upgrading are the per-worker connection admission limit, the Pingora thread count and keep-alive pool size now following `worker_threads` and the idle connection limit, and request IDs no longer being globally ordered.
+
 ## [0.7.3] - 2026-11-18
 
 ### Changed
