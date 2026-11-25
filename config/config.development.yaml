@@ -19,6 +19,7 @@ upstream:
     backends:
       - id: "frontend1"
         address: "https://127.0.0.1:443" # local/dev-only cleartext upstream
+        protocol: auto
         # health_check is optional — omit it to disable active health checks
 
 upstream_tls:

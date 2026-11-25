@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use impulse_config::config::HealthCheck;
+use impulse_config::config::{Backend, HealthCheck, UpstreamProtocol};
 
 use crate::common::{api_backend_mut, api_runtime_upstream, sample_runtime_config_with};
 
@@ -27,4 +27,19 @@ fn runtime_config_lowers_backend_endpoint_and_health_check_contract() {
     assert_eq!(health.timeout, Duration::from_millis(250));
     assert_eq!(health.failure_threshold, 4);
     assert_eq!(health.success_threshold, 3);
+}
+
+#[test]
+fn backend_protocol_contract_accepts_all_supported_modes() {
+    for (protocol, expected) in [
+        ("auto", UpstreamProtocol::Auto),
+        ("http1", UpstreamProtocol::Http1),
+        ("http2", UpstreamProtocol::Http2),
+    ] {
+        let yaml = format!(
+            "id: backend-1\naddress: https://backend.internal:8443\nprotocol: {protocol}\n"
+        );
+        let backend: Backend = serde_yaml::from_str(&yaml).expect("backend protocol");
+        assert_eq!(backend.protocol, expected);
+    }
 }

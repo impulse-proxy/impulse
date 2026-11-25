@@ -102,3 +102,67 @@ pub(crate) fn build_pingora_http_peer(
     }
     Ok((peer, address))
 }
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+    use crate::{
+        UpstreamConnectionLimitsInput, UpstreamEndpointInput, UpstreamH2FlowControlInput,
+        UpstreamTimeoutInput,
+    };
+
+    fn transport_input(protocol: UpstreamProtocol, tls: bool) -> UpstreamTransportInput {
+        UpstreamTransportInput {
+            endpoint: UpstreamEndpointInput {
+                configured_address: "127.0.0.1:8443".to_string(),
+                authority_host: "127.0.0.1".to_string(),
+                authority_port: 8443,
+                protocol,
+                tls,
+            },
+            tls: None,
+            timeouts: UpstreamTimeoutInput {
+                connect: Duration::from_secs(1),
+                execution: Duration::from_secs(2),
+                pool_idle: Duration::from_secs(3),
+            },
+            connection_limits: UpstreamConnectionLimitsInput { max_inflight: 23 },
+            h2_flow_control: UpstreamH2FlowControlInput {
+                stream_window_bytes: 65_535,
+                connection_window_bytes: 131_070,
+            },
+        }
+    }
+
+    #[test]
+    fn tls_protocol_policy_maps_to_expected_alpn() {
+        for (protocol, expected) in [
+            (UpstreamProtocol::Auto, ALPN::H2H1),
+            (UpstreamProtocol::Http1, ALPN::H1),
+            (UpstreamProtocol::Http2, ALPN::H2),
+        ] {
+            let (peer, _) =
+                build_pingora_http_peer(&transport_input(protocol, true)).expect("TLS peer");
+            assert_eq!(peer.options.alpn, expected);
+        }
+    }
+
+    #[test]
+    fn h2_settings_apply_only_to_h2_capable_protocols() {
+        let (http1, _) = build_pingora_http_peer(&transport_input(UpstreamProtocol::Http1, true))
+            .expect("HTTP/1 peer");
+        assert_eq!(http1.options.max_h2_streams, 1);
+        assert_eq!(http1.options.h2_stream_window_size, None);
+        assert_eq!(http1.options.h2_connection_window_size, None);
+
+        for protocol in [UpstreamProtocol::Auto, UpstreamProtocol::Http2] {
+            let (peer, _) =
+                build_pingora_http_peer(&transport_input(protocol, true)).expect("H2-capable peer");
+            assert_eq!(peer.options.max_h2_streams, 23);
+            assert_eq!(peer.options.h2_stream_window_size, Some(65_535));
+            assert_eq!(peer.options.h2_connection_window_size, Some(131_070));
+        }
+    }
+}

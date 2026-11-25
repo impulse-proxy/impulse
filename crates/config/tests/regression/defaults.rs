@@ -5,7 +5,8 @@ use std::time::Duration;
 use impulse_config::{
     config::{
         CURRENT_CONFIG_VERSION, ControlApi, ForwardedHeaderPolicyMode, MetricsEndpoint,
-        Performance, Resilience, RoutingTransparency, Tracing, UpstreamHostPolicyMode, UpstreamTls,
+        Performance, Resilience, RoutingTransparency, Tracing, UpstreamHostPolicyMode,
+        UpstreamProtocol, UpstreamTls,
     },
     runtime::RuntimeLoadBalancingStrategy,
 };
@@ -97,6 +98,7 @@ fn runtime_lowering_preserves_effective_defaults_for_sparse_configs() {
         UpstreamTls::default().strict_sni
     );
     assert_eq!(api.backends[0].backend.weight, 100);
+    assert_eq!(api.backends[0].backend.protocol, UpstreamProtocol::Auto);
     assert!(api.backends[0].health_check.is_none());
 
     assert_eq!(
