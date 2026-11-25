@@ -75,6 +75,20 @@ enum PingoraH1ExchangeState {
 }
 
 impl PingoraH1UpstreamSession {
+    pub(crate) fn from_negotiated(
+        connector: Arc<Connector>,
+        peer: HttpPeer,
+        session: HttpSession,
+    ) -> Self {
+        Self {
+            connector,
+            peer,
+            session: Some(session),
+            state: PingoraH1ExchangeState::Acquired,
+            connect_request: false,
+        }
+    }
+
     pub async fn acquire(
         connector: Arc<Connector>,
         mut peer: HttpPeer,
@@ -102,13 +116,7 @@ impl PingoraH1UpstreamSession {
             }
         };
 
-        Ok(Self {
-            connector,
-            peer,
-            session: Some(session),
-            state: PingoraH1ExchangeState::Acquired,
-            connect_request: false,
-        })
+        Ok(Self::from_negotiated(connector, peer, session))
     }
 
     pub fn session(&self) -> &HttpSession {

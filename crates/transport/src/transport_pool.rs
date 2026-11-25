@@ -11,6 +11,7 @@ use impulse_errors::{PoolError, ProxyError, RequestFailure};
 use impulse_observability::Metrics;
 use pingora_core::{
     connectors::http::{Connector, v2::Connector as H2Connector},
+    protocols::http::client::HttpSession as PingoraHttpSession,
     upstreams::peer::HttpPeer,
 };
 use tokio::sync::{RwLock, Semaphore, TryAcquireError};
@@ -73,28 +74,69 @@ impl UpstreamTransportPool {
         request: UpstreamExchangeRequest,
     ) -> Result<UpstreamExchangeResponse, ProxyError> {
         let UpstreamExchangeRequest { head, body } = request;
-        if matches!(
-            self.backend_entry(backend),
-            Some(UpstreamProtocol::Auto | UpstreamProtocol::Http1)
-        ) && head.headers.contains_key(hyper::header::TRAILER)
+        if self.backend_entry(backend) == Some(UpstreamProtocol::Http1)
+            && head.headers.contains_key(hyper::header::TRAILER)
         {
             return Err(ProxyError::RequestProtocol(
                 RequestFailure::RequestTrailersRequireHttp2,
             ));
         }
-        let config = self.resolved_pingora_backend(backend)?;
+        let mut config = self.resolved_pingora_backend(backend)?;
         let permit = self
             .acquire_exchange_permit(backend)
             .map_err(ProxyError::Pool)?;
         let connector = Arc::clone(&self.pingora_connector);
-        let mut identity = config.identity;
+        let identity = config.identity;
         let lifecycle = UpstreamExchangeLifecycle {
             _inflight_permit: UpstreamInflightPermit { _permit: permit },
         };
 
         match self.backend_entry(backend) {
-            Some(UpstreamProtocol::Auto | UpstreamProtocol::Http1) => {
-                identity.protocol = UpstreamProtocol::Http1;
+            Some(UpstreamProtocol::Auto) => {
+                config.peer.group_key = identity.pool_key();
+                let (mut session, reused) = connector
+                    .get_http_session(&config.peer)
+                    .await
+                    .map_err(|error| classify_pingora_h1_error(&error))?;
+                session.set_read_timeout(config.peer.options.read_timeout);
+                session.set_write_timeout(config.peer.options.write_timeout);
+                match session {
+                    PingoraHttpSession::H1(session) => {
+                        if head.headers.contains_key(hyper::header::TRAILER) {
+                            return Err(ProxyError::RequestProtocol(
+                                RequestFailure::RequestTrailersRequireHttp2,
+                            ));
+                        }
+                        let mut session = PingoraH1UpstreamSession::from_negotiated(
+                            connector,
+                            config.peer,
+                            session,
+                        );
+                        session.write_request(&head, body).await?;
+                        session.read_response(lifecycle).await
+                    }
+                    PingoraHttpSession::H2(session) => {
+                        if !reused {
+                            self.metrics
+                                .ingress_observations()
+                                .inc_pingora_pool_saturation();
+                        }
+                        let mut session = PingoraH2UpstreamSession::from_negotiated(
+                            connector,
+                            config.peer,
+                            session,
+                            reused,
+                            self.metrics.as_ref(),
+                        );
+                        session.write_request(&head, body).await?;
+                        session.read_response(lifecycle).await
+                    }
+                    PingoraHttpSession::Custom(_) => Err(ProxyError::Transport(
+                        "custom upstream protocol negotiated for HTTP backend".to_string(),
+                    )),
+                }
+            }
+            Some(UpstreamProtocol::Http1) => {
                 let mut session = match PingoraH1UpstreamSession::acquire(
                     connector,
                     config.peer,

@@ -5,7 +5,7 @@ use impulse_errors::{ProxyError, RequestFailure};
 use impulse_observability::Metrics;
 use pingora_core::{
     Error, InternalError, Result,
-    connectors::http::v2::Connector,
+    connectors::http::{Connector as HttpConnector, v2::Connector},
     protocols::http::{client::HttpSession as PingoraHttpSession, v2::client::Http2Session},
     upstreams::peer::{ALPN, HttpPeer},
 };
@@ -39,11 +39,36 @@ pub(crate) fn translate_pingora_h2_request_header(
 }
 
 pub(crate) struct PingoraH2UpstreamSession {
-    connector: Arc<Connector>,
+    connector: PingoraH2Connector,
     peer: HttpPeer,
     session: Option<Http2Session>,
     reused: bool,
     state: PingoraH2ExchangeState,
+}
+
+enum PingoraH2Connector {
+    Dedicated(Arc<Connector>),
+    Negotiated(Arc<HttpConnector>),
+}
+
+impl PingoraH2Connector {
+    async fn release(
+        &self,
+        session: Http2Session,
+        peer: &HttpPeer,
+        idle_timeout: Option<std::time::Duration>,
+    ) {
+        match self {
+            Self::Dedicated(connector) => {
+                connector.release_http_session(session, peer, idle_timeout);
+            }
+            Self::Negotiated(connector) => {
+                connector
+                    .release_http_session(PingoraHttpSession::H2(session), peer, idle_timeout)
+                    .await;
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -55,6 +80,25 @@ enum PingoraH2ExchangeState {
 }
 
 impl PingoraH2UpstreamSession {
+    pub(crate) fn from_negotiated(
+        connector: Arc<HttpConnector>,
+        peer: HttpPeer,
+        session: Http2Session,
+        reused: bool,
+        metrics: &Metrics,
+    ) -> Self {
+        metrics
+            .ingress_observations()
+            .record_pingora_h2_stream_capacity(session.conn.free_stream_slots());
+        Self {
+            connector: PingoraH2Connector::Negotiated(connector),
+            peer,
+            session: Some(session),
+            reused,
+            state: PingoraH2ExchangeState::Acquired,
+        }
+    }
+
     pub async fn acquire(
         connector: Arc<Connector>,
         mut peer: HttpPeer,
@@ -101,7 +145,7 @@ impl PingoraH2UpstreamSession {
             .ingress_observations()
             .record_pingora_h2_stream_capacity(session.conn.free_stream_slots());
         Ok(Self {
-            connector,
+            connector: PingoraH2Connector::Dedicated(connector),
             peer,
             session: Some(session),
             reused,
@@ -247,7 +291,8 @@ impl PingoraH2UpstreamSession {
             session.conn.mark_shutdown();
         }
         self.connector
-            .release_http_session(session, &self.peer, self.peer.options.idle_timeout);
+            .release(session, &self.peer, self.peer.options.idle_timeout)
+            .await;
     }
 
     pub async fn shutdown(mut self) {
@@ -268,11 +313,9 @@ impl PingoraH2UpstreamSession {
         self.state = PingoraH2ExchangeState::Closed;
         if let Some(mut session) = self.session.take() {
             session.shutdown();
-            self.connector.release_http_session(
-                session,
-                &self.peer,
-                self.peer.options.idle_timeout,
-            );
+            self.connector
+                .release(session, &self.peer, self.peer.options.idle_timeout)
+                .await;
         }
     }
 }
