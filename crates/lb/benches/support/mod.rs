@@ -1,10 +1,13 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, time::Duration};
 
 use impulse_config::{
-    config::{Backend, Config, Listen, LoadBalancing, RouteMatch, Tls, Upstream},
+    config::{Backend, Config, HealthCheck, Listen, LoadBalancing, RouteMatch, Tls, Upstream},
     runtime::{RuntimeConfig, RuntimeUpstream},
 };
-use impulse_lb::{BackendInput, BackendWeight, LoadBalancingStrategy, upstream_pool::UpstreamPool};
+use impulse_lb::{
+    BackendHealthInput, BackendInput, BackendWeight, LoadBalancingStrategy,
+    upstream_pool::UpstreamPool,
+};
 
 pub const BACKEND_COUNTS: [usize; 4] = [1, 10, 100, 1_000];
 pub const STRATEGIES: [(&str, &str); 2] = [
@@ -37,7 +40,14 @@ pub fn runtime_upstream(backend_count: usize, strategy: &str) -> RuntimeUpstream
                     id: format!("backend-{index:05}"),
                     address: format!("127.0.0.1:{}", 10_000 + index),
                     weight: 100,
-                    health_check: None,
+                    health_check: Some(HealthCheck {
+                        path: "/health".to_string(),
+                        interval: 1_000,
+                        timeout_ms: 1_000,
+                        failure_threshold: 1,
+                        success_threshold: 1,
+                        cooldown_ms: 10_000,
+                    }),
                 })
                 .collect(),
         },
@@ -72,7 +82,34 @@ pub fn runtime_upstream(backend_count: usize, strategy: &str) -> RuntimeUpstream
 }
 
 pub fn upstream_pool(backend_count: usize, strategy: &str) -> UpstreamPool {
-    upstream_pool_from_runtime(&runtime_upstream(backend_count, strategy))
+    let mut pool = upstream_pool_from_runtime(&runtime_upstream(backend_count, strategy));
+    seed_runtime_state(&mut pool, backend_count);
+    pool
+}
+
+fn seed_runtime_state(pool: &mut UpstreamPool, backend_count: usize) {
+    const LATENCY_OFFSETS_MS: [u64; 4] = [0, 7, 3, 11];
+
+    for index in 0..backend_count {
+        let baseline_latency_ms = 8 + (index * 37 % 120) as u64;
+        for offset_ms in LATENCY_OFFSETS_MS {
+            pool.begin_request_for_accounting(index);
+            pool.finish_request(
+                index,
+                Duration::from_millis(baseline_latency_ms + offset_ms),
+                Some(200),
+            );
+        }
+
+        let active_requests = (index * 5 + 3) % 8;
+        for _ in 0..active_requests {
+            pool.begin_request_for_accounting(index);
+        }
+    }
+
+    for index in (7..backend_count).step_by(8) {
+        let _ = pool.mark_backend_failure_from_active_check(index);
+    }
 }
 
 pub fn upstream_pool_from_runtime(upstream: &RuntimeUpstream) -> UpstreamPool {
@@ -95,7 +132,14 @@ pub fn upstream_pool_from_runtime(upstream: &RuntimeUpstream) -> UpstreamPool {
                 backend.backend.address.clone(),
                 index,
                 BackendWeight::new(backend.backend.weight),
-                None,
+                backend.health_check.as_ref().map(|health| {
+                    BackendHealthInput::new(
+                        health.failure_threshold,
+                        health.success_threshold,
+                        health.cooldown,
+                        true,
+                    )
+                }),
             )
         });
     UpstreamPool::new(backends, strategy, None)

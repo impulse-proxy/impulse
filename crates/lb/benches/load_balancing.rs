@@ -1,7 +1,6 @@
 mod support;
 
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
-use impulse_lb::upstream_pool::UpstreamPool;
 use support::{
     BACKEND_COUNTS, STRATEGIES, runtime_upstream, upstream_pool, upstream_pool_from_runtime,
 };
@@ -22,7 +21,6 @@ fn benchmark_selection(criterion: &mut Criterion) {
         let mut group = criterion.benchmark_group(format!("load_balancing/selection/{label}"));
         for backend_count in BACKEND_COUNTS {
             let mut pool = upstream_pool(backend_count, strategy);
-            warm_pool(&mut pool);
             let mut key_index = 0usize;
 
             group.throughput(Throughput::Elements(1));
@@ -57,10 +55,6 @@ fn benchmark_pool_index_construction(criterion: &mut Criterion) {
         }
         group.finish();
     }
-}
-
-fn warm_pool(pool: &mut UpstreamPool) {
-    black_box(pool.pick_without_begin(black_box(KEYS[0])));
 }
 
 criterion_group!(
