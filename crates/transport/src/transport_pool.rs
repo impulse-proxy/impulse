@@ -73,8 +73,10 @@ impl UpstreamTransportPool {
         request: UpstreamExchangeRequest,
     ) -> Result<UpstreamExchangeResponse, ProxyError> {
         let UpstreamExchangeRequest { head, body } = request;
-        if self.backend_entry(backend) == Some(UpstreamProtocol::Http1)
-            && head.headers.contains_key(hyper::header::TRAILER)
+        if matches!(
+            self.backend_entry(backend),
+            Some(UpstreamProtocol::Auto | UpstreamProtocol::Http1)
+        ) && head.headers.contains_key(hyper::header::TRAILER)
         {
             return Err(ProxyError::RequestProtocol(
                 RequestFailure::RequestTrailersRequireHttp2,
@@ -85,13 +87,14 @@ impl UpstreamTransportPool {
             .acquire_exchange_permit(backend)
             .map_err(ProxyError::Pool)?;
         let connector = Arc::clone(&self.pingora_connector);
-        let identity = config.identity;
+        let mut identity = config.identity;
         let lifecycle = UpstreamExchangeLifecycle {
             _inflight_permit: UpstreamInflightPermit { _permit: permit },
         };
 
         match self.backend_entry(backend) {
-            Some(UpstreamProtocol::Http1) => {
+            Some(UpstreamProtocol::Auto | UpstreamProtocol::Http1) => {
+                identity.protocol = UpstreamProtocol::Http1;
                 let mut session = match PingoraH1UpstreamSession::acquire(
                     connector,
                     config.peer,

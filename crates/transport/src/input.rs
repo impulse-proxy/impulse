@@ -3,6 +3,7 @@ use std::time::Duration;
 /// Upstream HTTP protocol selected for one backend.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum UpstreamProtocol {
+    Auto,
     Http1,
     Http2,
 }

@@ -38,6 +38,7 @@ pub(crate) fn build_pingora_http_peer(
     peer.options.write_timeout = Some(input.timeouts.execution);
     peer.options.idle_timeout = Some(input.timeouts.pool_idle);
     peer.options.alpn = match endpoint.protocol {
+        UpstreamProtocol::Auto => ALPN::H2H1,
         UpstreamProtocol::Http1 => ALPN::H1,
         UpstreamProtocol::Http2 => ALPN::H2,
     };

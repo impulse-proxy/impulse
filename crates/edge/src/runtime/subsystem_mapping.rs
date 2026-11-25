@@ -677,6 +677,8 @@ pub(crate) fn upstream_transport_inputs(config: &RuntimeConfig) -> Vec<UpstreamT
                         authority_host: backend.endpoint.authority_host.clone(),
                         authority_port: backend.endpoint.authority_port,
                         protocol: match backend.endpoint.transport_kind {
+                            RuntimeBackendTransportKind::Auto if uses_tls => UpstreamProtocol::Auto,
+                            RuntimeBackendTransportKind::Auto => UpstreamProtocol::Http1,
                             RuntimeBackendTransportKind::Http1 => UpstreamProtocol::Http1,
                             RuntimeBackendTransportKind::H2 => UpstreamProtocol::Http2,
                         },

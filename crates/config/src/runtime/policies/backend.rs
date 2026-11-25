@@ -57,9 +57,8 @@ impl RuntimeBackendEndpoint {
             RuntimeBackendAddressKind::Hostname
         };
         let transport_kind = match protocol {
-            UpstreamProtocol::Auto | UpstreamProtocol::Http1 => {
-                super::RuntimeBackendTransportKind::Http1
-            }
+            UpstreamProtocol::Auto => super::RuntimeBackendTransportKind::Auto,
+            UpstreamProtocol::Http1 => super::RuntimeBackendTransportKind::Http1,
             UpstreamProtocol::Http2 => super::RuntimeBackendTransportKind::H2,
         };
         let origin = canonical.origin();
@@ -484,7 +483,7 @@ mod tests {
         assert_eq!(endpoint.authority_host, "api.example.com");
         assert_eq!(endpoint.authority_port, 443);
         assert_eq!(endpoint.address_kind, RuntimeBackendAddressKind::Hostname);
-        assert_eq!(endpoint.transport_kind, RuntimeBackendTransportKind::Http1);
+        assert_eq!(endpoint.transport_kind, RuntimeBackendTransportKind::Auto);
         assert_eq!(endpoint.canonical.scheme(), BackendScheme::Https);
         assert_eq!(endpoint.canonical.authority(), "api.example.com:443");
     }
