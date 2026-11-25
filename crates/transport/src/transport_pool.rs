@@ -104,9 +104,7 @@ impl UpstreamTransportPool {
                         return Err(classify_pingora_h1_error(&error));
                     }
                 };
-                if let Err(error) = session.write_request(&head, body).await {
-                    return Err(error);
-                }
+                session.write_request(&head, body).await?;
                 session.read_response(lifecycle).await
             }
             Some(UpstreamProtocol::Http2) => {
@@ -124,9 +122,7 @@ impl UpstreamTransportPool {
                         return Err(classify_pingora_h2_error(&error, false));
                     }
                 };
-                if let Err(error) = session.write_request(&head, body).await {
-                    return Err(error);
-                }
+                session.write_request(&head, body).await?;
                 session.read_response(lifecycle).await
             }
             None => unreachable!("Pingora backend disappeared after lookup"),
