@@ -309,10 +309,6 @@ impl RuntimeObservationRecorder<'_> {
         self.metrics.inc_watchdog_restart_request();
     }
 
-    pub fn inc_watchdog_restart_hook(self) {
-        self.metrics.inc_watchdog_restart_hook();
-    }
-
     pub fn inc_watchdog_degraded_window(self) {
         self.metrics.inc_watchdog_degraded_window();
     }

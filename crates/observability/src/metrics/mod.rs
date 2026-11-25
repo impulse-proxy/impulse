@@ -220,7 +220,6 @@ pub struct Metrics {
     pub control_api_audit_event_drops: AtomicU64,
     pub control_api_audit_write_failures: AtomicU64,
     pub watchdog_restart_requests: AtomicU64,
-    pub watchdog_restart_hooks: AtomicU64,
     pub watchdog_degraded_windows: AtomicU64,
     pub runtime_panics: AtomicU64,
     pub runtime_rejection_invalid_config: AtomicU64,

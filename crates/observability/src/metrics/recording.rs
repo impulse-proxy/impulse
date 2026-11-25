@@ -231,7 +231,6 @@ impl Metrics {
             control_api_audit_event_drops: AtomicU64::new(0),
             control_api_audit_write_failures: AtomicU64::new(0),
             watchdog_restart_requests: AtomicU64::new(0),
-            watchdog_restart_hooks: AtomicU64::new(0),
             watchdog_degraded_windows: AtomicU64::new(0),
             runtime_panics: AtomicU64::new(0),
             runtime_rejection_invalid_config: AtomicU64::new(0),
@@ -1396,10 +1395,6 @@ impl Metrics {
     pub fn inc_watchdog_restart_request(&self) {
         self.watchdog_restart_requests
             .fetch_add(1, Ordering::Relaxed);
-    }
-
-    pub fn inc_watchdog_restart_hook(&self) {
-        self.watchdog_restart_hooks.fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn inc_watchdog_degraded_window(&self) {

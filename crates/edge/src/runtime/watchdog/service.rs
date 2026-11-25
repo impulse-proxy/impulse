@@ -165,7 +165,6 @@ pub(crate) async fn run_watchdog_service(state: WatchdogServiceState) {
         let status = command.status().await;
         match status {
             Ok(status) => {
-                metrics.runtime_observations().inc_watchdog_restart_hook();
                 let exit_status = status
                     .code()
                     .map(|code| code.to_string())

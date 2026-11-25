@@ -1370,15 +1370,6 @@ impl Metrics {
             self.watchdog_restart_requests.load(Ordering::Relaxed)
         ));
 
-        out.push_str(
-            "# HELP impulse_watchdog_restart_hooks Total executed watchdog restart hooks.\n",
-        );
-        out.push_str("# TYPE impulse_watchdog_restart_hooks counter\n");
-        out.push_str(&format!(
-            "impulse_watchdog_restart_hooks {}\n",
-            self.watchdog_restart_hooks.load(Ordering::Relaxed)
-        ));
-
         out.push_str("# HELP impulse_runtime_panics Total runtime task panics observed.\n");
         out.push_str("# TYPE impulse_runtime_panics counter\n");
         out.push_str(&format!(
