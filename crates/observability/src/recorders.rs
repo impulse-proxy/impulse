@@ -336,14 +336,6 @@ impl RuntimeObservationRecorder<'_> {
         self.metrics.inc_backend_dns_refresh_failure();
     }
 
-    pub fn inc_backend_client_rotation(self, backend: &str) {
-        self.metrics.inc_backend_client_rotation(backend);
-    }
-
-    pub fn inc_backend_client_rotation_failure(self) {
-        self.metrics.inc_backend_client_rotation_failure();
-    }
-
     pub fn record_backend_connect(self, backend: &str, hostname: &str, resolved_addr: SocketAddr) {
         self.metrics
             .record_backend_connect(backend, hostname, resolved_addr);

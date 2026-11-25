@@ -271,8 +271,6 @@ impl Metrics {
             backend_dns_refresh_success: AtomicU64::new(0),
             backend_dns_refresh_failure: AtomicU64::new(0),
             backend_dns_refresh_address_changes: AtomicU64::new(0),
-            backend_client_rotations: AtomicU64::new(0),
-            backend_client_rotation_failures: AtomicU64::new(0),
             jwt_validation_failures: RwLock::new(HashMap::new()),
             jwt_algorithm_rejections: RwLock::new(HashMap::new()),
             jwks_unknown_kid_events: RwLock::new(HashMap::new()),
@@ -291,7 +289,6 @@ impl Metrics {
             automatic_worker_slot_count,
             worker_counter_aggregation: Mutex::new(()),
             backend_dns_state: RwLock::new(HashMap::new()),
-            backend_rotation_state: RwLock::new(HashMap::new()),
             backend_connect_attempts: RwLock::new(HashMap::new()),
             request_result_metrics: RwLock::new(RequestResultMetricsStore::default()),
             request_result_metrics_version: AtomicU64::new(0),
@@ -705,20 +702,6 @@ impl Metrics {
             .fetch_add(1, Ordering::Relaxed);
     }
 
-    pub fn inc_backend_client_rotation(&self, backend: &str) {
-        self.backend_client_rotations
-            .fetch_add(1, Ordering::Relaxed);
-        if let Ok(mut guard) = self.backend_rotation_state.write() {
-            guard.entry(backend.to_string()).or_default().rotations += 1;
-            self.mark_backend_metrics_stale();
-        }
-    }
-
-    pub fn inc_backend_client_rotation_failure(&self) {
-        self.backend_client_rotation_failures
-            .fetch_add(1, Ordering::Relaxed);
-    }
-
     pub fn record_jwt_validation_failure(&self, reason: &str) {
         if increment_label_counter(&self.jwt_validation_failures, reason) {
             self.mark_jwt_jwks_metrics_stale();
@@ -861,9 +844,6 @@ impl Metrics {
             .collect::<HashSet<_>>();
 
         if let Ok(mut guard) = self.backend_dns_state.write() {
-            guard.retain(|backend, _| active_backends.contains(backend));
-        }
-        if let Ok(mut guard) = self.backend_rotation_state.write() {
             guard.retain(|backend, _| active_backends.contains(backend));
         }
         if let Ok(mut guard) = self.backend_connect_attempts.write() {

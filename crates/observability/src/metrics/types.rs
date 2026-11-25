@@ -76,11 +76,6 @@ pub(crate) struct BackendDnsState {
 }
 
 #[derive(Default, Clone)]
-pub(crate) struct BackendRotationState {
-    pub(crate) rotations: u64,
-}
-
-#[derive(Default, Clone)]
 pub(crate) struct JwksSourceState {
     pub(crate) jwks_source_id: String,
     pub(crate) refresh_success_total: u64,
@@ -180,7 +175,6 @@ pub(super) struct JwtJwksMetricsSnapshotCache {
 #[derive(Default, Clone)]
 pub(crate) struct BackendMetricsSnapshot {
     pub(crate) backend_dns_state: Vec<(String, BackendDnsState)>,
-    pub(crate) backend_rotation_state: Vec<(String, BackendRotationState)>,
     pub(crate) backend_connect_attempts: Vec<(BackendConnectAttemptKey, u64)>,
 }
 

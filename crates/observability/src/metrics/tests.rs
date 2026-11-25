@@ -428,15 +428,8 @@ fn cached_metric_family_snapshots_refresh_after_targeted_updates() {
     );
 
     metrics.record_backend_dns_refresh_success("backend-a", now, 2, false);
-    let backend_before = metrics.snapshot_backend_metrics();
-    assert_eq!(backend_before.backend_dns_state.len(), 1);
-    assert!(backend_before.backend_rotation_state.is_empty());
-    metrics.inc_backend_client_rotation("backend-a");
-    let backend_after = metrics.snapshot_backend_metrics();
-    assert_eq!(backend_after.backend_dns_state.len(), 1);
-    assert_eq!(backend_after.backend_rotation_state.len(), 1);
-    assert_eq!(backend_after.backend_rotation_state[0].0, "backend-a");
-    assert_eq!(backend_after.backend_rotation_state[0].1.rotations, 1);
+    let backend_snapshot = metrics.snapshot_backend_metrics();
+    assert_eq!(backend_snapshot.backend_dns_state.len(), 1);
 
     metrics.record_secret_reload("listeners", "success", "cert_reload_applied");
     let secret_before = metrics.snapshot_secret_metrics();
