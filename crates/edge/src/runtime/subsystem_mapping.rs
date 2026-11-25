@@ -518,7 +518,6 @@ pub(crate) fn watchdog_runtime_config(policy: &RuntimeWatchdogPolicy) -> Watchdo
             .try_into()
             .unwrap_or(u64::MAX),
         restart_command: policy.restart_command.clone(),
-        restart_hook: None,
     }
 }
 

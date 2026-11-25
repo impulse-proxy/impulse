@@ -178,7 +178,6 @@ mod tests {
             drain_grace_ms: 100,
             restart_cooldown_ms: 60_000,
             restart_command: vec!["true".to_string()],
-            restart_hook: None,
         }
     }
 

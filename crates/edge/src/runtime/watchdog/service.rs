@@ -55,17 +55,6 @@ pub(crate) async fn run_watchdog_service(state: WatchdogServiceState) {
             "Watchdog restart_command[0] must be an absolute executable path; refusing to execute relative restart command"
         );
     }
-    if watchdog_config
-        .restart_hook
-        .as_deref()
-        .map(str::trim)
-        .is_some_and(|value| !value.is_empty())
-    {
-        warn!(
-            "Watchdog restart_hook is deprecated and ignored; configure resilience.watchdog.restart_command instead"
-        );
-    }
-
     metrics.aggregate_worker_counters();
     let mut previous_requests = metrics.requests_total.load(Ordering::Relaxed);
     let mut previous_timeouts = metrics.backend_timeouts.load(Ordering::Relaxed);
@@ -229,7 +218,6 @@ mod tests {
             drain_grace_ms: 60_000,
             restart_cooldown_ms: 1,
             restart_command: vec!["/bin/true".to_string()],
-            restart_hook: None,
         }
     }
 

@@ -12,5 +12,4 @@ pub struct WatchdogRuntimeConfig {
     pub drain_grace_ms: u64,
     pub restart_cooldown_ms: u64,
     pub restart_command: Vec<String>,
-    pub restart_hook: Option<String>,
 }

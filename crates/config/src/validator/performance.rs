@@ -734,12 +734,6 @@ fn validate_resilience(config: &Config) -> bool {
         );
         return false;
     }
-    if config.resilience.watchdog.restart_hook.is_some() {
-        validation_error!(
-            "resilience.watchdog.restart_hook is deprecated and unsupported; use restart_command instead"
-        );
-        return false;
-    }
     true
 }
 
