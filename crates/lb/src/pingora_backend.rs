@@ -1,7 +1,5 @@
-#[cfg(test)]
-use std::collections::BTreeSet;
 use std::{
-    collections::HashMap,
+    collections::{BTreeSet, HashMap},
     future::Future,
     hash::{BuildHasher, RandomState},
     net::SocketAddr,
@@ -239,7 +237,8 @@ struct LatencyAwareSelectionState {
 }
 
 fn rank_latency_backends<'a, T>(
-    backends: &'a pingora_load_balancing::Backends,
+    backends: &pingora_load_balancing::Backends,
+    backend_set: &'a BTreeSet<PingoraBackend>,
     excluded_backend_ids: &[BackendId],
 ) -> (Option<SampledBackend<'a>>, Option<UnsampledBackend<'a>>)
 where
@@ -250,7 +249,7 @@ where
     let mut sampled_latency_sum = 0.0;
     let mut sampled_count = 0usize;
 
-    for backend in backends.get_backend().iter().filter(|backend| {
+    for backend in backend_set.iter().filter(|backend| {
         candidate_is_available::<T>(backend, backends.ready(backend), excluded_backend_ids)
     }) {
         let Some(identity) = backend.ext.get::<PingoraBackendIdentity<T>>() else {
@@ -307,7 +306,8 @@ where
 }
 
 fn periodic_latency_exploration<'a, T>(
-    backends: &'a pingora_load_balancing::Backends,
+    backends: &pingora_load_balancing::Backends,
+    backend_set: &'a BTreeSet<PingoraBackend>,
     excluded_backend_ids: &[BackendId],
     state: &LatencyAwareSelectionState,
 ) -> Option<&'a PingoraBackend>
@@ -321,7 +321,6 @@ where
     if !selection.is_multiple_of(EXPLORATION_INTERVAL) {
         return None;
     }
-    let backend_set = backends.get_backend();
     let available_count = backend_set
         .iter()
         .filter(|backend| {
@@ -340,35 +339,37 @@ where
         .nth(position)
 }
 
-fn latency_aware_backend<'a, T>(
-    backends: &'a pingora_load_balancing::Backends,
+fn latency_aware_backend<T>(
+    backends: &pingora_load_balancing::Backends,
     excluded_backend_ids: &[BackendId],
     state: &LatencyAwareSelectionState,
-) -> Option<&'a PingoraBackend>
+) -> Option<PingoraBackend>
 where
     T: Clone + Send + Sync + 'static,
 {
+    let backend_set = backends.get_backend();
     if excluded_backend_ids.is_empty()
         && let Some(backend) =
-            periodic_latency_exploration::<T>(backends, excluded_backend_ids, state)
+            periodic_latency_exploration::<T>(backends, &backend_set, excluded_backend_ids, state)
     {
-        return Some(backend);
+        return Some(backend.clone());
     }
 
-    let (sampled_best, unsampled_best) = rank_latency_backends::<T>(backends, excluded_backend_ids);
+    let (sampled_best, unsampled_best) =
+        rank_latency_backends::<T>(backends, &backend_set, excluded_backend_ids);
     if !excluded_backend_ids.is_empty() {
         return match (sampled_best, unsampled_best) {
             (Some(sampled), Some(unsampled)) if unsampled.score < sampled.score => {
-                Some(unsampled.backend)
+                Some(unsampled.backend.clone())
             }
-            (Some(sampled), _) => Some(sampled.backend),
-            (None, Some(unsampled)) => Some(unsampled.backend),
+            (Some(sampled), _) => Some(sampled.backend.clone()),
+            (None, Some(unsampled)) => Some(unsampled.backend.clone()),
             (None, None) => None,
         };
     }
 
     let Some(sampled) = sampled_best else {
-        return unsampled_best.map(|candidate| candidate.backend);
+        return unsampled_best.map(|candidate| candidate.backend.clone());
     };
     if let Some(unsampled) = unsampled_best {
         let probe = state
@@ -376,10 +377,10 @@ where
             .fetch_add(1, Ordering::Relaxed)
             .wrapping_add(1);
         if unsampled.active_requests == 0 && probe.is_multiple_of(UNSAMPLED_PROBE_INTERVAL) {
-            return Some(unsampled.backend);
+            return Some(unsampled.backend.clone());
         }
     }
-    Some(sampled.backend)
+    Some(sampled.backend.clone())
 }
 
 struct GenerationStickyCid<T> {
@@ -618,7 +619,6 @@ where
     ) -> Option<BackendSelectionResult<T>> {
         let state = &self.worker_states[worker_slot % self.worker_states.len()].0;
         latency_aware_backend::<T>(&self.backends, excluded_backend_ids, state)
-            .cloned()
             .and_then(|backend| selection_result(backend, self.generation))
     }
 

@@ -35,15 +35,6 @@ pub(crate) fn backend_input(index: usize, backend: &Backend) -> BackendInput {
     )
 }
 
-pub(crate) fn health_input(health: &HealthCheck) -> BackendHealthInput {
-    BackendHealthInput::new(
-        health.failure_threshold,
-        health.success_threshold,
-        std::time::Duration::from_millis(health.cooldown_ms),
-        health.interval > 0,
-    )
-}
-
 pub(crate) fn backend_inputs(upstream: &RuntimeUpstream) -> Vec<BackendInput> {
     upstream
         .backends
