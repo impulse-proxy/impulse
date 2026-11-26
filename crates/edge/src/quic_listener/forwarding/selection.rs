@@ -5,7 +5,6 @@ use impulse_contracts::BackendId;
 use impulse_errors::{PoolError, ProxyError, RequestFailure};
 use impulse_lb::{
     BackendSelectionInput,
-    alternate_backend::{AlternateBackendDecision, choose_alternate_backend_with_exclusion},
     pingora_backend::GenerationSelector,
     upstream_pool::{UpstreamPool, UpstreamPoolMembership},
 };
@@ -99,7 +98,7 @@ impl ForwardingSelectionService {
 
     pub(crate) fn select_backend_excluding(
         selector: &GenerationSelector<RuntimeBackendTlsPolicy>,
-        pool: &Arc<RwLock<UpstreamPool>>,
+        _pool: &Arc<RwLock<UpstreamPool>>,
         membership: &UpstreamPoolMembership,
         backend_transport_identities: &[BackendEndpoint],
         input: BackendSelectionInput<'_>,
@@ -114,15 +113,6 @@ impl ForwardingSelectionService {
                 selector.generation(),
                 input.generation()
             )));
-        }
-        if selector.uses_custom_dynamic_selector() {
-            return Self::select_custom_dynamic_backend(
-                selector,
-                pool,
-                membership,
-                backend_transport_identities,
-                input,
-            );
         }
         let Some(selected) = selector.select_excluding_for_worker(
             input.request_key(),
@@ -170,70 +160,6 @@ impl ForwardingSelectionService {
             ));
         }
         metrics.runtime_observations().inc_pingora_lb_selection();
-        Ok(Some(BackendCandidate {
-            id,
-            address,
-            index,
-            transport_identity,
-        }))
-    }
-
-    fn select_custom_dynamic_backend(
-        selector: &GenerationSelector<RuntimeBackendTlsPolicy>,
-        pool: &Arc<RwLock<UpstreamPool>>,
-        membership: &UpstreamPoolMembership,
-        backend_transport_identities: &[BackendEndpoint],
-        input: BackendSelectionInput<'_>,
-    ) -> Result<Option<BackendCandidate>, ProxyError> {
-        let mut pool = pool
-            .write()
-            .map_err(|_| ProxyError::RequestTransport(RequestFailure::UpstreamPoolLockPoisoned))?;
-        let selected = if input.excluded_backend_ids().is_empty() {
-            if input.begin_request() {
-                pool.pick(input.request_key())
-            } else {
-                pool.pick_without_begin(input.request_key())
-            }
-        } else {
-            match choose_alternate_backend_with_exclusion(
-                &pool,
-                |index| {
-                    selector
-                        .custom_backend_runtime_id(index)
-                        .is_some_and(|id| input.excluded_backend_ids().contains(&id))
-                },
-                Some(input.request_key()),
-            ) {
-                AlternateBackendDecision::Select(choice) => {
-                    if input.begin_request() && !pool.begin_request_if_healthy(choice.index) {
-                        None
-                    } else {
-                        Some(choice.index)
-                    }
-                }
-                AlternateBackendDecision::DoNotSelect { .. } => None,
-            }
-        };
-        let Some(index) = selected else {
-            return Ok(None);
-        };
-        let Some(id) = selector.custom_backend_runtime_id(index) else {
-            return Err(ProxyError::RequestTransport(
-                RequestFailure::InvalidBackendIndex,
-            ));
-        };
-        let Some(address) = membership.backend_address(index).map(str::to_string) else {
-            return Err(ProxyError::RequestTransport(
-                RequestFailure::InvalidBackendIndex,
-            ));
-        };
-        let Some(transport_identity) =
-            transport_identity_for_backend(id, &address, backend_transport_identities)
-        else {
-            return Err(ProxyError::RequestTransport(
-                RequestFailure::UnknownBackendTransportIdentity,
-            ));
-        };
         Ok(Some(BackendCandidate {
             id,
             address,

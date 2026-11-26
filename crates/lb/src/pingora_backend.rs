@@ -33,6 +33,9 @@ use crate::{
 };
 
 const WORKER_SELECTION_SLOTS: usize = 256;
+const ACTIVE_REQUEST_PENALTY_MS: f64 = 10.0;
+const UNSAMPLED_PROBE_INTERVAL: u64 = 16;
+const EXPLORATION_INTERVAL: u64 = 32;
 
 fn next_random(state: &AtomicU64) -> u64 {
     let value = state.fetch_add(0x9e37_79b9_7f4a_7c15, Ordering::Relaxed);
@@ -216,6 +219,173 @@ where
         .min_by_key(|(active_requests, index, _)| (*active_requests, *index))
         .map(|(_, _, backend)| backend)
         .cloned()
+}
+
+#[derive(Clone, Copy)]
+struct SampledBackend<'a> {
+    score: f64,
+    active_requests: usize,
+    index: usize,
+    backend: &'a PingoraBackend,
+}
+
+#[derive(Clone, Copy)]
+struct UnsampledBackend<'a> {
+    score: f64,
+    active_requests: usize,
+    index: usize,
+    backend: &'a PingoraBackend,
+}
+
+#[derive(Default)]
+struct LatencyAwareSelectionState {
+    unsampled_probe_cursor: AtomicU64,
+    exploration_cursor: AtomicUsize,
+    selections: AtomicU64,
+}
+
+fn rank_latency_backends<'a, T>(
+    backends: &'a pingora_load_balancing::Backends,
+    excluded_backend_ids: &[BackendId],
+) -> (Option<SampledBackend<'a>>, Option<UnsampledBackend<'a>>)
+where
+    T: Clone + Send + Sync + 'static,
+{
+    let mut sampled_best = None;
+    let mut unsampled_best: Option<UnsampledBackend<'_>> = None;
+    let mut sampled_latency_sum = 0.0;
+    let mut sampled_count = 0usize;
+
+    for backend in backends.get_backend().iter().filter(|backend| {
+        candidate_is_available::<T>(backend, backends.ready(backend), excluded_backend_ids)
+    }) {
+        let Some(identity) = backend.ext.get::<PingoraBackendIdentity<T>>() else {
+            continue;
+        };
+        let Some(state) = backend.ext.get::<Arc<BackendSelectionState>>() else {
+            continue;
+        };
+        let active_requests = state.active_requests();
+        let index = identity.index();
+        if let Some(ewma_latency_ms) = state.ewma_latency_ms() {
+            let score = ewma_latency_ms + active_requests as f64 * ACTIVE_REQUEST_PENALTY_MS;
+            sampled_latency_sum += ewma_latency_ms;
+            sampled_count += 1;
+            let candidate = SampledBackend {
+                score,
+                active_requests,
+                index,
+                backend,
+            };
+            if sampled_best.is_none_or(|best: SampledBackend<'_>| {
+                score < best.score
+                    || score == best.score
+                        && (active_requests < best.active_requests
+                            || active_requests == best.active_requests && index < best.index)
+            }) {
+                sampled_best = Some(candidate);
+            }
+        } else {
+            let candidate = UnsampledBackend {
+                score: 0.0,
+                active_requests,
+                index,
+                backend,
+            };
+            if unsampled_best.is_none_or(|best| {
+                active_requests < best.active_requests
+                    || active_requests == best.active_requests && index < best.index
+            }) {
+                unsampled_best = Some(candidate);
+            }
+        }
+    }
+
+    if sampled_count == 0 {
+        return (None, unsampled_best);
+    }
+    let neutral_baseline = sampled_latency_sum / sampled_count as f64;
+    if let Some(candidate) = &mut unsampled_best {
+        candidate.score =
+            neutral_baseline + candidate.active_requests as f64 * ACTIVE_REQUEST_PENALTY_MS;
+    }
+    (sampled_best, unsampled_best)
+}
+
+fn periodic_latency_exploration<'a, T>(
+    backends: &'a pingora_load_balancing::Backends,
+    excluded_backend_ids: &[BackendId],
+    state: &LatencyAwareSelectionState,
+) -> Option<&'a PingoraBackend>
+where
+    T: Clone + Send + Sync + 'static,
+{
+    let selection = state
+        .selections
+        .fetch_add(1, Ordering::Relaxed)
+        .wrapping_add(1);
+    if !selection.is_multiple_of(EXPLORATION_INTERVAL) {
+        return None;
+    }
+    let backend_set = backends.get_backend();
+    let available_count = backend_set
+        .iter()
+        .filter(|backend| {
+            candidate_is_available::<T>(backend, backends.ready(backend), excluded_backend_ids)
+        })
+        .count();
+    if available_count < 2 {
+        return None;
+    }
+    let position = state.exploration_cursor.fetch_add(1, Ordering::Relaxed) % available_count;
+    backend_set
+        .iter()
+        .filter(|backend| {
+            candidate_is_available::<T>(backend, backends.ready(backend), excluded_backend_ids)
+        })
+        .nth(position)
+}
+
+fn latency_aware_backend<'a, T>(
+    backends: &'a pingora_load_balancing::Backends,
+    excluded_backend_ids: &[BackendId],
+    state: &LatencyAwareSelectionState,
+) -> Option<&'a PingoraBackend>
+where
+    T: Clone + Send + Sync + 'static,
+{
+    if excluded_backend_ids.is_empty()
+        && let Some(backend) =
+            periodic_latency_exploration::<T>(backends, excluded_backend_ids, state)
+    {
+        return Some(backend);
+    }
+
+    let (sampled_best, unsampled_best) = rank_latency_backends::<T>(backends, excluded_backend_ids);
+    if !excluded_backend_ids.is_empty() {
+        return match (sampled_best, unsampled_best) {
+            (Some(sampled), Some(unsampled)) if unsampled.score < sampled.score => {
+                Some(unsampled.backend)
+            }
+            (Some(sampled), _) => Some(sampled.backend),
+            (None, Some(unsampled)) => Some(unsampled.backend),
+            (None, None) => None,
+        };
+    }
+
+    let Some(sampled) = sampled_best else {
+        return unsampled_best.map(|candidate| candidate.backend);
+    };
+    if let Some(unsampled) = unsampled_best {
+        let probe = state
+            .unsampled_probe_cursor
+            .fetch_add(1, Ordering::Relaxed)
+            .wrapping_add(1);
+        if unsampled.active_requests == 0 && probe.is_multiple_of(UNSAMPLED_PROBE_INTERVAL) {
+            return Some(unsampled.backend);
+        }
+    }
+    Some(sampled.backend)
 }
 
 struct GenerationStickyCid<T> {
@@ -420,6 +590,57 @@ where
     }
 }
 
+struct GenerationLatencyAware<T> {
+    generation: u64,
+    upstream_name: String,
+    backends: BackendView,
+    worker_states: Box<[Padded<LatencyAwareSelectionState>]>,
+    policy: std::marker::PhantomData<T>,
+}
+
+impl<T> GenerationLatencyAware<T>
+where
+    T: Clone + Send + Sync + 'static,
+{
+    fn from_backend_view(view: GenerationBackendView) -> Self {
+        let GenerationBackendView {
+            generation,
+            upstream_name,
+            backend_ids: _,
+            view,
+            discovery: _,
+        } = view;
+        Self {
+            generation,
+            upstream_name,
+            backends: view,
+            worker_states: (0..WORKER_SELECTION_SLOTS)
+                .map(|_| Padded(LatencyAwareSelectionState::default()))
+                .collect(),
+            policy: std::marker::PhantomData,
+        }
+    }
+
+    fn select_excluding(
+        &self,
+        excluded_backend_ids: &[BackendId],
+        worker_slot: usize,
+    ) -> Option<BackendSelectionResult<T>> {
+        let state = &self.worker_states[worker_slot % self.worker_states.len()].0;
+        latency_aware_backend::<T>(&self.backends, excluded_backend_ids, state)
+            .cloned()
+            .and_then(|backend| selection_result(backend, self.generation))
+    }
+
+    fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    fn upstream_name(&self) -> &str {
+        &self.upstream_name
+    }
+}
+
 pub struct GenerationBackendView {
     generation: u64,
     upstream_name: String,
@@ -434,7 +655,7 @@ enum GenerationSelectorKind<T> {
     Ketama(GenerationKetama<T>),
     StickyCid(GenerationStickyCid<T>),
     LeastConnections(GenerationBackendView),
-    CustomLatencyAware(GenerationBackendView),
+    LatencyAware(GenerationLatencyAware<T>),
 }
 
 pub struct GenerationSelector<T> {
@@ -452,8 +673,8 @@ where
             GenerationSelectorKind::WeightedRandom(selector) => selector.selector.backends(),
             GenerationSelectorKind::Ketama(selector) => selector.selector.backends(),
             GenerationSelectorKind::StickyCid(selector) => selector.selector.selector.backends(),
-            GenerationSelectorKind::LeastConnections(view)
-            | GenerationSelectorKind::CustomLatencyAware(view) => &view.view,
+            GenerationSelectorKind::LeastConnections(view) => &view.view,
+            GenerationSelectorKind::LatencyAware(selector) => &selector.backends,
         }
     }
 
@@ -514,7 +735,9 @@ where
             LoadBalancingStrategy::LeastConnections => {
                 GenerationSelectorKind::LeastConnections(view)
             }
-            LoadBalancingStrategy::LatencyAware => GenerationSelectorKind::CustomLatencyAware(view),
+            LoadBalancingStrategy::LatencyAware => GenerationSelectorKind::LatencyAware(
+                GenerationLatencyAware::from_backend_view(view),
+            ),
         };
         Ok(Self { kind, backend_ids })
     }
@@ -525,8 +748,8 @@ where
             GenerationSelectorKind::WeightedRandom(selector) => selector.generation(),
             GenerationSelectorKind::Ketama(selector) => selector.generation(),
             GenerationSelectorKind::StickyCid(selector) => selector.generation(),
-            GenerationSelectorKind::LeastConnections(view)
-            | GenerationSelectorKind::CustomLatencyAware(view) => view.generation(),
+            GenerationSelectorKind::LeastConnections(view) => view.generation(),
+            GenerationSelectorKind::LatencyAware(selector) => selector.generation(),
         }
     }
 
@@ -536,13 +759,9 @@ where
             GenerationSelectorKind::WeightedRandom(selector) => selector.upstream_name(),
             GenerationSelectorKind::Ketama(selector) => selector.upstream_name(),
             GenerationSelectorKind::StickyCid(selector) => selector.upstream_name(),
-            GenerationSelectorKind::LeastConnections(view)
-            | GenerationSelectorKind::CustomLatencyAware(view) => view.upstream_name(),
+            GenerationSelectorKind::LeastConnections(view) => view.upstream_name(),
+            GenerationSelectorKind::LatencyAware(selector) => selector.upstream_name(),
         }
-    }
-
-    pub fn uses_custom_dynamic_selector(&self) -> bool {
-        matches!(&self.kind, GenerationSelectorKind::CustomLatencyAware(_))
     }
 
     pub fn has_available_backend(&self) -> bool {
@@ -562,15 +781,6 @@ where
                     .get::<PingoraBackendIdentity<T>>()
                     .is_some_and(|identity| identity.runtime_id() == backend_id)
         })
-    }
-
-    pub fn custom_backend_runtime_id(&self, index: usize) -> Option<BackendId> {
-        match &self.kind {
-            GenerationSelectorKind::CustomLatencyAware(view) => {
-                view.backend_ids.get(index).copied()
-            }
-            _ => None,
-        }
     }
 
     pub fn backend_id(&self, index: usize) -> Option<BackendId> {
@@ -608,7 +818,9 @@ where
                 least_loaded_backend::<T>(&view.view, excluded_backend_ids)
                     .and_then(|backend| selection_result(backend, view.generation))
             }
-            GenerationSelectorKind::CustomLatencyAware(_) => None,
+            GenerationSelectorKind::LatencyAware(selector) => {
+                selector.select_excluding(excluded_backend_ids, worker_slot)
+            }
         }
     }
 
@@ -622,8 +834,10 @@ where
             GenerationSelectorKind::StickyCid(selector) => {
                 selector.selector.selector.update().await
             }
-            GenerationSelectorKind::LeastConnections(view)
-            | GenerationSelectorKind::CustomLatencyAware(view) => view.view.update(|_| {}).await,
+            GenerationSelectorKind::LeastConnections(view) => view.view.update(|_| {}).await,
+            GenerationSelectorKind::LatencyAware(selector) => {
+                selector.backends.update(|_| {}).await
+            }
         };
         result.map_err(|error| {
             format!(
