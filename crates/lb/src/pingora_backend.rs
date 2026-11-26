@@ -195,6 +195,29 @@ where
         .cloned()
 }
 
+fn least_loaded_backend<T>(
+    backends: &pingora_load_balancing::Backends,
+    excluded_backend_ids: &[BackendId],
+) -> Option<PingoraBackend>
+where
+    T: Clone + Send + Sync + 'static,
+{
+    backends
+        .get_backend()
+        .iter()
+        .filter(|backend| {
+            candidate_is_available::<T>(backend, backends.ready(backend), excluded_backend_ids)
+        })
+        .filter_map(|backend| {
+            let identity = backend.ext.get::<PingoraBackendIdentity<T>>()?;
+            let state = backend.ext.get::<Arc<BackendSelectionState>>()?;
+            Some((state.active_requests(), identity.index(), backend))
+        })
+        .min_by_key(|(active_requests, index, _)| (*active_requests, *index))
+        .map(|(_, _, backend)| backend)
+        .cloned()
+}
+
 struct GenerationStickyCid<T> {
     selector: GenerationKetama<T>,
 }
@@ -410,7 +433,7 @@ enum GenerationSelectorKind<T> {
     WeightedRandom(GenerationWeightedRandom<T>),
     Ketama(GenerationKetama<T>),
     StickyCid(GenerationStickyCid<T>),
-    CustomLeastConnections(GenerationBackendView),
+    LeastConnections(GenerationBackendView),
     CustomLatencyAware(GenerationBackendView),
 }
 
@@ -429,7 +452,7 @@ where
             GenerationSelectorKind::WeightedRandom(selector) => selector.selector.backends(),
             GenerationSelectorKind::Ketama(selector) => selector.selector.backends(),
             GenerationSelectorKind::StickyCid(selector) => selector.selector.selector.backends(),
-            GenerationSelectorKind::CustomLeastConnections(view)
+            GenerationSelectorKind::LeastConnections(view)
             | GenerationSelectorKind::CustomLatencyAware(view) => &view.view,
         }
     }
@@ -489,7 +512,7 @@ where
                 GenerationSelectorKind::StickyCid(GenerationStickyCid::from_backend_view(view))
             }
             LoadBalancingStrategy::LeastConnections => {
-                GenerationSelectorKind::CustomLeastConnections(view)
+                GenerationSelectorKind::LeastConnections(view)
             }
             LoadBalancingStrategy::LatencyAware => GenerationSelectorKind::CustomLatencyAware(view),
         };
@@ -502,7 +525,7 @@ where
             GenerationSelectorKind::WeightedRandom(selector) => selector.generation(),
             GenerationSelectorKind::Ketama(selector) => selector.generation(),
             GenerationSelectorKind::StickyCid(selector) => selector.generation(),
-            GenerationSelectorKind::CustomLeastConnections(view)
+            GenerationSelectorKind::LeastConnections(view)
             | GenerationSelectorKind::CustomLatencyAware(view) => view.generation(),
         }
     }
@@ -513,17 +536,13 @@ where
             GenerationSelectorKind::WeightedRandom(selector) => selector.upstream_name(),
             GenerationSelectorKind::Ketama(selector) => selector.upstream_name(),
             GenerationSelectorKind::StickyCid(selector) => selector.upstream_name(),
-            GenerationSelectorKind::CustomLeastConnections(view)
+            GenerationSelectorKind::LeastConnections(view)
             | GenerationSelectorKind::CustomLatencyAware(view) => view.upstream_name(),
         }
     }
 
     pub fn uses_custom_dynamic_selector(&self) -> bool {
-        matches!(
-            &self.kind,
-            GenerationSelectorKind::CustomLeastConnections(_)
-                | GenerationSelectorKind::CustomLatencyAware(_)
-        )
+        matches!(&self.kind, GenerationSelectorKind::CustomLatencyAware(_))
     }
 
     pub fn has_available_backend(&self) -> bool {
@@ -547,8 +566,7 @@ where
 
     pub fn custom_backend_runtime_id(&self, index: usize) -> Option<BackendId> {
         match &self.kind {
-            GenerationSelectorKind::CustomLeastConnections(view)
-            | GenerationSelectorKind::CustomLatencyAware(view) => {
+            GenerationSelectorKind::CustomLatencyAware(view) => {
                 view.backend_ids.get(index).copied()
             }
             _ => None,
@@ -586,8 +604,11 @@ where
             GenerationSelectorKind::StickyCid(selector) => {
                 selector.select_excluding(key, excluded_backend_ids)
             }
-            GenerationSelectorKind::CustomLeastConnections(_)
-            | GenerationSelectorKind::CustomLatencyAware(_) => None,
+            GenerationSelectorKind::LeastConnections(view) => {
+                least_loaded_backend::<T>(&view.view, excluded_backend_ids)
+                    .and_then(|backend| selection_result(backend, view.generation))
+            }
+            GenerationSelectorKind::CustomLatencyAware(_) => None,
         }
     }
 
@@ -601,7 +622,7 @@ where
             GenerationSelectorKind::StickyCid(selector) => {
                 selector.selector.selector.update().await
             }
-            GenerationSelectorKind::CustomLeastConnections(view)
+            GenerationSelectorKind::LeastConnections(view)
             | GenerationSelectorKind::CustomLatencyAware(view) => view.view.update(|_| {}).await,
         };
         result.map_err(|error| {
