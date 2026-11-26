@@ -2,14 +2,12 @@ use std::collections::HashMap;
 
 use impulse_config::{
     config::{Backend, Config, HealthCheck, Listen, LoadBalancing, RouteMatch, Tls, Upstream},
-    runtime::{
-        RuntimeConfig, RuntimeLoadBalancingStrategy, RuntimeRequestKeySpec, RuntimeUpstream,
-    },
+    runtime::{RuntimeConfig, RuntimeUpstream},
 };
 
 use crate::{
-    BackendHealthInput, BackendInput, BackendWeight, LoadBalancingStrategy, RequestKeyInput,
-    backend::BackendState, upstream_pool::UpstreamPool,
+    BackendHealthInput, BackendInput, BackendWeight, backend::BackendState,
+    upstream_pool::UpstreamPool,
 };
 
 pub(crate) fn backend_state(backend: &Backend) -> BackendState {
@@ -17,15 +15,7 @@ pub(crate) fn backend_state(backend: &Backend) -> BackendState {
 }
 
 pub(crate) fn upstream_pool(upstream: &RuntimeUpstream) -> Result<UpstreamPool, String> {
-    Ok(UpstreamPool::new(
-        backend_inputs(upstream),
-        strategy_input(upstream.load_balancing.strategy),
-        upstream
-            .load_balancing
-            .key_spec
-            .as_ref()
-            .map(request_key_input),
-    ))
+    Ok(UpstreamPool::new(backend_inputs(upstream)))
 }
 
 pub(crate) fn backend_input(index: usize, backend: &Backend) -> BackendInput {
@@ -45,15 +35,6 @@ pub(crate) fn backend_input(index: usize, backend: &Backend) -> BackendInput {
     )
 }
 
-pub(crate) fn health_input(health: &HealthCheck) -> BackendHealthInput {
-    BackendHealthInput::new(
-        health.failure_threshold,
-        health.success_threshold,
-        std::time::Duration::from_millis(health.cooldown_ms),
-        health.interval > 0,
-    )
-}
-
 pub(crate) fn backend_inputs(upstream: &RuntimeUpstream) -> Vec<BackendInput> {
     upstream
         .backends
@@ -61,34 +42,6 @@ pub(crate) fn backend_inputs(upstream: &RuntimeUpstream) -> Vec<BackendInput> {
         .enumerate()
         .map(|(index, backend)| backend_input(index, &backend.backend))
         .collect()
-}
-
-pub(crate) fn strategy_input(strategy: RuntimeLoadBalancingStrategy) -> LoadBalancingStrategy {
-    match strategy {
-        RuntimeLoadBalancingStrategy::RoundRobin => LoadBalancingStrategy::RoundRobin,
-        RuntimeLoadBalancingStrategy::ConsistentHash => LoadBalancingStrategy::ConsistentHash,
-        RuntimeLoadBalancingStrategy::Random => LoadBalancingStrategy::Random,
-        RuntimeLoadBalancingStrategy::LeastConnections => LoadBalancingStrategy::LeastConnections,
-        RuntimeLoadBalancingStrategy::LatencyAware => LoadBalancingStrategy::LatencyAware,
-        RuntimeLoadBalancingStrategy::StickyCid => LoadBalancingStrategy::StickyCid,
-        RuntimeLoadBalancingStrategy::Other => panic!("test runtime strategy must be supported"),
-    }
-}
-
-pub(crate) fn request_key_input(input: &RuntimeRequestKeySpec) -> RequestKeyInput {
-    match input {
-        RuntimeRequestKeySpec::Path => RequestKeyInput::Path,
-        RuntimeRequestKeySpec::Authority => RequestKeyInput::Authority,
-        RuntimeRequestKeySpec::Method => RequestKeyInput::Method,
-        RuntimeRequestKeySpec::Cid => RequestKeyInput::Cid,
-        RuntimeRequestKeySpec::StickyCid => RequestKeyInput::StickyCid,
-        RuntimeRequestKeySpec::PeerIp => RequestKeyInput::PeerIp,
-        RuntimeRequestKeySpec::ClientIp => RequestKeyInput::ClientIp,
-        RuntimeRequestKeySpec::BearerToken => RequestKeyInput::BearerToken,
-        RuntimeRequestKeySpec::Header(name) => RequestKeyInput::Header(name.clone()),
-        RuntimeRequestKeySpec::Cookie(name) => RequestKeyInput::Cookie(name.clone()),
-        RuntimeRequestKeySpec::Query(name) => RequestKeyInput::Query(name.clone()),
-    }
 }
 
 pub(crate) fn runtime_upstream_from_addresses(

@@ -21,7 +21,8 @@ mod test_support {
         config::{Backend, Config, HealthCheck, Listen, LoadBalancing, RouteMatch, Tls, Upstream},
         runtime::RuntimeConfig,
     };
-    use impulse_lb::upstream_pool::UpstreamPool;
+    use impulse_contracts::BackendId;
+    use impulse_lb::{pingora_backend::PingoraBackendRuntimeSnapshot, upstream_pool::UpstreamPool};
 
     fn test_runtime_config(interval: u64, backend_addr: &str) -> RuntimeConfig {
         let mut upstreams = HashMap::new();
@@ -102,5 +103,34 @@ mod test_support {
 
     pub(crate) fn test_active_health_upstream_pool() -> Arc<RwLock<UpstreamPool>> {
         test_upstream_pool_with_interval(1000)
+    }
+
+    pub(crate) fn test_backend_runtime_snapshots(
+        pools: &HashMap<String, Arc<RwLock<UpstreamPool>>>,
+    ) -> Vec<PingoraBackendRuntimeSnapshot> {
+        pools
+            .iter()
+            .flat_map(|(upstream_name, pool)| {
+                let guard = pool.read().expect("test upstream pool");
+                guard
+                    .backend_indices()
+                    .into_iter()
+                    .filter_map(|backend_index| {
+                        let configured_address = Arc::from(guard.backend_address(backend_index)?);
+                        let state = guard.backend_runtime_state(backend_index)?;
+                        Some(PingoraBackendRuntimeSnapshot {
+                            upstream_name: upstream_name.clone(),
+                            runtime_id: BackendId::new(backend_index as u32),
+                            configured_address,
+                            backend_index,
+                            present: true,
+                            ready: state.healthy,
+                            active_requests: state.active_requests,
+                            ewma_latency_ms: state.ewma_latency_ms,
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect()
     }
 }

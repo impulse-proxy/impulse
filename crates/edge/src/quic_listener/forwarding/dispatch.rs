@@ -455,8 +455,6 @@ impl Http3Service {
     }
 
     fn resolve_alternate_backend(
-        upstream_pool: &Arc<RwLock<UpstreamPool>>,
-        upstream_membership: &impulse_lb::upstream_pool::UpstreamPoolMembership,
         selector: &GenerationSelector<RuntimeBackendTlsPolicy>,
         backend_transport_identities: &[BackendEndpoint],
         input: BackendSelectionInput<'_>,
@@ -464,8 +462,6 @@ impl Http3Service {
     ) -> ResolvedAlternateBackend {
         match ForwardingSelectionService::select_backend_excluding(
             selector,
-            upstream_pool,
-            upstream_membership,
             backend_transport_identities,
             input,
             metrics,
@@ -608,33 +604,28 @@ impl Http3Service {
             .unwrap_or(shared_ctx.resilience);
         let circuit_breakers = Arc::clone(&resilience.circuit_breakers);
         let retry_budget = Arc::clone(&resilience.retry_budget);
-        let (backend_endpoints, alternate_selector, alternate_membership, alternate_generation) =
-            req.pinned_generation
-                .as_ref()
-                .and_then(|generation| {
-                    let state = generation.state();
-                    let route = state.route_runtime(pending_forward.upstream_id)?;
-                    Some((
-                        Arc::clone(&state.backend_endpoints_by_id),
-                        Some(Arc::clone(&route.selector)),
-                        Some(Arc::clone(&route.upstream_membership)),
-                        generation.generation(),
-                    ))
-                })
-                .unwrap_or_else(|| {
-                    (
-                        Arc::clone(&exec_ctx.backend_endpoints),
-                        shared_ctx
-                            .pingora_load_balancing
-                            .selector_by_id(pending_forward.upstream_id)
-                            .cloned(),
-                        shared_ctx
-                            .pingora_load_balancing
-                            .upstream_membership_by_id(pending_forward.upstream_id)
-                            .cloned(),
-                        shared_ctx.generation,
-                    )
-                });
+        let (backend_endpoints, alternate_selector, alternate_generation) = req
+            .pinned_generation
+            .as_ref()
+            .and_then(|generation| {
+                let state = generation.state();
+                let route = state.route_runtime(pending_forward.upstream_id)?;
+                Some((
+                    Arc::clone(&state.backend_endpoints_by_id),
+                    Some(Arc::clone(&route.selector)),
+                    generation.generation(),
+                ))
+            })
+            .unwrap_or_else(|| {
+                (
+                    Arc::clone(&exec_ctx.backend_endpoints),
+                    shared_ctx
+                        .pingora_load_balancing
+                        .selector_by_id(pending_forward.upstream_id)
+                        .cloned(),
+                    shared_ctx.generation,
+                )
+            });
         let transport_pool = Arc::clone(&exec_ctx.upstream_transport_pool);
         let hedge_delay = resilience.hedging_delay;
         let alternate_pool = req.upstream_pool.clone();
@@ -662,16 +653,8 @@ impl Http3Service {
         );
         let fut = async move {
             let resolve_alternate = || {
-                alternate_pool.as_ref().map(|upstream_pool| {
+                alternate_pool.as_ref().map(|_| {
                     let Some(selector) = alternate_selector.as_ref() else {
-                        alternate_metrics
-                            .runtime_observations()
-                            .inc_pingora_lb_selector_failure();
-                        return ResolvedAlternateBackend::Unavailable {
-                            reason: AlternateBackendFailureReason::PoolUnavailable,
-                        };
-                    };
-                    let Some(membership) = alternate_membership.as_ref() else {
                         alternate_metrics
                             .runtime_observations()
                             .inc_pingora_lb_selector_failure();
@@ -681,8 +664,6 @@ impl Http3Service {
                     };
                     let excluded = [pending_forward.backend_id];
                     Self::resolve_alternate_backend(
-                        upstream_pool,
-                        membership,
                         selector,
                         backend_endpoints.as_ref(),
                         BackendSelectionInput::new(

@@ -21,7 +21,7 @@ use crate::{
         },
         backend::state::{
             BackendHealthState, BackendLifecycleInventorySnapshot, BackendMembershipState,
-            BackendPoolPlacementSnapshot,
+            BackendRuntimePlacementSnapshot,
         },
         bundle::RuntimeGenerationRecord,
     },
@@ -360,7 +360,6 @@ struct ControlApiBackendPlacementPayload {
     healthy: bool,
     active_requests: usize,
     ewma_latency_ms: Option<f64>,
-    membership_epoch: u64,
 }
 
 #[derive(Serialize)]
@@ -515,7 +514,7 @@ mod tests {
         use crate::runtime::backend::{
             resolution::RuntimeBackendAddressKind,
             state::{
-                BackendIdentity, BackendPoolPlacementSnapshot, BackendResolutionState,
+                BackendIdentity, BackendResolutionState, BackendRuntimePlacementSnapshot,
                 CanonicalBackendLifecycleSnapshot,
             },
         };
@@ -583,13 +582,12 @@ mod tests {
                         },
                         health: BackendHealthState::Healthy,
                         membership: BackendMembershipState::Active,
-                        placements: vec![BackendPoolPlacementSnapshot {
+                        placements: vec![BackendRuntimePlacementSnapshot {
                             upstream_name: "api".into(),
                             backend_index: 0,
                             healthy: true,
                             active_requests: 1,
                             ewma_latency_ms: Some(12.5),
-                            membership_epoch: 9,
                         }],
                     },
                 ],

@@ -142,11 +142,6 @@ impl LoadBalancingStrategy {
             Self::StickyCid => "sticky-cid",
         }
     }
-
-    #[must_use]
-    pub const fn supports_readonly_alternate_pick(self) -> bool {
-        !matches!(self, Self::ConsistentHash | Self::StickyCid)
-    }
 }
 
 /// Validated source used to derive a keyed load-balancing value.

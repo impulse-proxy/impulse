@@ -200,7 +200,8 @@ impl ServiceDiscovery for ImpulseServiceDiscovery {
             .backends
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        Ok((backend_snapshot(&backends), HashMap::new()))
+        let backends = backend_snapshot(&backends);
+        Ok((backends, HashMap::new()))
     }
 }
 

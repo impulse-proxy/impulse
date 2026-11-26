@@ -1,6 +1,6 @@
 #[cfg(test)]
 use std::{
-    collections::hash_map::DefaultHasher,
+    collections::{HashMap, hash_map::DefaultHasher},
     hash::{Hash, Hasher},
 };
 
@@ -102,7 +102,20 @@ pub(in crate::quic_listener) fn selectors_for_test(
                 )),
             )
         })
-        .collect();
+        .collect::<HashMap<_, _>>();
+    let selection_states = upstream_pools
+        .iter()
+        .map(|(name, pool)| {
+            let pool = pool.read().expect("test upstream pool");
+            let states = (0..pool.state_summary().total_backends)
+                .map(|index| {
+                    pool.backend_selection_state(index)
+                        .expect("test backend selection state")
+                })
+                .collect::<Vec<_>>();
+            (name.clone(), states)
+        })
+        .collect::<HashMap<_, _>>();
     let views = runtime.upstreams.iter().map(move |(name, upstream)| {
         let upstream_id = identities
             .upstream_id(name)
@@ -129,6 +142,12 @@ pub(in crate::quic_listener) fn selectors_for_test(
                         .expect("test backend identity"),
                     address,
                     tls_identity.clone(),
+                    Arc::clone(
+                        selection_states
+                            .get(name)
+                            .and_then(|states| states.get(backend.index()))
+                            .expect("test backend selection state"),
+                    ),
                 )
             },
             Arc::clone(&view_health_registry),
@@ -138,6 +157,11 @@ pub(in crate::quic_listener) fn selectors_for_test(
             name.clone(),
             load_balancing_strategy_input(upstream.load_balancing.strategy)
                 .expect("validated load balancing strategy"),
+            upstream
+                .load_balancing
+                .key_spec
+                .as_ref()
+                .map(crate::runtime::subsystem_mapping::request_key_input),
             view,
         )
     });
@@ -162,8 +186,6 @@ pub(in crate::quic_listener) struct RouteResolution {
     pub(in crate::quic_listener) upstream_id: impulse_contracts::UpstreamId,
     pub(in crate::quic_listener) upstream_name: Arc<str>,
     pub(in crate::quic_listener) upstream_pool: Arc<RwLock<UpstreamPool>>,
-    pub(in crate::quic_listener) upstream_membership:
-        Arc<impulse_lb::upstream_pool::UpstreamPoolMembership>,
     pub(in crate::quic_listener) selector: Arc<GenerationSelector<RuntimeBackendTlsPolicy>>,
     pub(in crate::quic_listener) route_path_len: usize,
     pub(in crate::quic_listener) route_host_specific: bool,
@@ -339,7 +361,6 @@ impl Http3Service {
             upstream_id,
             upstream_name,
             upstream_pool,
-            upstream_membership: _,
             selector: _,
             route_path_len,
             route_host_specific,
@@ -398,7 +419,6 @@ impl Http3Service {
             route_id: route_target.route_id,
             upstream_id: route_target.upstream_id,
             upstream_pool: Arc::clone(&route_target.runtime.upstream_pool),
-            upstream_membership: Arc::clone(&route_target.runtime.upstream_membership),
             selector: Arc::clone(&route_target.runtime.selector),
             upstream_name,
             route_path_len: route_target.matched_path_len,
@@ -427,19 +447,11 @@ impl Http3Service {
                 RequestFailure::MissingUpstreamSelector,
             ))?
             .clone();
-        let upstream_membership = context
-            .pingora_load_balancing
-            .upstream_membership_by_id(route_target.upstream_id)
-            .ok_or(ProxyError::RequestTransport(
-                RequestFailure::MissingUpstreamPool,
-            ))?
-            .clone();
         Ok(RouteResolution {
             route_id: route_target.route_id,
             upstream_id: route_target.upstream_id,
             upstream_name,
             upstream_pool,
-            upstream_membership,
             selector,
             route_path_len: route_target.matched_path_len,
             route_host_specific: route_target.host_specific,
@@ -489,14 +501,12 @@ impl Http3Service {
     ) -> Result<TargetResolution, ProxyError> {
         let backend = ForwardingSelectionService::select_backend(
             request,
-            &route.upstream_pool,
             &route.selector,
             context.backend_transport_identities,
             SelectionScope {
                 generation: context.generation,
                 begin_request,
                 worker_slot: context.worker_slot,
-                membership: &route.upstream_membership,
             },
             context.metrics,
         )?;

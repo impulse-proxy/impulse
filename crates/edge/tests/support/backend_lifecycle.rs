@@ -23,7 +23,7 @@ use impulse_edge::runtime::{
 };
 use impulse_lb::{
     health::HealthTransition,
-    upstream_pool::{UpstreamBackendRuntimeState, UpstreamPoolMembershipSummary},
+    upstream_pool::{UpstreamBackendRuntimeState, UpstreamPoolStateSummary},
 };
 
 use super::{
@@ -144,10 +144,14 @@ impl BackendLifecycleHarness {
     pub(crate) fn backend_inventory(&self) -> Result<BackendLifecycleInventorySnapshot, String> {
         let handle = self.runtime_bundle_handle()?;
         let current = handle.current_view();
+        let runtime_backends = current
+            .state()
+            .pingora_load_balancing
+            .backend_runtime_snapshots();
         Ok(current
             .shared_services()
             .backend_lifecycle
-            .snapshot_inventory(&current.state().pingora_load_balancing.upstream_pools()))
+            .snapshot_inventory(&runtime_backends))
     }
 
     pub(crate) fn backend_snapshot(
@@ -165,7 +169,7 @@ impl BackendLifecycleHarness {
     pub(crate) fn upstream_membership_summary(
         &self,
         upstream_name: &str,
-    ) -> Result<UpstreamPoolMembershipSummary, String> {
+    ) -> Result<UpstreamPoolStateSummary, String> {
         let handle = self.runtime_bundle_handle()?;
         let current = handle.current_view();
         let pools = current.state().pingora_load_balancing.upstream_pools();
@@ -175,7 +179,7 @@ impl BackendLifecycleHarness {
         let guard = pool
             .read()
             .map_err(|_| format!("upstream pool '{upstream_name}' poisoned"))?;
-        Ok(guard.membership_summary())
+        Ok(guard.state_summary())
     }
 
     pub(crate) fn upstream_backend_runtime_state(

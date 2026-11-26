@@ -67,14 +67,13 @@ impl ControlApiBackendInventoryPayload {
 }
 
 impl ControlApiBackendPlacementPayload {
-    fn from_snapshot(snapshot: BackendPoolPlacementSnapshot) -> Self {
+    fn from_snapshot(snapshot: BackendRuntimePlacementSnapshot) -> Self {
         Self {
             upstream: snapshot.upstream_name,
             backend_index: snapshot.backend_index,
             healthy: snapshot.healthy,
             active_requests: snapshot.active_requests,
             ewma_latency_ms: snapshot.ewma_latency_ms,
-            membership_epoch: snapshot.membership_epoch,
         }
     }
 }

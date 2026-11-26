@@ -323,6 +323,15 @@ impl RuntimeBuilder {
                     name, err
                 ))
             })?;
+            let selection_states = (0..runtime_upstream.backends.len())
+                .map(|index| {
+                    upstream_pool.backend_selection_state(index).ok_or_else(|| {
+                        ProxyError::Transport(format!(
+                            "upstream '{name}' has no selection state for backend {index}"
+                        ))
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
             upstream_pools.insert(name.clone(), Arc::new(RwLock::new(upstream_pool)));
 
             let tls_identity = runtime_upstream.backend_tls_policy().clone();
@@ -349,8 +358,22 @@ impl RuntimeBuilder {
                                 backend.backend_id()
                             )
                         })?;
-                    let mut mapped =
-                        map_validated_backend(backend, backend_id, address, tls_identity.clone())?;
+                    let selection_state = selection_states
+                        .get(backend.index())
+                        .cloned()
+                        .ok_or_else(|| {
+                            format!(
+                                "missing selection state for backend '{}'",
+                                backend.backend_id()
+                            )
+                        })?;
+                    let mut mapped = map_validated_backend(
+                        backend,
+                        backend_id,
+                        address,
+                        tls_identity.clone(),
+                        selection_state,
+                    )?;
                     let health_identity = transport_pool
                         .pingora_backend_health_identity(backend.configured_address())
                         .ok_or_else(|| {
@@ -381,6 +404,11 @@ impl RuntimeBuilder {
                         ))
                     },
                 )?,
+                runtime_upstream
+                    .load_balancing
+                    .key_spec
+                    .as_ref()
+                    .map(crate::runtime::subsystem_mapping::request_key_input),
                 view,
             ));
         }
@@ -482,20 +510,11 @@ impl RuntimeBuilder {
                             "upstream '{upstream_name}' has no compiled upstream pool"
                         ))
                     })?;
-                let upstream_membership = pingora_load_balancing
-                    .upstream_membership_by_id(upstream_id)
-                    .cloned()
-                    .ok_or_else(|| {
-                        ProxyError::Transport(format!(
-                            "upstream '{upstream_name}' has no backend membership snapshot"
-                        ))
-                    })?;
                 Ok(RouteRuntime {
                     plugin_plan,
                     upstream_policy: Arc::new(upstream_policy.clone()),
                     selector,
                     upstream_pool,
-                    upstream_membership,
                     retry_policy: Arc::clone(&resilience.retry_budget),
                     observation_flags: Arc::clone(&observation_flags),
                 })

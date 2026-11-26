@@ -5,12 +5,12 @@ use pingora_core::{
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum PingoraUpstreamProtocol {
+pub(super) enum PingoraUpstreamProtocol {
     Http1,
     Http2,
 }
 
-pub fn pingora_peer_protocol(peer: &HttpPeer) -> PingoraUpstreamProtocol {
+pub(super) fn pingora_peer_protocol(peer: &HttpPeer) -> PingoraUpstreamProtocol {
     if matches!(peer.options.alpn, ALPN::H2) {
         PingoraUpstreamProtocol::Http2
     } else {
@@ -18,7 +18,7 @@ pub fn pingora_peer_protocol(peer: &HttpPeer) -> PingoraUpstreamProtocol {
     }
 }
 
-pub fn classify_pingora_proxy_error(
+pub(super) fn classify_pingora_proxy_error(
     error: &Error,
     protocol: PingoraUpstreamProtocol,
     reused: bool,

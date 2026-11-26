@@ -1,9 +1,7 @@
 mod support;
 
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
-use support::{
-    BACKEND_COUNTS, STRATEGIES, runtime_upstream, upstream_pool, upstream_pool_from_runtime,
-};
+use support::{BACKEND_COUNTS, STRATEGIES, runtime_upstream, selector_runtime};
 
 const KEYS: [&str; 8] = [
     "tenant:001",
@@ -20,7 +18,11 @@ fn benchmark_selection(criterion: &mut Criterion) {
     for (label, strategy) in STRATEGIES {
         let mut group = criterion.benchmark_group(format!("load_balancing/selection/{label}"));
         for backend_count in BACKEND_COUNTS {
-            let mut pool = upstream_pool(backend_count, strategy);
+            let upstream = runtime_upstream(backend_count, strategy);
+            let runtime = selector_runtime(&upstream);
+            let selector = runtime
+                .selector_by_id(impulse_contracts::UpstreamId::new(0))
+                .expect("benchmark selector");
             let mut key_index = 0usize;
 
             group.throughput(Throughput::Elements(1));
@@ -28,7 +30,7 @@ fn benchmark_selection(criterion: &mut Criterion) {
                 bencher.iter(|| {
                     let key = KEYS[key_index % KEYS.len()];
                     key_index = key_index.wrapping_add(1);
-                    black_box(pool.pick_without_begin(black_box(key)))
+                    black_box(selector.select_excluding(black_box(key), &[]))
                 });
             });
         }
@@ -47,8 +49,12 @@ fn benchmark_pool_index_construction(criterion: &mut Criterion) {
                 &upstream,
                 |bencher, upstream| {
                     bencher.iter(|| {
-                        let mut pool = upstream_pool_from_runtime(black_box(upstream));
-                        black_box(pool.pick_without_begin(black_box(KEYS[0])));
+                        let runtime = selector_runtime(black_box(upstream));
+                        black_box(
+                            runtime
+                                .selector_by_id(impulse_contracts::UpstreamId::new(0))
+                                .and_then(|selector| selector.select_excluding(KEYS[0], &[])),
+                        );
                     });
                 },
             );

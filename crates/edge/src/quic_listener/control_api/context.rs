@@ -91,9 +91,10 @@ impl ControlApiServiceCtx {
         let endpoint = runtime.runtime_config().observability.control_api.clone();
         let security = runtime.control_api_security();
         let paths = ControlApiPaths::from_endpoint(&endpoint);
+        let runtime_backends = runtime.pingora_load_balancing().backend_runtime_snapshots();
         let backend_inventory = runtime
             .backend_lifecycle()
-            .snapshot_inventory(&runtime.upstream_pools());
+            .snapshot_inventory(&runtime_backends);
         let runtime_view = OperationalRuntimeView::new(OperationalRuntimeViewInput {
             runtime_config: runtime.runtime_config().clone(),
             generation,
