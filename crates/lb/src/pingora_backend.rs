@@ -32,10 +32,10 @@ use crate::{
     pingora_discovery::ImpulseServiceDiscovery, upstream_pool::UpstreamPool,
 };
 
-const WORKER_SELECTION_SLOTS: usize = 256;
 const ACTIVE_REQUEST_PENALTY_MS: f64 = 10.0;
 const UNSAMPLED_PROBE_INTERVAL: u64 = 16;
 const EXPLORATION_INTERVAL: u64 = 32;
+const LATENCY_AWARE_STATE_SLOTS: usize = 256;
 
 #[derive(Clone, Debug)]
 pub struct BackendSelectionResult<P> {
@@ -121,8 +121,7 @@ where
             .is_some_and(|identity| !excluded_backend_ids.contains(&identity.runtime_id()))
 }
 
-/// Pads a per-worker value to its own cache line so workers that own adjacent
-/// slots do not invalidate each other's line on every update (false sharing).
+/// Keeps latency-aware state owned by adjacent workers on separate cache lines.
 #[repr(align(64))]
 struct Padded<T>(T);
 
@@ -373,19 +372,10 @@ where
         self.selector
             .select_excluding(cid_key.as_bytes(), excluded_backend_ids)
     }
-
-    fn generation(&self) -> u64 {
-        self.selector.generation()
-    }
-
-    fn upstream_name(&self) -> &str {
-        self.selector.upstream_name()
-    }
 }
 
 struct GenerationKetama<T> {
     generation: u64,
-    upstream_name: String,
     selector: LoadBalancer<pingora_load_balancing::selection::Consistent>,
     policy: std::marker::PhantomData<T>,
 }
@@ -397,14 +387,13 @@ where
     fn from_backend_view(view: GenerationBackendView) -> Self {
         let GenerationBackendView {
             generation,
-            upstream_name,
+            upstream_name: _,
             view,
             discovery: _,
         } = view;
 
         Self {
             generation,
-            upstream_name,
             selector: LoadBalancer::from_backends(view),
             policy: std::marker::PhantomData,
         }
@@ -424,122 +413,10 @@ where
         .or_else(|| first_available_backend::<T>(self.selector.backends(), excluded_backend_ids))?;
         selection_result(selected, self.generation)
     }
-
-    fn generation(&self) -> u64 {
-        self.generation
-    }
-
-    fn upstream_name(&self) -> &str {
-        &self.upstream_name
-    }
-}
-
-struct GenerationWeightedRandom<T> {
-    generation: u64,
-    upstream_name: String,
-    selector: LoadBalancer<PingoraWeighted<PingoraRandom>>,
-    policy: std::marker::PhantomData<T>,
-}
-
-impl<T> GenerationWeightedRandom<T>
-where
-    T: Clone + Send + Sync + 'static,
-{
-    fn from_backend_view(view: GenerationBackendView) -> Self {
-        let GenerationBackendView {
-            generation,
-            upstream_name,
-            view,
-            discovery: _,
-        } = view;
-
-        Self {
-            generation,
-            upstream_name,
-            selector: LoadBalancer::from_backends(view),
-            policy: std::marker::PhantomData,
-        }
-    }
-
-    fn select_excluding(
-        &self,
-        excluded_backend_ids: &[BackendId],
-        _worker_slot: usize,
-    ) -> Option<BackendSelectionResult<T>> {
-        let backend_count = self.selector.backends().get_backend().len();
-        let selected = select_pingora_excluding::<T, _>(
-            &self.selector,
-            &[],
-            backend_count.saturating_mul(10),
-            excluded_backend_ids,
-        )
-        .or_else(|| first_available_backend::<T>(self.selector.backends(), excluded_backend_ids))?;
-        selection_result(selected, self.generation)
-    }
-
-    fn generation(&self) -> u64 {
-        self.generation
-    }
-
-    fn upstream_name(&self) -> &str {
-        &self.upstream_name
-    }
-}
-
-struct GenerationWeightedRoundRobin<T> {
-    generation: u64,
-    upstream_name: String,
-    selector: LoadBalancer<PingoraWeighted<PingoraRoundRobin>>,
-    policy: std::marker::PhantomData<T>,
-}
-
-impl<T> GenerationWeightedRoundRobin<T>
-where
-    T: Clone + Send + Sync + 'static,
-{
-    fn from_backend_view(view: GenerationBackendView) -> Self {
-        let GenerationBackendView {
-            generation,
-            upstream_name,
-            view,
-            discovery: _,
-        } = view;
-
-        Self {
-            generation,
-            upstream_name,
-            selector: LoadBalancer::from_backends(view),
-            policy: std::marker::PhantomData,
-        }
-    }
-
-    fn select_excluding(
-        &self,
-        excluded_backend_ids: &[BackendId],
-        _worker_slot: usize,
-    ) -> Option<BackendSelectionResult<T>> {
-        let backend_count = self.selector.backends().get_backend().len();
-        let selected = select_pingora_excluding::<T, _>(
-            &self.selector,
-            &[],
-            backend_count.saturating_add(1),
-            excluded_backend_ids,
-        )?;
-        selection_result(selected, self.generation)
-    }
-
-    fn generation(&self) -> u64 {
-        self.generation
-    }
-
-    fn upstream_name(&self) -> &str {
-        &self.upstream_name
-    }
 }
 
 struct GenerationLatencyAware<T> {
     generation: u64,
-    upstream_name: String,
     backends: BackendView,
     worker_states: Box<[Padded<LatencyAwareSelectionState>]>,
     policy: std::marker::PhantomData<T>,
@@ -552,15 +429,14 @@ where
     fn from_backend_view(view: GenerationBackendView) -> Self {
         let GenerationBackendView {
             generation,
-            upstream_name,
+            upstream_name: _,
             view,
             discovery: _,
         } = view;
         Self {
             generation,
-            upstream_name,
             backends: view,
-            worker_states: (0..WORKER_SELECTION_SLOTS)
+            worker_states: (0..LATENCY_AWARE_STATE_SLOTS)
                 .map(|_| Padded(LatencyAwareSelectionState::default()))
                 .collect(),
             policy: std::marker::PhantomData,
@@ -576,14 +452,6 @@ where
         latency_aware_backend::<T>(&self.backends, excluded_backend_ids, state)
             .and_then(|backend| selection_result(backend, self.generation))
     }
-
-    fn generation(&self) -> u64 {
-        self.generation
-    }
-
-    fn upstream_name(&self) -> &str {
-        &self.upstream_name
-    }
 }
 
 pub struct GenerationBackendView {
@@ -594,8 +462,8 @@ pub struct GenerationBackendView {
 }
 
 enum GenerationSelectorKind<T> {
-    WeightedRoundRobin(GenerationWeightedRoundRobin<T>),
-    WeightedRandom(GenerationWeightedRandom<T>),
+    WeightedRoundRobin(LoadBalancer<PingoraWeighted<PingoraRoundRobin>>),
+    WeightedRandom(LoadBalancer<PingoraWeighted<PingoraRandom>>),
     Ketama(GenerationKetama<T>),
     StickyCid(GenerationStickyCid<T>),
     LeastConnections(GenerationBackendView),
@@ -603,6 +471,8 @@ enum GenerationSelectorKind<T> {
 }
 
 pub struct GenerationSelector<T> {
+    generation: u64,
+    upstream_name: String,
     kind: GenerationSelectorKind<T>,
     strategy: LoadBalancingStrategy,
     request_key: Option<RequestKeyInput>,
@@ -633,8 +503,8 @@ where
 {
     fn backends(&self) -> &BackendView {
         match &self.kind {
-            GenerationSelectorKind::WeightedRoundRobin(selector) => selector.selector.backends(),
-            GenerationSelectorKind::WeightedRandom(selector) => selector.selector.backends(),
+            GenerationSelectorKind::WeightedRoundRobin(selector) => selector.backends(),
+            GenerationSelectorKind::WeightedRandom(selector) => selector.backends(),
             GenerationSelectorKind::Ketama(selector) => selector.selector.backends(),
             GenerationSelectorKind::StickyCid(selector) => selector.selector.selector.backends(),
             GenerationSelectorKind::LeastConnections(view) => &view.view,
@@ -660,6 +530,8 @@ where
         request_key: Option<RequestKeyInput>,
         view: GenerationBackendView,
     ) -> Result<Self, String> {
+        let generation = view.generation;
+        let upstream_name = view.upstream_name.clone();
         let mut backend_metadata = Vec::new();
         for backend in view.view.get_backend().iter() {
             let identity = backend
@@ -697,12 +569,12 @@ where
                 )
             })?;
         let kind = match strategy {
-            LoadBalancingStrategy::RoundRobin => GenerationSelectorKind::WeightedRoundRobin(
-                GenerationWeightedRoundRobin::from_backend_view(view),
-            ),
-            LoadBalancingStrategy::Random => GenerationSelectorKind::WeightedRandom(
-                GenerationWeightedRandom::from_backend_view(view),
-            ),
+            LoadBalancingStrategy::RoundRobin => {
+                GenerationSelectorKind::WeightedRoundRobin(LoadBalancer::from_backends(view.view))
+            }
+            LoadBalancingStrategy::Random => {
+                GenerationSelectorKind::WeightedRandom(LoadBalancer::from_backends(view.view))
+            }
             LoadBalancingStrategy::ConsistentHash => {
                 GenerationSelectorKind::Ketama(GenerationKetama::from_backend_view(view))
             }
@@ -717,6 +589,8 @@ where
             ),
         };
         Ok(Self {
+            generation,
+            upstream_name,
             kind,
             strategy,
             request_key,
@@ -758,25 +632,11 @@ where
     }
 
     pub fn generation(&self) -> u64 {
-        match &self.kind {
-            GenerationSelectorKind::WeightedRoundRobin(selector) => selector.generation(),
-            GenerationSelectorKind::WeightedRandom(selector) => selector.generation(),
-            GenerationSelectorKind::Ketama(selector) => selector.generation(),
-            GenerationSelectorKind::StickyCid(selector) => selector.generation(),
-            GenerationSelectorKind::LeastConnections(view) => view.generation(),
-            GenerationSelectorKind::LatencyAware(selector) => selector.generation(),
-        }
+        self.generation
     }
 
     pub fn upstream_name(&self) -> &str {
-        match &self.kind {
-            GenerationSelectorKind::WeightedRoundRobin(selector) => selector.upstream_name(),
-            GenerationSelectorKind::WeightedRandom(selector) => selector.upstream_name(),
-            GenerationSelectorKind::Ketama(selector) => selector.upstream_name(),
-            GenerationSelectorKind::StickyCid(selector) => selector.upstream_name(),
-            GenerationSelectorKind::LeastConnections(view) => view.upstream_name(),
-            GenerationSelectorKind::LatencyAware(selector) => selector.upstream_name(),
-        }
+        &self.upstream_name
     }
 
     pub fn has_available_backend(&self) -> bool {
@@ -834,10 +694,25 @@ where
     ) -> Option<BackendSelectionResult<T>> {
         match &self.kind {
             GenerationSelectorKind::WeightedRoundRobin(selector) => {
-                selector.select_excluding(excluded_backend_ids, worker_slot)
+                let backend_count = selector.backends().get_backend().len();
+                select_pingora_excluding::<T, _>(
+                    selector,
+                    &[],
+                    backend_count.saturating_add(1),
+                    excluded_backend_ids,
+                )
+                .and_then(|backend| selection_result(backend, self.generation))
             }
             GenerationSelectorKind::WeightedRandom(selector) => {
-                selector.select_excluding(excluded_backend_ids, worker_slot)
+                let backend_count = selector.backends().get_backend().len();
+                select_pingora_excluding::<T, _>(
+                    selector,
+                    &[],
+                    backend_count.saturating_mul(10),
+                    excluded_backend_ids,
+                )
+                .or_else(|| first_available_backend::<T>(selector.backends(), excluded_backend_ids))
+                .and_then(|backend| selection_result(backend, self.generation))
             }
             GenerationSelectorKind::Ketama(selector) => {
                 selector.select_excluding(key.as_bytes(), excluded_backend_ids)
@@ -857,10 +732,8 @@ where
 
     async fn rebuild(&self) -> Result<(), String> {
         let result = match &self.kind {
-            GenerationSelectorKind::WeightedRoundRobin(selector) => {
-                selector.selector.update().await
-            }
-            GenerationSelectorKind::WeightedRandom(selector) => selector.selector.update().await,
+            GenerationSelectorKind::WeightedRoundRobin(selector) => selector.update().await,
+            GenerationSelectorKind::WeightedRandom(selector) => selector.update().await,
             GenerationSelectorKind::Ketama(selector) => selector.selector.update().await,
             GenerationSelectorKind::StickyCid(selector) => {
                 selector.selector.selector.update().await
@@ -1588,15 +1461,11 @@ mod tests {
         selector
     }
 
-    fn picks_for_worker(
-        selector: &GenerationSelector<()>,
-        worker_slot: usize,
-        count: usize,
-    ) -> Vec<usize> {
+    fn picks(selector: &GenerationSelector<()>, count: usize) -> Vec<usize> {
         (0..count)
             .map(|_| {
                 selector
-                    .select_excluding_for_worker("", &[], worker_slot)
+                    .select_excluding("", &[])
                     .expect("selection")
                     .index()
             })
@@ -1604,10 +1473,10 @@ mod tests {
     }
 
     #[test]
-    fn weighted_round_robin_follows_weights_within_a_worker() {
+    fn weighted_round_robin_follows_weights() {
         let selector = ready_selector(LoadBalancingStrategy::RoundRobin, &[3, 1]);
         // Two full cycles of total weight 4.
-        let picks = picks_for_worker(&selector, 0, 8);
+        let picks = picks(&selector, 8);
         assert_eq!(picks.iter().filter(|index| **index == 0).count(), 6);
         assert_eq!(picks.iter().filter(|index| **index == 1).count(), 2);
     }
@@ -1615,18 +1484,15 @@ mod tests {
     #[test]
     fn round_robin_uses_pingora_global_cursor() {
         let selector = ready_selector(LoadBalancingStrategy::RoundRobin, &[1, 1]);
-        assert_eq!(picks_for_worker(&selector, 0, 1), vec![0]);
-        assert_eq!(picks_for_worker(&selector, 1, 1), vec![1]);
-        assert_eq!(
-            picks_for_worker(&selector, WORKER_SELECTION_SLOTS + 3, 2),
-            vec![0, 1]
-        );
+        assert_eq!(picks(&selector, 1), vec![0]);
+        assert_eq!(picks(&selector, 1), vec![1]);
+        assert_eq!(picks(&selector, 2), vec![0, 1]);
     }
 
     #[test]
     fn weighted_random_respects_weights() {
         let selector = ready_selector(LoadBalancingStrategy::Random, &[9, 1]);
-        let picks = picks_for_worker(&selector, 0, 4_000);
+        let picks = picks(&selector, 4_000);
         let heavy = picks.iter().filter(|index| **index == 0).count();
         // Expected 3600 with a standard deviation of about 19; allow a wide margin.
         assert!(
@@ -1644,17 +1510,15 @@ mod tests {
             let selector = GenerationSelector::<()>::new(strategy, None, backend_view(&[1, 1, 1]))
                 .expect("selector");
             set_test_readiness(&selector, |index| index != 1);
-            for worker_slot in [0, 1, 7] {
-                for _ in 0..32 {
-                    let picked = selector
-                        .select_excluding_for_worker("", &[BackendId::new(0)], worker_slot)
-                        .expect("selection")
-                        .index();
-                    assert_eq!(
-                        picked, 2,
-                        "{strategy:?} picked an excluded or unhealthy backend"
-                    );
-                }
+            for _ in 0..32 {
+                let picked = selector
+                    .select_excluding("", &[BackendId::new(0)])
+                    .expect("selection")
+                    .index();
+                assert_eq!(
+                    picked, 2,
+                    "{strategy:?} picked an excluded or unhealthy backend"
+                );
             }
         }
     }
@@ -1668,15 +1532,15 @@ mod tests {
             let selector = GenerationSelector::<()>::new(strategy, None, backend_view(&[1, 1]))
                 .expect("selector");
             set_test_readiness(&selector, |_| false);
-            assert!(selector.select_excluding_for_worker("", &[], 0).is_none());
+            assert!(selector.select_excluding("", &[]).is_none());
         }
     }
 
     #[test]
-    fn per_worker_selection_state_occupies_its_own_cache_line() {
-        assert_eq!(std::mem::align_of::<Padded<AtomicUsize>>(), 64);
-        assert_eq!(std::mem::size_of::<Padded<AtomicUsize>>(), 64);
-        assert_eq!(std::mem::align_of::<Padded<AtomicU64>>(), 64);
-        assert_eq!(std::mem::size_of::<Padded<AtomicU64>>(), 64);
+    fn latency_aware_worker_state_is_cache_line_aligned() {
+        assert_eq!(
+            std::mem::align_of::<Padded<LatencyAwareSelectionState>>(),
+            64
+        );
     }
 }
