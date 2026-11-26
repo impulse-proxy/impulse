@@ -2,9 +2,7 @@ use std::{collections::HashMap, net::UdpSocket, sync::Arc, time::Instant};
 
 use impulse_config::runtime::{ListenerRuntimeConfig, RuntimeBackendTlsPolicy, RuntimeConfig};
 use impulse_errors::ProxyError;
-use impulse_lb::{
-    pingora_backend::SharedPingoraLoadBalancingRuntimeState, upstream_pool::UpstreamPool,
-};
+use impulse_lb::pingora_backend::SharedPingoraLoadBalancingRuntimeState;
 use impulse_operations::watchdog::WatchdogCoordinator;
 use impulse_plugins::CompiledGenerationPluginPlans;
 use impulse_transport::{SharedDnsResolver, UpstreamTransportPool};
@@ -131,10 +129,6 @@ impl ControlPlaneRuntimeView {
 
     pub(super) fn backend_dns_resolver(&self) -> SharedDnsResolver {
         self.backend_dns_resolver.clone()
-    }
-
-    pub(super) fn upstream_pools(&self) -> HashMap<String, Arc<std::sync::RwLock<UpstreamPool>>> {
-        self.pingora_load_balancing.upstream_pools()
     }
 
     pub(super) fn pingora_load_balancing(

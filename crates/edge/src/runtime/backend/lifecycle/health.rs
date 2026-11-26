@@ -108,7 +108,10 @@ mod tests {
         use impulse_lb::health::HealthTransition;
 
         use super::super::{
-            super::test_support::{test_active_health_upstream_pool, test_upstream_pool},
+            super::test_support::{
+                test_active_health_upstream_pool, test_backend_runtime_snapshots,
+                test_upstream_pool,
+            },
             apply_backend_health_observation, evaluate_active_health_check,
         };
         use crate::runtime::backend::{
@@ -204,7 +207,9 @@ mod tests {
 
             let mut pools = HashMap::new();
             pools.insert("api".to_string(), Arc::clone(&pool));
-            let summary = coordinator.snapshot_inventory(&pools).summary();
+            let summary = coordinator
+                .snapshot_inventory(&test_backend_runtime_snapshots(&pools))
+                .summary();
             assert_eq!(summary.healthy_backends, 0);
             assert_eq!(summary.total_backends, 1);
 
@@ -219,11 +224,13 @@ mod tests {
                 coordinator.apply_health_observation(Some(&pool), Some(0), &success.observation);
             assert!(matches!(transition, Some(HealthTransition::BecameHealthy)));
 
-            let summary = coordinator.snapshot_inventory(&pools).summary();
+            let summary = coordinator
+                .snapshot_inventory(&test_backend_runtime_snapshots(&pools))
+                .summary();
             assert_eq!(summary.healthy_backends, 1);
 
             let backend = coordinator
-                .snapshot_inventory(&pools)
+                .snapshot_inventory(&test_backend_runtime_snapshots(&pools))
                 .backends
                 .into_iter()
                 .find(|backend| backend.identity.backend_addr == "127.0.0.1:8080")
@@ -311,7 +318,7 @@ mod tests {
                 Some(HealthTransition::BecameUnhealthy)
             ));
 
-            let inventory = coordinator.snapshot_inventory(&pools);
+            let inventory = coordinator.snapshot_inventory(&test_backend_runtime_snapshots(&pools));
             let backend = inventory
                 .backends
                 .iter()
@@ -367,7 +374,10 @@ mod tests {
         use impulse_lb::health::HealthTransition;
 
         use super::super::{
-            super::test_support::{test_active_health_upstream_pool, test_upstream_pool},
+            super::test_support::{
+                test_active_health_upstream_pool, test_backend_runtime_snapshots,
+                test_upstream_pool,
+            },
             apply_backend_request_accounting, apply_backend_request_feedback,
             evaluate_active_health_check,
         };
@@ -587,7 +597,7 @@ mod tests {
                 Some(HealthTransition::BecameUnhealthy)
             ));
 
-            let inventory = coordinator.snapshot_inventory(&pools);
+            let inventory = coordinator.snapshot_inventory(&test_backend_runtime_snapshots(&pools));
             let backend = inventory
                 .backends
                 .iter()
@@ -656,7 +666,7 @@ mod tests {
                 Some(HealthTransition::BecameUnhealthy)
             ));
 
-            let inventory = coordinator.snapshot_inventory(&pools);
+            let inventory = coordinator.snapshot_inventory(&test_backend_runtime_snapshots(&pools));
             let backend = inventory
                 .backends
                 .iter()
@@ -697,7 +707,7 @@ mod tests {
             assert!(transition.is_none());
             assert_eq!(
                 coordinator
-                    .snapshot_inventory(&pools)
+                    .snapshot_inventory(&test_backend_runtime_snapshots(&pools))
                     .summary()
                     .healthy_backends,
                 1
@@ -718,7 +728,7 @@ mod tests {
             ));
             assert_eq!(
                 coordinator
-                    .snapshot_inventory(&pools)
+                    .snapshot_inventory(&test_backend_runtime_snapshots(&pools))
                     .summary()
                     .healthy_backends,
                 0

@@ -63,7 +63,7 @@ pub struct BackendLifecycleSnapshot {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct BackendPoolPlacementSnapshot {
+pub struct BackendRuntimePlacementSnapshot {
     pub upstream_name: String,
     pub backend_index: usize,
     pub healthy: bool,
@@ -77,7 +77,7 @@ pub struct CanonicalBackendLifecycleSnapshot {
     pub resolution: BackendResolutionState,
     pub health: BackendHealthState,
     pub membership: BackendMembershipState,
-    pub placements: Vec<BackendPoolPlacementSnapshot>,
+    pub placements: Vec<BackendRuntimePlacementSnapshot>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -171,7 +171,7 @@ mod tests {
                     },
                     health: BackendHealthState::Healthy,
                     membership: BackendMembershipState::Active,
-                    placements: vec![BackendPoolPlacementSnapshot {
+                    placements: vec![BackendRuntimePlacementSnapshot {
                         upstream_name: "api".into(),
                         backend_index: 0,
                         healthy: true,
@@ -191,7 +191,7 @@ mod tests {
                     },
                     health: BackendHealthState::Unhealthy { reason: None },
                     membership: BackendMembershipState::Suppressed,
-                    placements: vec![BackendPoolPlacementSnapshot {
+                    placements: vec![BackendRuntimePlacementSnapshot {
                         upstream_name: "api".into(),
                         backend_index: 1,
                         healthy: false,

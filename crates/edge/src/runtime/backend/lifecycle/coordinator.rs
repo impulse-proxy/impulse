@@ -3,7 +3,10 @@ use std::{
     sync::{Arc, RwLock},
 };
 
-use impulse_lb::{health::HealthTransition, upstream_pool::UpstreamPool};
+use impulse_lb::{
+    health::HealthTransition, pingora_backend::PingoraBackendRuntimeSnapshot,
+    upstream_pool::UpstreamPool,
+};
 
 use super::health::apply_backend_health_observation;
 use crate::runtime::backend::{
@@ -11,8 +14,8 @@ use crate::runtime::backend::{
     resolution::{RuntimeBackendAddressKind, RuntimeBackendResolution},
     state::{
         BackendHealthState, BackendIdentity, BackendLifecycleInventorySnapshot,
-        BackendLifecycleSnapshot, BackendMembershipState, BackendPoolPlacementSnapshot,
-        BackendResolutionState, CanonicalBackendLifecycleSnapshot,
+        BackendLifecycleSnapshot, BackendMembershipState, BackendResolutionState,
+        BackendRuntimePlacementSnapshot, CanonicalBackendLifecycleSnapshot,
     },
     store::RuntimeBackendResolutionStore,
 };
@@ -95,7 +98,7 @@ impl BackendLifecycleCoordinator {
 
     pub fn snapshot_inventory(
         &self,
-        upstream_pools: &HashMap<String, Arc<RwLock<UpstreamPool>>>,
+        runtime_backends: &[PingoraBackendRuntimeSnapshot],
     ) -> BackendLifecycleInventorySnapshot {
         let mut snapshots = self
             .snapshot_all()
@@ -114,37 +117,29 @@ impl BackendLifecycleCoordinator {
             })
             .collect::<HashMap<_, _>>();
 
-        for (upstream_name, pool) in upstream_pools {
-            let Ok(guard) = pool.read() else {
-                continue;
-            };
-            for backend_index in guard.backend_indices() {
-                let Some(backend_addr) = guard.backend_address(backend_index) else {
-                    continue;
-                };
-                let Some(backend) = guard.backend_runtime_state(backend_index) else {
-                    continue;
-                };
-                let entry = snapshots
-                    .entry(backend_addr.to_string())
-                    .or_insert_with(|| CanonicalBackendLifecycleSnapshot {
-                        identity: BackendIdentity::new(backend_addr.to_string()),
-                        resolution: BackendResolutionState {
-                            authority_host: backend_addr.to_string(),
-                            authority_port: 0,
-                            address_kind: RuntimeBackendAddressKind::IpLiteral,
-                            resolved_addrs: Vec::new(),
-                            last_refresh_success_at: None,
-                            refresh_generation: 0,
-                        },
-                        health: BackendHealthState::Unknown,
-                        membership: BackendMembershipState::Removed,
-                        placements: Vec::new(),
-                    });
-                entry.placements.push(BackendPoolPlacementSnapshot {
-                    upstream_name: upstream_name.clone(),
-                    backend_index,
-                    healthy: backend.healthy,
+        for backend in runtime_backends {
+            let backend_addr = backend.configured_address.as_ref();
+            let entry = snapshots
+                .entry(backend_addr.to_string())
+                .or_insert_with(|| CanonicalBackendLifecycleSnapshot {
+                    identity: BackendIdentity::new(backend_addr.to_string()),
+                    resolution: BackendResolutionState {
+                        authority_host: backend_addr.to_string(),
+                        authority_port: 0,
+                        address_kind: RuntimeBackendAddressKind::IpLiteral,
+                        resolved_addrs: Vec::new(),
+                        last_refresh_success_at: None,
+                        refresh_generation: 0,
+                    },
+                    health: BackendHealthState::Unknown,
+                    membership: BackendMembershipState::Removed,
+                    placements: Vec::new(),
+                });
+            if backend.present {
+                entry.placements.push(BackendRuntimePlacementSnapshot {
+                    upstream_name: backend.upstream_name.clone(),
+                    backend_index: backend.backend_index,
+                    healthy: backend.ready,
                     active_requests: backend.active_requests,
                     ewma_latency_ms: backend.ewma_latency_ms,
                 });
@@ -158,7 +153,12 @@ impl BackendLifecycleCoordinator {
                 continue;
             }
 
-            backend.membership = BackendMembershipState::Active;
+            let any_ready = backend.placements.iter().any(|placement| placement.healthy);
+            backend.membership = if any_ready {
+                BackendMembershipState::Active
+            } else {
+                BackendMembershipState::Suppressed
+            };
             backend.health = if backend.placements.iter().all(|placement| placement.healthy) {
                 BackendHealthState::Healthy
             } else {
@@ -195,7 +195,10 @@ mod tests {
         use impulse_lb::health::HealthTransition;
 
         use super::super::{
-            super::test_support::{test_active_health_upstream_pool, test_upstream_pool},
+            super::test_support::{
+                test_active_health_upstream_pool, test_backend_runtime_snapshots,
+                test_upstream_pool,
+            },
             BackendLifecycleCoordinator, RuntimeBackendLifecycleState,
         };
         use crate::runtime::backend::{
@@ -259,7 +262,7 @@ mod tests {
             let mut pools = HashMap::new();
             pools.insert("api".to_string(), test_upstream_pool());
 
-            let inventory = coordinator.snapshot_inventory(&pools);
+            let inventory = coordinator.snapshot_inventory(&test_backend_runtime_snapshots(&pools));
             let backend = inventory
                 .backends
                 .iter()
@@ -291,7 +294,7 @@ mod tests {
             let mut pools = HashMap::new();
             pools.insert("api".to_string(), test_upstream_pool());
 
-            let inventory = coordinator.snapshot_inventory(&pools);
+            let inventory = coordinator.snapshot_inventory(&test_backend_runtime_snapshots(&pools));
             let active = inventory
                 .backends
                 .iter()
@@ -344,7 +347,7 @@ mod tests {
 
             let mut pools = HashMap::new();
             pools.insert("api".to_string(), pool);
-            let inventory = coordinator.snapshot_inventory(&pools);
+            let inventory = coordinator.snapshot_inventory(&test_backend_runtime_snapshots(&pools));
 
             let active = inventory
                 .backends
@@ -352,7 +355,7 @@ mod tests {
                 .find(|backend| backend.identity.backend_addr == placed_backend)
                 .expect("active backend");
             assert_eq!(active.identity.backend_addr, placed_backend);
-            assert_eq!(active.membership, BackendMembershipState::Active);
+            assert_eq!(active.membership, BackendMembershipState::Suppressed);
             assert!(matches!(
                 active.health,
                 BackendHealthState::Unhealthy { reason: None }

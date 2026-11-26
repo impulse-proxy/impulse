@@ -21,7 +21,7 @@ use crate::{
         },
         backend::state::{
             BackendHealthState, BackendLifecycleInventorySnapshot, BackendMembershipState,
-            BackendPoolPlacementSnapshot,
+            BackendRuntimePlacementSnapshot,
         },
         bundle::RuntimeGenerationRecord,
     },
@@ -514,7 +514,7 @@ mod tests {
         use crate::runtime::backend::{
             resolution::RuntimeBackendAddressKind,
             state::{
-                BackendIdentity, BackendPoolPlacementSnapshot, BackendResolutionState,
+                BackendIdentity, BackendResolutionState, BackendRuntimePlacementSnapshot,
                 CanonicalBackendLifecycleSnapshot,
             },
         };
@@ -582,7 +582,7 @@ mod tests {
                         },
                         health: BackendHealthState::Healthy,
                         membership: BackendMembershipState::Active,
-                        placements: vec![BackendPoolPlacementSnapshot {
+                        placements: vec![BackendRuntimePlacementSnapshot {
                             upstream_name: "api".into(),
                             backend_index: 0,
                             healthy: true,

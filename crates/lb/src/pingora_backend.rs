@@ -651,6 +651,25 @@ pub struct GenerationSelector<T> {
     kind: GenerationSelectorKind<T>,
     strategy: LoadBalancingStrategy,
     request_key: Option<RequestKeyInput>,
+    backend_metadata: Box<[GenerationBackendMetadata]>,
+}
+
+struct GenerationBackendMetadata {
+    runtime_id: BackendId,
+    configured_address: Arc<str>,
+    selection_state: Arc<BackendSelectionState>,
+}
+
+#[derive(Clone, Debug)]
+pub struct PingoraBackendRuntimeSnapshot {
+    pub upstream_name: String,
+    pub runtime_id: BackendId,
+    pub configured_address: Arc<str>,
+    pub backend_index: usize,
+    pub present: bool,
+    pub ready: bool,
+    pub active_requests: usize,
+    pub ewma_latency_ms: Option<f64>,
 }
 
 impl<T> GenerationSelector<T>
@@ -686,7 +705,7 @@ where
         request_key: Option<RequestKeyInput>,
         view: GenerationBackendView,
     ) -> Result<Self, String> {
-        let mut backend_ids = vec![None; view.view.get_backend().len()];
+        let mut backend_metadata = Vec::new();
         for backend in view.view.get_backend().iter() {
             let identity = backend
                 .ext
@@ -694,20 +713,34 @@ where
                 .ok_or_else(|| {
                     format!("Pingora backend '{}' has no Impulse identity", backend.addr)
                 })?;
-            let slot = backend_ids.get_mut(identity.index()).ok_or_else(|| {
-                format!("Pingora backend '{}' has an invalid index", backend.addr)
-            })?;
-            *slot = Some(identity.runtime_id());
+            let selection_state =
+                backend
+                    .ext
+                    .get::<Arc<BackendSelectionState>>()
+                    .ok_or_else(|| {
+                        format!("Pingora backend '{}' has no selection state", backend.addr)
+                    })?;
+            if backend_metadata.len() <= identity.index() {
+                backend_metadata.resize_with(identity.index() + 1, || None);
+            }
+            let slot = &mut backend_metadata[identity.index()];
+            if slot.is_none() {
+                *slot = Some(GenerationBackendMetadata {
+                    runtime_id: identity.runtime_id(),
+                    configured_address: Arc::clone(&identity.configured_address),
+                    selection_state: Arc::clone(selection_state),
+                });
+            }
         }
-        if backend_ids
+        let backend_metadata = backend_metadata
             .into_iter()
-            .any(|backend_id| backend_id.is_none())
-        {
-            return Err(format!(
-                "upstream '{}' has incomplete backend identities",
-                view.upstream_name
-            ));
-        }
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| {
+                format!(
+                    "upstream '{}' has incomplete backend identities",
+                    view.upstream_name
+                )
+            })?;
         let kind = match strategy {
             LoadBalancingStrategy::RoundRobin => GenerationSelectorKind::WeightedRoundRobin(
                 GenerationWeightedRoundRobin::from_backend_view(view),
@@ -732,7 +765,41 @@ where
             kind,
             strategy,
             request_key,
+            backend_metadata: backend_metadata.into_boxed_slice(),
         })
+    }
+
+    fn runtime_snapshots(&self) -> Vec<PingoraBackendRuntimeSnapshot> {
+        let backends = self.backends();
+        let mut present = vec![false; self.backend_metadata.len()];
+        let mut ready = vec![false; self.backend_metadata.len()];
+        for backend in backends.get_backend().iter() {
+            let Some(identity) = backend.ext.get::<PingoraBackendIdentity<T>>() else {
+                continue;
+            };
+            let Some(is_present) = present.get_mut(identity.index()) else {
+                continue;
+            };
+            *is_present = true;
+            if let Some(is_ready) = ready.get_mut(identity.index()) {
+                *is_ready |= backends.ready(backend);
+            }
+        }
+
+        self.backend_metadata
+            .iter()
+            .enumerate()
+            .map(|(backend_index, metadata)| PingoraBackendRuntimeSnapshot {
+                upstream_name: self.upstream_name().to_string(),
+                runtime_id: metadata.runtime_id,
+                configured_address: Arc::clone(&metadata.configured_address),
+                backend_index,
+                present: present[backend_index],
+                ready: ready[backend_index],
+                active_requests: metadata.selection_state.active_requests(),
+                ewma_latency_ms: metadata.selection_state.ewma_latency_ms(),
+            })
+            .collect()
     }
 
     pub fn generation(&self) -> u64 {
@@ -1022,6 +1089,13 @@ where
             .iter()
             .cloned()
             .zip(self.upstream_pools_by_id.iter().map(Arc::clone))
+            .collect()
+    }
+
+    pub fn backend_runtime_snapshots(&self) -> Vec<PingoraBackendRuntimeSnapshot> {
+        self.selectors_by_id
+            .iter()
+            .flat_map(|selector| selector.runtime_snapshots())
             .collect()
     }
 

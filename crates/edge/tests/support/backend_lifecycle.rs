@@ -144,10 +144,14 @@ impl BackendLifecycleHarness {
     pub(crate) fn backend_inventory(&self) -> Result<BackendLifecycleInventorySnapshot, String> {
         let handle = self.runtime_bundle_handle()?;
         let current = handle.current_view();
+        let runtime_backends = current
+            .state()
+            .pingora_load_balancing
+            .backend_runtime_snapshots();
         Ok(current
             .shared_services()
             .backend_lifecycle
-            .snapshot_inventory(&current.state().pingora_load_balancing.upstream_pools()))
+            .snapshot_inventory(&runtime_backends))
     }
 
     pub(crate) fn backend_snapshot(
