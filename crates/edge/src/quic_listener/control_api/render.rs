@@ -360,7 +360,6 @@ struct ControlApiBackendPlacementPayload {
     healthy: bool,
     active_requests: usize,
     ewma_latency_ms: Option<f64>,
-    membership_epoch: u64,
 }
 
 #[derive(Serialize)]
@@ -589,7 +588,6 @@ mod tests {
                             healthy: true,
                             active_requests: 1,
                             ewma_latency_ms: Some(12.5),
-                            membership_epoch: 9,
                         }],
                     },
                 ],

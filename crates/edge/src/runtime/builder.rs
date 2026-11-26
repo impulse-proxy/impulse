@@ -404,6 +404,11 @@ impl RuntimeBuilder {
                         ))
                     },
                 )?,
+                runtime_upstream
+                    .load_balancing
+                    .key_spec
+                    .as_ref()
+                    .map(crate::runtime::subsystem_mapping::request_key_input),
                 view,
             ));
         }

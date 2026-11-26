@@ -1575,7 +1575,7 @@ mod tests {
 
             {
                 let guard = pool.read().expect("read");
-                assert!(guard.begin_request_if_healthy(0));
+                guard.begin_request_for_accounting(0);
             }
             finish_backend_request_accounting(BackendRequestFinishInput {
                 upstream_pool: Some(&pool),
@@ -1641,7 +1641,7 @@ mod tests {
             let pool = test_upstream_pool();
             {
                 let guard = pool.read().expect("read");
-                assert!(guard.begin_request_if_healthy(0));
+                guard.begin_request_for_accounting(0);
             }
 
             let finalized = finalize_backend_request_cleanup(

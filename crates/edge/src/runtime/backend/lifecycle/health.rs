@@ -517,7 +517,7 @@ mod tests {
             let pool = test_upstream_pool();
             {
                 let guard = pool.read().expect("read");
-                assert!(guard.begin_request_if_healthy(0));
+                guard.begin_request_for_accounting(0);
             }
 
             apply_backend_request_accounting(

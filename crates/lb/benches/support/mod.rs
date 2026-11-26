@@ -1,4 +1,10 @@
-use std::{collections::HashMap, time::Duration};
+use std::{
+    collections::{HashMap, hash_map::DefaultHasher},
+    hash::{Hash, Hasher},
+    net::SocketAddr,
+    sync::{Arc, RwLock},
+    time::Duration,
+};
 
 use impulse_config::{
     config::{Backend, Config, HealthCheck, Listen, LoadBalancing, RouteMatch, Tls, Upstream},
@@ -6,8 +12,12 @@ use impulse_config::{
 };
 use impulse_lb::{
     BackendHealthInput, BackendInput, BackendWeight, LoadBalancingStrategy,
+    pingora_backend::{
+        GenerationBackendView, PingoraLoadBalancingRuntimeState, map_validated_backend,
+    },
     upstream_pool::UpstreamPool,
 };
+use pingora_load_balancing::HealthRegistry;
 
 pub const BACKEND_COUNTS: [usize; 4] = [1, 10, 100, 1_000];
 pub const STRATEGIES: [(&str, &str); 2] = [
@@ -82,12 +92,6 @@ pub fn runtime_upstream(backend_count: usize, strategy: &str) -> RuntimeUpstream
     .expect("benchmark upstream must exist")
 }
 
-pub fn upstream_pool(backend_count: usize, strategy: &str) -> UpstreamPool {
-    let mut pool = upstream_pool_from_runtime(&runtime_upstream(backend_count, strategy));
-    seed_runtime_state(&mut pool, backend_count);
-    pool
-}
-
 fn seed_runtime_state(pool: &mut UpstreamPool, backend_count: usize) {
     const LATENCY_OFFSETS_MS: [u64; 4] = [0, 7, 3, 11];
 
@@ -113,7 +117,7 @@ fn seed_runtime_state(pool: &mut UpstreamPool, backend_count: usize) {
     }
 }
 
-pub fn upstream_pool_from_runtime(upstream: &RuntimeUpstream) -> UpstreamPool {
+pub fn selector_runtime(upstream: &RuntimeUpstream) -> PingoraLoadBalancingRuntimeState<()> {
     let strategy = match upstream.load_balancing.strategy {
         impulse_config::runtime::RuntimeLoadBalancingStrategy::LeastConnections => {
             LoadBalancingStrategy::LeastConnections
@@ -142,6 +146,46 @@ pub fn upstream_pool_from_runtime(upstream: &RuntimeUpstream) -> UpstreamPool {
                     )
                 }),
             )
-        });
-    UpstreamPool::new(backends, strategy, None)
+        })
+        .collect::<Vec<_>>();
+    let mut pool = UpstreamPool::new(backends.clone());
+    seed_runtime_state(&mut pool, backends.len());
+    let selection_states = (0..backends.len())
+        .map(|index| {
+            pool.backend_selection_state(index)
+                .expect("benchmark backend selection state")
+        })
+        .collect::<Vec<_>>();
+    let health_registry = Arc::new(HealthRegistry::with_equivalence(|backend| {
+        let mut hasher = DefaultHasher::new();
+        backend.hash(&mut hasher);
+        hasher.finish()
+    }));
+    let view = GenerationBackendView::new(
+        1,
+        "benchmark",
+        &backends,
+        |backend| {
+            map_validated_backend(
+                backend,
+                impulse_contracts::BackendId::new(backend.index() as u32),
+                SocketAddr::from(([127, 0, 0, 1], 10_000 + backend.index() as u16)),
+                (),
+                Arc::clone(&selection_states[backend.index()]),
+            )
+        },
+        Arc::clone(&health_registry),
+    )
+    .expect("benchmark backend view");
+    let runtime = PingoraLoadBalancingRuntimeState::new(
+        1,
+        HashMap::from([("benchmark".to_string(), Arc::new(RwLock::new(pool)))]),
+        [("benchmark".to_string(), strategy, None, view)],
+        health_registry,
+    )
+    .expect("benchmark selector runtime");
+    for index in (7..backends.len()).step_by(8) {
+        runtime.set_backend_enabled(impulse_contracts::BackendId::new(index as u32), false);
+    }
+    runtime
 }

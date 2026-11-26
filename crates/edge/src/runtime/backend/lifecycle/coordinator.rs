@@ -118,7 +118,6 @@ impl BackendLifecycleCoordinator {
             let Ok(guard) = pool.read() else {
                 continue;
             };
-            let membership_summary = guard.membership_summary();
             for backend_index in guard.backend_indices() {
                 let Some(backend_addr) = guard.backend_address(backend_index) else {
                     continue;
@@ -148,7 +147,6 @@ impl BackendLifecycleCoordinator {
                     healthy: backend.healthy,
                     active_requests: backend.active_requests,
                     ewma_latency_ms: backend.ewma_latency_ms,
-                    membership_epoch: membership_summary.membership_epoch,
                 });
             }
         }

@@ -676,19 +676,7 @@ where
                 .get::<PingoraBackendIdentity<T>>()
                 .is_some_and(|identity| identity.runtime_id() == backend_id)
             {
-                if let Some(state) = backend.ext.get::<Arc<BackendSelectionState>>() {
-                    state.set_enabled(enabled);
-                }
                 backends.set_enable(backend, enabled);
-            }
-        }
-    }
-
-    fn reconcile_backend_enablement(&self) {
-        let backends = self.backends();
-        for backend in backends.get_backend().iter() {
-            if let Some(state) = backend.ext.get::<Arc<BackendSelectionState>>() {
-                backends.set_enable(backend, state.enabled());
             }
         }
     }
@@ -866,7 +854,6 @@ where
                 self.upstream_name()
             )
         })?;
-        self.reconcile_backend_enablement();
         Ok(())
     }
 }
@@ -923,12 +910,19 @@ where
     pub fn new(
         generation: u64,
         upstream_pools: HashMap<String, Arc<RwLock<UpstreamPool>>>,
-        backend_views: impl IntoIterator<Item = (String, LoadBalancingStrategy, GenerationBackendView)>,
+        backend_views: impl IntoIterator<
+            Item = (
+                String,
+                LoadBalancingStrategy,
+                Option<RequestKeyInput>,
+                GenerationBackendView,
+            ),
+        >,
         health_registry: Arc<HealthRegistry>,
     ) -> Result<Self, String> {
         let mut selectors = HashMap::new();
         let mut discoveries = HashMap::new();
-        for (upstream_name, strategy, view) in backend_views {
+        for (upstream_name, strategy, request_key, view) in backend_views {
             if !upstream_pools.contains_key(&upstream_name) {
                 return Err(format!(
                     "upstream '{upstream_name}' has a selector but no backend pool"
@@ -947,15 +941,6 @@ where
                 ));
             }
             let discovery = view.discovery.clone();
-            let request_key = upstream_pools[&upstream_name]
-                .read()
-                .map_err(|_| {
-                    format!(
-                        "upstream pool lock poisoned while reading selection policy for '{upstream_name}'"
-                    )
-                })?
-                .lb_key_spec()
-                .cloned();
             let selector = GenerationSelector::new(strategy, request_key, view)?;
             if selectors
                 .insert(upstream_name.clone(), Arc::new(selector))
@@ -1280,6 +1265,7 @@ mod tests {
             [(
                 "api".to_string(),
                 LoadBalancingStrategy::RoundRobin,
+                None,
                 hostname_backend_view(GENERATION),
             )],
             health_registry(),
@@ -1449,6 +1435,7 @@ mod tests {
             [(
                 "api".to_string(),
                 LoadBalancingStrategy::ConsistentHash,
+                None,
                 backend_view(&[1, 1]),
             )],
             health_registry(),
@@ -1476,6 +1463,7 @@ mod tests {
                 [(
                     "api".to_string(),
                     LoadBalancingStrategy::RoundRobin,
+                    None,
                     backend_view(&[1]),
                 )],
                 health_registry(),

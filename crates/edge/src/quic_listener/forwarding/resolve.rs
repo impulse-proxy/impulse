@@ -107,7 +107,7 @@ pub(in crate::quic_listener) fn selectors_for_test(
         .iter()
         .map(|(name, pool)| {
             let pool = pool.read().expect("test upstream pool");
-            let states = (0..pool.membership_summary().total_backends)
+            let states = (0..pool.state_summary().total_backends)
                 .map(|index| {
                     pool.backend_selection_state(index)
                         .expect("test backend selection state")
@@ -157,6 +157,11 @@ pub(in crate::quic_listener) fn selectors_for_test(
             name.clone(),
             load_balancing_strategy_input(upstream.load_balancing.strategy)
                 .expect("validated load balancing strategy"),
+            upstream
+                .load_balancing
+                .key_spec
+                .as_ref()
+                .map(crate::runtime::subsystem_mapping::request_key_input),
             view,
         )
     });

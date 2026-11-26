@@ -572,7 +572,7 @@ pub(crate) fn load_balancing_strategy_input(
     }
 }
 
-fn request_key_input(input: &RuntimeRequestKeySpec) -> RequestKeyInput {
+pub(crate) fn request_key_input(input: &RuntimeRequestKeySpec) -> RequestKeyInput {
     match input {
         RuntimeRequestKeySpec::Path => RequestKeyInput::Path,
         RuntimeRequestKeySpec::Authority => RequestKeyInput::Authority,
@@ -617,15 +617,7 @@ pub(crate) fn load_balancing_backend_inputs(upstream: &RuntimeUpstream) -> Vec<B
 pub(crate) fn upstream_pool_from_runtime(
     upstream: &RuntimeUpstream,
 ) -> Result<UpstreamPool, String> {
-    Ok(UpstreamPool::new(
-        load_balancing_backend_inputs(upstream),
-        load_balancing_strategy_input(upstream.load_balancing.strategy)?,
-        upstream
-            .load_balancing
-            .key_spec
-            .as_ref()
-            .map(request_key_input),
-    ))
+    Ok(UpstreamPool::new(load_balancing_backend_inputs(upstream)))
 }
 
 fn upstream_tls_input(upstream: &RuntimeUpstream) -> UpstreamTlsInput {

@@ -69,7 +69,6 @@ pub struct BackendPoolPlacementSnapshot {
     pub healthy: bool,
     pub active_requests: usize,
     pub ewma_latency_ms: Option<f64>,
-    pub membership_epoch: u64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -178,7 +177,6 @@ mod tests {
                         healthy: true,
                         active_requests: 0,
                         ewma_latency_ms: None,
-                        membership_epoch: 1,
                     }],
                 },
                 CanonicalBackendLifecycleSnapshot {
@@ -199,7 +197,6 @@ mod tests {
                         healthy: false,
                         active_requests: 2,
                         ewma_latency_ms: Some(25.0),
-                        membership_epoch: 1,
                     }],
                 },
                 CanonicalBackendLifecycleSnapshot {

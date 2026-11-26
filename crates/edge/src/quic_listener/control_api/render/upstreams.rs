@@ -74,7 +74,6 @@ impl ControlApiBackendPlacementPayload {
             healthy: snapshot.healthy,
             active_requests: snapshot.active_requests,
             ewma_latency_ms: snapshot.ewma_latency_ms,
-            membership_epoch: snapshot.membership_epoch,
         }
     }
 }

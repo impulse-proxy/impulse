@@ -6,40 +6,17 @@ use crate::{
 };
 
 pub struct BackendPool {
-    pub backends: Vec<BackendState>,
-    pub healthy: Vec<usize>,
-    pub healthy_pos: Vec<Option<usize>>,
-    pub probing: Vec<usize>,
-    pub probing_pos: Vec<Option<usize>>,
-    pub membership_epoch: u64,
+    backends: Vec<BackendState>,
     // Earliest cooldown expiry among passively-ejected backends (no active
     // health check), driving time-based re-admission. `None` when none pending.
-    pub earliest_readmit: Option<Instant>,
-    pub next_probing_cursor: usize,
+    earliest_readmit: Option<Instant>,
 }
 
 impl BackendPool {
     pub fn new_from_states(backends: Vec<BackendState>) -> Self {
-        let mut healthy = Vec::with_capacity(backends.len());
-        let mut healthy_pos = vec![None; backends.len()];
-        let probing_pos = vec![None; backends.len()];
-
-        for (idx, backend) in backends.iter().enumerate() {
-            if backend.is_healthy() {
-                healthy_pos[idx] = Some(healthy.len());
-                healthy.push(idx);
-            }
-        }
-
         Self {
             backends,
-            healthy,
-            healthy_pos,
-            probing: Vec::new(),
-            probing_pos,
-            membership_epoch: 0,
             earliest_readmit: None,
-            next_probing_cursor: 0,
         }
     }
 
@@ -57,34 +34,7 @@ impl BackendPool {
             return None;
         }
 
-        let (was_healthy, was_probing, is_healthy, is_probing, transition) = {
-            let backend = &mut self.backends[index];
-            let was_healthy = backend.is_healthy();
-            let was_probing = backend.is_probing();
-            let transition = backend.record_success();
-            let is_healthy = backend.is_healthy();
-            let is_probing = backend.is_probing();
-            (was_healthy, was_probing, is_healthy, is_probing, transition)
-        };
-
-        if was_healthy != is_healthy {
-            if is_healthy {
-                debug_assert!(self.mark_healthy(index));
-            } else {
-                debug_assert!(self.mark_unhealthy(index));
-            }
-            self.membership_epoch = self.membership_epoch.wrapping_add(1);
-        }
-
-        if was_probing != is_probing {
-            if is_probing {
-                debug_assert!(self.mark_probing(index));
-            } else {
-                debug_assert!(self.mark_not_probing(index));
-            }
-        }
-
-        transition
+        self.backends[index].record_success()
     }
 
     /// Mark a success from the request path (passive).
@@ -155,29 +105,12 @@ impl BackendPool {
             (was_healthy, was_probing, is_healthy, is_probing, transition)
         };
 
-        if was_healthy != is_healthy {
-            if is_healthy {
-                debug_assert!(self.mark_healthy(index));
-            } else {
-                debug_assert!(self.mark_unhealthy(index));
-                // Passive ejections have no active loop to recover them; record
-                // the cooldown so `reconcile_readmit` can re-admit on expiry.
-                if !self.backends[index].has_active_health_check()
-                    && let Some(until) = self.backends[index].cooldown_until()
-                {
-                    self.earliest_readmit =
-                        Some(self.earliest_readmit.map_or(until, |e| e.min(until)));
-                }
-            }
-            self.membership_epoch = self.membership_epoch.wrapping_add(1);
-        }
-
-        if was_probing != is_probing {
-            if is_probing {
-                debug_assert!(self.mark_probing(index));
-            } else {
-                debug_assert!(self.mark_not_probing(index));
-            }
+        if was_healthy
+            && !is_healthy
+            && !self.backends[index].has_active_health_check()
+            && let Some(until) = self.backends[index].cooldown_until()
+        {
+            self.earliest_readmit = Some(self.earliest_readmit.map_or(until, |e| e.min(until)));
         }
 
         if !self.backends[index].has_active_health_check()
@@ -191,16 +124,8 @@ impl BackendPool {
     }
 
     /// Advance passively-ejected backends into probe eligibility once their
-    /// cooldown has elapsed. Reads the clock only when recovery is actually
-    /// pending, keeping the healthy pick path syscall-free.
-    pub fn reconcile_readmit(&mut self) {
-        if self.earliest_readmit.is_some() {
-            self.reconcile_readmit_at(Instant::now());
-        }
-    }
-
-    /// Core of [`reconcile_readmit`] with an injectable clock. Recomputes the
-    /// next pending expiry; early-returns while the soonest cooldown is unmet.
+    /// cooldown has elapsed. Recomputes the next pending expiry and returns
+    /// early while the soonest cooldown is unmet.
     pub fn reconcile_readmit_at(&mut self, now: Instant) {
         let Some(earliest) = self.earliest_readmit else {
             return;
@@ -213,9 +138,9 @@ impl BackendPool {
             if self.backends[index].has_active_health_check() {
                 continue;
             }
-            if self.backends[index].readmit_if_expired(now) {
-                debug_assert!(self.mark_probing(index));
-            } else if let Some(until) = self.backends[index].cooldown_until() {
+            if !self.backends[index].readmit_if_expired(now)
+                && let Some(until) = self.backends[index].cooldown_until()
+            {
                 next = Some(next.map_or(until, |e| e.min(until)));
             }
         }
@@ -224,11 +149,10 @@ impl BackendPool {
 
     #[must_use]
     pub fn healthy_len(&self) -> usize {
-        self.healthy.len()
-    }
-
-    pub fn healthy_indices_iter(&self) -> impl Iterator<Item = usize> + '_ {
-        self.healthy.iter().copied()
+        self.backends
+            .iter()
+            .filter(|backend| backend.is_healthy())
+            .count()
     }
 
     pub fn all_indices(&self) -> Vec<usize> {
@@ -239,42 +163,16 @@ impl BackendPool {
         self.backends.get(index)
     }
 
-    #[must_use]
-    pub fn membership_epoch(&self) -> u64 {
-        self.membership_epoch
-    }
-
     pub fn is_healthy_index(&self, index: usize) -> bool {
-        self.healthy_pos.get(index).copied().flatten().is_some()
+        self.backends
+            .get(index)
+            .is_some_and(BackendState::is_healthy)
     }
 
-    pub fn pick_probing_backend(&mut self, begin_request: bool) -> Option<usize> {
-        if self.probing.is_empty() {
-            return None;
-        }
-
-        let probing_len = self.probing.len();
-        let start = self.next_probing_cursor % probing_len;
-        let mut selected = None;
-
-        for offset in 0..probing_len {
-            let probing_pos = (start + offset) % probing_len;
-            let index = self.probing[probing_pos];
-            let backend = &mut self.backends[index];
-            if backend.active_requests() == 0 && backend.try_acquire_probe_permit() {
-                self.next_probing_cursor = probing_pos.wrapping_add(1);
-                selected = Some(index);
-                break;
-            }
-        }
-
-        if let Some(index) = selected
-            && begin_request
-        {
-            self.begin_request(index);
-        }
-
-        selected
+    pub fn try_acquire_probe(&mut self, index: usize) -> bool {
+        self.backends
+            .get_mut(index)
+            .is_some_and(BackendState::try_acquire_probe_permit)
     }
 
     pub fn begin_request(&self, index: usize) {
@@ -296,83 +194,6 @@ impl BackendPool {
         };
         backend.record_failure_latency_penalty(latency);
     }
-
-    fn mark_healthy(&mut self, index: usize) -> bool {
-        if index >= self.backends.len() {
-            return false;
-        }
-
-        if self.healthy_pos[index].is_some() {
-            return false;
-        }
-
-        let pos = self.healthy.len();
-        self.healthy.push(index);
-        self.healthy_pos[index] = Some(pos);
-        true
-    }
-
-    fn mark_probing(&mut self, index: usize) -> bool {
-        if index >= self.backends.len() {
-            return false;
-        }
-
-        if self.probing_pos[index].is_some() {
-            return false;
-        }
-
-        let pos = self.probing.len();
-        self.probing.push(index);
-        self.probing_pos[index] = Some(pos);
-        true
-    }
-
-    fn mark_unhealthy(&mut self, index: usize) -> bool {
-        if index >= self.backends.len() {
-            return false;
-        }
-
-        let Some(pos) = self.healthy_pos[index] else {
-            return false;
-        };
-
-        let removed = self.healthy.swap_remove(pos);
-        debug_assert_eq!(removed, index);
-
-        if pos < self.healthy.len() {
-            let moved_index = self.healthy[pos];
-            self.healthy_pos[moved_index] = Some(pos);
-        }
-
-        self.healthy_pos[index] = None;
-        true
-    }
-
-    fn mark_not_probing(&mut self, index: usize) -> bool {
-        if index >= self.backends.len() {
-            return false;
-        }
-
-        let Some(pos) = self.probing_pos[index] else {
-            return false;
-        };
-
-        let removed = self.probing.swap_remove(pos);
-        debug_assert_eq!(removed, index);
-
-        if pos < self.probing.len() {
-            let moved_index = self.probing[pos];
-            self.probing_pos[moved_index] = Some(pos);
-        }
-
-        self.probing_pos[index] = None;
-        if self.probing.is_empty() {
-            self.next_probing_cursor = 0;
-        } else {
-            self.next_probing_cursor %= self.probing.len();
-        }
-        true
-    }
 }
 
 #[cfg(test)]
@@ -381,7 +202,7 @@ mod tests {
 
     use impulse_config::config::{Backend, HealthCheck};
 
-    use super::{BackendPool, FAILURE_PENALTY_LATENCY_MS};
+    use super::BackendPool;
     use crate::{
         backend::BackendState,
         health::{HealthFailureReason, HealthTransition},
@@ -405,63 +226,15 @@ mod tests {
     }
 
     #[test]
-    fn backend_pool_epoch_changes_only_on_health_membership_transition() {
-        let mut pool = BackendPool::new_from_states(vec![create_backend_state("10.0.0.1:1")]);
-        assert_eq!(pool.membership_epoch(), 0);
-
-        pool.mark_failure(0);
-        pool.mark_failure(0);
-        assert_eq!(pool.membership_epoch(), 0);
-
-        pool.mark_failure(0);
-        assert_eq!(pool.membership_epoch(), 1);
-
-        pool.mark_failure(0);
-        assert_eq!(pool.membership_epoch(), 1);
-
-        pool.mark_success(0);
-        assert_eq!(pool.membership_epoch(), 2);
-
-        pool.mark_success(0);
-        assert_eq!(pool.membership_epoch(), 2);
-    }
-
-    #[test]
-    fn healthy_cache_tracks_membership_changes_without_duplicates() {
-        let mut pool = BackendPool::new_from_states(vec![
-            create_backend_state("10.0.0.1:1"),
-            create_backend_state("10.0.0.2:1"),
-            create_backend_state("10.0.0.3:1"),
-        ]);
-
-        assert_eq!(pool.healthy, vec![0, 1, 2]);
-
-        pool.mark_failure(1);
-        pool.mark_failure(1);
-        pool.mark_failure(1);
-        assert_eq!(pool.healthy, vec![0, 2]);
-
-        pool.mark_failure(1);
-        assert_eq!(pool.healthy, vec![0, 2]);
-
-        pool.mark_success(1);
-        let healthy = &pool.healthy;
-        assert_eq!(healthy.len(), 3);
-        assert!(healthy.contains(&0));
-        assert!(healthy.contains(&1));
-        assert!(healthy.contains(&2));
-    }
-
-    #[test]
     fn backend_recovers_after_success_threshold() {
         let mut pool = BackendPool::new_from_states(vec![create_backend_state("10.0.0.1:1")]);
         pool.mark_failure(0);
         pool.mark_failure(0);
         pool.mark_failure(0);
 
-        assert!(pool.healthy.is_empty());
+        assert_eq!(pool.healthy_len(), 0);
         pool.mark_success(0);
-        assert_eq!(pool.healthy, vec![0]);
+        assert_eq!(pool.healthy_len(), 1);
     }
 
     #[test]
@@ -508,7 +281,7 @@ mod tests {
     }
 
     #[test]
-    fn probing_backend_probe_budget_is_consumed_by_selection_attempts() {
+    fn probing_backend_probe_budget_is_bounded() {
         let backend = Backend {
             id: "b1".to_string(),
             address: "10.0.0.1:1".to_string(),
@@ -531,11 +304,10 @@ mod tests {
             Some(HealthTransition::BecameUnhealthy)
         ));
         pool.reconcile_readmit_at(Instant::now() + Duration::from_millis(10_001));
-        assert!(pool.backend(0).is_some_and(BackendState::is_probing));
 
-        assert_eq!(pool.pick_probing_backend(false), Some(0));
-        assert_eq!(pool.pick_probing_backend(false), Some(0));
-        assert_eq!(pool.pick_probing_backend(false), None);
+        assert!(pool.try_acquire_probe(0));
+        assert!(pool.try_acquire_probe(0));
+        assert!(!pool.try_acquire_probe(0));
     }
 
     #[test]
@@ -610,38 +382,6 @@ mod tests {
     }
 
     #[test]
-    fn probing_backend_allows_only_one_inflight_probe_when_beginning_requests() {
-        let backend = Backend {
-            id: "b1".to_string(),
-            address: "10.0.0.1:1".to_string(),
-            protocol: Default::default(),
-            weight: 1,
-            health_check: Some(HealthCheck {
-                path: "/health".to_string(),
-                interval: 0,
-                timeout_ms: 1000,
-                failure_threshold: 1,
-                success_threshold: 2,
-                cooldown_ms: 10_000,
-            }),
-        };
-        let mut pool =
-            BackendPool::new_from_states(vec![crate::test_support::backend_state(&backend)]);
-
-        assert!(matches!(
-            pool.mark_request_failure(0, HealthFailureReason::Transport),
-            Some(HealthTransition::BecameUnhealthy)
-        ));
-        pool.reconcile_readmit_at(Instant::now() + Duration::from_millis(10_001));
-
-        assert_eq!(pool.pick_probing_backend(true), Some(0));
-        assert_eq!(pool.pick_probing_backend(true), None);
-        pool.finish_request(0, Duration::from_millis(10), Some(200));
-        assert_eq!(pool.pick_probing_backend(true), Some(0));
-        assert_eq!(pool.pick_probing_backend(true), None);
-    }
-
-    #[test]
     fn request_failure_records_penalty_sample_for_unsampled_backend() {
         let mut pool = BackendPool::new_from_states(vec![create_backend_state("10.0.0.1:1")]);
 
@@ -654,7 +394,7 @@ mod tests {
         assert!(transition.is_none());
         assert_eq!(
             pool.backend(0).and_then(BackendState::ewma_latency_ms),
-            Some(FAILURE_PENALTY_LATENCY_MS)
+            Some(1_000.0)
         );
     }
 
@@ -671,7 +411,7 @@ mod tests {
 
         assert_eq!(
             pool.backend(0).and_then(BackendState::ewma_latency_ms),
-            Some(FAILURE_PENALTY_LATENCY_MS)
+            Some(1_000.0)
         );
     }
 
@@ -689,7 +429,7 @@ mod tests {
         assert!(pool.is_healthy_index(0));
         assert_eq!(
             pool.backend(0).and_then(BackendState::ewma_latency_ms),
-            Some(FAILURE_PENALTY_LATENCY_MS)
+            Some(1_000.0)
         );
     }
 }

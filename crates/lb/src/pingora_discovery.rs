@@ -1,6 +1,5 @@
 use std::{
-    collections::{BTreeSet, HashMap, hash_map::DefaultHasher},
-    hash::{Hash, Hasher},
+    collections::{BTreeSet, HashMap},
     net::SocketAddr,
     sync::{
         Arc, RwLock,
@@ -11,7 +10,7 @@ use std::{
 use async_trait::async_trait;
 use pingora_load_balancing::{Backend as PingoraBackend, discovery::ServiceDiscovery};
 
-use crate::{BackendInput, backend::BackendSelectionState};
+use crate::BackendInput;
 
 #[derive(Clone)]
 pub(crate) struct ImpulseServiceDiscovery {
@@ -202,16 +201,7 @@ impl ServiceDiscovery for ImpulseServiceDiscovery {
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let backends = backend_snapshot(&backends);
-        let enablement = backends
-            .iter()
-            .filter_map(|backend| {
-                let state = backend.ext.get::<Arc<BackendSelectionState>>()?;
-                let mut hasher = DefaultHasher::new();
-                backend.hash(&mut hasher);
-                Some((hasher.finish(), state.enabled()))
-            })
-            .collect();
-        Ok((backends, enablement))
+        Ok((backends, HashMap::new()))
     }
 }
 
