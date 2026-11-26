@@ -67,10 +67,7 @@ use rustls::{
 use smallvec::SmallVec;
 
 use self::{
-    error::{
-        PingoraUpstreamProtocol, PingoraUpstreamTlsHandshake, classify_pingora_proxy_error,
-        pingora_peer_protocol,
-    },
+    error::{PingoraUpstreamProtocol, classify_pingora_proxy_error, pingora_peer_protocol},
     request::{PingoraRequestContext as IngressRequestContext, apply_normalized_request_headers},
     response::{
         apply_normalized_response_headers, build_response_header, write_downstream_response,
@@ -797,7 +794,7 @@ impl ProxyHttp for PingoraEdgeRequestService {
         peer: &HttpPeer,
         #[cfg(unix)] _fd: std::os::unix::io::RawFd,
         #[cfg(windows)] _socket: std::os::windows::io::RawSocket,
-        digest: Option<&Digest>,
+        _digest: Option<&Digest>,
         ctx: &mut Self::CTX,
     ) -> Result<()> {
         let metrics = ctx
@@ -810,20 +807,6 @@ impl ProxyHttp for PingoraEdgeRequestService {
             metrics.inc_upstream_connection_reused();
         } else {
             metrics.inc_upstream_connection_created();
-        }
-        let tls_handshake = if reused {
-            None
-        } else {
-            digest
-                .and_then(|digest| digest.ssl_digest.as_deref())
-                .and_then(|digest| digest.extension.get::<PingoraUpstreamTlsHandshake>())
-                .copied()
-        };
-        if let Some(handshake) = tls_handshake {
-            metrics.record_upstream_tls_handshake(matches!(
-                handshake,
-                PingoraUpstreamTlsHandshake::Resumed
-            ));
         }
         if pingora_peer_protocol(peer) == PingoraUpstreamProtocol::Http2 {
             if reused {

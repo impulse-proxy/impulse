@@ -3,7 +3,7 @@ use pingora_core::{Error, ErrorType, Result};
 use pingora_http::ResponseHeader;
 use pingora_proxy::Session;
 
-pub fn build_response_header(
+pub(super) fn build_response_header(
     status: http::StatusCode,
     headers: &http::HeaderMap,
 ) -> Result<ResponseHeader> {
@@ -14,7 +14,7 @@ pub fn build_response_header(
     Ok(response)
 }
 
-pub fn apply_normalized_response_headers(
+pub(super) fn apply_normalized_response_headers(
     target: &mut ResponseHeader,
     headers: &http::HeaderMap,
 ) -> Result<()> {
@@ -27,7 +27,7 @@ pub fn apply_normalized_response_headers(
     Ok(())
 }
 
-pub async fn write_downstream_response(
+pub(super) async fn write_downstream_response(
     session: &mut Session,
     status: http::StatusCode,
     headers: &[(String, String)],
@@ -82,7 +82,7 @@ pub async fn write_downstream_response(
         .await
 }
 
-pub async fn write_local_response(
+pub(super) async fn write_local_response(
     session: &mut Session,
     status: http::StatusCode,
     body: &'static [u8],
@@ -105,7 +105,7 @@ pub async fn write_local_response(
         .await
 }
 
-pub async fn write_error_response(
+pub(super) async fn write_error_response(
     session: &mut Session,
     status: http::StatusCode,
     body: Bytes,

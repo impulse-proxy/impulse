@@ -7,7 +7,7 @@ use impulse_contracts::{BackendId, RequestId};
 use pingora_core::Result;
 use pingora_http::RequestHeader;
 
-pub struct PingoraRequestContext<T> {
+pub(crate) struct PingoraRequestContext<T> {
     state: T,
     pub started_at: Instant,
     pub method: Option<String>,
@@ -30,7 +30,7 @@ pub struct PingoraRequestContext<T> {
 }
 
 impl<T> PingoraRequestContext<T> {
-    pub fn new(state: T, request_id: RequestId) -> Self {
+    pub(crate) fn new(state: T, request_id: RequestId) -> Self {
         let now = Instant::now();
         Self {
             state,
@@ -70,7 +70,7 @@ impl<T> DerefMut for PingoraRequestContext<T> {
     }
 }
 
-pub fn apply_normalized_request_headers(
+pub(super) fn apply_normalized_request_headers(
     target: &mut RequestHeader,
     headers: &http::HeaderMap,
 ) -> Result<()> {
