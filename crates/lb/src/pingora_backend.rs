@@ -20,6 +20,7 @@ pub use pingora_load_balancing::{
 use pingora_load_balancing::{
     BackendView, LoadBalancer,
     selection::{
+        BackendIter, BackendSelection,
         algorithms::{Random as PingoraRandom, RoundRobin as PingoraRoundRobin},
         weighted::Weighted as PingoraWeighted,
     },
@@ -139,6 +140,22 @@ where
             candidate_is_available::<T>(backend, backends.ready(backend), excluded_backend_ids)
         })
         .cloned()
+}
+
+fn select_pingora_excluding<T, S>(
+    selector: &LoadBalancer<S>,
+    key: &[u8],
+    max_iterations: usize,
+    excluded_backend_ids: &[BackendId],
+) -> Option<PingoraBackend>
+where
+    T: Clone + Send + Sync + 'static,
+    S: BackendSelection + 'static,
+    S::Iter: BackendIter,
+{
+    selector.select_with(key, max_iterations, |backend, healthy| {
+        candidate_is_available::<T>(backend, healthy, excluded_backend_ids)
+    })
 }
 
 fn least_loaded_backend<T>(
@@ -398,18 +415,13 @@ where
         key: &[u8],
         excluded_backend_ids: &[BackendId],
     ) -> Option<BackendSelectionResult<T>> {
-        let selected = self
-            .selector
-            .select_with(
-                key,
-                self.selector.backends().get_backend().len(),
-                |backend, healthy| {
-                    candidate_is_available::<T>(backend, healthy, excluded_backend_ids)
-                },
-            )
-            .or_else(|| {
-                first_available_backend::<T>(self.selector.backends(), excluded_backend_ids)
-            })?;
+        let selected = select_pingora_excluding::<T, _>(
+            &self.selector,
+            key,
+            self.selector.backends().get_backend().len(),
+            excluded_backend_ids,
+        )
+        .or_else(|| first_available_backend::<T>(self.selector.backends(), excluded_backend_ids))?;
         selection_result(selected, self.generation)
     }
 
@@ -455,14 +467,13 @@ where
         _worker_slot: usize,
     ) -> Option<BackendSelectionResult<T>> {
         let backend_count = self.selector.backends().get_backend().len();
-        let selected = self
-            .selector
-            .select_with(&[], backend_count.saturating_mul(10), |backend, healthy| {
-                candidate_is_available::<T>(backend, healthy, excluded_backend_ids)
-            })
-            .or_else(|| {
-                first_available_backend::<T>(self.selector.backends(), excluded_backend_ids)
-            })?;
+        let selected = select_pingora_excluding::<T, _>(
+            &self.selector,
+            &[],
+            backend_count.saturating_mul(10),
+            excluded_backend_ids,
+        )
+        .or_else(|| first_available_backend::<T>(self.selector.backends(), excluded_backend_ids))?;
         selection_result(selected, self.generation)
     }
 
@@ -508,10 +519,11 @@ where
         _worker_slot: usize,
     ) -> Option<BackendSelectionResult<T>> {
         let backend_count = self.selector.backends().get_backend().len();
-        let selected = self.selector.select_with(
+        let selected = select_pingora_excluding::<T, _>(
+            &self.selector,
             &[],
             backend_count.saturating_add(1),
-            |backend, healthy| candidate_is_available::<T>(backend, healthy, excluded_backend_ids),
+            excluded_backend_ids,
         )?;
         selection_result(selected, self.generation)
     }
