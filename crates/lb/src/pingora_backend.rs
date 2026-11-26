@@ -1,7 +1,6 @@
 use std::{
     collections::{BTreeSet, HashMap},
     future::Future,
-    hash::{BuildHasher, RandomState},
     net::SocketAddr,
     sync::{
         Arc, RwLock,
@@ -21,7 +20,7 @@ pub use pingora_load_balancing::{
 use pingora_load_balancing::{
     BackendView, LoadBalancer,
     selection::{
-        Random as PingoraRandom, algorithms::RoundRobin as PingoraRoundRobin,
+        algorithms::{Random as PingoraRandom, RoundRobin as PingoraRoundRobin},
         weighted::Weighted as PingoraWeighted,
     },
 };
@@ -36,14 +35,6 @@ const WORKER_SELECTION_SLOTS: usize = 256;
 const ACTIVE_REQUEST_PENALTY_MS: f64 = 10.0;
 const UNSAMPLED_PROBE_INTERVAL: u64 = 16;
 const EXPLORATION_INTERVAL: u64 = 32;
-
-fn next_random(state: &AtomicU64) -> u64 {
-    let value = state.fetch_add(0x9e37_79b9_7f4a_7c15, Ordering::Relaxed);
-    let mut mixed = value;
-    mixed = (mixed ^ (mixed >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-    mixed = (mixed ^ (mixed >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-    mixed ^ (mixed >> 31)
-}
 
 #[derive(Clone, Debug)]
 pub struct BackendSelectionResult<P> {
@@ -133,49 +124,6 @@ where
 /// slots do not invalidate each other's line on every update (false sharing).
 #[repr(align(64))]
 struct Padded<T>(T);
-
-/// Weighted pick over the currently available backends without allocating.
-///
-/// `pick_slot` receives the total weight of the available backends and returns a
-/// position in `0..total_weight`. If readiness changes between the two passes and
-/// the position no longer lands on a backend, fall back to the first available one.
-fn select_weighted_backend<T>(
-    backends: &pingora_load_balancing::Backends,
-    excluded_backend_ids: &[BackendId],
-    pick_slot: impl FnOnce(usize) -> usize,
-) -> Option<PingoraBackend>
-where
-    T: Clone + Send + Sync + 'static,
-{
-    let backend_set = backends.get_backend();
-    let is_available = |backend: &&PingoraBackend| {
-        candidate_is_available::<T>(backend, backends.ready(backend), excluded_backend_ids)
-    };
-    let total_weight = backend_set
-        .iter()
-        .filter(&is_available)
-        .fold(0usize, |total, backend| {
-            total.saturating_add(backend.weight)
-        });
-    if total_weight == 0 {
-        return None;
-    }
-
-    let mut weight_slot = pick_slot(total_weight);
-    backend_set
-        .iter()
-        .filter(&is_available)
-        .find(|backend| {
-            if weight_slot < backend.weight {
-                true
-            } else {
-                weight_slot -= backend.weight;
-                false
-            }
-        })
-        .cloned()
-        .or_else(|| first_available_backend::<T>(backends, excluded_backend_ids))
-}
 
 fn first_available_backend<T>(
     backends: &pingora_load_balancing::Backends,
@@ -477,8 +425,7 @@ where
 struct GenerationWeightedRandom<T> {
     generation: u64,
     upstream_name: String,
-    selector: LoadBalancer<PingoraRandom>,
-    worker_random_states: Box<[Padded<AtomicU64>]>,
+    selector: LoadBalancer<PingoraWeighted<PingoraRandom>>,
     policy: std::marker::PhantomData<T>,
 }
 
@@ -498,12 +445,6 @@ where
             generation,
             upstream_name,
             selector: LoadBalancer::from_backends(view),
-            worker_random_states: (0..WORKER_SELECTION_SLOTS)
-                .map(|slot| {
-                    let seed = RandomState::new().hash_one((slot, generation));
-                    Padded(AtomicU64::new(seed))
-                })
-                .collect(),
             policy: std::marker::PhantomData,
         }
     }
@@ -511,14 +452,17 @@ where
     fn select_excluding(
         &self,
         excluded_backend_ids: &[BackendId],
-        worker_slot: usize,
+        _worker_slot: usize,
     ) -> Option<BackendSelectionResult<T>> {
-        let state = &self.worker_random_states[worker_slot % self.worker_random_states.len()].0;
-        let selected = select_weighted_backend::<T>(
-            self.selector.backends(),
-            excluded_backend_ids,
-            |total_weight| (next_random(state) % total_weight as u64) as usize,
-        )?;
+        let backend_count = self.selector.backends().get_backend().len();
+        let selected = self
+            .selector
+            .select_with(&[], backend_count.saturating_mul(10), |backend, healthy| {
+                candidate_is_available::<T>(backend, healthy, excluded_backend_ids)
+            })
+            .or_else(|| {
+                first_available_backend::<T>(self.selector.backends(), excluded_backend_ids)
+            })?;
         selection_result(selected, self.generation)
     }
 
