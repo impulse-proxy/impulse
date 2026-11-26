@@ -1,4 +1,5 @@
 use std::{
+    any::Any,
     convert::Infallible,
     fmt,
     sync::{Arc, RwLock, atomic::Ordering},
@@ -33,8 +34,8 @@ use impulse_observability::ResponseCacheOutcome;
 use impulse_observability::ResponseCompressionAction;
 pub use impulse_pingora_ingress::PingoraListenerTask;
 use impulse_pingora_ingress::{
-    ConnectionAdmission, PingoraDrainState, PingoraIngressAdapter, PingoraListenerConfig,
-    PingoraRequestContext as IngressRequestContext, PingoraRequestService, PingoraUpstreamProtocol,
+    ConnectionAdmission, PingoraDrainState, PingoraListenerConfig,
+    PingoraRequestContext as IngressRequestContext, PingoraUpstreamProtocol,
     PingoraUpstreamTlsHandshake, apply_normalized_request_headers,
     apply_normalized_response_headers, build_response_header, classify_pingora_proxy_error,
     classify_tunnel, configure_tunnel_peer, configure_tunnel_proxy, create_listener_service,
@@ -57,13 +58,13 @@ use pingora_core::protocols::http::compression::Algorithm;
 use pingora_core::{
     Error, HTTPStatus, InternalError, Result,
     apps::ServerApp,
-    protocols::Stream,
+    protocols::{Digest, Stream},
     server::{ShutdownWatch, configuration::ServerConf},
     services::listening::Service,
     upstreams::peer::HttpPeer,
 };
 use pingora_http::{RequestHeader, ResponseHeader};
-use pingora_proxy::{HttpProxy, Session, http_proxy};
+use pingora_proxy::{HttpProxy, ProxyHttp, Session, http_proxy};
 use rustls::{
     server::{ClientHello, ResolvesServerCert},
     sign::CertifiedKey,
@@ -437,7 +438,7 @@ impl PingoraEdgeRequestService {
 }
 
 pub(crate) struct PingoraConnectionLimitedApp {
-    proxy: Arc<HttpProxy<PingoraIngressAdapter<PingoraEdgeRequestService>>>,
+    proxy: Arc<HttpProxy<PingoraEdgeRequestService>>,
     runtime: RuntimeBundleHandle,
     listener_label: String,
     drain: Arc<PingoraDrainState>,
@@ -701,10 +702,10 @@ fn pingora_ingress_service_for_listener(
     let drain = Arc::new(PingoraDrainState::default());
     let mut proxy = http_proxy(
         configuration,
-        PingoraIngressAdapter::new(PingoraEdgeRequestService {
+        PingoraEdgeRequestService {
             runtime: runtime.clone(),
             drain: Arc::clone(&drain),
-        }),
+        },
     );
     configure_tunnel_proxy(&mut proxy);
     let service = create_listener_service(
@@ -721,10 +722,10 @@ fn pingora_ingress_service_for_listener(
 }
 
 #[async_trait]
-impl PingoraRequestService for PingoraEdgeRequestService {
-    type Context = PingoraRequestContext;
+impl ProxyHttp for PingoraEdgeRequestService {
+    type CTX = PingoraRequestContext;
 
-    fn new_context(&self) -> Self::Context {
+    fn new_ctx(&self) -> Self::CTX {
         self.drain.request_started();
         let runtime = self.runtime.current();
         IngressRequestContext::new(
@@ -751,7 +752,20 @@ impl PingoraRequestService for PingoraEdgeRequestService {
         )
     }
 
-    fn downstream_connection_reused(&self, ctx: &mut Self::Context) {
+    fn persist_connection_context(
+        &self,
+        _session: &Session,
+        _ctx: &Self::CTX,
+    ) -> Option<Box<dyn Any + Send + Sync>> {
+        Some(Box::new(()))
+    }
+
+    fn on_connection_reuse(
+        &self,
+        _session: &mut Session,
+        ctx: &mut Self::CTX,
+        _previous_context: Box<dyn Any + Send + Sync>,
+    ) {
         ctx.runtime
             .shared_state
             .shared_services()
@@ -760,13 +774,16 @@ impl PingoraRequestService for PingoraEdgeRequestService {
             .inc_downstream_connection_reused();
     }
 
-    fn upstream_connection_established(
+    async fn connected_to_upstream(
         &self,
-        ctx: &mut Self::Context,
-        peer: &HttpPeer,
+        _session: &mut Session,
         reused: bool,
-        tls_handshake: Option<PingoraUpstreamTlsHandshake>,
-    ) {
+        peer: &HttpPeer,
+        #[cfg(unix)] _fd: std::os::unix::io::RawFd,
+        #[cfg(windows)] _socket: std::os::windows::io::RawSocket,
+        digest: Option<&Digest>,
+        ctx: &mut Self::CTX,
+    ) -> Result<()> {
         let metrics = ctx
             .runtime
             .shared_state
@@ -778,6 +795,14 @@ impl PingoraRequestService for PingoraEdgeRequestService {
         } else {
             metrics.inc_upstream_connection_created();
         }
+        let tls_handshake = if reused {
+            None
+        } else {
+            digest
+                .and_then(|digest| digest.ssl_digest.as_deref())
+                .and_then(|digest| digest.extension.get::<PingoraUpstreamTlsHandshake>())
+                .copied()
+        };
         if let Some(handshake) = tls_handshake {
             metrics.record_upstream_tls_handshake(matches!(
                 handshake,
@@ -791,9 +816,10 @@ impl PingoraRequestService for PingoraEdgeRequestService {
                 metrics.inc_h2_connection_created();
             }
         }
+        Ok(())
     }
 
-    async fn request_filter(&self, session: &mut Session, ctx: &mut Self::Context) -> Result<bool> {
+    async fn request_filter(&self, session: &mut Session, ctx: &mut Self::CTX) -> Result<bool> {
         let runtime = Arc::clone(&ctx.runtime);
         let state = runtime.shared_state.generation_state();
         let shared = runtime.shared_state.shared_services();
@@ -1182,7 +1208,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
     }
 
     #[cfg(feature = "response-cache")]
-    fn request_cache_filter(&self, session: &mut Session, ctx: &mut Self::Context) -> Result<()> {
+    fn request_cache_filter(&self, session: &mut Session, ctx: &mut Self::CTX) -> Result<()> {
         if ctx.passthrough {
             return Ok(());
         }
@@ -1263,7 +1289,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
     }
 
     #[cfg(feature = "response-cache")]
-    fn cache_key_callback(&self, session: &Session, ctx: &mut Self::Context) -> Result<CacheKey> {
+    fn cache_key_callback(&self, session: &Session, ctx: &mut Self::CTX) -> Result<CacheKey> {
         let representation = ctx.response_cache_representation.ok_or_else(|| {
             Error::explain(InternalError, "response cache representation is missing")
         })?;
@@ -1311,7 +1337,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
         &self,
         session: &Session,
         response: &ResponseHeader,
-        ctx: &mut Self::Context,
+        ctx: &mut Self::CTX,
     ) -> Result<RespCacheable> {
         if ctx.passthrough {
             return Ok(RespCacheable::Uncacheable(NoCacheReason::Custom(
@@ -1352,7 +1378,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
         session: &mut Session,
         body: &mut Option<Bytes>,
         _end_of_stream: bool,
-        ctx: &mut Self::Context,
+        ctx: &mut Self::CTX,
     ) -> Result<()> {
         let now = Instant::now();
         let timeouts = &ctx.runtime.runtime_config.policies.timeouts;
@@ -1434,7 +1460,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
     async fn upstream_peer(
         &self,
         session: &mut Session,
-        ctx: &mut Self::Context,
+        ctx: &mut Self::CTX,
     ) -> Result<Box<HttpPeer>> {
         if ctx.retry_backend.is_some() || ctx.selected_backend.is_none() {
             ctx.selected_backend = Some(self.select_backend(session, ctx)?);
@@ -1475,7 +1501,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
         &self,
         _session: &mut Session,
         peer: &HttpPeer,
-        ctx: &mut Self::Context,
+        ctx: &mut Self::CTX,
         error: Box<Error>,
     ) -> Box<Error> {
         ctx.runtime
@@ -1494,7 +1520,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
         peer: &HttpPeer,
         session: &mut Session,
         error: Box<Error>,
-        ctx: &mut Self::Context,
+        ctx: &mut Self::CTX,
         reused: bool,
     ) -> Box<Error> {
         ctx.runtime
@@ -1518,7 +1544,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
         &self,
         session: &mut Session,
         upstream_request: &mut RequestHeader,
-        ctx: &mut Self::Context,
+        ctx: &mut Self::CTX,
     ) -> Result<()> {
         let policy = ctx.policy.as_ref().ok_or_else(|| {
             Error::explain(
@@ -1622,7 +1648,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
         session: &mut Session,
         upstream_response: &ResponseHeader,
         _end_of_stream: bool,
-        ctx: &mut Self::Context,
+        ctx: &mut Self::CTX,
     ) -> Result<()> {
         if ctx.passthrough || upstream_response.status.is_informational() {
             return Ok(());
@@ -1670,7 +1696,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
         &self,
         session: &mut Session,
         upstream_response: &mut ResponseHeader,
-        ctx: &mut Self::Context,
+        ctx: &mut Self::CTX,
     ) -> Result<()> {
         let now = Instant::now();
         let timeouts = &ctx.runtime.runtime_config.policies.timeouts;
@@ -1770,7 +1796,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
         &self,
         _session: &mut Session,
         response: &mut ResponseHeader,
-        ctx: &mut Self::Context,
+        ctx: &mut Self::CTX,
     ) -> Result<()> {
         match ctx.tunnel.map(|tunnel| tunnel.mode) {
             Some(TunnelMode::Websocket)
@@ -1789,7 +1815,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
         _session: &mut Session,
         body: &mut Option<Bytes>,
         _end_of_stream: bool,
-        ctx: &mut Self::Context,
+        ctx: &mut Self::CTX,
     ) -> Result<Option<Duration>> {
         if ctx.response_body_suppressed {
             *body = None;
@@ -1881,7 +1907,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
         &self,
         _session: &mut Session,
         upstream_trailers: &mut http::HeaderMap,
-        ctx: &mut Self::Context,
+        ctx: &mut Self::CTX,
     ) -> Result<()> {
         let normalized = normalize_response_trailers(
             upstream_trailers,
@@ -1894,7 +1920,7 @@ impl PingoraRequestService for PingoraEdgeRequestService {
         Ok(())
     }
 
-    async fn logging(&self, session: &mut Session, error: Option<&Error>, ctx: &mut Self::Context) {
+    async fn logging(&self, session: &mut Session, error: Option<&Error>, ctx: &mut Self::CTX) {
         if !ctx.completion.complete() {
             return;
         }
