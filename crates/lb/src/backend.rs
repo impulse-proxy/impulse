@@ -51,11 +51,11 @@ impl BackendSelectionState {
     }
 
     pub(crate) fn finish_request(&self, latency: Duration, status: Option<u16>) {
-        let _ =
-            self.active_requests
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-                    Some(current.saturating_sub(1))
-                });
+        let _ = self
+            .active_requests
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                Some(current.saturating_sub(1))
+            });
 
         if status.is_some_and(|code| (500..=599).contains(&code)) {
             return;
@@ -65,7 +65,7 @@ impl BackendSelectionState {
             (latency.as_secs_f64() * 1_000.0).clamp(MIN_LATENCY_SAMPLE_MS, MAX_LATENCY_SAMPLE_MS);
         let _ = self
             .ewma_latency_ms
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |bits| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |bits| {
                 let next = if bits == UNSAMPLED_LATENCY {
                     observed_ms
                 } else {
@@ -82,7 +82,7 @@ impl BackendSelectionState {
             .max(FAILURE_PENALTY_LATENCY_MS);
         let _ = self
             .ewma_latency_ms
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |bits| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |bits| {
                 Some(if bits == UNSAMPLED_LATENCY {
                     penalty_ms.to_bits()
                 } else {
