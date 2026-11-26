@@ -34,48 +34,6 @@ pub struct AlternateBackendPolicy {
     pub healthy_fallback: bool,
 }
 
-/// Immutable backend membership compiled for one runtime generation.
-#[derive(Clone, Debug)]
-pub struct UpstreamPoolMembership {
-    backends: Box<[UpstreamBackendMembership]>,
-    strategy: LoadBalancingStrategy,
-    request_key: Option<RequestKeyInput>,
-}
-
-#[derive(Clone, Debug)]
-struct UpstreamBackendMembership {
-    address: Arc<str>,
-    selection_state: Arc<BackendSelectionState>,
-}
-
-impl UpstreamPoolMembership {
-    pub fn backend_address(&self, index: usize) -> Option<&str> {
-        self.backends
-            .get(index)
-            .map(|backend| backend.address.as_ref())
-    }
-
-    pub(crate) fn backend_addresses(&self) -> impl ExactSizeIterator<Item = &str> {
-        self.backends.iter().map(|backend| backend.address.as_ref())
-    }
-
-    pub fn begin_request(&self, index: usize) -> bool {
-        let Some(backend) = self.backends.get(index) else {
-            return false;
-        };
-        backend.selection_state.begin_request();
-        true
-    }
-
-    pub const fn lb_strategy(&self) -> LoadBalancingStrategy {
-        self.strategy
-    }
-
-    pub fn lb_key_spec(&self) -> Option<&RequestKeyInput> {
-        self.request_key.as_ref()
-    }
-}
-
 pub struct UpstreamPool {
     pool: BackendPool,
     load_balancer: Option<LoadBalancing>,
@@ -177,22 +135,6 @@ impl UpstreamPool {
 
     pub fn backend_address(&self, index: usize) -> Option<&str> {
         self.pool.address(index)
-    }
-
-    pub fn membership_snapshot(&self) -> UpstreamPoolMembership {
-        UpstreamPoolMembership {
-            backends: self
-                .pool
-                .backends
-                .iter()
-                .map(|backend| UpstreamBackendMembership {
-                    address: Arc::from(backend.address()),
-                    selection_state: backend.selection_state(),
-                })
-                .collect(),
-            strategy: self.strategy,
-            request_key: self.request_key.clone(),
-        }
     }
 
     pub fn backend_indices(&self) -> Vec<usize> {

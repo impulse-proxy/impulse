@@ -242,7 +242,7 @@ impl ImpulsePingoraHealthCheck {
             &evaluation.observation,
         );
         if let Some(transition) = transition {
-            self.pingora_load_balancing.set_backend_readiness(
+            self.pingora_load_balancing.set_backend_enabled(
                 target.backend_id,
                 matches!(transition, HealthTransition::BecameHealthy),
             );

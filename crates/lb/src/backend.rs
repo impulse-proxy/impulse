@@ -1,7 +1,7 @@
 use std::{
     sync::{
         Arc,
-        atomic::{AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -19,6 +19,7 @@ const UNSAMPLED_LATENCY: u64 = u64::MAX;
 
 #[derive(Debug)]
 pub struct BackendSelectionState {
+    enabled: AtomicBool,
     active_requests: AtomicUsize,
     ewma_latency_ms: AtomicU64,
 }
@@ -26,6 +27,7 @@ pub struct BackendSelectionState {
 impl Default for BackendSelectionState {
     fn default() -> Self {
         Self {
+            enabled: AtomicBool::new(true),
             active_requests: AtomicUsize::new(0),
             ewma_latency_ms: AtomicU64::new(UNSAMPLED_LATENCY),
         }
@@ -33,6 +35,14 @@ impl Default for BackendSelectionState {
 }
 
 impl BackendSelectionState {
+    pub(crate) fn enabled(&self) -> bool {
+        self.enabled.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn set_enabled(&self, enabled: bool) {
+        self.enabled.store(enabled, Ordering::Release);
+    }
+
     pub fn active_requests(&self) -> usize {
         self.active_requests.load(Ordering::Relaxed)
     }

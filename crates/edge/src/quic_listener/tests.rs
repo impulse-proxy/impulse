@@ -1064,7 +1064,7 @@ fn resolve_backend_skips_unhealthy_backends() {
         guard.mark_backend_failure_from_active_check(0);
         guard.mark_backend_failure_from_active_check(0);
     }
-    selectors.set_backend_readiness(impulse_contracts::BackendId::new(0), false);
+    selectors.set_backend_enabled(impulse_contracts::BackendId::new(0), false);
 
     let request =
         super::forwarding::TestTargetResolutionRequest::new("GET", "/api/items", None, None, None);

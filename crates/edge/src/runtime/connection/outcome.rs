@@ -848,7 +848,7 @@ pub(crate) fn publish_passive_readiness_transition(
     transition: Option<HealthTransition>,
 ) {
     if let Some(transition) = transition {
-        pingora_load_balancing.set_backend_readiness(
+        pingora_load_balancing.set_backend_enabled(
             backend_id,
             matches!(transition, HealthTransition::BecameHealthy),
         );

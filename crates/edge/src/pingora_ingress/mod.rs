@@ -360,25 +360,29 @@ impl PingoraEdgeRequestService {
                         "Pingora ingress retry backend has no transport identity",
                     )
                 })?;
-                let address = route_runtime
-                    .upstream_membership
-                    .backend_address(index)
-                    .ok_or_else(|| {
-                        Error::explain(
-                            InternalError,
-                            "Pingora ingress retry backend has no configured address",
-                        )
-                    })?;
-                if state.identities.backend_id_at(upstream_id, index) != Some(backend_id)
-                    || !route_runtime.selector.backend_is_available(backend_id)
-                    || !route_runtime.upstream_membership.begin_request(index)
-                {
+                if state.identities.backend_id_at(upstream_id, index) != Some(backend_id) {
                     return Error::e_explain(
                         InternalError,
                         "Pingora ingress retry backend is no longer available",
                     );
                 }
-                (backend_id, address.to_string(), index, transport_identity)
+                let Some(available) = route_runtime
+                    .selector
+                    .available_backend(backend_id)
+                    .filter(|backend| backend.index() == index)
+                else {
+                    return Error::e_explain(
+                        InternalError,
+                        "Pingora ingress retry backend is no longer available",
+                    );
+                };
+                available.begin_request();
+                (
+                    backend_id,
+                    available.configured_address().to_string(),
+                    index,
+                    transport_identity,
+                )
             } else {
                 let method = ctx.method.as_deref().ok_or_else(|| {
                     Error::explain(
@@ -408,7 +412,6 @@ impl PingoraEdgeRequestService {
                 );
                 let selected = ForwardingSelectionService::select_backend(
                     &selection_request,
-                    &pool,
                     &route_runtime.selector,
                     &state.backend_endpoints_by_id,
                     SelectionScope {
@@ -420,7 +423,6 @@ impl PingoraEdgeRequestService {
                             .shared_services()
                             .metrics
                             .current_worker_slot(),
-                        membership: &route_runtime.upstream_membership,
                     },
                     ctx.runtime.shared_state.shared_services().metrics.as_ref(),
                 )
@@ -2171,8 +2173,6 @@ fn handle_pingora_proxy_failure(
     let metrics = ctx.runtime.shared_state.shared_services().metrics.as_ref();
     let selection = ForwardingSelectionService::select_backend_excluding(
         &route_runtime.selector,
-        &selected.pool,
-        &route_runtime.upstream_membership,
         &ctx.runtime
             .shared_state
             .generation_state()
