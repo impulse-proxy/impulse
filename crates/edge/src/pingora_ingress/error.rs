@@ -10,6 +10,12 @@ pub enum PingoraUpstreamProtocol {
     Http2,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PingoraUpstreamTlsHandshake {
+    Full,
+    Resumed,
+}
+
 pub fn pingora_peer_protocol(peer: &HttpPeer) -> PingoraUpstreamProtocol {
     if matches!(peer.options.alpn, ALPN::H2) {
         PingoraUpstreamProtocol::Http2

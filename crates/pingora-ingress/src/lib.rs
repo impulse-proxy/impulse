@@ -27,28 +27,6 @@ use pingora_core::{
 };
 use rustls::server::{ResolvesServerCert, danger::ClientCertVerifier};
 
-mod error;
-mod request;
-mod response;
-mod tunnel;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum PingoraUpstreamTlsHandshake {
-    Full,
-    Resumed,
-}
-
-pub use error::{PingoraUpstreamProtocol, classify_pingora_proxy_error, pingora_peer_protocol};
-pub use request::{PingoraRequestContext, apply_normalized_request_headers};
-pub use response::{
-    apply_normalized_response_headers, build_response_header, write_downstream_response,
-    write_error_response, write_local_response,
-};
-pub use tunnel::{
-    classify_tunnel, configure_tunnel_peer, configure_tunnel_proxy, tunnel_cache_flags,
-    tunnel_response_established,
-};
-
 #[async_trait]
 pub trait ConnectionAdmission: fmt::Debug + Send + Sync {
     async fn should_accept(&self, address: Option<&SocketAddr>) -> bool;

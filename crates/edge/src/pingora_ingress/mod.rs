@@ -34,13 +34,8 @@ use impulse_observability::ResponseCacheOutcome;
 use impulse_observability::ResponseCompressionAction;
 pub use impulse_pingora_ingress::PingoraListenerTask;
 use impulse_pingora_ingress::{
-    ConnectionAdmission, PingoraDrainState, PingoraListenerConfig,
-    PingoraRequestContext as IngressRequestContext, PingoraUpstreamProtocol,
-    PingoraUpstreamTlsHandshake, apply_normalized_request_headers,
-    apply_normalized_response_headers, build_response_header, classify_pingora_proxy_error,
-    classify_tunnel, configure_tunnel_peer, configure_tunnel_proxy, create_listener_service,
-    pingora_peer_protocol, spawn_listener, tunnel_cache_flags, tunnel_response_established,
-    write_downstream_response, write_error_response, write_local_response,
+    ConnectionAdmission, PingoraDrainState, PingoraListenerConfig, create_listener_service,
+    spawn_listener,
 };
 #[cfg(feature = "response-cache")]
 use impulse_plugins::CachePluginFillDecision;
@@ -70,6 +65,27 @@ use rustls::{
     sign::CertifiedKey,
 };
 use smallvec::SmallVec;
+
+use self::{
+    error::{
+        PingoraUpstreamProtocol, PingoraUpstreamTlsHandshake, classify_pingora_proxy_error,
+        pingora_peer_protocol,
+    },
+    request::{PingoraRequestContext as IngressRequestContext, apply_normalized_request_headers},
+    response::{
+        apply_normalized_response_headers, build_response_header, write_downstream_response,
+        write_error_response, write_local_response,
+    },
+    tunnel::{
+        classify_tunnel, configure_tunnel_peer, configure_tunnel_proxy, tunnel_cache_flags,
+        tunnel_response_established,
+    },
+};
+
+mod error;
+mod request;
+mod response;
+mod tunnel;
 
 #[cfg(feature = "external-auth")]
 use crate::edge_core::request_execution::execute_compiled_external_auth;
