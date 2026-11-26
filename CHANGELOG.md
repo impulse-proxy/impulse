@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.5] - 2026-11-26
+
+### Added
+
+- `protocol` on each upstream backend selects the HTTP protocol used to reach it: `auto` (default), `http1` or `http2`. With `auto`, TLS backends negotiate HTTP/2 or HTTP/1.1 and cleartext `http://` backends use HTTP/1.1. Upstream TLS settings are now independent of this choice.
+- Criterion benchmarks for production route lookup and realistic backend selection.
+
+### Changed
+
+- Updated transitive dependencies that had known vulnerabilities.
+- Removed dead and duplicated internals: the unwired upstream proxy transport, unused transport completion and cancellation channels, the placeholder backend client rotation, and duplicate runtime timeout, in-flight limit and route policy fields. Transport write errors now propagate directly.
+
+### Fixed
+
+- HTTP/3 ingress now negotiates the upstream protocol for backends set to `auto`.
+- HTTP/2 flow-control settings are applied only to HTTP/2 upstream connections.
+
+### Removed
+
+- The `resilience.watchdog.restart_hook` configuration key and its handling. It was already rejected by validation in favor of `restart_command`; it is now simply an unknown field.
+- Prometheus metrics that were inactive or misleading: `impulse_watchdog_restart_hooks`, `impulse_backend_client_rotations`, `impulse_backend_client_rotations_total`, `impulse_backend_client_rotation_failures_total`, `impulse_backend_connect_attempt_total`, `impulse_backend_dns_refresh_success_total`, `impulse_backend_dns_refresh_failure_total` and `impulse_backend_dns_address_set_changes_total`.
+
+### Compatibility
+
+- One new optional key, `protocol`, which defaults to `auto`. Existing configurations load unchanged, and no other configuration key was removed.
+- Dashboards, recording rules and alerts that use any of the removed metrics must be updated. A PromQL sum that includes a removed metric returns no data rather than treating it as zero.
+
 ## [0.7.4] - 2026-11-25
 
 ### Changed
