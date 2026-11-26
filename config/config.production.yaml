@@ -61,6 +61,7 @@ upstream:
     backends:
       - id: "backend1"
         address: "backend.internal.example:8443" # verified HTTPS by default (no scheme needed)
+        protocol: auto # TLS ALPN prefers HTTP/2 with HTTP/1.1 fallback
         weight: 100
         health_check:
           path: "/health"

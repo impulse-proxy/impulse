@@ -10,10 +10,6 @@ fn require_nonzero_u64(name: &str, value: u64) -> Result<(), RuntimeConfigError>
     Ok(())
 }
 
-fn unsupported_policy(message: impl Into<String>) -> RuntimeConfigError {
-    RuntimeConfigError::UnsupportedPolicyCombination(message.into())
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeWatchdogPolicy {
     pub enabled: bool,
@@ -80,12 +76,6 @@ pub(crate) fn normalize_watchdog_policy(
             "resilience.watchdog.restart_command[0] must be an absolute executable path",
         ));
     }
-    if resilience.watchdog.restart_hook.is_some() {
-        return Err(unsupported_policy(
-            "resilience.watchdog.restart_hook is deprecated and unsupported; use restart_command instead",
-        ));
-    }
-
     let mut restart_command = resilience.watchdog.restart_command.clone();
     if let Some(program) = restart_command.first_mut() {
         *program = program.trim().to_string();

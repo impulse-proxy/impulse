@@ -231,7 +231,6 @@ impl Metrics {
             control_api_audit_event_drops: AtomicU64::new(0),
             control_api_audit_write_failures: AtomicU64::new(0),
             watchdog_restart_requests: AtomicU64::new(0),
-            watchdog_restart_hooks: AtomicU64::new(0),
             watchdog_degraded_windows: AtomicU64::new(0),
             runtime_panics: AtomicU64::new(0),
             runtime_rejection_invalid_config: AtomicU64::new(0),
@@ -269,11 +268,6 @@ impl Metrics {
             downstream_tls_handshake_success: AtomicU64::new(0),
             downstream_tls_handshake_full: AtomicU64::new(0),
             downstream_tls_handshake_resumed: AtomicU64::new(0),
-            backend_dns_refresh_success: AtomicU64::new(0),
-            backend_dns_refresh_failure: AtomicU64::new(0),
-            backend_dns_refresh_address_changes: AtomicU64::new(0),
-            backend_client_rotations: AtomicU64::new(0),
-            backend_client_rotation_failures: AtomicU64::new(0),
             jwt_validation_failures: RwLock::new(HashMap::new()),
             jwt_algorithm_rejections: RwLock::new(HashMap::new()),
             jwks_unknown_kid_events: RwLock::new(HashMap::new()),
@@ -292,8 +286,6 @@ impl Metrics {
             automatic_worker_slot_count,
             worker_counter_aggregation: Mutex::new(()),
             backend_dns_state: RwLock::new(HashMap::new()),
-            backend_rotation_state: RwLock::new(HashMap::new()),
-            backend_connect_attempts: RwLock::new(HashMap::new()),
             request_result_metrics: RwLock::new(RequestResultMetricsStore::default()),
             request_result_metrics_version: AtomicU64::new(0),
             request_result_metrics_cache: RwLock::new(RequestResultMetricsSnapshotCache::default()),
@@ -670,20 +662,12 @@ impl Metrics {
             .fetch_add(1, Ordering::Relaxed);
     }
 
-    pub fn record_backend_dns_refresh_success(
+    pub fn record_backend_dns_state(
         &self,
         backend: &str,
         refreshed_at: SystemTime,
         resolved_address_count: usize,
-        changed: bool,
     ) {
-        self.backend_dns_refresh_success
-            .fetch_add(1, Ordering::Relaxed);
-        if changed {
-            self.backend_dns_refresh_address_changes
-                .fetch_add(1, Ordering::Relaxed);
-        }
-
         let last_success_unix_seconds = refreshed_at
             .duration_since(UNIX_EPOCH)
             .ok()
@@ -699,25 +683,6 @@ impl Metrics {
             );
             self.mark_backend_metrics_stale();
         }
-    }
-
-    pub fn inc_backend_dns_refresh_failure(&self) {
-        self.backend_dns_refresh_failure
-            .fetch_add(1, Ordering::Relaxed);
-    }
-
-    pub fn inc_backend_client_rotation(&self, backend: &str) {
-        self.backend_client_rotations
-            .fetch_add(1, Ordering::Relaxed);
-        if let Ok(mut guard) = self.backend_rotation_state.write() {
-            guard.entry(backend.to_string()).or_default().rotations += 1;
-            self.mark_backend_metrics_stale();
-        }
-    }
-
-    pub fn inc_backend_client_rotation_failure(&self) {
-        self.backend_client_rotation_failures
-            .fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn record_jwt_validation_failure(&self, reason: &str) {
@@ -864,12 +829,6 @@ impl Metrics {
         if let Ok(mut guard) = self.backend_dns_state.write() {
             guard.retain(|backend, _| active_backends.contains(backend));
         }
-        if let Ok(mut guard) = self.backend_rotation_state.write() {
-            guard.retain(|backend, _| active_backends.contains(backend));
-        }
-        if let Ok(mut guard) = self.backend_connect_attempts.write() {
-            guard.retain(|key, _| active_backends.contains(&key.backend));
-        }
         if let Ok(mut guard) = self.request_result_metrics.write() {
             guard
                 .upstream_request_counts
@@ -913,33 +872,6 @@ impl Metrics {
         self.request_result_metrics_version
             .fetch_add(1, Ordering::Relaxed);
         self.mark_secret_metrics_stale();
-    }
-
-    pub fn record_backend_connect(
-        &self,
-        backend: &str,
-        hostname: &str,
-        resolved_addr: std::net::SocketAddr,
-    ) {
-        if let Ok(mut guard) = self.backend_connect_attempts.write() {
-            let key = BackendConnectAttemptKey {
-                backend: backend.to_string(),
-                hostname: hostname.to_string(),
-                resolved_addr: resolved_addr.to_string(),
-            };
-            if guard.contains_key(&key) || guard.len() < BACKEND_CONNECT_ATTEMPT_LABEL_CAP {
-                *guard.entry(key).or_default() += 1;
-            } else {
-                *guard
-                    .entry(BackendConnectAttemptKey {
-                        backend: backend.to_string(),
-                        hostname: METRIC_LABEL_OVER_CAP.to_string(),
-                        resolved_addr: METRIC_LABEL_OVER_CAP.to_string(),
-                    })
-                    .or_default() += 1;
-            }
-            self.mark_backend_metrics_stale();
-        }
     }
 
     pub fn record_request_result(
@@ -1396,10 +1328,6 @@ impl Metrics {
     pub fn inc_watchdog_restart_request(&self) {
         self.watchdog_restart_requests
             .fetch_add(1, Ordering::Relaxed);
-    }
-
-    pub fn inc_watchdog_restart_hook(&self) {
-        self.watchdog_restart_hooks.fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn inc_watchdog_degraded_window(&self) {

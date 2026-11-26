@@ -1,9 +1,14 @@
+use std::{
+    pin::Pin,
+    task::{Context, Poll},
+};
+
 use bytes::Bytes;
 use hyper::http::{HeaderMap, Method, StatusCode, Uri, Version};
 use impulse_contracts::TunnelMode;
 use impulse_errors::ProxyError;
 use tokio::{
-    io::{AsyncRead, AsyncWrite},
+    io::{AsyncRead, AsyncWrite, ReadBuf},
     sync::{OwnedSemaphorePermit, mpsc, oneshot},
 };
 
@@ -38,38 +43,11 @@ pub(crate) fn upstream_response_body_channel() -> (
     mpsc::channel(16)
 }
 
-pub(crate) struct UpstreamCancellation {
-    pub signal: oneshot::Receiver<()>,
-}
-
-#[derive(Debug)]
-#[allow(dead_code)]
-pub(crate) enum UpstreamExchangeOutcome {
-    Completed,
-    Cancelled,
-    Failed(ProxyError),
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum UpstreamConnectionReuse {
-    Reuse,
-    Close,
-}
-
-#[derive(Debug)]
-#[allow(dead_code)]
-pub(crate) struct UpstreamExchangeCompletion {
-    pub outcome: UpstreamExchangeOutcome,
-    pub connection_reuse: UpstreamConnectionReuse,
-}
-
 pub(crate) struct UpstreamInflightPermit {
     pub(crate) _permit: OwnedSemaphorePermit,
 }
 
 pub(crate) struct UpstreamExchangeLifecycle {
-    pub cancellation: UpstreamCancellation,
-    pub completion: oneshot::Sender<UpstreamExchangeCompletion>,
     pub _inflight_permit: UpstreamInflightPermit,
 }
 
@@ -96,41 +74,47 @@ impl UpstreamTunnel {
         }
     }
 
-    pub fn into_parts(
-        self,
-    ) -> (
-        TunnelMode,
-        Box<dyn UpstreamTunnelIo>,
-        UpstreamTunnelCompletion,
-    ) {
+    pub fn into_parts(self) -> (TunnelMode, Box<dyn UpstreamTunnelIo>) {
         (
             self.mode,
-            self.io,
-            UpstreamTunnelCompletion {
-                lifecycle: self.lifecycle,
-            },
+            Box::new(UpstreamTunnelLease {
+                io: self.io,
+                _lifecycle: self.lifecycle,
+            }),
         )
     }
 }
 
-pub struct UpstreamTunnelCompletion {
-    lifecycle: UpstreamExchangeLifecycle,
+struct UpstreamTunnelLease {
+    io: Box<dyn UpstreamTunnelIo>,
+    _lifecycle: UpstreamExchangeLifecycle,
 }
 
-impl UpstreamTunnelCompletion {
-    pub fn complete(self) {
-        self.finish(UpstreamExchangeOutcome::Completed);
+impl AsyncRead for UpstreamTunnelLease {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(self.io.as_mut()).poll_read(cx, buf)
+    }
+}
+
+impl AsyncWrite for UpstreamTunnelLease {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        Pin::new(self.io.as_mut()).poll_write(cx, buf)
     }
 
-    pub fn fail(self, error: ProxyError) {
-        self.finish(UpstreamExchangeOutcome::Failed(error));
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(self.io.as_mut()).poll_flush(cx)
     }
 
-    fn finish(self, outcome: UpstreamExchangeOutcome) {
-        let _ = self.lifecycle.completion.send(UpstreamExchangeCompletion {
-            outcome,
-            connection_reuse: UpstreamConnectionReuse::Close,
-        });
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(self.io.as_mut()).poll_shutdown(cx)
     }
 }
 

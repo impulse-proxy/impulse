@@ -121,6 +121,7 @@ pub(crate) fn runtime_upstream_from_addresses(
                 .map(|(index, address)| Backend {
                     id: format!("backend-{index}"),
                     address: (*address).to_string(),
+                    protocol: Default::default(),
                     weight: 1,
                     health_check: Some(default_health_check(1000)),
                 })

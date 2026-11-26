@@ -518,7 +518,6 @@ pub(crate) fn watchdog_runtime_config(policy: &RuntimeWatchdogPolicy) -> Watchdo
             .try_into()
             .unwrap_or(u64::MAX),
         restart_command: policy.restart_command.clone(),
-        restart_hook: None,
     }
 }
 
@@ -650,6 +649,18 @@ fn upstream_tls_input(upstream: &RuntimeUpstream) -> UpstreamTlsInput {
     }
 }
 
+fn upstream_protocol_input(
+    protocol: RuntimeBackendTransportKind,
+    uses_tls: bool,
+) -> UpstreamProtocol {
+    match protocol {
+        RuntimeBackendTransportKind::Auto if uses_tls => UpstreamProtocol::Auto,
+        RuntimeBackendTransportKind::Auto => UpstreamProtocol::Http1,
+        RuntimeBackendTransportKind::Http1 => UpstreamProtocol::Http1,
+        RuntimeBackendTransportKind::H2 => UpstreamProtocol::Http2,
+    }
+}
+
 pub(crate) fn upstream_transport_inputs(config: &RuntimeConfig) -> Vec<UpstreamTransportInput> {
     let connection = &config.policies.transport.backend_connections;
     let timeouts = UpstreamTimeoutInput {
@@ -677,19 +688,43 @@ pub(crate) fn upstream_transport_inputs(config: &RuntimeConfig) -> Vec<UpstreamT
                         configured_address: backend.backend.address.clone(),
                         authority_host: backend.endpoint.authority_host.clone(),
                         authority_port: backend.endpoint.authority_port,
-                        protocol: match backend.endpoint.transport_kind {
-                            RuntimeBackendTransportKind::Http1 => UpstreamProtocol::Http1,
-                            RuntimeBackendTransportKind::H2 => UpstreamProtocol::Http2,
-                        },
+                        protocol: upstream_protocol_input(
+                            backend.endpoint.transport_kind,
+                            uses_tls,
+                        ),
                         tls: uses_tls,
                     },
                     tls: uses_tls.then(|| tls.clone()),
                     timeouts,
-                    proxy: None,
                     connection_limits,
                     h2_flow_control,
                 }
             })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn upstream_protocol_lowering_separates_tls_from_http_protocol() {
+        assert_eq!(
+            upstream_protocol_input(RuntimeBackendTransportKind::Auto, true),
+            UpstreamProtocol::Auto
+        );
+        assert_eq!(
+            upstream_protocol_input(RuntimeBackendTransportKind::Auto, false),
+            UpstreamProtocol::Http1
+        );
+        assert_eq!(
+            upstream_protocol_input(RuntimeBackendTransportKind::Http1, true),
+            UpstreamProtocol::Http1
+        );
+        assert_eq!(
+            upstream_protocol_input(RuntimeBackendTransportKind::H2, false),
+            UpstreamProtocol::Http2
+        );
+    }
 }

@@ -313,7 +313,7 @@ mod tests {
     use super::{listeners::runtime_listeners, *};
     use crate::config::{
         Config, ForwardedHeaderPolicyMode, Listen, LoadBalancing, RouteMatch, Tls, TlsCertificate,
-        Upstream, UpstreamHostPolicyMode,
+        Upstream, UpstreamHostPolicyMode, UpstreamProtocol,
     };
 
     fn sample_config() -> Config {
@@ -368,6 +368,7 @@ mod tests {
                 backends: vec![Backend {
                     id: "api-1".to_string(),
                     address: "https://api.internal:8443".to_string(),
+                    protocol: Default::default(),
                     weight: 100,
                     health_check: None,
                 }],
@@ -436,14 +437,6 @@ mod tests {
             api.backend_tls_policy().ca_file.as_deref(),
             Some(ca_path.to_string_lossy().as_ref())
         );
-        assert_eq!(
-            runtime.policies.transport.backend_connections.max_inflight,
-            runtime
-                .policies
-                .transport
-                .connection_limits
-                .backend_pool_max_inflight
-        );
         assert_eq!(runtime.policies.rate_limits.scoped_limits.len(), 1);
         assert_eq!(
             runtime.policies.rate_limits.scoped_limits[0].idle_ttl,
@@ -464,6 +457,7 @@ mod tests {
             path_prefix: Some("/v1".to_string()),
             method: Some("get".to_string()),
         };
+        upstream.backends[0].protocol = UpstreamProtocol::Http2;
 
         let runtime = RuntimeConfig::from_config(&config).expect("runtime config");
         let runtime_upstream = runtime.upstreams.get("api").expect("api runtime upstream");
@@ -502,6 +496,11 @@ mod tests {
         assert_eq!(exported.route.host.as_deref(), Some("api.example.com:443"));
         assert_eq!(exported.route.method.as_deref(), Some("GET"));
         assert_eq!(exported.route.path_prefix.as_deref(), Some("/v1"));
+        assert_eq!(
+            runtime_upstream.backends[0].endpoint.transport_kind,
+            RuntimeBackendTransportKind::H2
+        );
+        assert_eq!(exported.backends[0].protocol, UpstreamProtocol::Http2);
     }
 
     #[test]

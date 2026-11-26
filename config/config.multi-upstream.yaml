@@ -73,6 +73,7 @@ upstream:
     backends:
       - id: "api-1"
         address: "10.0.1.11:8443"   # primary — verified HTTPS; no scheme needed
+        protocol: auto
         weight: 100                  # default unit weight; receives ~40% of ring slots
         health_check:
           path: "/api/health"
@@ -84,6 +85,7 @@ upstream:
 
       - id: "api-2"
         address: "10.0.1.12:8443"
+        protocol: auto
         weight: 100
         health_check:
           path: "/api/health"
@@ -95,6 +97,7 @@ upstream:
 
       - id: "api-3"
         address: "10.0.1.13:8443"
+        protocol: auto
         weight: 50    # half the ring slots; useful for a canary or under-specced node
         health_check:
           path: "/api/health"
@@ -118,6 +121,7 @@ upstream:
     backends:
       - id: "web-1"
         address: "10.0.2.21:8443"
+        protocol: auto
         weight: 100          # equal weight; latency-aware adjusts effective share at runtime
         health_check:
           path: "/health"
@@ -129,6 +133,7 @@ upstream:
 
       - id: "web-2"
         address: "10.0.2.22:8443"
+        protocol: auto
         weight: 100
         health_check:
           path: "/health"

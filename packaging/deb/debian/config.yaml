@@ -21,6 +21,7 @@ upstream:
     backends:
       - id: "backend1"
         address: "backend.internal.example:8443"
+        protocol: auto
         weight: 100
         health_check:
           path: "/health"

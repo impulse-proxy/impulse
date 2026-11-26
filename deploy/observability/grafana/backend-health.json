@@ -312,12 +312,12 @@
       },
       "targets": [
         {
-          "expr": "100 * sum(impulse:backend_dns_refresh_failure_ratio:rate5m)",
+          "expr": "100 * sum(impulse:pingora_discovery_refresh_failure_ratio:rate5m)",
           "legendFormat": "dns refresh failure ratio",
           "refId": "A"
         }
       ],
-      "title": "DNS Refresh Failure Ratio",
+      "title": "Pingora Discovery Failure Ratio",
       "type": "stat"
     },
     {
@@ -635,86 +635,22 @@
       },
       "targets": [
         {
-          "expr": "sum(impulse:backend_dns_refresh_successes:rate5m)",
+          "expr": "sum(impulse:pingora_discovery_refresh_successes:rate5m)",
           "legendFormat": "refresh success",
           "refId": "A"
         },
         {
-          "expr": "sum(impulse:backend_dns_refresh_failures:rate5m)",
+          "expr": "sum(impulse:pingora_discovery_refresh_failures:rate5m)",
           "legendFormat": "refresh failure",
           "refId": "B"
         },
         {
-          "expr": "sum(impulse:backend_dns_address_set_changes:rate5m)",
-          "legendFormat": "address-set changes",
+          "expr": "sum(impulse:pingora_discovery_membership_updates:rate5m)",
+          "legendFormat": "membership updates",
           "refId": "C"
         }
       ],
-      "title": "DNS Refresh Outcomes and Address-Set Changes",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "description": "Rotation events triggered by DNS topology changes, plus rotation failures that may leave stale pooled state behind.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "drawStyle": "line",
-            "fillOpacity": 12,
-            "lineInterpolation": "linear",
-            "lineWidth": 2,
-            "showPoints": "never",
-            "spanNulls": true,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            }
-          },
-          "unit": "ops"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 10,
-        "w": 12,
-        "x": 12,
-        "y": 27
-      },
-      "id": 12,
-      "options": {
-        "legend": {
-          "calcs": [
-            "lastNotNull",
-            "max"
-          ],
-          "displayMode": "table",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "expr": "sum(impulse:backend_client_rotation_events:rate5m)",
-          "legendFormat": "rotation events",
-          "refId": "A"
-        },
-        {
-          "expr": "sum(impulse:backend_client_rotation_failures:rate5m)",
-          "legendFormat": "rotation failures",
-          "refId": "B"
-        }
-      ],
-      "title": "Client Rotations and Failures",
+      "title": "Pingora Discovery Refresh Outcomes",
       "type": "timeseries"
     },
     {
@@ -916,70 +852,6 @@
       ],
       "title": "Backend Failure Pressure",
       "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "description": "Observed upstream socket connect attempts by backend. This helps distinguish traffic concentration from passive failure concentration.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "decimals": 3,
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "yellow",
-                "value": 0.05
-              },
-              {
-                "color": "red",
-                "value": 1
-              }
-            ]
-          },
-          "unit": "reqps"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 9,
-        "x": 6,
-        "y": 48
-      },
-      "id": 17,
-      "options": {
-        "displayMode": "gradient",
-        "minVizHeight": 16,
-        "minVizWidth": 8,
-        "orientation": "horizontal",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "showUnfilled": true
-      },
-      "targets": [
-        {
-          "expr": "topk(12, sum by (backend) (impulse:backend_connect_attempts_by_backend:rate5m{backend=~\"${backend:regex}\"}))",
-          "legendFormat": "{{backend}}",
-          "refId": "A"
-        }
-      ],
-      "title": "Connect Attempts by Backend",
-      "type": "bargauge"
     },
     {
       "datasource": {

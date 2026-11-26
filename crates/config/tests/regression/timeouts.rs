@@ -32,7 +32,7 @@ fn runtime_config_normalizes_timeout_and_transport_knobs_into_runtime_policies()
         Duration::from_millis(400)
     );
     assert_eq!(
-        policies.timeouts.h2_pool_idle,
+        policies.transport.backend_connections.pool_idle_timeout,
         Duration::from_millis(91_000)
     );
     assert_eq!(

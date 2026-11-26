@@ -161,10 +161,10 @@ groups:
             That usually means tail latency is deteriorating enough that the
             hedge policy is engaging routinely rather than exceptionally.
 
-      - alert: ImpulseBackendDnsRefreshFailures
+      - alert: ImpulsePingoraDiscoveryRefreshFailures
         expr: >-
-          impulse:backend_dns_refresh_failures:rate5m > 0
-          and impulse:backend_dns_refresh_failure_ratio:rate5m > 0.10
+          impulse:pingora_discovery_refresh_failures:rate5m > 0
+          and impulse:pingora_discovery_refresh_failure_ratio:rate5m > 0.10
         for: 15m
         labels:
           severity: ticket
@@ -173,7 +173,7 @@ groups:
         annotations:
           summary: Backend DNS refresh failures are rising
           description: >-
-            The packaged DNS refresh recording rules show ongoing failures and a
+            Pingora discovery refresh outcomes show ongoing failures and a
             failure ratio above 10%. Address-set refresh is no longer reliably
             converging and stale backend endpoints may be retained.
 

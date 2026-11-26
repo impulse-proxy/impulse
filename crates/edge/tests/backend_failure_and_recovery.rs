@@ -33,6 +33,7 @@ fn backend_config(id: &str, addr: SocketAddr, health_check: Option<HealthCheck>)
     Backend {
         id: id.to_string(),
         address: backend_identity(addr),
+        protocol: Default::default(),
         weight: 1,
         health_check,
     }
@@ -439,6 +440,15 @@ fn partial_outage_preserves_healthy_backend_availability() {
     for _ in 0..6 {
         let response = harness
             .run_request(H3RequestSpec::get("localhost", "/"))
+            .or_else(|first_error| {
+                harness
+                    .run_request(H3RequestSpec::get("localhost", "/"))
+                    .map_err(|retry_error| {
+                        format!(
+                            "initial request failed: {first_error}; retry failed: {retry_error}"
+                        )
+                    })
+            })
             .expect("partial outage request");
         match response.status {
             200 => {

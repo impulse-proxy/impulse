@@ -55,17 +55,6 @@ pub(crate) async fn run_watchdog_service(state: WatchdogServiceState) {
             "Watchdog restart_command[0] must be an absolute executable path; refusing to execute relative restart command"
         );
     }
-    if watchdog_config
-        .restart_hook
-        .as_deref()
-        .map(str::trim)
-        .is_some_and(|value| !value.is_empty())
-    {
-        warn!(
-            "Watchdog restart_hook is deprecated and ignored; configure resilience.watchdog.restart_command instead"
-        );
-    }
-
     metrics.aggregate_worker_counters();
     let mut previous_requests = metrics.requests_total.load(Ordering::Relaxed);
     let mut previous_timeouts = metrics.backend_timeouts.load(Ordering::Relaxed);
@@ -155,7 +144,7 @@ pub(crate) async fn run_watchdog_service(state: WatchdogServiceState) {
             );
         } else {
             warn!(
-                "Watchdog restart drain grace elapsed; executing hook without full drain: {}",
+                "Watchdog restart drain grace elapsed; executing restart command without full drain: {}",
                 restart_reason
             );
         }
@@ -176,27 +165,26 @@ pub(crate) async fn run_watchdog_service(state: WatchdogServiceState) {
         let status = command.status().await;
         match status {
             Ok(status) => {
-                metrics.runtime_observations().inc_watchdog_restart_hook();
                 let exit_status = status
                     .code()
                     .map(|code| code.to_string())
                     .unwrap_or_else(|| "signal".to_string());
                 if status.success() {
                     info!(
-                        "Watchdog restart hook exited successfully with status {}",
+                        "Watchdog restart command exited successfully with status {}",
                         exit_status
                     );
                     watchdog.complete_restart_cycle();
                 } else {
                     log::error!(
-                        "Watchdog restart hook exited unsuccessfully with status {}; keeping restart pending",
+                        "Watchdog restart command exited unsuccessfully with status {}; keeping restart pending",
                         exit_status
                     );
                 }
             }
             Err(err) => {
                 log::error!(
-                    "Watchdog restart hook execution failed: {}; keeping restart pending",
+                    "Watchdog restart command execution failed: {}; keeping restart pending",
                     err
                 );
             }
@@ -229,7 +217,6 @@ mod tests {
             drain_grace_ms: 60_000,
             restart_cooldown_ms: 1,
             restart_command: vec!["/bin/true".to_string()],
-            restart_hook: None,
         }
     }
 

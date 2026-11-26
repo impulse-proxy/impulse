@@ -12,6 +12,7 @@ upstream:
     backends:
       - id: "backend1"
         address: "127.0.0.1:8080"  # verified HTTPS by default; use config.development.yaml for explicit local HTTP
+        protocol: auto  # auto | http1 | http2
         health_check:
           path: "/health"
 

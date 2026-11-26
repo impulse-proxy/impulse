@@ -139,6 +139,7 @@ upstream:
     backends:
       - id: "api-1"
         address: "127.0.0.1:8001"
+        protocol: auto # auto | http1 | http2
         weight: 100
         health_check:
           path: "/health"

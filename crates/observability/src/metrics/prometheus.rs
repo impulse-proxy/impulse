@@ -156,14 +156,6 @@ fn render_backend_metrics_families(snapshot: &BackendMetricsSnapshot) -> String 
         "# HELP impulse_backend_dns_resolved_addresses Current number of resolved addresses retained for a backend identity.\n",
     );
     out.push_str("# TYPE impulse_backend_dns_resolved_addresses gauge\n");
-    out.push_str(
-        "# HELP impulse_backend_client_rotations Per-backend client rotation count triggered by DNS changes.\n",
-    );
-    out.push_str("# TYPE impulse_backend_client_rotations counter\n");
-    out.push_str(
-        "# HELP impulse_backend_connect_attempt_total Observed upstream socket connects grouped by backend identity, hostname, and resolved address.\n",
-    );
-    out.push_str("# TYPE impulse_backend_connect_attempt_total counter\n");
     for (backend, state) in &snapshot.backend_dns_state {
         let backend = escape_prometheus_label(backend);
         out.push_str(&format!(
@@ -173,22 +165,6 @@ fn render_backend_metrics_families(snapshot: &BackendMetricsSnapshot) -> String 
         out.push_str(&format!(
             "impulse_backend_dns_resolved_addresses{{backend=\"{}\"}} {}\n",
             backend, state.resolved_address_count
-        ));
-    }
-    for (backend, state) in &snapshot.backend_rotation_state {
-        let backend = escape_prometheus_label(backend);
-        out.push_str(&format!(
-            "impulse_backend_client_rotations{{backend=\"{}\"}} {}\n",
-            backend, state.rotations
-        ));
-    }
-    for (key, count) in &snapshot.backend_connect_attempts {
-        let backend = escape_prometheus_label(&key.backend);
-        let hostname = escape_prometheus_label(&key.hostname);
-        let resolved_addr = escape_prometheus_label(&key.resolved_addr);
-        out.push_str(&format!(
-            "impulse_backend_connect_attempt_total{{backend=\"{}\",hostname=\"{}\",resolved_addr=\"{}\"}} {}\n",
-            backend, hostname, resolved_addr, count
         ));
     }
     out
@@ -1370,15 +1346,6 @@ impl Metrics {
             self.watchdog_restart_requests.load(Ordering::Relaxed)
         ));
 
-        out.push_str(
-            "# HELP impulse_watchdog_restart_hooks Total executed watchdog restart hooks.\n",
-        );
-        out.push_str("# TYPE impulse_watchdog_restart_hooks counter\n");
-        out.push_str(&format!(
-            "impulse_watchdog_restart_hooks {}\n",
-            self.watchdog_restart_hooks.load(Ordering::Relaxed)
-        ));
-
         out.push_str("# HELP impulse_runtime_panics Total runtime task panics observed.\n");
         out.push_str("# TYPE impulse_runtime_panics counter\n");
         out.push_str(&format!(
@@ -1658,48 +1625,6 @@ impl Metrics {
                 value
             ));
         }
-        out.push_str(
-            "# HELP impulse_backend_dns_refresh_success_total Total successful backend DNS refreshes.\n",
-        );
-        out.push_str("# TYPE impulse_backend_dns_refresh_success_total counter\n");
-        out.push_str(&format!(
-            "impulse_backend_dns_refresh_success_total {}\n",
-            self.backend_dns_refresh_success.load(Ordering::Relaxed)
-        ));
-        out.push_str(
-            "# HELP impulse_backend_dns_refresh_failure_total Total failed backend DNS refreshes.\n",
-        );
-        out.push_str("# TYPE impulse_backend_dns_refresh_failure_total counter\n");
-        out.push_str(&format!(
-            "impulse_backend_dns_refresh_failure_total {}\n",
-            self.backend_dns_refresh_failure.load(Ordering::Relaxed)
-        ));
-        out.push_str(
-            "# HELP impulse_backend_dns_address_set_changes_total Total successful backend DNS refreshes that changed the resolved address set.\n",
-        );
-        out.push_str("# TYPE impulse_backend_dns_address_set_changes_total counter\n");
-        out.push_str(&format!(
-            "impulse_backend_dns_address_set_changes_total {}\n",
-            self.backend_dns_refresh_address_changes
-                .load(Ordering::Relaxed)
-        ));
-        out.push_str(
-            "# HELP impulse_backend_client_rotations_total Total backend client rotations triggered by DNS address-set changes.\n",
-        );
-        out.push_str("# TYPE impulse_backend_client_rotations_total counter\n");
-        out.push_str(&format!(
-            "impulse_backend_client_rotations_total {}\n",
-            self.backend_client_rotations.load(Ordering::Relaxed)
-        ));
-        out.push_str(
-            "# HELP impulse_backend_client_rotation_failures_total Total backend client rotations that failed after a DNS address-set change (stale pooled connections may persist).\n",
-        );
-        out.push_str("# TYPE impulse_backend_client_rotation_failures_total counter\n");
-        out.push_str(&format!(
-            "impulse_backend_client_rotation_failures_total {}\n",
-            self.backend_client_rotation_failures
-                .load(Ordering::Relaxed)
-        ));
         self.append_cached_jwt_jwks_metrics_families(&mut out);
         self.append_cached_backend_metrics_families(&mut out);
         out.push_str(

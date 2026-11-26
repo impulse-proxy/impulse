@@ -393,11 +393,8 @@ impl Http3Service {
         let tunnel = upgrade.tunnel.await.map_err(|_| {
             ProxyError::RequestTransport(RequestFailure::UpstreamTunnelTaskStopped)
         })??;
-        let (mode, io, completion) = tunnel.into_parts();
+        let (mode, io) = tunnel.into_parts();
         if mode != TunnelMode::Websocket {
-            completion.fail(ProxyError::RequestProtocol(
-                RequestFailure::UnexpectedTunnelMode,
-            ));
             return Err(ProxyError::RequestProtocol(
                 RequestFailure::UnexpectedTunnelMode,
             ));
@@ -439,14 +436,12 @@ impl Http3Service {
             match tokio::try_join!(write_fut, read_fut) {
                 Ok(((), ())) => {
                     let _ = chunk_tx.send(ResponseChunk::End).await;
-                    completion.complete();
                 }
                 Err(err) => {
                     let detail = err.to_string();
                     let _ = chunk_tx
-                        .send(ResponseChunk::Error(ProxyError::Transport(detail.clone())))
+                        .send(ResponseChunk::Error(ProxyError::Transport(detail)))
                         .await;
-                    completion.fail(ProxyError::Transport(detail));
                 }
             }
         };

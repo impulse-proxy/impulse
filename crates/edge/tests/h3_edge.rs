@@ -81,6 +81,7 @@ fn make_config(port: u32, cert: String, key: String, backend_address: String) ->
             backends: vec![Backend {
                 id: "backend1".to_string(),
                 address: normalize_backend_address(backend_address),
+                protocol: Default::default(),
                 weight: 1,
                 health_check: Some(HealthCheck {
                     path: "/health".to_string(),
@@ -627,6 +628,7 @@ fn make_config_with_rate_limit(
             backends: vec![Backend {
                 id: "backend1".to_string(),
                 address: normalize_backend_address(backend_address),
+                protocol: Default::default(),
                 weight: 1,
                 health_check: Some(HealthCheck {
                     path: "/health".to_string(),

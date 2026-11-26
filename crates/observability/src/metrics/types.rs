@@ -76,11 +76,6 @@ pub(crate) struct BackendDnsState {
 }
 
 #[derive(Default, Clone)]
-pub(crate) struct BackendRotationState {
-    pub(crate) rotations: u64,
-}
-
-#[derive(Default, Clone)]
 pub(crate) struct JwksSourceState {
     pub(crate) jwks_source_id: String,
     pub(crate) refresh_success_total: u64,
@@ -91,22 +86,6 @@ pub(crate) struct JwksSourceState {
     pub(crate) last_refresh_success_unix_seconds: Option<u64>,
     pub(crate) last_failure_reason: Option<&'static str>,
 }
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) struct BackendConnectAttemptKey {
-    pub(crate) backend: String,
-    pub(crate) hostname: String,
-    pub(crate) resolved_addr: String,
-}
-
-/// Upper bound on the number of distinct `impulse_backend_connect_attempt_total`
-/// series. Once this many distinct keys exist, further keys collapse into a
-/// stable overflow series so label cardinality does not grow with DNS churn.
-pub(crate) const BACKEND_CONNECT_ATTEMPT_LABEL_CAP: usize = 512;
-
-/// Stable sentinel used for the `hostname`/`resolved_addr` labels once the
-/// cardinality cap is reached.
-pub(crate) const METRIC_LABEL_OVER_CAP: &str = "__over_cap__";
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct UpstreamRequestCountKey {
@@ -180,8 +159,6 @@ pub(super) struct JwtJwksMetricsSnapshotCache {
 #[derive(Default, Clone)]
 pub(crate) struct BackendMetricsSnapshot {
     pub(crate) backend_dns_state: Vec<(String, BackendDnsState)>,
-    pub(crate) backend_rotation_state: Vec<(String, BackendRotationState)>,
-    pub(crate) backend_connect_attempts: Vec<(BackendConnectAttemptKey, u64)>,
 }
 
 #[derive(Default, Clone)]

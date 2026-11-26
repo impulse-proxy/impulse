@@ -428,6 +428,7 @@ mod tests {
         crate::test_support::backend_state(&Backend {
             id: format!("backend-{address}"),
             address: address.to_string(),
+            protocol: Default::default(),
             weight: 1,
             health_check: Some(HealthCheck {
                 path: "/health".to_string(),
@@ -505,6 +506,7 @@ mod tests {
         let backend = Backend {
             id: "b1".to_string(),
             address: "10.0.0.1:1".to_string(),
+            protocol: Default::default(),
             weight: 1,
             health_check: Some(HealthCheck {
                 path: "/health".to_string(),
@@ -547,6 +549,7 @@ mod tests {
         let backend = Backend {
             id: "b1".to_string(),
             address: "10.0.0.1:1".to_string(),
+            protocol: Default::default(),
             weight: 1,
             health_check: Some(HealthCheck {
                 path: "/health".to_string(),
@@ -577,6 +580,7 @@ mod tests {
         let backend = Backend {
             id: "b1".to_string(),
             address: "10.0.0.1:1".to_string(),
+            protocol: Default::default(),
             weight: 1,
             health_check: Some(HealthCheck {
                 path: "/health".to_string(),
@@ -611,6 +615,7 @@ mod tests {
         let backend = Backend {
             id: "b1".to_string(),
             address: "10.0.0.1:1".to_string(),
+            protocol: Default::default(),
             weight: 1,
             health_check: Some(HealthCheck {
                 path: "/health".to_string(),
@@ -646,6 +651,7 @@ mod tests {
         let backend = Backend {
             id: "b1".to_string(),
             address: "10.0.0.1:1".to_string(),
+            protocol: Default::default(),
             weight: 1,
             health_check: Some(HealthCheck {
                 path: "/health".to_string(),

@@ -1,7 +1,4 @@
-use std::{
-    net::SocketAddr,
-    time::{Duration, SystemTime},
-};
+use std::time::{Duration, SystemTime};
 
 use impulse_contracts::{
     BackendId, HealthFailureReason, HedgeOutcomeTelemetryReason, HedgeTriggerTelemetryReason,
@@ -309,10 +306,6 @@ impl RuntimeObservationRecorder<'_> {
         self.metrics.inc_watchdog_restart_request();
     }
 
-    pub fn inc_watchdog_restart_hook(self) {
-        self.metrics.inc_watchdog_restart_hook();
-    }
-
     pub fn inc_watchdog_degraded_window(self) {
         self.metrics.inc_watchdog_degraded_window();
     }
@@ -321,36 +314,14 @@ impl RuntimeObservationRecorder<'_> {
         self.metrics.bind_worker_slot(slot);
     }
 
-    pub fn record_backend_dns_refresh_success(
+    pub fn record_backend_dns_state(
         self,
         backend: &str,
         refreshed_at: SystemTime,
         resolved_address_count: usize,
-        changed: bool,
     ) {
-        self.metrics.record_backend_dns_refresh_success(
-            backend,
-            refreshed_at,
-            resolved_address_count,
-            changed,
-        );
-    }
-
-    pub fn inc_backend_dns_refresh_failure(self) {
-        self.metrics.inc_backend_dns_refresh_failure();
-    }
-
-    pub fn inc_backend_client_rotation(self, backend: &str) {
-        self.metrics.inc_backend_client_rotation(backend);
-    }
-
-    pub fn inc_backend_client_rotation_failure(self) {
-        self.metrics.inc_backend_client_rotation_failure();
-    }
-
-    pub fn record_backend_connect(self, backend: &str, hostname: &str, resolved_addr: SocketAddr) {
         self.metrics
-            .record_backend_connect(backend, hostname, resolved_addr);
+            .record_backend_dns_state(backend, refreshed_at, resolved_address_count);
     }
 
     pub fn record_pingora_discovery_refresh(

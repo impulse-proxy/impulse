@@ -11,6 +11,7 @@ use impulse_errors::{PoolError, ProxyError, RequestFailure};
 use impulse_observability::Metrics;
 use pingora_core::{
     connectors::http::{Connector, v2::Connector as H2Connector},
+    protocols::http::client::HttpSession as PingoraHttpSession,
     upstreams::peer::HttpPeer,
 };
 use tokio::sync::{RwLock, Semaphore, TryAcquireError};
@@ -18,10 +19,7 @@ use tokio::sync::{RwLock, Semaphore, TryAcquireError};
 use crate::{
     PingoraBackendHealthIdentity, PingoraUpstreamConnectionIdentity, UpstreamProtocol,
     UpstreamTransportInput,
-    exchange::{
-        UpstreamCancellation, UpstreamConnectionReuse, UpstreamExchangeCompletion,
-        UpstreamExchangeLifecycle, UpstreamExchangeOutcome, UpstreamInflightPermit,
-    },
+    exchange::{UpstreamExchangeLifecycle, UpstreamInflightPermit},
     http3::{UpstreamExchangeRequest, UpstreamExchangeResponse},
     pingora_failure::{classify_pingora_h1_error, classify_pingora_h2_error},
     pingora_h1::PingoraH1UpstreamSession,
@@ -76,43 +74,68 @@ impl UpstreamTransportPool {
         request: UpstreamExchangeRequest,
     ) -> Result<UpstreamExchangeResponse, ProxyError> {
         let UpstreamExchangeRequest { head, body } = request;
-        let (_cancellation_signal, cancellation) = tokio::sync::oneshot::channel();
-        let (completion, _completion_observer) = tokio::sync::oneshot::channel();
         if self.backend_entry(backend) == Some(UpstreamProtocol::Http1)
             && head.headers.contains_key(hyper::header::TRAILER)
         {
-            let error = ProxyError::RequestProtocol(RequestFailure::RequestTrailersRequireHttp2);
-            finish_pingora_dispatch_failure(completion, &error);
-            return Err(error);
+            return Err(ProxyError::RequestProtocol(
+                RequestFailure::RequestTrailersRequireHttp2,
+            ));
         }
-        let config = match self.resolved_pingora_backend(backend) {
-            Ok(config) => config,
-            Err(error) => {
-                finish_pingora_dispatch_failure(completion, &error);
-                return Err(error);
-            }
-        };
+        let mut config = self.resolved_pingora_backend(backend)?;
         let permit = self
             .acquire_exchange_permit(backend)
-            .map_err(ProxyError::Pool);
-        let permit = match permit {
-            Ok(permit) => permit,
-            Err(error) => {
-                finish_pingora_dispatch_failure(completion, &error);
-                return Err(error);
-            }
-        };
+            .map_err(ProxyError::Pool)?;
         let connector = Arc::clone(&self.pingora_connector);
         let identity = config.identity;
         let lifecycle = UpstreamExchangeLifecycle {
-            cancellation: UpstreamCancellation {
-                signal: cancellation,
-            },
-            completion,
             _inflight_permit: UpstreamInflightPermit { _permit: permit },
         };
 
         match self.backend_entry(backend) {
+            Some(UpstreamProtocol::Auto) => {
+                config.peer.group_key = identity.pool_key();
+                let (mut session, reused) = connector
+                    .get_http_session(&config.peer)
+                    .await
+                    .map_err(|error| classify_pingora_h1_error(&error))?;
+                session.set_read_timeout(config.peer.options.read_timeout);
+                session.set_write_timeout(config.peer.options.write_timeout);
+                match session {
+                    PingoraHttpSession::H1(session) => {
+                        if head.headers.contains_key(hyper::header::TRAILER) {
+                            return Err(ProxyError::RequestProtocol(
+                                RequestFailure::RequestTrailersRequireHttp2,
+                            ));
+                        }
+                        let mut session = PingoraH1UpstreamSession::from_negotiated(
+                            connector,
+                            config.peer,
+                            session,
+                        );
+                        session.write_request(&head, body).await?;
+                        session.read_response(lifecycle).await
+                    }
+                    PingoraHttpSession::H2(session) => {
+                        if !reused {
+                            self.metrics
+                                .ingress_observations()
+                                .inc_pingora_pool_saturation();
+                        }
+                        let mut session = PingoraH2UpstreamSession::from_negotiated(
+                            connector,
+                            config.peer,
+                            session,
+                            reused,
+                            self.metrics.as_ref(),
+                        );
+                        session.write_request(&head, body).await?;
+                        session.read_response(lifecycle).await
+                    }
+                    PingoraHttpSession::Custom(_) => Err(ProxyError::Transport(
+                        "custom upstream protocol negotiated for HTTP backend".to_string(),
+                    )),
+                }
+            }
             Some(UpstreamProtocol::Http1) => {
                 let mut session = match PingoraH1UpstreamSession::acquire(
                     connector,
@@ -123,15 +146,10 @@ impl UpstreamTransportPool {
                 {
                     Ok(session) => session,
                     Err(error) => {
-                        let error = classify_pingora_h1_error(&error);
-                        finish_pingora_dispatch_failure(lifecycle.completion, &error);
-                        return Err(error);
+                        return Err(classify_pingora_h1_error(&error));
                     }
                 };
-                if let Err(error) = session.write_request(&head, body).await {
-                    finish_pingora_dispatch_failure(lifecycle.completion, &error);
-                    return Err(error);
-                }
+                session.write_request(&head, body).await?;
                 session.read_response(lifecycle).await
             }
             Some(UpstreamProtocol::Http2) => {
@@ -146,15 +164,10 @@ impl UpstreamTransportPool {
                 {
                     Ok(session) => session,
                     Err(error) => {
-                        let error = classify_pingora_h2_error(&error, false);
-                        finish_pingora_dispatch_failure(lifecycle.completion, &error);
-                        return Err(error);
+                        return Err(classify_pingora_h2_error(&error, false));
                     }
                 };
-                if let Err(error) = session.write_request(&head, body).await {
-                    finish_pingora_dispatch_failure(lifecycle.completion, &error);
-                    return Err(error);
-                }
+                session.write_request(&head, body).await?;
                 session.read_response(lifecycle).await
             }
             None => unreachable!("Pingora backend disappeared after lookup"),
@@ -211,7 +224,6 @@ impl UpstreamTransportPool {
                 input.endpoint.protocol,
                 peer.sni.clone(),
                 input.tls.as_ref(),
-                input.proxy.as_ref(),
                 generation,
             );
             pingora_backends.insert(
@@ -257,27 +269,4 @@ impl UpstreamTransportPool {
             Err(TryAcquireError::Closed) => Err(PoolError::InflightLimiterClosed),
         }
     }
-
-    pub fn rotate_backend_client(&self, backend: &str) -> bool {
-        self.backend_entry(backend).is_some()
-    }
-}
-
-fn finish_pingora_dispatch_failure(
-    completion: tokio::sync::oneshot::Sender<UpstreamExchangeCompletion>,
-    error: &ProxyError,
-) {
-    let outcome_error = match error {
-        ProxyError::Transport(detail) => ProxyError::Transport(detail.clone()),
-        ProxyError::RequestTransport(failure) => ProxyError::RequestTransport(*failure),
-        ProxyError::Protocol(detail) => ProxyError::Protocol(detail.clone()),
-        ProxyError::RequestProtocol(failure) => ProxyError::RequestProtocol(*failure),
-        ProxyError::Timeout => ProxyError::Timeout,
-        ProxyError::Tls(detail) => ProxyError::Tls(detail.clone()),
-        ProxyError::Bridge(_) | ProxyError::Pool(_) => ProxyError::Transport(error.to_string()),
-    };
-    let _ = completion.send(UpstreamExchangeCompletion {
-        outcome: UpstreamExchangeOutcome::Failed(outcome_error),
-        connection_reuse: UpstreamConnectionReuse::Close,
-    });
 }

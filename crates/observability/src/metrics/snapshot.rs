@@ -167,42 +167,7 @@ impl BackendMetricsSnapshot {
             })
             .unwrap_or_default();
 
-        let backend_rotation_state = metrics
-            .backend_rotation_state
-            .read()
-            .map(|guard| {
-                let mut entries = guard
-                    .iter()
-                    .map(|(backend, state)| (backend.clone(), state.clone()))
-                    .collect::<Vec<_>>();
-                entries.sort_by(|(left, _), (right, _)| left.cmp(right));
-                entries
-            })
-            .unwrap_or_default();
-
-        let backend_connect_attempts = metrics
-            .backend_connect_attempts
-            .read()
-            .map(|guard| {
-                let mut entries = guard
-                    .iter()
-                    .map(|(key, value)| (key.clone(), *value))
-                    .collect::<Vec<_>>();
-                entries.sort_by(|(left, _), (right, _)| {
-                    left.backend
-                        .cmp(&right.backend)
-                        .then_with(|| left.hostname.cmp(&right.hostname))
-                        .then_with(|| left.resolved_addr.cmp(&right.resolved_addr))
-                });
-                entries
-            })
-            .unwrap_or_default();
-
-        Self {
-            backend_dns_state,
-            backend_rotation_state,
-            backend_connect_attempts,
-        }
+        Self { backend_dns_state }
     }
 }
 

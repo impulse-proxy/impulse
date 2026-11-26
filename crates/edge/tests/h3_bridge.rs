@@ -181,6 +181,7 @@ fn make_config(port: u32, backend_addr: String, cert: String, key: String) -> Co
             backends: vec![Backend {
                 id: "backend1".to_string(),
                 address: normalize_backend_address(backend_addr),
+                protocol: Default::default(),
                 weight: 1,
                 health_check: Some(HealthCheck {
                     path: "/health".to_string(),

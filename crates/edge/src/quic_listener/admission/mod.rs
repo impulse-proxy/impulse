@@ -404,6 +404,7 @@ mod tests {
                 backends: vec![Backend {
                     id: "a".to_string(),
                     address: "http://127.0.0.1:8080".to_string(),
+                    protocol: Default::default(),
                     weight: 1,
                     health_check: Some(HealthCheck {
                         path: "/health".to_string(),
@@ -493,6 +494,7 @@ mod tests {
                     backends: vec![Backend {
                         id: "a".to_string(),
                         address: "http://127.0.0.1:8080".to_string(),
+                        protocol: Default::default(),
                         weight: 1,
                         health_check: None,
                     }],
@@ -1069,6 +1071,7 @@ mod tests {
                     backends: vec![Backend {
                         id: "a".to_string(),
                         address: "http://127.0.0.1:8080".to_string(),
+                        protocol: Default::default(),
                         weight: 1,
                         health_check: None,
                     }],

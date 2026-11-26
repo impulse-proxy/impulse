@@ -59,7 +59,6 @@ pub struct RuntimeConnectionLimits {
     pub global_inflight: usize,
     pub per_upstream_inflight: usize,
     pub per_backend: usize,
-    pub backend_pool_max_inflight: usize,
     pub max_active_connections: usize,
 }
 
@@ -260,9 +259,6 @@ impl RuntimeTransportPolicy {
                 global_inflight: performance.global_inflight_limit,
                 per_upstream_inflight: performance.per_upstream_inflight_limit,
                 per_backend: performance.per_backend_inflight_limit,
-                backend_pool_max_inflight: performance
-                    .per_backend_inflight_limit
-                    .saturating_mul(performance.worker_threads.max(1)),
                 max_active_connections: performance.max_active_connections,
             },
             backend_connections: RuntimeBackendConnectionPolicy {
@@ -338,7 +334,7 @@ mod tests {
         assert_eq!(policy.connection_limits.global_inflight, 1000);
         assert_eq!(policy.connection_limits.per_upstream_inflight, 250);
         assert_eq!(policy.connection_limits.per_backend, 32);
-        assert_eq!(policy.connection_limits.backend_pool_max_inflight, 128);
+        assert_eq!(policy.backend_connections.max_inflight, 128);
         assert_eq!(policy.connection_limits.max_active_connections, 4096);
     }
 

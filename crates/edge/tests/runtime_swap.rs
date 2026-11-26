@@ -160,6 +160,7 @@ fn single_backend_upstream_with_address(address: String, tls: Option<UpstreamTls
         backends: vec![Backend {
             id: "backend-a".to_string(),
             address,
+            protocol: Default::default(),
             weight: 1,
             health_check: None,
         }],

@@ -658,7 +658,6 @@ pub struct Watchdog {
     pub drain_grace_ms: u64,
     pub restart_cooldown_ms: u64,
     pub restart_command: Vec<String>,
-    pub restart_hook: Option<String>,
 }
 
 impl Default for Watchdog {
@@ -674,7 +673,6 @@ impl Default for Watchdog {
             drain_grace_ms: 8_000,
             restart_cooldown_ms: 120_000,
             restart_command: Vec::new(),
-            restart_hook: None,
         }
     }
 }

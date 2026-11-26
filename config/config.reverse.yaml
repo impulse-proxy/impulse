@@ -36,6 +36,7 @@ upstream:
         backends:
             - id: "backend1"
               address: "https://127.0.0.1:5174"
+              protocol: auto
               weight: 100
         
     api_pool:
@@ -55,6 +56,7 @@ upstream:
         backends:
             - id: "backend1"
               address: "https://127.0.0.1:7001"
+              protocol: auto
               weight: 100
               health_check:
                   path: "/health"
@@ -62,6 +64,7 @@ upstream:
 
             - id: "backend2"
               address: "https://127.0.0.1:7002"
+              protocol: auto
               weight: 50
               health_check:
                   path: "/health"

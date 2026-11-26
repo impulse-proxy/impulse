@@ -20,8 +20,6 @@ pub struct RuntimeTimeoutPolicy {
     pub backend_total_request: Duration,
     pub shutdown_drain: Duration,
     pub client_body_idle: Duration,
-    pub h2_pool_idle: Duration,
-    pub backend_dns_refresh_interval: Duration,
     pub quic_max_idle: Duration,
 }
 
@@ -101,10 +99,6 @@ impl RuntimeTimeoutPolicy {
             ),
             shutdown_drain: Duration::from_millis(performance.shutdown_drain_timeout_ms),
             client_body_idle: Duration::from_millis(performance.client_body_idle_timeout_ms),
-            h2_pool_idle: Duration::from_millis(performance.h2_pool_idle_timeout_ms),
-            backend_dns_refresh_interval: Duration::from_millis(
-                performance.backend_dns_refresh_interval_ms,
-            ),
             quic_max_idle: Duration::from_millis(performance.quic_max_idle_timeout_ms),
         })
     }
@@ -129,8 +123,6 @@ mod tests {
         performance.backend_total_request_timeout_ms = 4_000;
         performance.shutdown_drain_timeout_ms = 5_000;
         performance.client_body_idle_timeout_ms = 6_000;
-        performance.h2_pool_idle_timeout_ms = 7_000;
-        performance.backend_dns_refresh_interval_ms = 8_000;
         performance.quic_max_idle_timeout_ms = 9_000;
 
         let policy = RuntimeTimeoutPolicy::normalize(&performance).expect("timeout policy");
@@ -143,11 +135,6 @@ mod tests {
         assert_eq!(policy.backend_total_request, Duration::from_millis(4_000));
         assert_eq!(policy.shutdown_drain, Duration::from_millis(5_000));
         assert_eq!(policy.client_body_idle, Duration::from_millis(6_000));
-        assert_eq!(policy.h2_pool_idle, Duration::from_millis(7_000));
-        assert_eq!(
-            policy.backend_dns_refresh_interval,
-            Duration::from_millis(8_000)
-        );
         assert_eq!(policy.quic_max_idle, Duration::from_millis(9_000));
     }
 

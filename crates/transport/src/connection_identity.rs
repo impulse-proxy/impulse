@@ -1,30 +1,10 @@
 use std::{
-    collections::{BTreeMap, hash_map::DefaultHasher},
+    collections::hash_map::DefaultHasher,
     hash::{Hash, Hasher},
     net::SocketAddr,
-    path::PathBuf,
 };
 
-use crate::{UpstreamProtocol, UpstreamProxyInput, UpstreamTlsInput};
-
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub(crate) struct PingoraUpstreamProxyIdentity {
-    pub(crate) next_hop: PathBuf,
-    pub(crate) host: String,
-    pub(crate) port: u16,
-    pub(crate) headers: BTreeMap<String, Vec<u8>>,
-}
-
-impl From<&UpstreamProxyInput> for PingoraUpstreamProxyIdentity {
-    fn from(proxy: &UpstreamProxyInput) -> Self {
-        Self {
-            next_hop: proxy.next_hop.to_path_buf(),
-            host: proxy.host.clone(),
-            port: proxy.port,
-            headers: proxy.headers.clone(),
-        }
-    }
-}
+use crate::{UpstreamProtocol, UpstreamTlsInput};
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct PingoraUpstreamConnectionIdentity {
@@ -37,7 +17,6 @@ pub(crate) struct PingoraUpstreamConnectionIdentity {
     pub(crate) ca_dir_fingerprint_sha256: Option<String>,
     pub(crate) client_certificate_fingerprint_sha256: Option<String>,
     pub(crate) client_key_fingerprint_sha256: Option<String>,
-    pub(crate) proxy: Option<PingoraUpstreamProxyIdentity>,
     pub(crate) generation: u64,
 }
 
@@ -56,7 +35,6 @@ impl PingoraUpstreamConnectionIdentity {
         protocol: UpstreamProtocol,
         sni: String,
         tls: Option<&UpstreamTlsInput>,
-        proxy: Option<&UpstreamProxyInput>,
         generation: u64,
     ) -> Self {
         Self {
@@ -71,7 +49,6 @@ impl PingoraUpstreamConnectionIdentity {
                 .and_then(|tls| tls.client_certificate_fingerprint_sha256.clone()),
             client_key_fingerprint_sha256: tls
                 .and_then(|tls| tls.client_key_fingerprint_sha256.clone()),
-            proxy: proxy.map(Into::into),
             generation,
         }
     }
@@ -101,7 +78,6 @@ mod tests {
             UpstreamProtocol::Http2,
             "backend.internal".to_string(),
             Some(tls),
-            None,
             generation,
         )
     }

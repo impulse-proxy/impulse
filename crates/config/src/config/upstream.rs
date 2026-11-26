@@ -460,11 +460,22 @@ pub struct UpstreamHostPolicy {
     pub host: Option<String>,
 }
 
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum UpstreamProtocol {
+    #[default]
+    Auto,
+    Http1,
+    Http2,
+}
+
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct Backend {
     pub id: String,
     pub address: String,
+    #[serde(default)]
+    pub protocol: UpstreamProtocol,
     #[serde(default = "Backend::default_weight")]
     pub weight: u32,
     #[serde(default)]

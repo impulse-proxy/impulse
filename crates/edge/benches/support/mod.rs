@@ -149,6 +149,7 @@ fn upstream(id: String, index: usize, route: RouteMatch) -> Upstream {
         backends: vec![Backend {
             id,
             address: format!("127.0.0.1:{}", 10_000 + index),
+            protocol: Default::default(),
             weight: 100,
             health_check: None,
         }],

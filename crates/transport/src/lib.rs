@@ -20,8 +20,7 @@ pub use connection_identity::PingoraBackendHealthIdentity;
 pub(crate) use connection_identity::PingoraUpstreamConnectionIdentity;
 pub use input::{
     UpstreamConnectionLimitsInput, UpstreamEndpointInput, UpstreamH2FlowControlInput,
-    UpstreamProtocol, UpstreamProxyInput, UpstreamTimeoutInput, UpstreamTlsInput,
-    UpstreamTransportInput,
+    UpstreamProtocol, UpstreamTimeoutInput, UpstreamTlsInput, UpstreamTransportInput,
 };
 pub use pingora_failure::{classify_pingora_h1_error, classify_pingora_h2_error};
 pub use runtime_config::SharedDnsResolver;
@@ -32,7 +31,7 @@ pub use transport_pool::UpstreamTransportPool;
 pub mod http3 {
     pub use crate::exchange::{
         UpstreamBody, UpstreamBodyFrame, UpstreamExchangeRequest, UpstreamExchangeResponse,
-        UpstreamRequestHead, UpstreamResponseHead, UpstreamTunnel, UpstreamTunnelCompletion,
-        UpstreamTunnelIo, UpstreamUpgrade,
+        UpstreamRequestHead, UpstreamResponseHead, UpstreamTunnel, UpstreamTunnelIo,
+        UpstreamUpgrade,
     };
 }

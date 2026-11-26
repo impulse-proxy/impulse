@@ -88,7 +88,7 @@ fn runtime_config_lowers_effective_tls_and_upstream_policy_wrappers() {
     assert_eq!(upstream.backends[0].endpoint.authority_port, 8443);
     assert_eq!(
         upstream.backends[0].endpoint.transport_kind,
-        RuntimeBackendTransportKind::H2
+        RuntimeBackendTransportKind::Auto
     );
     assert_eq!(
         upstream.backend_tls_policy().ca_file.as_deref(),

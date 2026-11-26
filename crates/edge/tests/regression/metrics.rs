@@ -7,7 +7,10 @@ use impulse_contracts::{
     RetryAttemptTelemetryReason, RetryPolicyDenialReason, UpstreamTerminalErrorKind,
 };
 use impulse_edge::runtime::activation::{RuntimeOperationOutcomeReason, RuntimeRejectionReason};
-use impulse_observability::{Metrics, OverloadShedReason, RouteOutcome};
+use impulse_observability::{
+    DiscoveryRefreshUpdate, Metrics, OverloadShedReason, PingoraDiscoveryRefreshOutcome,
+    RouteOutcome,
+};
 
 #[test]
 fn metrics_render_includes_route_percentiles() {
@@ -380,32 +383,25 @@ fn metrics_render_includes_worker_labels() {
 }
 
 #[test]
-fn metrics_render_includes_backend_dns_refresh_telemetry() {
-    let metrics = Metrics::default();
-    metrics.record_backend_dns_refresh_success(
+fn metrics_render_includes_backend_discovery_telemetry() {
+    let metrics = Metrics::new(1, ["api_pool".to_string()]);
+    metrics.record_backend_dns_state(
         "backend.internal:443",
         std::time::UNIX_EPOCH + Duration::from_secs(42),
         2,
-        true,
     );
-    metrics.inc_backend_dns_refresh_failure();
-    metrics.inc_backend_client_rotation("backend.internal:443");
-    metrics.record_backend_connect(
-        "backend.internal:443",
-        "backend.internal",
-        "10.0.0.10:443".parse().expect("addr one"),
+    metrics.record_pingora_discovery_refresh(
+        PingoraDiscoveryRefreshOutcome::Updated,
+        Some(DiscoveryRefreshUpdate {
+            upstream_name: "api_pool",
+            membership_generation: 7,
+            membership_changed: true,
+            rebuild_duration: Duration::from_millis(2),
+        }),
     );
-    metrics.record_backend_connect(
-        "backend.internal:443",
-        "backend.internal",
-        "10.0.0.11:443".parse().expect("addr two"),
-    );
+    metrics.record_pingora_discovery_refresh(PingoraDiscoveryRefreshOutcome::RetainedFailure, None);
 
     let output = metrics.render_prometheus();
-    assert!(output.contains("impulse_backend_dns_refresh_success_total 1"));
-    assert!(output.contains("impulse_backend_dns_refresh_failure_total 1"));
-    assert!(output.contains("impulse_backend_dns_address_set_changes_total 1"));
-    assert!(output.contains("impulse_backend_client_rotations_total 1"));
     assert!(output.contains(
         "impulse_backend_dns_last_refresh_success_seconds{backend=\"backend.internal:443\"} 42"
     ));
@@ -413,15 +409,13 @@ fn metrics_render_includes_backend_dns_refresh_telemetry() {
         output
             .contains("impulse_backend_dns_resolved_addresses{backend=\"backend.internal:443\"} 2")
     );
+    assert!(output.contains("impulse_pingora_discovery_refresh_total{outcome=\"updated\"} 1"));
     assert!(
-        output.contains("impulse_backend_client_rotations{backend=\"backend.internal:443\"} 1")
+        output.contains("impulse_pingora_discovery_refresh_total{outcome=\"retained_failure\"} 1")
     );
-    assert!(output.contains(
-        "impulse_backend_connect_attempt_total{backend=\"backend.internal:443\",hostname=\"backend.internal\",resolved_addr=\"10.0.0.10:443\"} 1"
-    ));
-    assert!(output.contains(
-        "impulse_backend_connect_attempt_total{backend=\"backend.internal:443\",hostname=\"backend.internal\",resolved_addr=\"10.0.0.11:443\"} 1"
-    ));
+    assert!(
+        output.contains("impulse_pingora_discovery_membership_generation{upstream=\"api_pool\"} 7")
+    );
 }
 
 #[test]
@@ -491,36 +485,4 @@ fn metrics_render_includes_downstream_tls_certificate_expiry() {
     assert!(output.contains(
         "impulse_downstream_tls_certificate_days_remaining{listener=\"127.0.0.1:9889\",server_name=\"api.example.com\"}"
     ));
-}
-
-#[test]
-fn backend_connect_attempt_labels_are_cardinality_bounded() {
-    // obs Phase 2 (step 7): resolved_addr/hostname are otherwise unbounded across
-    // DNS churn. Emitting far more distinct addresses than the cap must not create
-    // an unbounded number of series — overflow folds into a stable sentinel.
-    let metrics = Metrics::default();
-    for i in 0..5_000u32 {
-        let octet_a = (i / 256) % 256;
-        let octet_b = i % 256;
-        let addr = format!("10.{octet_a}.{octet_b}.1:443");
-        metrics.record_backend_connect(
-            "backend.internal:443",
-            "backend.internal",
-            addr.parse().expect("addr"),
-        );
-    }
-
-    let output = metrics.render_prometheus();
-    let series = output
-        .lines()
-        .filter(|line| line.starts_with("impulse_backend_connect_attempt_total{"))
-        .count();
-    assert!(
-        series <= 600,
-        "connect-attempt series must be bounded, got {series}"
-    );
-    assert!(
-        output.contains("resolved_addr=\"__over_cap__\""),
-        "overflow beyond the cap must fold into the stable sentinel series"
-    );
 }

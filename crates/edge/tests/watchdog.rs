@@ -14,7 +14,6 @@ fn watchdog_config() -> WatchdogRuntimeConfig {
         drain_grace_ms: 5_000,
         restart_cooldown_ms: 60_000,
         restart_command: Vec::new(),
-        restart_hook: None,
     }
 }
 

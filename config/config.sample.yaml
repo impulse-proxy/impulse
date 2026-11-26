@@ -107,6 +107,7 @@ upstream:
     backends:
       - id: "backend1"
         address: "api-backend-1.internal.example:7001"   # verified HTTPS by default; use config.development.yaml for local cleartext
+        protocol: auto  # auto negotiates H2/H1 over TLS; use http1 or http2 to force a protocol
         weight: 100  # relative traffic share for supported algorithms; must be 1–1000
         health_check:
           path: "/health"
@@ -114,6 +115,7 @@ upstream:
 
       - id: "backend2"
         address: "api-backend-2.internal.example:7002"   # verified HTTPS by default; use config.development.yaml for local cleartext
+        protocol: auto
         weight: 50   # for weighted modes such as round-robin/random/consistent-hash, receives ~33% vs backend1's ~67%
         health_check:
           path: "/status"
@@ -129,6 +131,7 @@ upstream:
     backends:
       - id: "auth1"
         address: "auth-backend-1.internal.example:8001"   # verified HTTPS by default; use config.development.yaml for local cleartext
+        protocol: auto
         weight: 100  # required default for least-connections/latency-aware; relative share for supported weighted modes
         health_check:
           path: "/health"

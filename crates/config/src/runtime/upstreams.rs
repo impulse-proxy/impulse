@@ -1,5 +1,5 @@
 use super::*;
-use crate::validator::is_valid_https_or_loopback_http_url;
+use crate::{backend_endpoint::BackendScheme, validator::is_valid_https_or_loopback_http_url};
 
 type RouteMatcherKey = RuntimeRouteMatchPolicy;
 
@@ -40,7 +40,7 @@ impl RuntimeUpstream {
         // that is simply irrelevant for a plaintext backend.
         let uses_https_backends = backends
             .iter()
-            .any(|backend| backend.endpoint.transport_kind == RuntimeBackendTransportKind::H2);
+            .any(|backend| backend.endpoint.canonical.scheme() == BackendScheme::Https);
         let backend_tls_policy = if uses_https_backends {
             RuntimeBackendTlsPolicy::from_effective_tls(
                 &effective_tls,
@@ -136,10 +136,7 @@ pub(super) fn normalize_upstreams(
         let mut upstream_uses_https_backends = false;
 
         for backend in &runtime_upstream.backends {
-            if matches!(
-                backend.endpoint.transport_kind,
-                RuntimeBackendTransportKind::H2
-            ) {
+            if backend.endpoint.canonical.scheme() == BackendScheme::Https {
                 upstream_uses_https_backends = true;
             }
 
@@ -194,6 +191,7 @@ impl RuntimeBackend {
                 upstream_name,
                 backend.id.as_str(),
                 backend.address.as_str(),
+                backend.protocol,
             )?,
             health_check: backend
                 .health_check
@@ -841,6 +839,7 @@ mod tests {
             backends: vec![Backend {
                 id: "b1".to_string(),
                 address: "http://127.0.0.1:7001".to_string(),
+                protocol: Default::default(),
                 weight: 1,
                 health_check: None,
             }],

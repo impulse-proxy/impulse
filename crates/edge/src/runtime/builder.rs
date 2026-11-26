@@ -496,10 +496,7 @@ impl RuntimeBuilder {
                     selector,
                     upstream_pool,
                     upstream_membership,
-                    transport_policy: Arc::clone(&transport_policy),
                     retry_policy: Arc::clone(&resilience.retry_budget),
-                    cache_policy: Arc::new(upstream_policy.response_cache.clone()),
-                    compression_policy: Arc::new(upstream_policy.response_compression.clone()),
                     observation_flags: Arc::clone(&observation_flags),
                 })
             })

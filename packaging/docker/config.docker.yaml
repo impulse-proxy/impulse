@@ -19,6 +19,7 @@ upstream:
     backends:
       - id: "default-backend"
         address: "http://127.0.0.1:8080"
+        protocol: http1
 
 upstream_tls:
   verify_certificates: true

@@ -76,8 +76,8 @@ fn reconcile_jwks_sources_prunes_removed_telemetry_state() {
 fn reconcile_runtime_metric_labels_prunes_removed_reload_identities() {
     let metrics = Metrics::default();
     let now = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
-    metrics.record_backend_dns_refresh_success("backend-old", now, 1, false);
-    metrics.record_backend_dns_refresh_success("backend-new", now, 1, false);
+    metrics.record_backend_dns_state("backend-old", now, 1);
+    metrics.record_backend_dns_state("backend-new", now, 1);
     metrics.record_request_result(
         "upstream-old",
         Some("backend-old"),
@@ -372,12 +372,7 @@ fn prometheus_render_is_stable_across_repeated_cached_family_renders() {
     metrics.record_jwt_validation_failure("issuer_mismatch");
     metrics.record_jwks_unknown_kid("jwks:example");
     metrics.record_jwks_refresh_success("jwks:example", "fresh", 2, now, Some(now));
-    metrics.record_backend_dns_refresh_success("backend-a", now, 2, false);
-    metrics.record_backend_connect(
-        "backend-a",
-        "origin.internal",
-        "127.0.0.1:443".parse().expect("socket address"),
-    );
+    metrics.record_backend_dns_state("backend-a", now, 2);
     metrics.record_secret_reload("listeners", "success", "cert_reload_applied");
     metrics.set_secret_last_success_unixtime("upstreams", 1_700_000_123);
     metrics.replace_upstream_client_cert_expiry([("payments".to_string(), 1_800_000_000)]);
@@ -427,16 +422,9 @@ fn cached_metric_family_snapshots_refresh_after_targeted_updates() {
         vec![("jwks:example".to_string(), 1)]
     );
 
-    metrics.record_backend_dns_refresh_success("backend-a", now, 2, false);
-    let backend_before = metrics.snapshot_backend_metrics();
-    assert_eq!(backend_before.backend_dns_state.len(), 1);
-    assert!(backend_before.backend_rotation_state.is_empty());
-    metrics.inc_backend_client_rotation("backend-a");
-    let backend_after = metrics.snapshot_backend_metrics();
-    assert_eq!(backend_after.backend_dns_state.len(), 1);
-    assert_eq!(backend_after.backend_rotation_state.len(), 1);
-    assert_eq!(backend_after.backend_rotation_state[0].0, "backend-a");
-    assert_eq!(backend_after.backend_rotation_state[0].1.rotations, 1);
+    metrics.record_backend_dns_state("backend-a", now, 2);
+    let backend_snapshot = metrics.snapshot_backend_metrics();
+    assert_eq!(backend_snapshot.backend_dns_state.len(), 1);
 
     metrics.record_secret_reload("listeners", "success", "cert_reload_applied");
     let secret_before = metrics.snapshot_secret_metrics();

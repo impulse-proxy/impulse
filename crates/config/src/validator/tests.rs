@@ -52,6 +52,7 @@ fn base_config(cert: &str, key: &str) -> Config {
             backends: vec![Backend {
                 id: "backend-1".to_string(),
                 address: "127.0.0.1:8080".to_string(),
+                protocol: Default::default(),
                 weight: 1,
                 health_check: Some(HealthCheck {
                     path: "/health".to_string(),
@@ -1394,33 +1395,6 @@ fn rejects_control_api_unknown_identity_source_kind() {
 }
 
 #[test]
-fn rejects_legacy_watchdog_restart_hook() {
-    let dir = tempdir().expect("tempdir");
-    let (cert, key) = write_test_certs(dir.path());
-    let mut cfg = base_config(&cert.to_string_lossy(), &key.to_string_lossy());
-    cfg.resilience.watchdog.restart_hook = Some("echo legacy".to_string());
-    assert!(validate(&cfg).is_err());
-}
-
-#[test]
-fn rejects_any_provided_legacy_watchdog_restart_hook_value() {
-    let dir = tempdir().expect("tempdir");
-    let (cert, key) = write_test_certs(dir.path());
-
-    let mut cfg = base_config(&cert.to_string_lossy(), &key.to_string_lossy());
-    cfg.resilience.watchdog.restart_hook = None;
-    assert!(validate(&cfg).is_ok());
-
-    cfg = base_config(&cert.to_string_lossy(), &key.to_string_lossy());
-    cfg.resilience.watchdog.restart_hook = Some(String::new());
-    assert!(validate(&cfg).is_err());
-
-    cfg = base_config(&cert.to_string_lossy(), &key.to_string_lossy());
-    cfg.resilience.watchdog.restart_hook = Some("   ".to_string());
-    assert!(validate(&cfg).is_err());
-}
-
-#[test]
 fn rejects_empty_privilege_drop_user_or_group() {
     let dir = tempdir().expect("tempdir");
     let (cert, key) = write_test_certs(dir.path());
@@ -1478,6 +1452,7 @@ fn rejects_ambiguous_route_matchers_with_same_host_path_and_method() {
         backends: vec![Backend {
             id: "backend-2".to_string(),
             address: "127.0.0.1:9002".to_string(),
+            protocol: Default::default(),
             weight: 1,
             health_check: None,
         }],
@@ -1547,6 +1522,7 @@ fn allows_same_host_and_path_when_methods_differ() {
         backends: vec![Backend {
             id: "backend-2".to_string(),
             address: "127.0.0.1:9002".to_string(),
+            protocol: Default::default(),
             weight: 1,
             health_check: None,
         }],
@@ -1652,6 +1628,7 @@ fn accepts_supported_load_balancers_with_mixed_backend_weights() {
         upstream.backends.push(Backend {
             id: "backend-2".to_string(),
             address: "127.0.0.1:8081".to_string(),
+            protocol: Default::default(),
             weight: 200,
             health_check: None,
         });

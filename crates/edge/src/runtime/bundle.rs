@@ -673,6 +673,7 @@ mod tests {
                 backends: vec![Backend {
                     id: "b1".to_string(),
                     address: backend_addr.to_string(),
+                    protocol: Default::default(),
                     weight: 1,
                     health_check: None,
                 }],

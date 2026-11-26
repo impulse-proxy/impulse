@@ -30,9 +30,11 @@ upstream:
       - id: "backend1"
         # Explicit cleartext for local benchmark backends.
         address: "http://127.0.0.1:8080"
+        protocol: http1
         weight: 100
       - id: "backend2"
         address: "http://127.0.0.1:8081"
+        protocol: http1
         weight: 100
 
 upstream_tls:

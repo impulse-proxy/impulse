@@ -24,10 +24,7 @@ use tokio::{
 
 use crate::{
     PingoraUpstreamConnectionIdentity, UpstreamProtocol,
-    exchange::{
-        UpstreamCancellation, UpstreamConnectionReuse, UpstreamExchangeCompletion,
-        UpstreamExchangeLifecycle, UpstreamExchangeOutcome, upstream_response_body_channel,
-    },
+    exchange::{UpstreamExchangeLifecycle, upstream_response_body_channel},
     http3::{
         UpstreamBody, UpstreamBodyFrame, UpstreamExchangeResponse, UpstreamRequestHead,
         UpstreamResponseHead, UpstreamTunnel, UpstreamUpgrade,
@@ -78,6 +75,20 @@ enum PingoraH1ExchangeState {
 }
 
 impl PingoraH1UpstreamSession {
+    pub(crate) fn from_negotiated(
+        connector: Arc<Connector>,
+        peer: HttpPeer,
+        session: HttpSession,
+    ) -> Self {
+        Self {
+            connector,
+            peer,
+            session: Some(session),
+            state: PingoraH1ExchangeState::Acquired,
+            connect_request: false,
+        }
+    }
+
     pub async fn acquire(
         connector: Arc<Connector>,
         mut peer: HttpPeer,
@@ -105,13 +116,7 @@ impl PingoraH1UpstreamSession {
             }
         };
 
-        Ok(Self {
-            connector,
-            peer,
-            session: Some(session),
-            state: PingoraH1ExchangeState::Acquired,
-            connect_request: false,
-        })
+        Ok(Self::from_negotiated(connector, peer, session))
     }
 
     pub fn session(&self) -> &HttpSession {
@@ -205,35 +210,19 @@ impl PingoraH1UpstreamSession {
         if self.state != PingoraH1ExchangeState::RequestComplete {
             self.close().await;
             let detail = "Pingora HTTP/1 response read before request completion".to_string();
-            finish_pingora_h1_exchange(
-                lifecycle,
-                UpstreamExchangeOutcome::Failed(ProxyError::Protocol(detail.clone())),
-                UpstreamConnectionReuse::Close,
-            );
             return Err(ProxyError::Protocol(detail));
         }
         loop {
             if let Err(error) = self.session_mut().read_response().await {
-                let outcome_error = classify_pingora_h1_error(&error);
-                let return_error = classify_pingora_h1_error(&error);
+                let error = classify_pingora_h1_error(&error);
                 self.shutdown().await;
-                finish_pingora_h1_exchange(
-                    lifecycle,
-                    UpstreamExchangeOutcome::Failed(outcome_error),
-                    UpstreamConnectionReuse::Close,
-                );
-                return Err(return_error);
+                return Err(error);
             }
             let Some(status) = self.session().get_status() else {
                 let detail =
                     "Pingora HTTP/1 response status is unavailable after reading its header"
                         .to_string();
                 self.shutdown().await;
-                finish_pingora_h1_exchange(
-                    lifecycle,
-                    UpstreamExchangeOutcome::Failed(ProxyError::Protocol(detail.clone())),
-                    UpstreamConnectionReuse::Close,
-                );
                 return Err(ProxyError::Protocol(detail));
             };
             if !status.is_informational() || status == hyper::StatusCode::SWITCHING_PROTOCOLS {
@@ -245,11 +234,6 @@ impl PingoraH1UpstreamSession {
             let detail =
                 "Pingora HTTP/1 response header is unavailable after reading it".to_string();
             self.shutdown().await;
-            finish_pingora_h1_exchange(
-                lifecycle,
-                UpstreamExchangeOutcome::Failed(ProxyError::Protocol(detail.clone())),
-                UpstreamConnectionReuse::Close,
-            );
             return Err(ProxyError::Protocol(detail));
         };
         let head = UpstreamResponseHead {
@@ -282,11 +266,6 @@ impl PingoraH1UpstreamSession {
         if head.headers.contains_key(hyper::header::TRAILER) {
             self.shutdown().await;
             let detail = "Pingora 0.9 cannot expose HTTP/1 response trailers".to_string();
-            finish_pingora_h1_exchange(
-                lifecycle,
-                UpstreamExchangeOutcome::Failed(ProxyError::Protocol(detail.clone())),
-                UpstreamConnectionReuse::Close,
-            );
             return Err(ProxyError::Protocol(detail));
         }
         let (frames, body) = upstream_response_body_channel();
@@ -298,24 +277,19 @@ impl PingoraH1UpstreamSession {
         })
     }
 
-    pub async fn release(mut self) -> UpstreamConnectionReuse {
+    pub async fn release(mut self) {
         if self.state != PingoraH1ExchangeState::ResponseComplete {
             self.close().await;
-            return UpstreamConnectionReuse::Close;
+            return;
         }
         let Some(mut session) = self.session.take() else {
-            return UpstreamConnectionReuse::Close;
+            return;
         };
         if !session.is_body_done() {
             session.shutdown().await;
-            return UpstreamConnectionReuse::Close;
+            return;
         }
         session.respect_keepalive();
-        let connection_reuse = if session.will_keepalive() {
-            UpstreamConnectionReuse::Reuse
-        } else {
-            UpstreamConnectionReuse::Close
-        };
         self.connector
             .release_http_session(
                 PingoraHttpSession::H1(session),
@@ -323,7 +297,6 @@ impl PingoraH1UpstreamSession {
                 self.peer.options.idle_timeout,
             )
             .await;
-        connection_reuse
     }
 
     pub async fn shutdown(mut self) {
@@ -381,122 +354,32 @@ impl AsyncWrite for PingoraH1TunnelLease {
     }
 }
 
-fn finish_pingora_h1_exchange(
-    lifecycle: UpstreamExchangeLifecycle,
-    outcome: UpstreamExchangeOutcome,
-    connection_reuse: UpstreamConnectionReuse,
-) {
-    let _ = lifecycle.completion.send(UpstreamExchangeCompletion {
-        outcome,
-        connection_reuse,
-    });
-}
-
-async fn send_pingora_h1_response_frame(
-    frames: &mpsc::Sender<Result<UpstreamBodyFrame, ProxyError>>,
-    frame: Result<UpstreamBodyFrame, ProxyError>,
-    cancellation: &mut UpstreamCancellation,
-    cancellation_open: &mut bool,
-) -> bool {
-    if !*cancellation_open {
-        return frames.send(frame).await.is_ok();
-    }
-    tokio::select! {
-        cancellation_result = &mut cancellation.signal => {
-            if cancellation_result.is_ok() {
-                false
-            } else {
-                *cancellation_open = false;
-                frames.send(frame).await.is_ok()
-            }
-        }
-        permit = frames.reserve() => match permit {
-            Ok(permit) => {
-                permit.send(frame);
-                true
-            }
-            Err(_) => false,
-        },
-    }
-}
-
 async fn pump_pingora_h1_response(
     mut session: PingoraH1UpstreamSession,
     frames: mpsc::Sender<Result<UpstreamBodyFrame, ProxyError>>,
-    mut lifecycle: UpstreamExchangeLifecycle,
+    _lifecycle: UpstreamExchangeLifecycle,
 ) {
-    let mut cancellation_open = true;
     loop {
-        let next = if cancellation_open {
-            tokio::select! {
-                cancellation_result = &mut lifecycle.cancellation.signal => {
-                    if cancellation_result.is_ok() {
-                        session.shutdown().await;
-                        finish_pingora_h1_exchange(
-                            lifecycle,
-                            UpstreamExchangeOutcome::Cancelled,
-                            UpstreamConnectionReuse::Close,
-                        );
-                        return;
-                    }
-                    cancellation_open = false;
-                    continue;
-                }
-                body = session.session_mut().read_body_bytes() => body,
-            }
-        } else {
-            session.session_mut().read_body_bytes().await
-        };
-
-        match next {
+        match session.session_mut().read_body_bytes().await {
             Ok(Some(data)) => {
-                if !send_pingora_h1_response_frame(
-                    &frames,
-                    Ok(UpstreamBodyFrame::Data(data)),
-                    &mut lifecycle.cancellation,
-                    &mut cancellation_open,
-                )
-                .await
+                if frames
+                    .send(Ok(UpstreamBodyFrame::Data(data)))
+                    .await
+                    .is_err()
                 {
                     session.shutdown().await;
-                    finish_pingora_h1_exchange(
-                        lifecycle,
-                        UpstreamExchangeOutcome::Cancelled,
-                        UpstreamConnectionReuse::Close,
-                    );
                     return;
                 }
             }
             Ok(None) => {
                 session.state = PingoraH1ExchangeState::ResponseComplete;
-                let connection_reuse = session.release().await;
-                finish_pingora_h1_exchange(
-                    lifecycle,
-                    UpstreamExchangeOutcome::Completed,
-                    connection_reuse,
-                );
+                session.release().await;
                 return;
             }
             Err(error) => {
                 let frame_error = classify_pingora_h1_error(&error);
-                let outcome_error = classify_pingora_h1_error(&error);
-                let delivered = send_pingora_h1_response_frame(
-                    &frames,
-                    Err(frame_error),
-                    &mut lifecycle.cancellation,
-                    &mut cancellation_open,
-                )
-                .await;
+                let _ = frames.send(Err(frame_error)).await;
                 session.shutdown().await;
-                finish_pingora_h1_exchange(
-                    lifecycle,
-                    if delivered {
-                        UpstreamExchangeOutcome::Failed(outcome_error)
-                    } else {
-                        UpstreamExchangeOutcome::Cancelled
-                    },
-                    UpstreamConnectionReuse::Close,
-                );
                 return;
             }
         }

@@ -6,9 +6,9 @@ use x509_parser::parse_x509_certificate;
 
 use super::config_invalid;
 use crate::{
-    backend_endpoint::{BackendEndpoint, BackendScheme},
+    backend_endpoint::BackendEndpoint,
     bounded_file::{BoundedFileReadError, read_file_with_limit},
-    config::{HealthCheck, Performance, UpstreamTls},
+    config::{HealthCheck, Performance, UpstreamProtocol, UpstreamTls},
     runtime::{
         RuntimeConfigError, RuntimeResolvedSecretMetadata, RuntimeSecretResolver,
         resolve_file_secret_path,
@@ -39,6 +39,7 @@ impl RuntimeBackendEndpoint {
         upstream_name: &str,
         backend_id: &str,
         address: &str,
+        protocol: UpstreamProtocol,
     ) -> Result<Self, RuntimeConfigError> {
         let canonical = BackendEndpoint::parse(address).map_err(|reason| {
             RuntimeConfigError::BackendAddressInvalid {
@@ -55,9 +56,10 @@ impl RuntimeBackendEndpoint {
         } else {
             RuntimeBackendAddressKind::Hostname
         };
-        let transport_kind = match canonical.scheme() {
-            BackendScheme::Http => super::RuntimeBackendTransportKind::Http1,
-            BackendScheme::Https => super::RuntimeBackendTransportKind::H2,
+        let transport_kind = match protocol {
+            UpstreamProtocol::Auto => super::RuntimeBackendTransportKind::Auto,
+            UpstreamProtocol::Http1 => super::RuntimeBackendTransportKind::Http1,
+            UpstreamProtocol::Http2 => super::RuntimeBackendTransportKind::H2,
         };
         let origin = canonical.origin();
 
@@ -447,7 +449,7 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
-    use crate::runtime::RuntimeBackendTransportKind;
+    use crate::{backend_endpoint::BackendScheme, runtime::RuntimeBackendTransportKind};
 
     fn assert_config_invalid(err: RuntimeConfigError, expected: impl AsRef<str>) {
         let expected = expected.as_ref();
@@ -468,15 +470,20 @@ mod tests {
 
     #[test]
     fn runtime_backend_endpoint_normalizes_hostname_backend_and_canonical_authority() {
-        let endpoint = RuntimeBackendEndpoint::normalize("payments", "primary", "api.example.com")
-            .expect("hostname backend");
+        let endpoint = RuntimeBackendEndpoint::normalize(
+            "payments",
+            "primary",
+            "api.example.com",
+            UpstreamProtocol::Auto,
+        )
+        .expect("hostname backend");
 
         assert_eq!(endpoint.configured_address, "api.example.com");
         assert_eq!(endpoint.origin, "https://api.example.com:443");
         assert_eq!(endpoint.authority_host, "api.example.com");
         assert_eq!(endpoint.authority_port, 443);
         assert_eq!(endpoint.address_kind, RuntimeBackendAddressKind::Hostname);
-        assert_eq!(endpoint.transport_kind, RuntimeBackendTransportKind::H2);
+        assert_eq!(endpoint.transport_kind, RuntimeBackendTransportKind::Auto);
         assert_eq!(endpoint.canonical.scheme(), BackendScheme::Https);
         assert_eq!(endpoint.canonical.authority(), "api.example.com:443");
     }
@@ -487,6 +494,7 @@ mod tests {
             "payments",
             "edge-ipv6",
             "https://[2001:db8::10]:9443",
+            UpstreamProtocol::Http2,
         )
         .expect("ip literal backend");
 
@@ -499,17 +507,25 @@ mod tests {
     }
 
     #[test]
-    fn runtime_backend_endpoint_derives_transport_kind_from_scheme() {
-        let http_endpoint =
-            RuntimeBackendEndpoint::normalize("payments", "legacy", "http://127.0.0.1:8080")
-                .expect("http backend");
-        let https_endpoint =
-            RuntimeBackendEndpoint::normalize("payments", "modern", "https://api.example.com:8443")
-                .expect("https backend");
+    fn runtime_backend_endpoint_uses_protocol_independently_of_scheme() {
+        let http_endpoint = RuntimeBackendEndpoint::normalize(
+            "payments",
+            "legacy",
+            "http://127.0.0.1:8080",
+            UpstreamProtocol::Http2,
+        )
+        .expect("http backend");
+        let https_endpoint = RuntimeBackendEndpoint::normalize(
+            "payments",
+            "modern",
+            "https://api.example.com:8443",
+            UpstreamProtocol::Http1,
+        )
+        .expect("https backend");
 
         assert_eq!(
             http_endpoint.transport_kind,
-            RuntimeBackendTransportKind::Http1
+            RuntimeBackendTransportKind::H2
         );
         assert_eq!(http_endpoint.authority_host, "127.0.0.1");
         assert_eq!(http_endpoint.authority_port, 8080);
@@ -521,7 +537,7 @@ mod tests {
 
         assert_eq!(
             https_endpoint.transport_kind,
-            RuntimeBackendTransportKind::H2
+            RuntimeBackendTransportKind::Http1
         );
         assert_eq!(https_endpoint.authority_host, "api.example.com");
         assert_eq!(https_endpoint.authority_port, 8443);
