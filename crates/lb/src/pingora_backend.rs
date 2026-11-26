@@ -20,7 +20,10 @@ pub use pingora_load_balancing::{
 };
 use pingora_load_balancing::{
     BackendView, LoadBalancer,
-    selection::{Random as PingoraRandom, RoundRobin as PingoraRoundRobin},
+    selection::{
+        Random as PingoraRandom, algorithms::RoundRobin as PingoraRoundRobin,
+        weighted::Weighted as PingoraWeighted,
+    },
 };
 
 pub use crate::backend::BackendSelectionState;
@@ -531,8 +534,7 @@ where
 struct GenerationWeightedRoundRobin<T> {
     generation: u64,
     upstream_name: String,
-    selector: LoadBalancer<PingoraRoundRobin>,
-    worker_cursors: Box<[Padded<AtomicUsize>]>,
+    selector: LoadBalancer<PingoraWeighted<PingoraRoundRobin>>,
     policy: std::marker::PhantomData<T>,
 }
 
@@ -552,9 +554,6 @@ where
             generation,
             upstream_name,
             selector: LoadBalancer::from_backends(view),
-            worker_cursors: (0..WORKER_SELECTION_SLOTS)
-                .map(|_| Padded(AtomicUsize::new(0)))
-                .collect(),
             policy: std::marker::PhantomData,
         }
     }
@@ -562,13 +561,13 @@ where
     fn select_excluding(
         &self,
         excluded_backend_ids: &[BackendId],
-        worker_slot: usize,
+        _worker_slot: usize,
     ) -> Option<BackendSelectionResult<T>> {
-        let cursor = &self.worker_cursors[worker_slot % self.worker_cursors.len()].0;
-        let selected = select_weighted_backend::<T>(
-            self.selector.backends(),
-            excluded_backend_ids,
-            |total_weight| cursor.fetch_add(1, Ordering::Relaxed) % total_weight,
+        let backend_count = self.selector.backends().get_backend().len();
+        let selected = self.selector.select_with(
+            &[],
+            backend_count.saturating_add(1),
+            |backend, healthy| candidate_is_available::<T>(backend, healthy, excluded_backend_ids),
         )?;
         selection_result(selected, self.generation)
     }
@@ -1658,16 +1657,13 @@ mod tests {
     }
 
     #[test]
-    fn round_robin_cursors_are_independent_per_worker() {
+    fn round_robin_uses_pingora_global_cursor() {
         let selector = ready_selector(LoadBalancingStrategy::RoundRobin, &[1, 1]);
-        assert_eq!(picks_for_worker(&selector, 0, 2), vec![0, 1]);
-        // Worker 0 already advanced; worker 1 still starts from its own cursor.
-        assert_eq!(picks_for_worker(&selector, 1, 2), vec![0, 1]);
-        // Slots wrap around the fixed slot table instead of panicking.
-        assert!(
-            selector
-                .select_excluding_for_worker("", &[], WORKER_SELECTION_SLOTS + 3)
-                .is_some()
+        assert_eq!(picks_for_worker(&selector, 0, 1), vec![0]);
+        assert_eq!(picks_for_worker(&selector, 1, 1), vec![1]);
+        assert_eq!(
+            picks_for_worker(&selector, WORKER_SELECTION_SLOTS + 3, 2),
+            vec![0, 1]
         );
     }
 
