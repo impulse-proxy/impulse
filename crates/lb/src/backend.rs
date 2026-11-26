@@ -1,7 +1,7 @@
 use std::{
     sync::{
         Arc,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicU64, AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -11,14 +11,94 @@ use crate::{
     health::{HealthFailureReason, HealthTransition},
 };
 
+const EWMA_ALPHA: f64 = 0.2;
+const FAILURE_PENALTY_LATENCY_MS: f64 = 1_000.0;
+const MIN_LATENCY_SAMPLE_MS: f64 = 1.0;
+const MAX_LATENCY_SAMPLE_MS: f64 = 60_000.0;
+const UNSAMPLED_LATENCY: u64 = u64::MAX;
+
+#[derive(Debug)]
+pub struct BackendSelectionState {
+    active_requests: AtomicUsize,
+    ewma_latency_ms: AtomicU64,
+}
+
+impl Default for BackendSelectionState {
+    fn default() -> Self {
+        Self {
+            active_requests: AtomicUsize::new(0),
+            ewma_latency_ms: AtomicU64::new(UNSAMPLED_LATENCY),
+        }
+    }
+}
+
+impl BackendSelectionState {
+    pub fn active_requests(&self) -> usize {
+        self.active_requests.load(Ordering::Relaxed)
+    }
+
+    pub fn ewma_latency_ms(&self) -> Option<f64> {
+        let bits = self.ewma_latency_ms.load(Ordering::Relaxed);
+        if bits == UNSAMPLED_LATENCY {
+            None
+        } else {
+            Some(f64::from_bits(bits))
+        }
+    }
+
+    pub(crate) fn begin_request(&self) {
+        self.active_requests.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn finish_request(&self, latency: Duration, status: Option<u16>) {
+        let _ =
+            self.active_requests
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                    Some(current.saturating_sub(1))
+                });
+
+        if status.is_some_and(|code| (500..=599).contains(&code)) {
+            return;
+        }
+
+        let observed_ms =
+            (latency.as_secs_f64() * 1_000.0).clamp(MIN_LATENCY_SAMPLE_MS, MAX_LATENCY_SAMPLE_MS);
+        let _ = self
+            .ewma_latency_ms
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |bits| {
+                let next = if bits == UNSAMPLED_LATENCY {
+                    observed_ms
+                } else {
+                    EWMA_ALPHA * observed_ms + (1.0 - EWMA_ALPHA) * f64::from_bits(bits)
+                };
+                Some(next.to_bits())
+            });
+    }
+
+    pub(crate) fn record_failure_latency_penalty(&self, latency: Duration) {
+        let penalty_ms = latency
+            .as_secs_f64()
+            .mul_add(1_000.0, 0.0)
+            .max(FAILURE_PENALTY_LATENCY_MS);
+        let _ = self
+            .ewma_latency_ms
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |bits| {
+                Some(if bits == UNSAMPLED_LATENCY {
+                    penalty_ms.to_bits()
+                } else {
+                    f64::from_bits(bits).max(penalty_ms).to_bits()
+                })
+            });
+    }
+}
+
 #[derive(Clone)]
 pub struct BackendState {
     pub address: String,
     pub health_check: Option<BackendHealthInput>,
     pub consecutive_failures: u32,
     health_state: HealthState,
-    pub active_requests: Arc<AtomicUsize>,
-    pub ewma_latency_ms: Option<f64>,
+    selection_state: Arc<BackendSelectionState>,
 }
 
 impl BackendState {
@@ -28,8 +108,7 @@ impl BackendState {
             health_check: backend.health().copied(),
             consecutive_failures: 0,
             health_state: HealthState::Healthy,
-            active_requests: Arc::new(AtomicUsize::new(0)),
-            ewma_latency_ms: None,
+            selection_state: Arc::default(),
         }
     }
 
@@ -56,11 +135,27 @@ impl BackendState {
     }
 
     pub fn active_requests(&self) -> usize {
-        self.active_requests.load(Ordering::Relaxed)
+        self.selection_state.active_requests()
     }
 
     pub fn ewma_latency_ms(&self) -> Option<f64> {
-        self.ewma_latency_ms
+        self.selection_state.ewma_latency_ms()
+    }
+
+    pub(crate) fn selection_state(&self) -> Arc<BackendSelectionState> {
+        Arc::clone(&self.selection_state)
+    }
+
+    pub(crate) fn begin_request(&self) {
+        self.selection_state.begin_request();
+    }
+
+    pub(crate) fn finish_request(&self, latency: Duration, status: Option<u16>) {
+        self.selection_state.finish_request(latency, status);
+    }
+
+    pub(crate) fn record_failure_latency_penalty(&self, latency: Duration) {
+        self.selection_state.record_failure_latency_penalty(latency);
     }
 
     pub fn record_success(&mut self) -> Option<HealthTransition> {

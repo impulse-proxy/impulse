@@ -4,17 +4,11 @@
 //! mutation surface that edge/runtime code is allowed to use. Strategy state is
 //! encapsulated here; callers should not reach into [`BackendPool`] directly.
 
-use std::{
-    sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    },
-    time::Duration,
-};
+use std::{sync::Arc, time::Duration};
 
 use crate::{
     BackendInput, LoadBalancingStrategy, RequestKeyInput,
-    backend::BackendState,
+    backend::{BackendSelectionState, BackendState},
     backend_pool::BackendPool,
     health::{HealthFailureReason, HealthTransition},
     load_balancing::LoadBalancing,
@@ -51,7 +45,7 @@ pub struct UpstreamPoolMembership {
 #[derive(Clone, Debug)]
 struct UpstreamBackendMembership {
     address: Arc<str>,
-    active_requests: Arc<AtomicUsize>,
+    selection_state: Arc<BackendSelectionState>,
 }
 
 impl UpstreamPoolMembership {
@@ -69,7 +63,7 @@ impl UpstreamPoolMembership {
         let Some(backend) = self.backends.get(index) else {
             return false;
         };
-        backend.active_requests.fetch_add(1, Ordering::Relaxed);
+        backend.selection_state.begin_request();
         true
     }
 
@@ -193,7 +187,7 @@ impl UpstreamPool {
                 .iter()
                 .map(|backend| UpstreamBackendMembership {
                     address: Arc::from(backend.address()),
-                    active_requests: Arc::clone(&backend.active_requests),
+                    selection_state: backend.selection_state(),
                 })
                 .collect(),
             strategy: self.strategy,
@@ -203,6 +197,10 @@ impl UpstreamPool {
 
     pub fn backend_indices(&self) -> Vec<usize> {
         self.pool.all_indices()
+    }
+
+    pub fn backend_selection_state(&self, index: usize) -> Option<Arc<BackendSelectionState>> {
+        self.pool.backend(index).map(BackendState::selection_state)
     }
 
     pub fn is_backend_healthy(&self, index: usize) -> bool {

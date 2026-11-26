@@ -25,6 +25,7 @@ use pingora_load_balancing::{
     selection::{Random as PingoraRandom, RoundRobin as PingoraRoundRobin},
 };
 
+pub use crate::backend::BackendSelectionState;
 use crate::{
     BackendInput, LoadBalancingStrategy,
     pingora_discovery::ImpulseServiceDiscovery,
@@ -991,6 +992,7 @@ pub fn map_validated_backend<T>(
     runtime_id: BackendId,
     address: SocketAddr,
     tls_identity: T,
+    selection_state: Arc<BackendSelectionState>,
 ) -> Result<PingoraBackend, String>
 where
     T: Clone + Send + Sync + 'static,
@@ -1011,6 +1013,7 @@ where
         index: backend.index(),
         tls_identity,
     });
+    mapped.ext.insert(selection_state);
     Ok(mapped)
 }
 
@@ -1060,6 +1063,7 @@ mod tests {
                     BackendId::new(backend.index() as u32),
                     SocketAddr::from(([0, 0, 0, 0], 8080)),
                     (),
+                    Arc::default(),
                 )
             },
             health_registry(),
@@ -1120,7 +1124,13 @@ mod tests {
                     health_check: None,
                 };
                 let input = crate::test_support::backend_input(index, &backend);
-                map_validated_backend(&input, BackendId::new(input.index() as u32), address, ())
+                map_validated_backend(
+                    &input,
+                    BackendId::new(input.index() as u32),
+                    address,
+                    (),
+                    Arc::default(),
+                )
             })
             .collect::<Result<BTreeSet<_>, _>>()
             .expect("map test backends");
@@ -1181,6 +1191,7 @@ mod tests {
             BackendId::new(input.index() as u32),
             SocketAddr::from(([127, 0, 0, 1], 8000)),
             (),
+            Arc::default(),
         )
         .expect("map backend");
 

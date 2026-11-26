@@ -323,6 +323,15 @@ impl RuntimeBuilder {
                     name, err
                 ))
             })?;
+            let selection_states = (0..runtime_upstream.backends.len())
+                .map(|index| {
+                    upstream_pool.backend_selection_state(index).ok_or_else(|| {
+                        ProxyError::Transport(format!(
+                            "upstream '{name}' has no selection state for backend {index}"
+                        ))
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
             upstream_pools.insert(name.clone(), Arc::new(RwLock::new(upstream_pool)));
 
             let tls_identity = runtime_upstream.backend_tls_policy().clone();
@@ -349,8 +358,22 @@ impl RuntimeBuilder {
                                 backend.backend_id()
                             )
                         })?;
-                    let mut mapped =
-                        map_validated_backend(backend, backend_id, address, tls_identity.clone())?;
+                    let selection_state = selection_states
+                        .get(backend.index())
+                        .cloned()
+                        .ok_or_else(|| {
+                            format!(
+                                "missing selection state for backend '{}'",
+                                backend.backend_id()
+                            )
+                        })?;
+                    let mut mapped = map_validated_backend(
+                        backend,
+                        backend_id,
+                        address,
+                        tls_identity.clone(),
+                        selection_state,
+                    )?;
                     let health_identity = transport_pool
                         .pingora_backend_health_identity(backend.configured_address())
                         .ok_or_else(|| {

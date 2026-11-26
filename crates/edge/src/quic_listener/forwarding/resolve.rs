@@ -1,6 +1,6 @@
 #[cfg(test)]
 use std::{
-    collections::hash_map::DefaultHasher,
+    collections::{HashMap, hash_map::DefaultHasher},
     hash::{Hash, Hasher},
 };
 
@@ -102,7 +102,20 @@ pub(in crate::quic_listener) fn selectors_for_test(
                 )),
             )
         })
-        .collect();
+        .collect::<HashMap<_, _>>();
+    let selection_states = upstream_pools
+        .iter()
+        .map(|(name, pool)| {
+            let pool = pool.read().expect("test upstream pool");
+            let states = (0..pool.membership_summary().total_backends)
+                .map(|index| {
+                    pool.backend_selection_state(index)
+                        .expect("test backend selection state")
+                })
+                .collect::<Vec<_>>();
+            (name.clone(), states)
+        })
+        .collect::<HashMap<_, _>>();
     let views = runtime.upstreams.iter().map(move |(name, upstream)| {
         let upstream_id = identities
             .upstream_id(name)
@@ -129,6 +142,12 @@ pub(in crate::quic_listener) fn selectors_for_test(
                         .expect("test backend identity"),
                     address,
                     tls_identity.clone(),
+                    Arc::clone(
+                        selection_states
+                            .get(name)
+                            .and_then(|states| states.get(backend.index()))
+                            .expect("test backend selection state"),
+                    ),
                 )
             },
             Arc::clone(&view_health_registry),

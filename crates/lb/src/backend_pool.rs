@@ -1,17 +1,9 @@
-use std::{
-    sync::atomic::Ordering,
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 
 use crate::{
     backend::BackendState,
     health::{HealthFailureReason, HealthTransition},
 };
-
-const EWMA_ALPHA: f64 = 0.2;
-const FAILURE_PENALTY_LATENCY_MS: f64 = 1_000.0;
-const MIN_LATENCY_SAMPLE_MS: f64 = 1.0;
-const MAX_LATENCY_SAMPLE_MS: f64 = 60_000.0;
 
 pub struct BackendPool {
     pub backends: Vec<BackendState>,
@@ -287,51 +279,22 @@ impl BackendPool {
 
     pub fn begin_request(&self, index: usize) {
         if let Some(backend) = self.backends.get(index) {
-            backend.active_requests.fetch_add(1, Ordering::Relaxed);
+            backend.begin_request();
         }
     }
 
     pub fn finish_request(&mut self, index: usize, latency: Duration, status: Option<u16>) {
-        let Some(backend) = self.backends.get_mut(index) else {
+        let Some(backend) = self.backends.get(index) else {
             return;
         };
-
-        let _ =
-            backend
-                .active_requests
-                .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-                    Some(current.saturating_sub(1))
-                });
-
-        if status.is_some_and(|code| (500..=599).contains(&code)) {
-            return;
-        }
-
-        let observed_ms =
-            (latency.as_secs_f64() * 1_000.0).clamp(MIN_LATENCY_SAMPLE_MS, MAX_LATENCY_SAMPLE_MS);
-        Self::record_latency_sample(backend, observed_ms);
-    }
-
-    fn record_latency_sample(backend: &mut BackendState, observed_ms: f64) {
-        backend.ewma_latency_ms = Some(match backend.ewma_latency_ms {
-            Some(previous) => EWMA_ALPHA * observed_ms + (1.0 - EWMA_ALPHA) * previous,
-            None => observed_ms,
-        });
+        backend.finish_request(latency, status);
     }
 
     fn record_failure_latency_penalty(&mut self, index: usize, latency: Duration) {
-        let Some(backend) = self.backends.get_mut(index) else {
+        let Some(backend) = self.backends.get(index) else {
             return;
         };
-
-        let penalty_ms = latency
-            .as_secs_f64()
-            .mul_add(1_000.0, 0.0)
-            .max(FAILURE_PENALTY_LATENCY_MS);
-        backend.ewma_latency_ms = Some(match backend.ewma_latency_ms {
-            Some(previous) => previous.max(penalty_ms),
-            None => penalty_ms,
-        });
+        backend.record_failure_latency_penalty(latency);
     }
 
     fn mark_healthy(&mut self, index: usize) -> bool {
