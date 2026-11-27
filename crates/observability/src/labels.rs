@@ -131,39 +131,6 @@ impl RetryDecisionReason {
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub enum HedgeDecisionReason {
-    DelayElapsed,
-    HedgingDisabled,
-    PrimaryCompleted,
-    RequestBodyNotReplayable,
-    TunnelRequest,
-    MethodNotAllowed,
-    AlternateBackendUnavailable,
-    HedgeBudgetDenied,
-}
-
-impl HedgeDecisionReason {
-    #[must_use]
-    pub const fn slug(self) -> &'static str {
-        match self {
-            Self::DelayElapsed => "delay_elapsed",
-            Self::HedgingDisabled => "hedging_disabled",
-            Self::PrimaryCompleted => "primary_completed",
-            Self::RequestBodyNotReplayable => "request_body_not_replayable",
-            Self::TunnelRequest => "tunnel_request",
-            Self::MethodNotAllowed => "method_not_allowed",
-            Self::AlternateBackendUnavailable => "alternate_backend_unavailable",
-            Self::HedgeBudgetDenied => "hedge_budget_denied",
-        }
-    }
-
-    #[must_use]
-    pub const fn is_triggered(self) -> bool {
-        matches!(self, Self::DelayElapsed)
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum AdmissionDecisionReason {
     AuthDenied,
     AuthUnavailable,

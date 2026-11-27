@@ -1,9 +1,8 @@
 use std::time::{Duration, SystemTime};
 
 use impulse_contracts::{
-    BackendId, HealthFailureReason, HedgeOutcomeTelemetryReason, HedgeTriggerTelemetryReason,
-    PluginActivationOutcome, PluginExecutionObservation, PluginKind, RetryAttemptTelemetryReason,
-    RetryPolicyDenialReason, RouteId, UpstreamId,
+    BackendId, HealthFailureReason, PluginActivationOutcome, PluginExecutionObservation,
+    PluginKind, RetryAttemptTelemetryReason, RetryPolicyDenialReason, RouteId, UpstreamId,
 };
 
 use crate::{
@@ -213,18 +212,6 @@ impl PolicyObservationRecorder<'_> {
 
     pub fn inc_inflight_wait_admit_upstream(self) {
         self.metrics.inc_inflight_wait_admit_upstream();
-    }
-
-    pub fn inc_hedge_trigger(self, reason: HedgeTriggerTelemetryReason) {
-        self.metrics.inc_hedge_trigger(reason);
-    }
-
-    pub fn inc_hedge_outcome(self, reason: HedgeOutcomeTelemetryReason) {
-        self.metrics.inc_hedge_outcome(reason);
-    }
-
-    pub fn observe_hedge_primary_late_ms(self, late_ms: u64) {
-        self.metrics.observe_hedge_primary_late_ms(late_ms);
     }
 
     pub fn inc_retry_attempt(self, reason: RetryAttemptTelemetryReason) {

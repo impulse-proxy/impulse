@@ -55,17 +55,6 @@ impl From<UpstreamRetryReason> for RetryAttemptTelemetryReason {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum HedgeTriggerTelemetryReason {
-    DelayElapsed,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum HedgeOutcomeTelemetryReason {
-    PrimaryWonAfterTrigger,
-    HedgeWon,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CancellationReason {
     ClientReset,
     ConnectionClosed,

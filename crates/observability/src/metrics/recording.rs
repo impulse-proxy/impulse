@@ -195,12 +195,6 @@ impl Metrics {
             pingora_h2_stream_capacity: AtomicU64::new(0),
             h2_stream_resets_total: AtomicU64::new(0),
             h2_goaway_total: AtomicU64::new(0),
-            hedge_triggered: AtomicU64::new(0),
-            hedge_won: AtomicU64::new(0),
-            hedge_wasted: AtomicU64::new(0),
-            hedge_primary_won_after_trigger: AtomicU64::new(0),
-            hedge_primary_late_ms_total: AtomicU64::new(0),
-            hedge_primary_late_samples: AtomicU64::new(0),
             ingress_packets_total: AtomicU64::new(0),
             ingress_queue_drops: AtomicU64::new(0),
             ingress_queue_drop_bytes: AtomicU64::new(0),
@@ -584,30 +578,6 @@ impl Metrics {
 
     pub fn inc_inflight_wait_admit_upstream(&self) {
         self.inflight_wait_admit_upstream
-            .fetch_add(1, Ordering::Relaxed);
-    }
-
-    pub fn inc_hedge_trigger(&self, _reason: HedgeTriggerTelemetryReason) {
-        self.hedge_triggered.fetch_add(1, Ordering::Relaxed);
-    }
-
-    pub fn inc_hedge_outcome(&self, reason: HedgeOutcomeTelemetryReason) {
-        match reason {
-            HedgeOutcomeTelemetryReason::PrimaryWonAfterTrigger => {
-                self.hedge_primary_won_after_trigger
-                    .fetch_add(1, Ordering::Relaxed);
-                self.hedge_wasted.fetch_add(1, Ordering::Relaxed);
-            }
-            HedgeOutcomeTelemetryReason::HedgeWon => {
-                self.hedge_won.fetch_add(1, Ordering::Relaxed);
-            }
-        }
-    }
-
-    pub fn observe_hedge_primary_late_ms(&self, late_ms: u64) {
-        self.hedge_primary_late_ms_total
-            .fetch_add(late_ms, Ordering::Relaxed);
-        self.hedge_primary_late_samples
             .fetch_add(1, Ordering::Relaxed);
     }
 

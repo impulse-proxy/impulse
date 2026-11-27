@@ -21,8 +21,7 @@ pub use identity::{
 pub use outcome::{
     AdmissionOutcomeKind, AlternateBackendFailureReason, BackendFailureReason,
     BackendHealthObservationOutcome, BackendHealthObservationSource, CancellationReason,
-    CompletionReason, HealthFailureReason, HedgeOutcomeTelemetryReason,
-    HedgeTriggerTelemetryReason, RejectionReason, RetryAttemptTelemetryReason,
+    CompletionReason, HealthFailureReason, RejectionReason, RetryAttemptTelemetryReason,
     RetryPolicyDenialReason, TerminalReason, TimeoutReason, UpstreamRetryReason,
     UpstreamTerminalErrorKind,
 };

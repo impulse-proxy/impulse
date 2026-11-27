@@ -1121,58 +1121,6 @@ impl Metrics {
             self.connection_cap_rejects.load(Ordering::Relaxed)
         ));
 
-        out.push_str("# HELP impulse_hedge_triggered_total Total hedge attempts started.\n");
-        out.push_str("# TYPE impulse_hedge_triggered_total counter\n");
-        out.push_str(&format!(
-            "impulse_hedge_triggered_total {}\n",
-            self.hedge_triggered.load(Ordering::Relaxed)
-        ));
-
-        out.push_str(
-            "# HELP impulse_hedge_won_total Total requests where hedge response arrived first.\n",
-        );
-        out.push_str("# TYPE impulse_hedge_won_total counter\n");
-        out.push_str(&format!(
-            "impulse_hedge_won_total {}\n",
-            self.hedge_won.load(Ordering::Relaxed)
-        ));
-
-        out.push_str(
-            "# HELP impulse_hedge_wasted_total Total hedge attempts that did not win the race.\n",
-        );
-        out.push_str("# TYPE impulse_hedge_wasted_total counter\n");
-        out.push_str(&format!(
-            "impulse_hedge_wasted_total {}\n",
-            self.hedge_wasted.load(Ordering::Relaxed)
-        ));
-
-        out.push_str(
-            "# HELP impulse_hedge_primary_won_after_trigger_total Total hedged requests where primary still won.\n",
-        );
-        out.push_str("# TYPE impulse_hedge_primary_won_after_trigger_total counter\n");
-        out.push_str(&format!(
-            "impulse_hedge_primary_won_after_trigger_total {}\n",
-            self.hedge_primary_won_after_trigger.load(Ordering::Relaxed)
-        ));
-
-        out.push_str(
-            "# HELP impulse_hedge_primary_late_ms_total Aggregate milliseconds primary was late after hedge trigger.\n",
-        );
-        out.push_str("# TYPE impulse_hedge_primary_late_ms_total counter\n");
-        out.push_str(&format!(
-            "impulse_hedge_primary_late_ms_total {}\n",
-            self.hedge_primary_late_ms_total.load(Ordering::Relaxed)
-        ));
-
-        out.push_str(
-            "# HELP impulse_hedge_primary_late_samples_total Number of late-primary observations used in hedge tuning.\n",
-        );
-        out.push_str("# TYPE impulse_hedge_primary_late_samples_total counter\n");
-        out.push_str(&format!(
-            "impulse_hedge_primary_late_samples_total {}\n",
-            self.hedge_primary_late_samples.load(Ordering::Relaxed)
-        ));
-
         out.push_str(
             "# HELP impulse_ingress_packets_total Total UDP packets processed by ingress.\n",
         );

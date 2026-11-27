@@ -11,10 +11,9 @@ mod recorders;
 
 pub use event::{MetricReasonLabels, OperationalEventContext};
 pub use labels::{
-    AdmissionDecisionReason, AdmissionOverloadCause, BackendHealthReason, HedgeDecisionReason,
-    QuotaBackendHealthReason, QuotaPolicyDecision, QuotaPolicyReason, RequestOutcomeReason,
-    RetryDecisionReason, RuntimeOperationOutcomeReason, RuntimeRejectionReason,
-    backend_health_reason,
+    AdmissionDecisionReason, AdmissionOverloadCause, BackendHealthReason, QuotaBackendHealthReason,
+    QuotaPolicyDecision, QuotaPolicyReason, RequestOutcomeReason, RetryDecisionReason,
+    RuntimeOperationOutcomeReason, RuntimeRejectionReason, backend_health_reason,
 };
 pub use metrics::{
     BackendRequestCountKey, DiscoveryRefreshUpdate, Metrics, OverloadShedReason,
