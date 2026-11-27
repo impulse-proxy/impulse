@@ -81,28 +81,23 @@ pub struct RequestBuildInput<'a, B = BoxBody<Bytes, Infallible>> {
 }
 
 #[derive(Debug)]
+pub struct RequestPolicyHeaderInput<'a> {
+    pub target: RequestBuildTarget<'a>,
+    pub authority: Option<&'a str>,
+    pub headers: &'a http::HeaderMap,
+    pub policy_header_mutations: &'a [RequestHeaderMutationRef<'a>],
+    pub trace: RequestTraceContext<'a>,
+    pub forwarded: RequestForwardedContext,
+    pub include_host_header: bool,
+    pub preserve_upgrade: bool,
+}
+
+pub type RequestPolicyHeaderMutationOverlay =
+    smallvec::SmallVec<[(HeaderName, Option<HeaderValue>); 11]>;
+
 pub(crate) struct RequestHeaderSanitizationInput<'a> {
-    pub(crate) target: RequestBuildTarget<'a>,
-    pub(crate) authority: Option<&'a str>,
     pub(crate) headers: &'a http::HeaderMap,
-    pub(crate) policy_header_mutations: &'a [RequestHeaderMutationRef<'a>],
-    pub(crate) preserve_upgrade: bool,
-    pub(crate) forwarded: RequestForwardedContext,
-}
-
-#[derive(Debug)]
-pub(crate) struct ResolvedRequestHeaderPolicy<'a> {
-    pub(crate) host_value: &'a str,
-    pub(crate) forwarded_values: ForwardedHeaderValues,
-}
-
-type RequestHeaderMutationOverlay = smallvec::SmallVec<[(HeaderName, HeaderValue); 7]>;
-
-pub(crate) struct RequestPolicyHeaderMutations<'a> {
-    pub(crate) resolved_headers: ResolvedRequestHeaderPolicy<'a>,
-    pub(crate) trace: RequestTraceContext<'a>,
-    pub(crate) policy_header_mutations: &'a [RequestHeaderMutationRef<'a>],
-    pub(crate) include_host_header: bool,
+    pub(crate) policy_header_mutations: &'a RequestPolicyHeaderMutationOverlay,
     pub(crate) preserve_upgrade: bool,
 }
 
@@ -134,14 +129,41 @@ impl RequestBodyMode {
 pub(crate) fn copy_sanitized_request_headers(
     mut builder: http::request::Builder,
     input: RequestHeaderSanitizationInput<'_>,
-) -> Result<(http::request::Builder, ResolvedRequestHeaderPolicy<'_>), BridgeError> {
+) -> http::request::Builder {
     let RequestHeaderSanitizationInput {
+        headers,
+        policy_header_mutations,
+        preserve_upgrade,
+    } = input;
+
+    for (header_name, header_value) in headers {
+        if policy_header_mutations
+            .iter()
+            .any(|(name, _)| name == header_name)
+        {
+            continue;
+        }
+        if should_strip_request_header(header_name, headers, preserve_upgrade) {
+            continue;
+        }
+        builder = builder.header(header_name.clone(), header_value.clone());
+    }
+
+    builder
+}
+
+pub fn request_policy_header_mutations(
+    input: RequestPolicyHeaderInput<'_>,
+) -> Result<RequestPolicyHeaderMutationOverlay, BridgeError> {
+    let RequestPolicyHeaderInput {
         target,
         authority,
         headers,
         policy_header_mutations,
-        preserve_upgrade,
+        trace,
         forwarded,
+        include_host_header,
+        preserve_upgrade,
     } = input;
     let RequestBuildTarget { endpoint, policies } = target;
     let mut host_from_headers = None;
@@ -152,39 +174,24 @@ pub(crate) fn copy_sanitized_request_headers(
 
     for (header_name, header_value) in headers {
         let name = header_name.as_str().as_bytes();
-        let value = header_value.as_bytes();
         if policy_header_mutations
             .iter()
             .any(|mutation| mutation.name.eq_ignore_ascii_case(name))
         {
             continue;
         }
+        let value = header_value.as_bytes();
         if name.eq_ignore_ascii_case(b"forwarded") {
             forwarded_from_headers.push(value);
-            continue;
-        }
-        if name.eq_ignore_ascii_case(b"x-forwarded-for") {
+        } else if name.eq_ignore_ascii_case(b"x-forwarded-for") {
             x_forwarded_for_from_headers.push(value);
-            continue;
-        }
-        if name.eq_ignore_ascii_case(b"x-forwarded-proto") {
+        } else if name.eq_ignore_ascii_case(b"x-forwarded-proto") {
             x_forwarded_proto_from_headers.push(value);
-            continue;
-        }
-        if name.eq_ignore_ascii_case(b"x-forwarded-host") {
+        } else if name.eq_ignore_ascii_case(b"x-forwarded-host") {
             x_forwarded_host_from_headers.push(value);
-            continue;
-        }
-
-        if name.eq_ignore_ascii_case(b"host") {
+        } else if name.eq_ignore_ascii_case(b"host") {
             host_from_headers = std::str::from_utf8(value).ok();
-            continue;
         }
-
-        if should_strip_request_header(header_name, headers, preserve_upgrade) {
-            continue;
-        }
-        builder = builder.header(header_name.clone(), header_value.clone());
     }
 
     let host_value =
@@ -201,35 +208,9 @@ pub(crate) fn copy_sanitized_request_headers(
         host_value,
     )?;
 
-    Ok((
-        builder,
-        ResolvedRequestHeaderPolicy {
-            host_value,
-            forwarded_values,
-        },
-    ))
-}
-
-pub(crate) fn apply_request_policy_header_mutations(
-    mut builder: http::request::Builder,
-    mutations: RequestPolicyHeaderMutations<'_>,
-) -> Result<http::request::Builder, BridgeError> {
-    let RequestPolicyHeaderMutations {
-        resolved_headers,
-        trace,
-        policy_header_mutations,
-        include_host_header,
-        preserve_upgrade,
-    } = mutations;
-    let ResolvedRequestHeaderPolicy {
-        host_value,
-        forwarded_values,
-    } = resolved_headers;
+    let mut overlay = RequestPolicyHeaderMutationOverlay::new();
 
     for mutation in policy_header_mutations {
-        let Some(value) = mutation.value else {
-            continue;
-        };
         let header_name =
             HeaderName::from_bytes(mutation.name).map_err(|_| BridgeError::InvalidHeader)?;
         if should_strip_proxy_header(&header_name, preserve_upgrade)
@@ -237,35 +218,44 @@ pub(crate) fn apply_request_policy_header_mutations(
         {
             continue;
         }
-        let header_value =
-            HeaderValue::from_bytes(value).map_err(|_| BridgeError::InvalidHeader)?;
-        builder = builder.header(header_name, header_value);
+        let header_value = mutation
+            .value
+            .map(HeaderValue::from_bytes)
+            .transpose()
+            .map_err(|_| BridgeError::InvalidHeader)?;
+        overlay.push((header_name, header_value));
     }
 
-    let mut overlay = RequestHeaderMutationOverlay::new();
-    if include_host_header {
-        overlay.push((
-            http::header::HOST,
-            HeaderValue::from_str(host_value).map_err(|_| BridgeError::InvalidHeader)?,
-        ));
-    }
+    overlay.push((
+        http::header::HOST,
+        include_host_header
+            .then_some(HeaderValue::from_str(host_value))
+            .transpose()
+            .map_err(|_| BridgeError::InvalidHeader)?,
+    ));
 
-    let has_request_id = builder
-        .headers_ref()
-        .is_some_and(|h| h.contains_key("x-request-id"));
-    if !has_request_id {
+    let effective_header_present = |name: &str| {
+        policy_header_mutations
+            .iter()
+            .rev()
+            .find(|mutation| mutation.name.eq_ignore_ascii_case(name.as_bytes()))
+            .map_or_else(
+                || headers.contains_key(name),
+                |mutation| mutation.value.is_some(),
+            )
+    };
+    if !effective_header_present("x-request-id") {
         let mut request_id = itoa::Buffer::new();
         overlay.push((
             HeaderName::from_static("x-request-id"),
-            HeaderValue::from_str(request_id.format(trace.request_id))
-                .map_err(|_| BridgeError::InvalidHeader)?,
+            Some(
+                HeaderValue::from_str(request_id.format(trace.request_id))
+                    .map_err(|_| BridgeError::InvalidHeader)?,
+            ),
         ));
     }
 
-    let has_traceparent = builder
-        .headers_ref()
-        .is_some_and(|h| h.contains_key("traceparent"));
-    if !has_traceparent {
+    if !effective_header_present("traceparent") {
         let traceparent = if let Some(traceparent) = trace.traceparent {
             Some(HeaderValue::from_str(traceparent).map_err(|_| BridgeError::InvalidHeader)?)
         } else if let Some((trace_id, span_id)) = trace.trace_id.zip(trace.span_id) {
@@ -280,28 +270,41 @@ pub(crate) fn apply_request_policy_header_mutations(
             None
         };
         if let Some(traceparent) = traceparent {
-            overlay.push((HeaderName::from_static("traceparent"), traceparent));
+            overlay.push((HeaderName::from_static("traceparent"), Some(traceparent)));
         }
     }
 
-    if let Some(value) = forwarded_values.forwarded {
-        overlay.push((HeaderName::from_static("forwarded"), value));
-    }
-    if let Some(value) = forwarded_values.x_forwarded_for {
-        overlay.push((HeaderName::from_static("x-forwarded-for"), value));
-    }
-    if let Some(value) = forwarded_values.x_forwarded_proto {
-        overlay.push((HeaderName::from_static("x-forwarded-proto"), value));
-    }
-    if let Some(value) = forwarded_values.x_forwarded_host {
-        overlay.push((HeaderName::from_static("x-forwarded-host"), value));
+    overlay.push((
+        HeaderName::from_static("forwarded"),
+        forwarded_values.forwarded,
+    ));
+    overlay.push((
+        HeaderName::from_static("x-forwarded-for"),
+        forwarded_values.x_forwarded_for,
+    ));
+    overlay.push((
+        HeaderName::from_static("x-forwarded-proto"),
+        forwarded_values.x_forwarded_proto,
+    ));
+    overlay.push((
+        HeaderName::from_static("x-forwarded-host"),
+        forwarded_values.x_forwarded_host,
+    ));
+
+    Ok(overlay)
+}
+
+pub(crate) fn apply_request_policy_header_mutations(
+    mut builder: http::request::Builder,
+    mutations: &RequestPolicyHeaderMutationOverlay,
+) -> http::request::Builder {
+    for (name, value) in mutations {
+        if let Some(value) = value {
+            builder = builder.header(name, value);
+        }
     }
 
-    for (name, value) in overlay {
-        builder = builder.header(name, value);
-    }
-
-    Ok(builder)
+    builder
 }
 
 pub(crate) fn apply_request_transport_headers(

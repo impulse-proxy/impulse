@@ -8,9 +8,9 @@ use impulse_errors::BridgeError;
 use crate::{
     request::{
         RequestBuildInput, RequestBuildTarget, RequestHeaderSanitizationInput,
-        RequestPolicyHeaderMutations, RequestTransportHeaders,
-        apply_request_policy_header_mutations, apply_request_transport_headers,
-        copy_sanitized_request_headers,
+        RequestPolicyHeaderInput, RequestTransportHeaders, apply_request_policy_header_mutations,
+        apply_request_transport_headers, copy_sanitized_request_headers,
+        request_policy_header_mutations,
     },
     websocket::legacy_websocket_upgrade_requested_for_headers,
 };
@@ -46,32 +46,30 @@ pub(crate) fn build_h1_request(
     let method = Method::from_bytes(method.as_bytes()).map_err(|_| BridgeError::InvalidMethod)?;
     let preserve_upgrade = legacy_websocket_upgrade_requested_for_headers(method.as_str(), headers);
 
+    let policy_mutations = request_policy_header_mutations(RequestPolicyHeaderInput {
+        target: RequestBuildTarget { endpoint, policies },
+        authority,
+        headers,
+        policy_header_mutations,
+        trace,
+        forwarded,
+        include_host_header: true,
+        preserve_upgrade,
+    })?;
     let builder = Request::builder().method(method.clone());
-    let (mut builder, resolved_headers) = copy_sanitized_request_headers(
+    let mut builder = copy_sanitized_request_headers(
         builder,
         RequestHeaderSanitizationInput {
-            target: RequestBuildTarget { endpoint, policies },
-            authority,
             headers,
-            policy_header_mutations,
+            policy_header_mutations: &policy_mutations,
             preserve_upgrade,
-            forwarded,
         },
-    )?;
+    );
     let request_path = if path.is_empty() { "/" } else { path };
     let uri =
         Uri::try_from(endpoint.uri_for_path(request_path)).map_err(|_| BridgeError::InvalidUri)?;
     builder = builder.uri(uri);
-    builder = apply_request_policy_header_mutations(
-        builder,
-        RequestPolicyHeaderMutations {
-            resolved_headers,
-            trace,
-            policy_header_mutations,
-            include_host_header: true,
-            preserve_upgrade,
-        },
-    )?;
+    builder = apply_request_policy_header_mutations(builder, &policy_mutations);
     builder = apply_request_transport_headers(
         builder,
         RequestTransportHeaders {

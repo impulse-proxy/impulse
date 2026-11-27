@@ -70,15 +70,16 @@ impl<T> DerefMut for PingoraRequestContext<T> {
     }
 }
 
-pub(super) fn apply_normalized_request_headers(
+pub(super) fn apply_request_policy_header_mutations(
     target: &mut RequestHeader,
-    headers: &http::HeaderMap,
+    mutations: &impulse_bridge::request::RequestPolicyHeaderMutationOverlay,
 ) -> Result<()> {
-    while let Some(name) = target.headers.keys().next().cloned() {
-        target.remove_header(&name);
-    }
-    for (name, value) in headers {
-        target.append_header(name.clone(), value.clone())?;
+    for (name, value) in mutations {
+        if let Some(value) = value {
+            target.insert_header(name.clone(), value.clone())?;
+        } else {
+            target.remove_header(name);
+        }
     }
     Ok(())
 }

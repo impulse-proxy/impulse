@@ -1,6 +1,5 @@
 use std::{
     any::Any,
-    convert::Infallible,
     fmt,
     sync::{Arc, RwLock, atomic::Ordering},
     time::{Duration, Instant},
@@ -8,15 +7,11 @@ use std::{
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use http_body_util::{Full, combinators::BoxBody};
 use impulse_bridge::response::{
     ResponseBodyMode, ResponseNormalizationProtocol, ResponseProtocolConstraints,
     normalize_response_trailers,
 };
-use impulse_config::{
-    backend_endpoint::{BackendEndpoint, BackendScheme},
-    runtime::ListenerRuntimeConfig,
-};
+use impulse_config::{backend_endpoint::BackendEndpoint, runtime::ListenerRuntimeConfig};
 use impulse_contracts::{
     AlternateBackendFailureReason, HealthFailureReason, IngressProtocol,
     PluginExecutionObservation, PluginExecutionOutcome, PluginHeaderMutation, PluginKind,
@@ -68,7 +63,9 @@ use smallvec::SmallVec;
 
 use self::{
     error::{PingoraUpstreamProtocol, classify_pingora_proxy_error, pingora_peer_protocol},
-    request::{PingoraRequestContext as IngressRequestContext, apply_normalized_request_headers},
+    request::{
+        PingoraRequestContext as IngressRequestContext, apply_request_policy_header_mutations,
+    },
     response::{
         apply_normalized_response_headers, build_response_header, write_downstream_response,
         write_error_response, write_local_response,
@@ -1559,18 +1556,6 @@ impl ProxyHttp for PingoraEdgeRequestService {
                 "Pingora ingress upstream peer did not select a backend",
             )
         })?;
-        let method = ctx.method.as_deref().ok_or_else(|| {
-            Error::explain(
-                InternalError,
-                "Pingora ingress request filter did not validate a method",
-            )
-        })?;
-        let path = ctx.path.as_deref().ok_or_else(|| {
-            Error::explain(
-                InternalError,
-                "Pingora ingress request filter did not validate a path",
-            )
-        })?;
         let endpoint = &selected.transport_identity;
         let client_addr = session
             .client_addr()
@@ -1608,40 +1593,32 @@ impl ProxyHttp for PingoraEdgeRequestService {
                 })
                 .collect::<SmallVec<[_; 4]>>()
         });
-        let input = impulse_bridge::request::RequestBuildInput {
-            method,
-            path,
-            authority: ctx.authority.as_deref(),
-            headers: std::borrow::Cow::Borrowed(&downstream_request.headers),
-            policy_header_mutations: auth_header_mutations.as_deref().unwrap_or_default(),
-            websocket_extended_connect: false,
-            body: BoxBody::new(Full::<Bytes>::new(Bytes::new())),
-            body_mode: impulse_bridge::request::RequestBuildInput::<
-                BoxBody<Bytes, Infallible>,
-            >::body_mode_for_length(ctx.content_length),
-            trace: impulse_bridge::request::RequestTraceContext {
-                request_id: ctx.request_id,
-                traceparent,
-                trace_id: None,
-                span_id: None,
+        let policy_header_mutations = impulse_bridge::request::request_policy_header_mutations(
+            impulse_bridge::request::RequestPolicyHeaderInput {
+                target,
+                authority: ctx.authority.as_deref(),
+                headers: &downstream_request.headers,
+                policy_header_mutations: auth_header_mutations.as_deref().unwrap_or_default(),
+                trace: impulse_bridge::request::RequestTraceContext {
+                    request_id: ctx.request_id,
+                    traceparent,
+                    trace_id: None,
+                    span_id: None,
+                },
+                forwarded: impulse_bridge::request::RequestForwardedContext { client_addr },
+                include_host_header: true,
+                preserve_upgrade: false,
             },
-            forwarded: impulse_bridge::request::RequestForwardedContext { client_addr },
-        };
-        let normalized = match endpoint.scheme() {
-            BackendScheme::Http => impulse_bridge::request::build_h1_request(target, input),
-            BackendScheme::Https => {
-                impulse_bridge::request::build_h2_request_for_target(target, input)
-            }
-        }
+        )
         .map_err(|error| {
             Error::because(
                 InternalError,
-                "upstream request normalization failed",
+                "upstream request policy mutation failed",
                 error,
             )
         })?;
 
-        apply_normalized_request_headers(upstream_request, normalized.headers())
+        apply_request_policy_header_mutations(upstream_request, &policy_header_mutations)
     }
 
     async fn adjust_upstream_modules(
