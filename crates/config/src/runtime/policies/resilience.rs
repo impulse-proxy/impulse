@@ -12,14 +12,6 @@ pub struct RuntimeCircuitBreakerPolicy {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RuntimeHedgingPolicy {
-    pub enabled: bool,
-    pub delay: Duration,
-    pub safe_methods: Vec<String>,
-    pub route_allowlist: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeRetryBudgetPolicy {
     pub enabled: bool,
     pub ratio_percent: u8,
@@ -50,25 +42,6 @@ pub(crate) fn normalize_circuit_breaker_policy(
         failure_threshold: resilience.circuit_breaker.failure_threshold,
         open: Duration::from_millis(resilience.circuit_breaker.open_ms.max(1)),
         half_open_max_probes: resilience.circuit_breaker.half_open_max_probes,
-    })
-}
-
-pub(crate) fn normalize_hedging_policy(
-    resilience: &Resilience,
-    safe_methods: Vec<String>,
-    route_allowlist: Vec<String>,
-) -> Result<RuntimeHedgingPolicy, RuntimeConfigError> {
-    if resilience.hedging.enabled && resilience.hedging.delay_ms == 0 {
-        return Err(config_invalid(
-            "resilience.hedging: delay_ms must be > 0 when hedging is enabled",
-        ));
-    }
-
-    Ok(RuntimeHedgingPolicy {
-        enabled: resilience.hedging.enabled,
-        delay: Duration::from_millis(resilience.hedging.delay_ms),
-        safe_methods,
-        route_allowlist,
     })
 }
 

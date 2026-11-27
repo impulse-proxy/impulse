@@ -309,15 +309,13 @@ fn summarize_auth_admission_resilience(bundle: &RuntimeBundle) -> String {
     let admission = &bundle.runtime_config.policies.admission;
     let rate_limits = &bundle.runtime_config.policies.rate_limits;
     let resilience = format!(
-        "adaptive={}..{:?};route_queue={}..{};circuit={}#{};hedging={}@{:?};retry={}@{};brownout={}%;watchdog={};scoped_rate_limits={}",
+        "adaptive={}..{:?};route_queue={}..{};circuit={}#{};retry={}@{};brownout={}%;watchdog={};scoped_rate_limits={}",
         admission.adaptive_admission.min_limit,
         admission.adaptive_admission.max_limit,
         admission.route_queue.default_cap,
         admission.route_queue.global_cap,
         admission.circuit_breaker.enabled,
         admission.circuit_breaker.failure_threshold,
-        admission.hedging.enabled,
-        admission.hedging.delay,
         admission.retry_budget.enabled,
         admission.retry_budget.ratio_percent,
         admission.brownout.trigger_inflight_percent,

@@ -627,7 +627,7 @@ impl Http3Service {
                 )
             });
         let transport_pool = Arc::clone(&exec_ctx.upstream_transport_pool);
-        let hedge_delay = resilience.hedging_delay;
+        let hedge_delay = std::time::Duration::ZERO;
         let alternate_pool = req.upstream_pool.clone();
         let alternate_metrics = Arc::clone(&shared_ctx.metrics);
         let alternate_worker_slot = shared_ctx.worker_slot;
@@ -639,8 +639,8 @@ impl Http3Service {
         let bodyless_mode = req.bodyless_mode;
         let request_id = req.request_id;
         let method_idempotent = is_idempotent_method(&req.method);
-        let hedge_method_allowed = resilience.hedging_method_allowed(&req.method);
-        let hedge_configured = resilience.hedging_route_enabled_for(pending_forward.route_id);
+        let hedge_method_allowed = false;
+        let hedge_configured = false;
         let hedge_tunnel_request = tunnel_mode.is_tunnel();
         let needs_alternate_before_primary =
             hedge_configured && hedge_method_allowed && bodyless_mode && !hedge_tunnel_request;

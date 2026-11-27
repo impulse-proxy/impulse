@@ -2,9 +2,7 @@ use std::{collections::HashMap, time::Duration};
 
 use super::{
     RuntimeQuotaPolicySet, config_invalid, normalize_optional_string,
-    resilience::{
-        normalize_circuit_breaker_policy, normalize_hedging_policy, normalize_retry_budget_policy,
-    },
+    resilience::{normalize_circuit_breaker_policy, normalize_retry_budget_policy},
     watchdog::normalize_watchdog_policy,
 };
 use crate::{
@@ -234,7 +232,6 @@ pub struct RuntimeAdmissionPolicy {
     pub adaptive_admission: RuntimeAdaptiveAdmissionPolicy,
     pub route_queue: RuntimeRouteQueuePolicy,
     pub circuit_breaker: super::RuntimeCircuitBreakerPolicy,
-    pub hedging: super::RuntimeHedgingPolicy,
     pub retry_budget: super::RuntimeRetryBudgetPolicy,
     pub brownout: RuntimeBrownoutPolicy,
     pub watchdog: super::RuntimeWatchdogPolicy,
@@ -396,9 +393,6 @@ impl RuntimeAdmissionPolicy {
         protocol.early_data_safe_methods = early_data_safe_methods;
         protocol.allowed_methods = allowed_methods;
         protocol.denied_path_prefixes = denied_path_prefixes;
-        let hedging_safe_methods = normalize_string_vec(&resilience.hedging.safe_methods);
-        let hedging_route_allowlist = normalize_string_vec(&resilience.hedging.route_allowlist);
-
         Ok(Self {
             adaptive_admission: RuntimeAdaptiveAdmissionPolicy {
                 enabled: resilience.adaptive_admission.enabled,
@@ -419,11 +413,6 @@ impl RuntimeAdmissionPolicy {
                 caps: resilience.route_queue.caps.clone(),
             },
             circuit_breaker: normalize_circuit_breaker_policy(resilience)?,
-            hedging: normalize_hedging_policy(
-                resilience,
-                hedging_safe_methods,
-                hedging_route_allowlist,
-            )?,
             retry_budget: normalize_retry_budget_policy(resilience)?,
             brownout: RuntimeBrownoutPolicy {
                 enabled: resilience.brownout.enabled,

@@ -40,7 +40,7 @@ pub use self::{
         RuntimeQuotaLocalFallback, RuntimeQuotaPolicy, RuntimeQuotaPolicySet,
         RuntimeQuotaSelectorDimension, RuntimeQuotaSelectorMatcher, RuntimeQuotaWindow,
     },
-    resilience::{RuntimeCircuitBreakerPolicy, RuntimeHedgingPolicy, RuntimeRetryBudgetPolicy},
+    resilience::{RuntimeCircuitBreakerPolicy, RuntimeRetryBudgetPolicy},
     timeouts::RuntimeTimeoutPolicy,
     transport::{RuntimeBackendConnectionPolicy, RuntimeConnectionLimits, RuntimeTransportPolicy},
     watchdog::RuntimeWatchdogPolicy,
