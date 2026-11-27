@@ -34,7 +34,9 @@ use support::{
         ParityRequestSpec, ParityResponseSnapshot, ProtocolParityHarness, make_backend,
         make_upstream,
     },
-    request_path::{HttpRequestSpec, reserve_unused_listener_port, run_http2_request_to},
+    request_path::{
+        HttpRequestSpec, reserve_unused_listener_port, run_http1_request_to, run_http2_request_to,
+    },
 };
 
 struct PingoraTestService {
@@ -446,6 +448,80 @@ fn pingora_and_http3_share_request_contracts() {
             user_agent: "impulse-pingora-parity-test",
             selected_response_headers: &[],
         },
+    );
+}
+
+#[test]
+fn pingora_and_http3_sanitize_hop_by_hop_request_headers() {
+    if !local_listener_bind_available() {
+        return;
+    }
+
+    let mut harness = ProtocolParityHarness::new();
+    let backend_addr = harness.start_h1_backend(|request| async move {
+        let present = |name| request.headers().contains_key(name);
+        let body = format!(
+            "connection={}\nkeep-alive={}\nx-secret={}\nx-keep={}\n",
+            present("connection"),
+            present("keep-alive"),
+            present("x-secret"),
+            present("x-keep"),
+        );
+        Ok::<_, std::convert::Infallible>(hyper::Response::new(http_body_util::Full::new(
+            bytes::Bytes::from(body),
+        )))
+    });
+    let upstream = make_upstream(
+        "/headers",
+        vec![make_backend("backend-a", backend_addr.to_string())],
+        None,
+        "round-robin",
+    );
+    let config = harness.make_config(HashMap::from([("api".to_string(), upstream)]));
+    let mut pingora_config = config.clone();
+    pingora_config.listen.port = reserve_unused_listener_port();
+    let (_pingora, pingora_addr) =
+        PingoraTestService::start(pingora_config).expect("start Pingora ingress");
+    harness
+        .start_listener(config)
+        .expect("start HTTP/3 ingress");
+
+    let headers = &[
+        ("connection", "keep-alive, x-secret"),
+        ("keep-alive", "timeout=5"),
+        ("x-secret", "drop-me"),
+        ("x-keep", "preserve-me"),
+    ];
+    let pingora = run_http1_request_to(
+        pingora_addr,
+        harness.cert_path(),
+        HttpRequestSpec {
+            method: "GET",
+            authority: "localhost",
+            path: "/headers",
+            headers,
+            body: None,
+            user_agent: "impulse-request-sanitization-test",
+        },
+    )
+    .expect("Pingora HTTP/1 response");
+    let http3 = harness
+        .run_quic(ParityRequestSpec {
+            method: "GET",
+            authority: "localhost",
+            path: "/headers",
+            headers,
+            body: None,
+            user_agent: "impulse-request-sanitization-test",
+            selected_response_headers: &[],
+        })
+        .expect("HTTP/3 response");
+
+    assert_eq!(pingora.status, http3.response.status);
+    assert_eq!(pingora.body, http3.response.body);
+    assert_eq!(
+        String::from_utf8_lossy(&pingora.body),
+        "connection=false\nkeep-alive=false\nx-secret=false\nx-keep=true\n"
     );
 }
 
