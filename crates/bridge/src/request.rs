@@ -9,7 +9,7 @@ use impulse_errors::BridgeError;
 
 use crate::{
     ForwardingPolicyInput, HostPolicyInput, UpstreamTargetInput,
-    forwarded::{ForwardedHeaderChains, ForwardedHeaderValues, build_forwarded_header_values},
+    forwarded::{ForwardedHeaderChains, build_forwarded_header_values},
     headers::should_strip_proxy_header,
     host::resolve_upstream_host_value,
 };
