@@ -9,7 +9,7 @@ Impulse is not just a proxy binary. It is an operator-facing traffic layer for t
 ## Why Impulse
 
 - **Modern edge ingress**: HTTP/1.1 and HTTP/2 run on Pingora in production, with TLS/ALPN, mTLS, WebSocket, and CONNECT support; HTTP/3 over QUIC is experimental.
-- **Clear traffic control**: routing, load balancing, admission, quota, overload protection, retries, hedging, and circuit breaking are explicit runtime concerns.
+- **Clear traffic control**: routing, load balancing, admission, quota, overload protection, retries, and circuit breaking are explicit runtime concerns.
 - **Operator visibility**: metrics, logs, traces, control API views, audit events, dashboards, alerts, and SLO artifacts ship as one observability package.
 - **Backend compatibility**: adopt modern client ingress without rewriting existing backend services.
 
@@ -62,7 +62,7 @@ Impulse gives teams one runtime to receive traffic, make explicit decisions, pro
 
 - admission control and overload shedding
 - quota and advanced rate-limit policy pipeline
-- retries and hedging
+- retries
 - circuit breaking
 - bounded request and response memory behavior
 - optional response caching and streaming gzip compression

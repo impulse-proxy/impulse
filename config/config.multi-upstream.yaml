@@ -303,12 +303,6 @@ resilience:
     enabled: true
     ratio_percent: 20   # at most 20% of requests may be retries at any moment
 
-  # --- hedging ------------------------------------------------------------
-  hedging:
-    enabled: false   # default; enable for latency-sensitive reads once baseline is established
-    delay_ms: 75
-    safe_methods: ["GET", "HEAD"]
-
 # ---------------------------------------------------------------------------
 # security — privilege drop after socket bind
 # Impulse binds :443 as root, then drops to this user/group before serving traffic.
