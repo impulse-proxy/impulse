@@ -7,8 +7,9 @@ use hyper::ext::Protocol;
 use impulse_errors::BridgeError;
 
 use crate::request::{
-    RequestBuildInput, RequestBuildTarget, RequestHeaderAssembly, RequestHeaderPolicyInput,
-    apply_request_header_assembly, apply_request_header_policies,
+    RequestBuildInput, RequestBuildTarget, RequestHeaderSanitizationInput,
+    RequestPolicyHeaderMutations, RequestTransportHeaders, apply_request_policy_header_mutations,
+    apply_request_transport_headers, copy_sanitized_request_headers,
 };
 
 pub(crate) fn build_h2_request_for_target(
@@ -21,7 +22,7 @@ pub(crate) fn build_h2_request_for_target(
         path,
         authority,
         headers,
-        auth_header_mutations,
+        policy_header_mutations,
         websocket_extended_connect,
         body,
         body_mode,
@@ -41,13 +42,13 @@ pub(crate) fn build_h2_request_for_target(
     };
     let is_connect = upstream_method == Method::CONNECT;
     let builder = Request::builder().method(upstream_method.clone());
-    let (mut builder, resolved_headers) = apply_request_header_policies(
+    let (mut builder, resolved_headers) = copy_sanitized_request_headers(
         builder,
-        RequestHeaderPolicyInput {
+        RequestHeaderSanitizationInput {
             target: RequestBuildTarget { endpoint, policies },
             authority,
             headers,
-            auth_header_mutations,
+            policy_header_mutations,
             preserve_upgrade: false,
             forwarded,
         },
@@ -71,17 +72,24 @@ pub(crate) fn build_h2_request_for_target(
             .version(Version::HTTP_2)
             .extension(Protocol::from_static("websocket"));
     }
-    builder = apply_request_header_assembly(
+    builder = apply_request_policy_header_mutations(
         builder,
-        RequestHeaderAssembly {
+        RequestPolicyHeaderMutations {
             resolved_headers,
             trace,
-            content_length,
-            include_content_length: !websocket_extended_connect,
+            policy_header_mutations,
             include_host_header: !websocket_extended_connect,
-            add_te_trailers: false,
+            preserve_upgrade: false,
         },
     )?;
+    builder = apply_request_transport_headers(
+        builder,
+        RequestTransportHeaders {
+            content_length,
+            include_content_length: !websocket_extended_connect,
+            add_te_trailers: false,
+        },
+    );
 
     builder.body(body).map_err(BridgeError::Build)
 }

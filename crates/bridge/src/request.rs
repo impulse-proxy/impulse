@@ -72,7 +72,7 @@ pub struct RequestBuildInput<'a, B = BoxBody<Bytes, Infallible>> {
     pub path: &'a str,
     pub authority: Option<&'a str>,
     pub headers: Cow<'a, http::HeaderMap>,
-    pub auth_header_mutations: &'a [RequestHeaderMutationRef<'a>],
+    pub policy_header_mutations: &'a [RequestHeaderMutationRef<'a>],
     pub websocket_extended_connect: bool,
     pub body: B,
     pub body_mode: RequestBodyMode,
@@ -81,11 +81,11 @@ pub struct RequestBuildInput<'a, B = BoxBody<Bytes, Infallible>> {
 }
 
 #[derive(Debug)]
-pub(crate) struct RequestHeaderPolicyInput<'a> {
+pub(crate) struct RequestHeaderSanitizationInput<'a> {
     pub(crate) target: RequestBuildTarget<'a>,
     pub(crate) authority: Option<&'a str>,
     pub(crate) headers: &'a http::HeaderMap,
-    pub(crate) auth_header_mutations: &'a [RequestHeaderMutationRef<'a>],
+    pub(crate) policy_header_mutations: &'a [RequestHeaderMutationRef<'a>],
     pub(crate) preserve_upgrade: bool,
     pub(crate) forwarded: RequestForwardedContext,
 }
@@ -98,12 +98,17 @@ pub(crate) struct ResolvedRequestHeaderPolicy<'a> {
 
 type RequestHeaderMutationOverlay = smallvec::SmallVec<[(HeaderName, HeaderValue); 7]>;
 
-pub(crate) struct RequestHeaderAssembly<'a> {
+pub(crate) struct RequestPolicyHeaderMutations<'a> {
     pub(crate) resolved_headers: ResolvedRequestHeaderPolicy<'a>,
     pub(crate) trace: RequestTraceContext<'a>,
+    pub(crate) policy_header_mutations: &'a [RequestHeaderMutationRef<'a>],
+    pub(crate) include_host_header: bool,
+    pub(crate) preserve_upgrade: bool,
+}
+
+pub(crate) struct RequestTransportHeaders {
     pub(crate) content_length: Option<usize>,
     pub(crate) include_content_length: bool,
-    pub(crate) include_host_header: bool,
     pub(crate) add_te_trailers: bool,
 }
 
@@ -126,15 +131,15 @@ impl RequestBodyMode {
     }
 }
 
-pub(crate) fn apply_request_header_policies(
+pub(crate) fn copy_sanitized_request_headers(
     mut builder: http::request::Builder,
-    input: RequestHeaderPolicyInput<'_>,
+    input: RequestHeaderSanitizationInput<'_>,
 ) -> Result<(http::request::Builder, ResolvedRequestHeaderPolicy<'_>), BridgeError> {
-    let RequestHeaderPolicyInput {
+    let RequestHeaderSanitizationInput {
         target,
         authority,
         headers,
-        auth_header_mutations,
+        policy_header_mutations,
         preserve_upgrade,
         forwarded,
     } = input;
@@ -148,7 +153,7 @@ pub(crate) fn apply_request_header_policies(
     for (header_name, header_value) in headers {
         let name = header_name.as_str().as_bytes();
         let value = header_value.as_bytes();
-        if auth_header_mutations
+        if policy_header_mutations
             .iter()
             .any(|mutation| mutation.name.eq_ignore_ascii_case(name))
         {
@@ -182,22 +187,6 @@ pub(crate) fn apply_request_header_policies(
         builder = builder.header(header_name.clone(), header_value.clone());
     }
 
-    for mutation in auth_header_mutations {
-        let Some(value) = mutation.value else {
-            continue;
-        };
-        let header_name =
-            HeaderName::from_bytes(mutation.name).map_err(|_| BridgeError::InvalidHeader)?;
-        if should_strip_proxy_header(&header_name, preserve_upgrade)
-            || header_name == http::header::HOST
-        {
-            continue;
-        }
-        let header_value =
-            HeaderValue::from_bytes(value).map_err(|_| BridgeError::InvalidHeader)?;
-        builder = builder.header(header_name, header_value);
-    }
-
     let host_value =
         resolve_upstream_host_value(endpoint, policies.host_policy, authority, host_from_headers)?;
     let forwarded_values = build_forwarded_header_values(
@@ -221,28 +210,36 @@ pub(crate) fn apply_request_header_policies(
     ))
 }
 
-pub(crate) fn apply_request_header_assembly(
+pub(crate) fn apply_request_policy_header_mutations(
     mut builder: http::request::Builder,
-    assembly: RequestHeaderAssembly<'_>,
+    mutations: RequestPolicyHeaderMutations<'_>,
 ) -> Result<http::request::Builder, BridgeError> {
-    let RequestHeaderAssembly {
+    let RequestPolicyHeaderMutations {
         resolved_headers,
         trace,
-        content_length,
-        include_content_length,
+        policy_header_mutations,
         include_host_header,
-        add_te_trailers,
-    } = assembly;
+        preserve_upgrade,
+    } = mutations;
     let ResolvedRequestHeaderPolicy {
         host_value,
         forwarded_values,
     } = resolved_headers;
 
-    if include_content_length
-        && let Some(len) = content_length
-        && len > 0
-    {
-        builder = builder.header(http::header::CONTENT_LENGTH, len);
+    for mutation in policy_header_mutations {
+        let Some(value) = mutation.value else {
+            continue;
+        };
+        let header_name =
+            HeaderName::from_bytes(mutation.name).map_err(|_| BridgeError::InvalidHeader)?;
+        if should_strip_proxy_header(&header_name, preserve_upgrade)
+            || header_name == http::header::HOST
+        {
+            continue;
+        }
+        let header_value =
+            HeaderValue::from_bytes(value).map_err(|_| BridgeError::InvalidHeader)?;
+        builder = builder.header(header_name, header_value);
     }
 
     let mut overlay = RequestHeaderMutationOverlay::new();
@@ -304,9 +301,28 @@ pub(crate) fn apply_request_header_assembly(
         builder = builder.header(name, value);
     }
 
+    Ok(builder)
+}
+
+pub(crate) fn apply_request_transport_headers(
+    mut builder: http::request::Builder,
+    headers: RequestTransportHeaders,
+) -> http::request::Builder {
+    let RequestTransportHeaders {
+        content_length,
+        include_content_length,
+        add_te_trailers,
+    } = headers;
+
+    if include_content_length
+        && let Some(len) = content_length
+        && len > 0
+    {
+        builder = builder.header(http::header::CONTENT_LENGTH, len);
+    }
     if add_te_trailers {
         builder = builder.header(http::header::TE, "trailers");
     }
 
-    Ok(builder)
+    builder
 }

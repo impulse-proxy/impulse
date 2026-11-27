@@ -123,7 +123,7 @@ fn request_input_from_headers<'a>(
         path,
         authority: meta.authority,
         headers,
-        auth_header_mutations: &[],
+        policy_header_mutations: &[],
         websocket_extended_connect,
         body: Empty::<Bytes>::new().boxed(),
         body_mode: RequestBuildInput::<BoxBody<Bytes, Infallible>>::body_mode_for_length(

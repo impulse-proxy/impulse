@@ -274,7 +274,7 @@ impl PendingForward {
         &'a self,
         method: &'a str,
         headers: http::HeaderMap,
-        auth_header_mutations: &'a [impulse_bridge::request::RequestHeaderMutationRef<'a>],
+        policy_header_mutations: &'a [impulse_bridge::request::RequestHeaderMutationRef<'a>],
         websocket_extended_connect: bool,
         body: BoxBody<Bytes, Infallible>,
         content_length: Option<usize>,
@@ -284,7 +284,7 @@ impl PendingForward {
             path: &self.path,
             authority: self.authority.as_deref(),
             headers: Cow::Owned(headers),
-            auth_header_mutations,
+            policy_header_mutations,
             websocket_extended_connect,
             body,
             body_mode:

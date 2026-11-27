@@ -7,8 +7,10 @@ use impulse_errors::BridgeError;
 
 use crate::{
     request::{
-        RequestBuildInput, RequestBuildTarget, RequestHeaderAssembly, RequestHeaderPolicyInput,
-        apply_request_header_assembly, apply_request_header_policies,
+        RequestBuildInput, RequestBuildTarget, RequestHeaderSanitizationInput,
+        RequestPolicyHeaderMutations, RequestTransportHeaders,
+        apply_request_policy_header_mutations, apply_request_transport_headers,
+        copy_sanitized_request_headers,
     },
     websocket::legacy_websocket_upgrade_requested_for_headers,
 };
@@ -30,7 +32,7 @@ pub(crate) fn build_h1_request(
         path,
         authority,
         headers,
-        auth_header_mutations,
+        policy_header_mutations,
         websocket_extended_connect: _,
         body,
         body_mode,
@@ -45,13 +47,13 @@ pub(crate) fn build_h1_request(
     let preserve_upgrade = legacy_websocket_upgrade_requested_for_headers(method.as_str(), headers);
 
     let builder = Request::builder().method(method.clone());
-    let (mut builder, resolved_headers) = apply_request_header_policies(
+    let (mut builder, resolved_headers) = copy_sanitized_request_headers(
         builder,
-        RequestHeaderPolicyInput {
+        RequestHeaderSanitizationInput {
             target: RequestBuildTarget { endpoint, policies },
             authority,
             headers,
-            auth_header_mutations,
+            policy_header_mutations,
             preserve_upgrade,
             forwarded,
         },
@@ -60,17 +62,24 @@ pub(crate) fn build_h1_request(
     let uri =
         Uri::try_from(endpoint.uri_for_path(request_path)).map_err(|_| BridgeError::InvalidUri)?;
     builder = builder.uri(uri);
-    builder = apply_request_header_assembly(
+    builder = apply_request_policy_header_mutations(
         builder,
-        RequestHeaderAssembly {
+        RequestPolicyHeaderMutations {
             resolved_headers,
             trace,
-            content_length,
-            include_content_length: true,
+            policy_header_mutations,
             include_host_header: true,
-            add_te_trailers: !preserve_upgrade,
+            preserve_upgrade,
         },
     )?;
+    builder = apply_request_transport_headers(
+        builder,
+        RequestTransportHeaders {
+            content_length,
+            include_content_length: true,
+            add_te_trailers: !preserve_upgrade,
+        },
+    );
     if matches!(body_mode, crate::request::RequestBodyMode::Streaming) {
         builder = builder.header(http::header::TRANSFER_ENCODING, "chunked");
     }
