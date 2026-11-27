@@ -1,7 +1,8 @@
 //! Canonical request/response conversion surface for upstream bridging.
 //!
 //! Consumers should use:
-//! - [`request`] for upstream request construction and header policy application
+//! - [`http3`] for HTTP/3 request translation into upstream protocols
+//! - [`request`] for application-owned upstream header policy
 //! - [`response`] for downstream response normalization and emission policy
 //! - [`websocket`] for websocket and upgrade helpers
 //!
@@ -13,6 +14,7 @@ mod h3_to_h1;
 mod h3_to_h2;
 mod headers;
 mod host;
+pub mod http3;
 mod input;
 pub mod request;
 pub mod response;

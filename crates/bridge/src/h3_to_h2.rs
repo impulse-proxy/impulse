@@ -6,11 +6,13 @@ use http_body_util::combinators::BoxBody;
 use hyper::ext::Protocol;
 use impulse_errors::BridgeError;
 
-use crate::request::{
-    RequestBuildInput, RequestBuildTarget, RequestHeaderSanitizationInput,
-    RequestPolicyHeaderInput, RequestTransportHeaders, apply_request_policy_header_mutations,
-    apply_request_transport_headers, copy_sanitized_request_headers,
-    request_policy_header_mutations,
+use crate::{
+    http3::{
+        RequestBuildInput, RequestHeaderSanitizationInput, RequestTransportHeaders,
+        apply_request_policy_header_mutations, apply_request_transport_headers,
+        copy_sanitized_request_headers,
+    },
+    request::{RequestBuildTarget, RequestPolicyHeaderInput, request_policy_header_mutations},
 };
 
 pub(crate) fn build_h2_request_for_target(

@@ -7,10 +7,9 @@ use http_body_util::{BodyExt, Empty, combinators::BoxBody};
 use impulse_bridge::{
     ForwardedHeaderMode, ForwardingPolicyInput, HostPolicyInput, HostPolicyMode, UpstreamScheme,
     UpstreamTargetInput,
+    http3::{RequestBodyMode, RequestBuildInput, build_h1_request, build_h2_request_for_target},
     request::{
-        RequestBodyMode, RequestBuildInput, RequestBuildPolicies, RequestBuildTarget,
-        RequestForwardedContext, RequestTraceContext, build_h1_request,
-        build_h2_request_for_target,
+        RequestBuildPolicies, RequestBuildTarget, RequestForwardedContext, RequestTraceContext,
     },
 };
 use impulse_config::{

@@ -6,12 +6,12 @@ use http_body_util::combinators::BoxBody;
 use impulse_errors::BridgeError;
 
 use crate::{
-    request::{
-        RequestBuildInput, RequestBuildTarget, RequestHeaderSanitizationInput,
-        RequestPolicyHeaderInput, RequestTransportHeaders, apply_request_policy_header_mutations,
+    http3::{
+        RequestBodyMode, RequestBuildInput, RequestHeaderSanitizationInput,
+        RequestTransportHeaders, apply_request_policy_header_mutations,
         apply_request_transport_headers, copy_sanitized_request_headers,
-        request_policy_header_mutations,
     },
+    request::{RequestBuildTarget, RequestPolicyHeaderInput, request_policy_header_mutations},
     websocket::legacy_websocket_upgrade_requested_for_headers,
 };
 
@@ -78,7 +78,7 @@ pub(crate) fn build_h1_request(
             add_te_trailers: !preserve_upgrade,
         },
     );
-    if matches!(body_mode, crate::request::RequestBodyMode::Streaming) {
+    if matches!(body_mode, RequestBodyMode::Streaming) {
         builder = builder.header(http::header::TRANSFER_ENCODING, "chunked");
     }
 

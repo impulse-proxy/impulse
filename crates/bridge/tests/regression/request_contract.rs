@@ -4,7 +4,7 @@ use http::{
     HeaderMap, HeaderValue,
     header::{CONTENT_LENGTH, HOST},
 };
-use impulse_bridge::request::{
+use impulse_bridge::http3::{
     RequestBodyMode, RequestBuildInput, build_h1_request, build_h2_request_for_target,
 };
 use impulse_config::{
@@ -266,7 +266,7 @@ fn canonical_empty_body_inputs_do_not_emit_content_length_for_h1_or_h2() {
         client_addr: "203.0.113.20:7001".parse().expect("client"),
     };
 
-    let h1 = impulse_bridge::request::build_h1_request(
+    let h1 = impulse_bridge::http3::build_h1_request(
         request_target(&endpoint, &host_policy, &forwarded_header_policy),
         request_input_with_body_mode("GET", "", &[], meta, RequestBodyMode::Empty),
     )
