@@ -55,17 +55,6 @@ impl From<UpstreamRetryReason> for RetryAttemptTelemetryReason {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum HedgePolicyDenialReason {
-    HedgingDisabled,
-    PrimaryRequestCompleted,
-    RequestBodyNotReplayable,
-    TunnelRequest,
-    MethodNotAllowed,
-    AlternateBackendUnavailable(AlternateBackendFailureReason),
-    BudgetDenied,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum HedgeTriggerTelemetryReason {
     DelayElapsed,
 }

@@ -2,14 +2,14 @@ use std::convert::Infallible;
 
 use bytes::{BufMut, BytesMut};
 use impulse_config::{backend_endpoint::BackendEndpoint, runtime::RuntimeBackendTlsPolicy};
-use impulse_contracts::{AlternateBackendFailureReason, HedgeOutcomeTelemetryReason};
+use impulse_contracts::AlternateBackendFailureReason;
 #[cfg(feature = "response-cache")]
 use impulse_contracts::{IngressProtocol, PluginRequestView};
-use impulse_errors::{HedgePolicyDecision, RetryPolicyDecision, is_idempotent_method};
+use impulse_errors::{RetryPolicyDecision, is_idempotent_method};
 use impulse_lb::{BackendSelectionInput, pingora_backend::GenerationSelector};
 #[cfg(feature = "response-cache")]
 use impulse_observability::ResponseCacheOutcome;
-use impulse_observability::{HedgeDecisionReason, RetryDecisionReason};
+use impulse_observability::RetryDecisionReason;
 #[cfg(feature = "response-cache")]
 use impulse_plugins::ResponseCacheKeyParts;
 use impulse_transport::{
@@ -627,7 +627,6 @@ impl Http3Service {
                 )
             });
         let transport_pool = Arc::clone(&exec_ctx.upstream_transport_pool);
-        let hedge_delay = std::time::Duration::ZERO;
         let alternate_pool = req.upstream_pool.clone();
         let alternate_metrics = Arc::clone(&shared_ctx.metrics);
         let alternate_worker_slot = shared_ctx.worker_slot;
@@ -639,18 +638,7 @@ impl Http3Service {
         let bodyless_mode = req.bodyless_mode;
         let request_id = req.request_id;
         let method_idempotent = is_idempotent_method(&req.method);
-        let hedge_method_allowed = false;
-        let hedge_configured = false;
-        let hedge_tunnel_request = tunnel_mode.is_tunnel();
-        let needs_alternate_before_primary =
-            hedge_configured && hedge_method_allowed && bodyless_mode && !hedge_tunnel_request;
-        let policy = RetryCoordinator::new(
-            method_idempotent,
-            bodyless_mode,
-            hedge_method_allowed,
-            hedge_configured,
-            hedge_tunnel_request,
-        );
+        let policy = RetryCoordinator::new(method_idempotent, bodyless_mode);
         let fut = async move {
             let resolve_alternate = || {
                 alternate_pool.as_ref().map(|_| {
@@ -677,9 +665,7 @@ impl Http3Service {
                     )
                 })
             };
-            let mut alternate_backend = needs_alternate_before_primary
-                .then(resolve_alternate)
-                .flatten();
+            let mut alternate_backend = None;
             let route_name = pending_forward.upstream_name.as_ref();
             let route_id = pending_forward.route_id;
             let primary_backend_id = pending_forward.backend_id;
@@ -741,203 +727,34 @@ impl Http3Service {
                             "missing upstream request for non-websocket forward".into(),
                         )
                     })?;
-                    let (alternate_backend_available, alternate_backend_failure) =
-                        alternate_backend_policy_state(alternate_backend.as_ref());
-                    let response: UpstreamExchangeResponse = match policy.hedge_before_delay(
-                        alternate_backend_available,
-                        alternate_backend_failure,
-                    ) {
-                        HedgePolicyDecision::WaitForPrimary => {
-                            let hedge_candidate = Self::build_alternate_bodyless_candidate(
-                                alternate_backend.as_ref(),
-                                pending_forward.as_ref(),
-                            );
-
-                            if let Some(AlternateBodylessCandidate {
-                                backend_id: hedge_backend_id,
-                                backend: hedge_backend,
-                                request: hedge_request,
-                            }) = hedge_candidate
-                            {
-                                let primary_started = Instant::now();
-                                let primary_fut = Self::send_upstream_request(
-                                    primary_backend_id,
-                                    primary_backend,
-                                    request,
+                    let response: UpstreamExchangeResponse = match Self::send_upstream_request(
+                        primary_backend_id,
+                        primary_backend,
+                        request,
+                        circuit_breakers,
+                        transport_pool,
+                    )
+                    .await
+                    {
+                        Ok(response) => response,
+                        Err(primary_err) => {
+                            alternate_backend = alternate_backend.or_else(resolve_alternate);
+                            Self::retry_primary_error(
+                                primary_err,
+                                RetryExecutionCtx {
+                                    request_id,
+                                    route_id,
+                                    route_name,
+                                    policy,
+                                    policy_telemetry: &mut policy_telemetry,
+                                    retry_budget,
+                                    alternate_backend: alternate_backend.as_ref(),
+                                    pending_forward: pending_forward.as_ref(),
                                     circuit_breakers,
                                     transport_pool,
-                                );
-                                tokio::pin!(primary_fut);
-                                let hedge_sleep = tokio::time::sleep(hedge_delay);
-                                tokio::pin!(hedge_sleep);
-
-                                if let Some(result) = tokio::select! {
-                                    result = &mut primary_fut => Some(result),
-                                    _ = &mut hedge_sleep => None,
-                                } {
-                                    result?
-                                } else {
-                                    match policy.hedge_after_delay(
-                                        retry_budget.allow_retry(route_id).is_ok(),
-                                    ) {
-                                        HedgePolicyDecision::Hedge { reason } => {
-                                            policy_telemetry.hedge.record_trigger(reason);
-                                            let hedge_fut = Self::send_upstream_request(
-                                                hedge_backend_id,
-                                                hedge_backend.as_str(),
-                                                hedge_request,
-                                                circuit_breakers,
-                                                transport_pool,
-                                            );
-                                            tokio::pin!(hedge_fut);
-                                            tokio::select! {
-                                                result = &mut primary_fut => {
-                                                    match result {
-                                                        Ok(response) => {
-                                                            policy_telemetry
-                                                                .hedge
-                                                                .record_outcome(HedgeOutcomeTelemetryReason::PrimaryWonAfterTrigger);
-                                                            response
-                                                        }
-                                                        Err(_primary_err) => {
-                                                            policy_telemetry
-                                                                .hedge
-                                                                .record_outcome(HedgeOutcomeTelemetryReason::HedgeWon);
-                                                            let elapsed_ms = primary_started.elapsed().as_millis() as u64;
-                                                            let delay_ms = hedge_delay.as_millis() as u64;
-                                                            policy_telemetry
-                                                                .hedge
-                                                                .observe_primary_late_ms(elapsed_ms.saturating_sub(delay_ms));
-                                                            hedge_fut.await?
-                                                        }
-                                                    }
-                                                }
-                                                result = &mut hedge_fut => {
-                                                    match result {
-                                                        Ok(response) => {
-                                                            policy_telemetry
-                                                                .hedge
-                                                                .record_outcome(HedgeOutcomeTelemetryReason::HedgeWon);
-                                                            let elapsed_ms = primary_started.elapsed().as_millis() as u64;
-                                                            let delay_ms = hedge_delay.as_millis() as u64;
-                                                            policy_telemetry
-                                                                .hedge
-                                                                .observe_primary_late_ms(elapsed_ms.saturating_sub(delay_ms));
-                                                            response
-                                                        }
-                                                        Err(_hedge_err) => {
-                                                            policy_telemetry
-                                                                .hedge
-                                                                .record_outcome(HedgeOutcomeTelemetryReason::PrimaryWonAfterTrigger);
-                                                            primary_fut.await?
-                                                        }
-                                                    }
-                                                },
-                                            }
-                                        }
-                                        HedgePolicyDecision::WaitForPrimary => primary_fut.await?,
-                                        HedgePolicyDecision::DoNotHedge { denial } => {
-                                            debug!(
-                                                "hedge decision: request_id={} upstream={} decision=suppressed reason={} detail={:?}",
-                                                request_id,
-                                                route_name,
-                                                HedgeDecisionReason::from(denial).slug(),
-                                                denial
-                                            );
-                                            primary_fut.await?
-                                        }
-                                    }
-                                }
-                            } else {
-                                Self::send_upstream_request(
-                                    primary_backend_id,
-                                    primary_backend,
-                                    request,
-                                    circuit_breakers,
-                                    transport_pool,
-                                )
-                                .await?
-                            }
-                        }
-                        HedgePolicyDecision::DoNotHedge { denial } => {
-                            debug!(
-                                "hedge decision: request_id={} upstream={} decision=denied reason={} detail={:?}",
-                                request_id,
-                                route_name,
-                                HedgeDecisionReason::from(denial).slug(),
-                                denial
-                            );
-                            match Self::send_upstream_request(
-                                primary_backend_id,
-                                primary_backend,
-                                request,
-                                circuit_breakers,
-                                transport_pool,
+                                },
                             )
-                            .await
-                            {
-                                Ok(response) => response,
-                                Err(primary_err) => {
-                                    alternate_backend =
-                                        alternate_backend.or_else(resolve_alternate);
-                                    Self::retry_primary_error(
-                                        primary_err,
-                                        RetryExecutionCtx {
-                                            request_id,
-                                            route_id,
-                                            route_name,
-                                            policy,
-                                            policy_telemetry: &mut policy_telemetry,
-                                            retry_budget,
-                                            alternate_backend: alternate_backend.as_ref(),
-                                            pending_forward: pending_forward.as_ref(),
-                                            circuit_breakers,
-                                            transport_pool,
-                                        },
-                                    )
-                                    .await?
-                                }
-                            }
-                        }
-                        HedgePolicyDecision::Hedge { reason } => {
-                            debug!(
-                                "hedge decision: request_id={} upstream={} decision=triggered reason={} detail={:?}",
-                                request_id,
-                                route_name,
-                                HedgeDecisionReason::DelayElapsed.slug(),
-                                reason
-                            );
-                            match Self::send_upstream_request(
-                                primary_backend_id,
-                                primary_backend,
-                                request,
-                                circuit_breakers,
-                                transport_pool,
-                            )
-                            .await
-                            {
-                                Ok(response) => response,
-                                Err(primary_err) => {
-                                    alternate_backend =
-                                        alternate_backend.or_else(resolve_alternate);
-                                    Self::retry_primary_error(
-                                        primary_err,
-                                        RetryExecutionCtx {
-                                            request_id,
-                                            route_id,
-                                            route_name,
-                                            policy,
-                                            policy_telemetry: &mut policy_telemetry,
-                                            retry_budget,
-                                            alternate_backend: alternate_backend.as_ref(),
-                                            pending_forward: pending_forward.as_ref(),
-                                            circuit_breakers,
-                                            transport_pool,
-                                        },
-                                    )
-                                    .await?
-                                }
-                            }
+                            .await?
                         }
                     };
 

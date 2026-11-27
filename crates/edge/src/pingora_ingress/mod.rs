@@ -2217,9 +2217,6 @@ fn handle_pingora_proxy_failure(
     let retry = RetryCoordinator::new(
         ctx.method.as_deref().is_some_and(is_idempotent_method),
         ctx.request_body_replayable && retry_safe,
-        false,
-        false,
-        ctx.tunnel.is_some(),
     );
     let decision = retry.retry_after_error(
         &proxy_error,

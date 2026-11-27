@@ -1,7 +1,7 @@
 use impulse_contracts::{
     AdmissionOutcomeKind, BackendFailureReason, BackendHealthObservationOutcome,
-    BackendHealthObservationSource, HedgePolicyDenialReason, RejectionReason,
-    RetryPolicyDenialReason, TimeoutReason, UpstreamRetryReason,
+    BackendHealthObservationSource, RejectionReason, RetryPolicyDenialReason, TimeoutReason,
+    UpstreamRetryReason,
 };
 use serde::{Deserialize, Serialize};
 
@@ -350,22 +350,6 @@ impl From<RetryPolicyDenialReason> for RetryDecisionReason {
             RetryPolicyDenialReason::TerminalError(_)
             | RetryPolicyDenialReason::AttemptLimitReached
             | RetryPolicyDenialReason::AlternateBackendUnavailable(_) => Self::RetryPolicyDisabled,
-        }
-    }
-}
-
-impl From<HedgePolicyDenialReason> for HedgeDecisionReason {
-    fn from(reason: HedgePolicyDenialReason) -> Self {
-        match reason {
-            HedgePolicyDenialReason::HedgingDisabled => Self::HedgingDisabled,
-            HedgePolicyDenialReason::PrimaryRequestCompleted => Self::PrimaryCompleted,
-            HedgePolicyDenialReason::RequestBodyNotReplayable => Self::RequestBodyNotReplayable,
-            HedgePolicyDenialReason::TunnelRequest => Self::TunnelRequest,
-            HedgePolicyDenialReason::MethodNotAllowed => Self::MethodNotAllowed,
-            HedgePolicyDenialReason::AlternateBackendUnavailable(_) => {
-                Self::AlternateBackendUnavailable
-            }
-            HedgePolicyDenialReason::BudgetDenied => Self::HedgeBudgetDenied,
         }
     }
 }
