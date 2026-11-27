@@ -6,10 +6,12 @@ use http_body_util::combinators::BoxBody;
 use impulse_errors::BridgeError;
 
 use crate::{
-    request::{
-        RequestBuildInput, RequestBuildTarget, RequestHeaderAssembly, RequestHeaderPolicyInput,
-        apply_request_header_assembly, apply_request_header_policies,
+    http3::{
+        RequestBodyMode, RequestBuildInput, RequestHeaderSanitizationInput,
+        RequestTransportHeaders, apply_request_policy_header_mutations,
+        apply_request_transport_headers, copy_sanitized_request_headers,
     },
+    request::{RequestBuildTarget, RequestPolicyHeaderInput, request_policy_header_mutations},
     websocket::legacy_websocket_upgrade_requested_for_headers,
 };
 
@@ -30,7 +32,7 @@ pub(crate) fn build_h1_request(
         path,
         authority,
         headers,
-        auth_header_mutations,
+        policy_header_mutations,
         websocket_extended_connect: _,
         body,
         body_mode,
@@ -44,34 +46,39 @@ pub(crate) fn build_h1_request(
     let method = Method::from_bytes(method.as_bytes()).map_err(|_| BridgeError::InvalidMethod)?;
     let preserve_upgrade = legacy_websocket_upgrade_requested_for_headers(method.as_str(), headers);
 
+    let policy_mutations = request_policy_header_mutations(RequestPolicyHeaderInput {
+        target: RequestBuildTarget { endpoint, policies },
+        authority,
+        headers,
+        policy_header_mutations,
+        trace,
+        forwarded,
+        include_host_header: true,
+        preserve_upgrade,
+    })?;
     let builder = Request::builder().method(method.clone());
-    let (mut builder, resolved_headers) = apply_request_header_policies(
+    let mut builder = copy_sanitized_request_headers(
         builder,
-        RequestHeaderPolicyInput {
-            target: RequestBuildTarget { endpoint, policies },
-            authority,
+        RequestHeaderSanitizationInput {
             headers,
-            auth_header_mutations,
+            policy_header_mutations: &policy_mutations,
             preserve_upgrade,
-            forwarded,
         },
-    )?;
+    );
     let request_path = if path.is_empty() { "/" } else { path };
     let uri =
         Uri::try_from(endpoint.uri_for_path(request_path)).map_err(|_| BridgeError::InvalidUri)?;
     builder = builder.uri(uri);
-    builder = apply_request_header_assembly(
+    builder = apply_request_policy_header_mutations(builder, &policy_mutations);
+    builder = apply_request_transport_headers(
         builder,
-        RequestHeaderAssembly {
-            resolved_headers,
-            trace,
+        RequestTransportHeaders {
             content_length,
             include_content_length: true,
-            include_host_header: true,
             add_te_trailers: !preserve_upgrade,
         },
-    )?;
-    if matches!(body_mode, crate::request::RequestBodyMode::Streaming) {
+    );
+    if matches!(body_mode, RequestBodyMode::Streaming) {
         builder = builder.header(http::header::TRANSFER_ENCODING, "chunked");
     }
 

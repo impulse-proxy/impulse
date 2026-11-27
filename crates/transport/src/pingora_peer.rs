@@ -4,7 +4,7 @@ use std::{
 };
 
 use pingora_core::{
-    upstreams::peer::{ALPN, HttpPeer},
+    upstreams::peer::{ALPN, HttpPeer, HttpUpstreamRequestPolicy},
     utils::tls::{CertKey, WrappedX509, parse_x509},
 };
 use rustls_pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
@@ -37,6 +37,7 @@ pub(crate) fn build_pingora_http_peer(
     peer.options.read_timeout = Some(input.timeouts.execution);
     peer.options.write_timeout = Some(input.timeouts.execution);
     peer.options.idle_timeout = Some(input.timeouts.pool_idle);
+    peer.options.http_upstream_request_policy = HttpUpstreamRequestPolicy::standard();
     peer.options.alpn = match endpoint.protocol {
         UpstreamProtocol::Auto => ALPN::H2H1,
         UpstreamProtocol::Http1 => ALPN::H1,

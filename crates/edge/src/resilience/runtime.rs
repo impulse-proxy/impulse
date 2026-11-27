@@ -26,15 +26,11 @@ pub struct RuntimeResilience {
     pub max_headers_bytes: usize,
     pub enforce_authority_host_match: bool,
     pub allow_connect: bool,
-    pub hedging_enabled: bool,
-    pub hedging_delay: Duration,
-    hedge_safe_methods: HashSet<String>,
     early_data_safe_methods: HashSet<String>,
     allowed_methods: HashSet<String>,
     denied_path_prefixes: Vec<String>,
     connect_allowed_ports: HashSet<u16>,
     connect_allowed_authorities: HashSet<String>,
-    route_allowlist: HashSet<RouteId>,
 }
 
 impl RuntimeResilience {
@@ -45,7 +41,6 @@ impl RuntimeResilience {
             .keys()
             .chain(config.retry_budget.per_route_ratio_percent.keys())
             .chain(config.brownout.core_routes.iter())
-            .chain(config.hedging.route_allowlist.iter())
             .collect::<Vec<_>>();
         route_names.sort_unstable();
         route_names.dedup();
@@ -109,12 +104,6 @@ impl RuntimeResilience {
                 .map(|name| route_ids[name.as_str()])
                 .collect(),
         ));
-        let hedge_safe_methods = config
-            .hedging
-            .safe_methods
-            .iter()
-            .map(|method| method.to_ascii_uppercase())
-            .collect::<HashSet<_>>();
         let early_data_safe_methods = config
             .protocol
             .early_data_safe_methods
@@ -126,12 +115,6 @@ impl RuntimeResilience {
             .allowed_methods
             .iter()
             .map(|method| method.to_ascii_uppercase())
-            .collect::<HashSet<_>>();
-        let route_allowlist = config
-            .hedging
-            .route_allowlist
-            .iter()
-            .map(|name| route_ids[name.as_str()])
             .collect::<HashSet<_>>();
         let connect_allowed_ports = config
             .protocol
@@ -158,15 +141,11 @@ impl RuntimeResilience {
             max_headers_bytes: config.protocol.max_headers_bytes.max(1),
             enforce_authority_host_match: config.protocol.enforce_authority_host_match,
             allow_connect: config.protocol.allow_connect,
-            hedging_enabled: config.hedging.enabled,
-            hedging_delay: Duration::from_millis(config.hedging.delay_ms),
-            hedge_safe_methods,
             early_data_safe_methods,
             allowed_methods,
             denied_path_prefixes: config.protocol.denied_path_prefixes.clone(),
             connect_allowed_ports,
             connect_allowed_authorities,
-            route_allowlist,
         }
     }
 
@@ -224,12 +203,6 @@ impl RuntimeResilience {
                 .filter_map(|name| identities.route_id(name))
                 .collect(),
         ));
-        let hedge_safe_methods = admission_policy
-            .hedging
-            .safe_methods
-            .iter()
-            .map(|method| method.to_ascii_uppercase())
-            .collect::<HashSet<_>>();
         let early_data_safe_methods = admission_policy
             .protocol
             .0
@@ -243,12 +216,6 @@ impl RuntimeResilience {
             .allowed_methods
             .iter()
             .map(|method| method.to_ascii_uppercase())
-            .collect::<HashSet<_>>();
-        let route_allowlist = admission_policy
-            .hedging
-            .route_allowlist
-            .iter()
-            .map(|name| identities.route_id(name).unwrap_or(RouteId::new(u32::MAX)))
             .collect::<HashSet<_>>();
         let connect_allowed_ports = admission_policy
             .protocol
@@ -277,32 +244,12 @@ impl RuntimeResilience {
             max_headers_bytes: admission_policy.protocol.0.max_headers_bytes.max(1),
             enforce_authority_host_match: admission_policy.protocol.0.enforce_authority_host_match,
             allow_connect: admission_policy.protocol.0.allow_connect,
-            hedging_enabled: admission_policy.hedging.enabled,
-            hedging_delay: admission_policy.hedging.delay,
-            hedge_safe_methods,
             early_data_safe_methods,
             allowed_methods,
             denied_path_prefixes: admission_policy.protocol.0.denied_path_prefixes.clone(),
             connect_allowed_ports,
             connect_allowed_authorities,
-            route_allowlist,
         }
-    }
-
-    pub fn hedging_route_enabled_for(&self, route: RouteId) -> bool {
-        if !self.hedging_enabled || self.brownout.is_active() {
-            return false;
-        }
-        self.route_allowlist.is_empty() || self.route_allowlist.contains(&route)
-    }
-
-    pub fn hedging_method_allowed(&self, method: &str) -> bool {
-        self.hedge_safe_methods
-            .contains(&method.to_ascii_uppercase())
-    }
-
-    pub fn hedging_allowed_for(&self, method: &str, route: RouteId, bodyless: bool) -> bool {
-        self.hedging_route_enabled_for(route) && bodyless && self.hedging_method_allowed(method)
     }
 
     pub fn early_data_allowed_for(&self, method: &str) -> bool {

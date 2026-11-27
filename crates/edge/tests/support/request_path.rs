@@ -17,7 +17,7 @@ use http_body_util::{BodyExt, Full, combinators::BoxBody};
 use hyper::{
     Request, Response,
     body::{Body, Frame, Incoming},
-    client::conn::http2,
+    client::conn::{http1, http2},
     service::service_fn,
 };
 use hyper_util::rt::{TokioExecutor, TokioIo};
@@ -560,6 +560,67 @@ pub(crate) fn run_http2_request_to(
         .block_on(run_http2_request(addr, cert_path, request))
 }
 
+pub(crate) fn run_http1_request_to(
+    addr: SocketAddr,
+    cert_path: &str,
+    request: HttpRequestSpec<'_>,
+) -> Result<HttpResponse, String> {
+    tokio::runtime::Runtime::new()
+        .expect("runtime")
+        .block_on(run_http1_request(addr, cert_path, request))
+}
+
+async fn run_http1_request(
+    addr: SocketAddr,
+    cert_path: &str,
+    request: HttpRequestSpec<'_>,
+) -> Result<HttpResponse, String> {
+    let roots = read_test_root_store(cert_path)?;
+    let mut tls_config = ClientConfig::builder()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    tls_config.alpn_protocols = vec![b"http/1.1".to_vec()];
+    let connector = TlsConnector::from(Arc::new(tls_config));
+    let server_name = ServerName::try_from("localhost")
+        .map_err(|err| format!("server name: {err}"))?
+        .to_owned();
+    let stream = TcpStream::connect(addr)
+        .await
+        .map_err(|err| format!("tcp connect: {err}"))?;
+    let tls_stream = connector
+        .connect(server_name, stream)
+        .await
+        .map_err(|err| format!("tls connect: {err}"))?;
+    let (mut sender, connection) = http1::handshake(TokioIo::new(tls_stream))
+        .await
+        .map_err(|err| format!("h1 handshake: {err}"))?;
+    tokio::spawn(async move {
+        let _ = connection.await;
+    });
+
+    let mut builder = Request::builder()
+        .method(request.method)
+        .uri(request.path)
+        .header("host", request.authority)
+        .header("user-agent", request.user_agent);
+    for (name, value) in request.headers {
+        builder = builder.header(*name, *value);
+    }
+    let body = request.body.unwrap_or_default().to_vec();
+    let request = builder
+        .body(
+            Full::new(Bytes::from(body))
+                .map_err(|never| match never {})
+                .boxed(),
+        )
+        .map_err(|err| format!("request build: {err}"))?;
+    let response = sender
+        .send_request(request)
+        .await
+        .map_err(|err| format!("send request: {err}"))?;
+    read_http_response(response).await
+}
+
 async fn run_http2_request(
     addr: SocketAddr,
     cert_path: &str,
@@ -603,10 +664,10 @@ async fn run_http2_request(
         .send_request(req)
         .await
         .map_err(|err| format!("send request: {err}"))?;
-    read_http2_response(response).await
+    read_http_response(response).await
 }
 
-async fn read_http2_response(mut response: Response<Incoming>) -> Result<HttpResponse, String> {
+async fn read_http_response(mut response: Response<Incoming>) -> Result<HttpResponse, String> {
     let status = response.status().as_u16();
     let headers = response
         .headers()

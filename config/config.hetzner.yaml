@@ -157,11 +157,6 @@ resilience:
     failure_threshold: 5
     open_ms: 10000
     half_open_max_probes: 2
-  hedging:
-    enabled: false
-    delay_ms: 75
-    safe_methods: ["GET", "HEAD"]
-    route_allowlist: []
   retry_budget:
     enabled: true
     ratio_percent: 20

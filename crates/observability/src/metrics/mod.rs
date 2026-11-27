@@ -10,9 +10,9 @@ use std::{
 };
 
 use impulse_contracts::{
-    BackendId, HealthFailureReason, HedgeOutcomeTelemetryReason, HedgeTriggerTelemetryReason,
-    PluginActivationOutcome, PluginExecutionObservation, PluginExecutionOutcome, PluginKind,
-    PluginPhase, RetryAttemptTelemetryReason, RetryPolicyDenialReason, RouteId, UpstreamId,
+    BackendId, HealthFailureReason, PluginActivationOutcome, PluginExecutionObservation,
+    PluginExecutionOutcome, PluginKind, PluginPhase, RetryAttemptTelemetryReason,
+    RetryPolicyDenialReason, RouteId, UpstreamId,
 };
 
 use crate::{
@@ -184,12 +184,6 @@ pub struct Metrics {
     pub pingora_h2_stream_capacity: AtomicU64,
     pub h2_stream_resets_total: AtomicU64,
     pub h2_goaway_total: AtomicU64,
-    pub hedge_triggered: AtomicU64,
-    pub hedge_won: AtomicU64,
-    pub hedge_wasted: AtomicU64,
-    pub hedge_primary_won_after_trigger: AtomicU64,
-    pub hedge_primary_late_ms_total: AtomicU64,
-    pub hedge_primary_late_samples: AtomicU64,
     pub ingress_packets_total: AtomicU64,
     pub ingress_queue_drops: AtomicU64,
     pub ingress_queue_drop_bytes: AtomicU64,

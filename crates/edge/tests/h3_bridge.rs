@@ -2502,7 +2502,6 @@ fn metrics_endpoint_exposes_route_slo_metrics() {
     assert!(metrics.contains("impulse_overload_shed_by_reason_total"));
     assert!(metrics.contains("impulse_active_connections"));
     assert!(metrics.contains("impulse_connection_cap_rejects"));
-    assert!(metrics.contains("impulse_hedge_triggered_total"));
 }
 
 #[test]

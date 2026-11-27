@@ -17,8 +17,7 @@ pub use proxy::{
     classify_upstream_proxy_error,
 };
 pub use retry::{
-    HedgePolicyDecision, HedgePolicyFacts, HedgePrimaryState, RetryPolicyDecision,
-    RetryPolicyFacts, UpstreamRetryability, classify_retryability, evaluate_hedge_policy,
+    RetryPolicyDecision, RetryPolicyFacts, UpstreamRetryability, classify_retryability,
     evaluate_retry_policy, is_idempotent_method,
 };
 pub use upstream::{

@@ -3,8 +3,8 @@
 use std::{sync::atomic::Ordering, time::Duration};
 
 use impulse_contracts::{
-    AlternateBackendFailureReason, HedgeOutcomeTelemetryReason, HedgeTriggerTelemetryReason,
-    RetryAttemptTelemetryReason, RetryPolicyDenialReason, UpstreamTerminalErrorKind,
+    AlternateBackendFailureReason, RetryAttemptTelemetryReason, RetryPolicyDenialReason,
+    UpstreamTerminalErrorKind,
 };
 use impulse_edge::runtime::activation::{RuntimeOperationOutcomeReason, RuntimeRejectionReason};
 use impulse_observability::{
@@ -108,17 +108,13 @@ fn request_buffer_reservation_respects_cap_and_releases() {
 }
 
 #[test]
-fn metrics_render_includes_overload_reasons_and_hedge_counters() {
+fn metrics_render_includes_overload_reasons() {
     let metrics = Metrics::default();
     metrics.inc_overload_shed_reason(OverloadShedReason::GlobalInflight);
     metrics.inc_overload_shed_reason(OverloadShedReason::BackendInflight);
     metrics.inc_overload_shed_reason(OverloadShedReason::CircuitOpen);
     metrics.set_active_connections(7);
     metrics.inc_connection_cap_reject();
-    metrics.inc_hedge_trigger(HedgeTriggerTelemetryReason::DelayElapsed);
-    metrics.inc_hedge_outcome(HedgeOutcomeTelemetryReason::HedgeWon);
-    metrics.inc_hedge_outcome(HedgeOutcomeTelemetryReason::PrimaryWonAfterTrigger);
-    metrics.observe_hedge_primary_late_ms(42);
     metrics.inc_control_api_connection_limit_drop();
 
     let output = metrics.render_prometheus();
@@ -129,12 +125,6 @@ fn metrics_render_includes_overload_reasons_and_hedge_counters() {
     assert!(output.contains("impulse_overload_shed_by_reason_total{reason=\"circuit_open\"} 1"));
     assert!(output.contains("impulse_active_connections 7"));
     assert!(output.contains("impulse_connection_cap_rejects 1"));
-    assert!(output.contains("impulse_hedge_triggered_total 1"));
-    assert!(output.contains("impulse_hedge_won_total 1"));
-    assert!(output.contains("impulse_hedge_wasted_total 1"));
-    assert!(output.contains("impulse_hedge_primary_won_after_trigger_total 1"));
-    assert!(output.contains("impulse_hedge_primary_late_ms_total 42"));
-    assert!(output.contains("impulse_hedge_primary_late_samples_total 1"));
     assert!(output.contains("impulse_ingress_queue_bytes 0\n"));
     assert!(output.contains("impulse_ingress_bad_header_total 0\n"));
     assert!(output.contains("impulse_ingress_rate_limited_total 0\n"));
@@ -219,7 +209,7 @@ fn resilience_metrics_increment_correctly() {
 }
 
 #[test]
-fn retry_and_hedge_counters_increment_only_on_executed_branches() {
+fn retry_counters_increment_only_on_executed_branches() {
     let metrics = Metrics::default();
     metrics.inc_retry_attempt(RetryAttemptTelemetryReason::Transport);
     metrics.inc_retry_denied(RetryPolicyDenialReason::MethodNotIdempotent);
@@ -231,9 +221,6 @@ fn retry_and_hedge_counters_increment_only_on_executed_branches() {
     metrics.inc_retry_denied(RetryPolicyDenialReason::TerminalError(
         UpstreamTerminalErrorKind::Protocol,
     ));
-    metrics.inc_hedge_trigger(HedgeTriggerTelemetryReason::DelayElapsed);
-    metrics.inc_hedge_outcome(HedgeOutcomeTelemetryReason::PrimaryWonAfterTrigger);
-
     let output = metrics.render_prometheus();
     assert!(output.contains("impulse_retries_total 1\n"));
     assert!(output.contains("impulse_retry_attempts_total{reason=\"transport\"} 1\n"));
@@ -241,10 +228,6 @@ fn retry_and_hedge_counters_increment_only_on_executed_branches() {
     assert!(output.contains("impulse_retry_denied_total{reason=\"budget\"} 0\n"));
     assert!(output.contains("impulse_retry_denied_total{reason=\"no_bodyless\"} 2\n"));
     assert!(output.contains("impulse_retry_denied_total{reason=\"no_alternate\"} 1\n"));
-    assert!(output.contains("impulse_hedge_triggered_total 1\n"));
-    assert!(output.contains("impulse_hedge_won_total 0\n"));
-    assert!(output.contains("impulse_hedge_wasted_total 1\n"));
-    assert!(output.contains("impulse_hedge_primary_won_after_trigger_total 1\n"));
 }
 
 #[test]

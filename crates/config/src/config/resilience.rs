@@ -10,7 +10,6 @@ pub struct Resilience {
     pub quota: QuotaPolicyConfig,
     pub protocol: ProtocolPolicy,
     pub circuit_breaker: CircuitBreaker,
-    pub hedging: Hedging,
     pub retry_budget: RetryBudget,
     pub brownout: Brownout,
     pub watchdog: Watchdog,
@@ -132,9 +131,6 @@ impl Resilience {
             }
         }
         self.quota.validate()?;
-        if self.hedging.enabled && self.hedging.delay_ms == 0 {
-            return Err("resilience.hedging: delay_ms must be > 0 when hedging is enabled".into());
-        }
         Ok(())
     }
 }
@@ -579,27 +575,6 @@ impl Default for CircuitBreaker {
             failure_threshold: 3,
             open_ms: 30_000,
             half_open_max_probes: 1,
-        }
-    }
-}
-
-#[derive(Debug, Deserialize, Serialize, Clone)]
-#[serde(default)]
-#[serde(deny_unknown_fields)]
-pub struct Hedging {
-    pub enabled: bool,
-    pub delay_ms: u64,
-    pub safe_methods: Vec<String>,
-    pub route_allowlist: Vec<String>,
-}
-
-impl Default for Hedging {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            delay_ms: 100,
-            safe_methods: vec!["GET".to_string(), "HEAD".to_string()],
-            route_allowlist: Vec::new(),
         }
     }
 }

@@ -1,7 +1,7 @@
 use impulse_contracts::{
     AdmissionOutcomeKind, BackendFailureReason, BackendHealthObservationOutcome,
-    BackendHealthObservationSource, HedgePolicyDenialReason, RejectionReason,
-    RetryPolicyDenialReason, TimeoutReason, UpstreamRetryReason,
+    BackendHealthObservationSource, RejectionReason, RetryPolicyDenialReason, TimeoutReason,
+    UpstreamRetryReason,
 };
 use serde::{Deserialize, Serialize};
 
@@ -127,39 +127,6 @@ impl RetryDecisionReason {
             self,
             Self::UpstreamTimeout | Self::UpstreamTransportFailure | Self::UpstreamProtocolFailure
         )
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub enum HedgeDecisionReason {
-    DelayElapsed,
-    HedgingDisabled,
-    PrimaryCompleted,
-    RequestBodyNotReplayable,
-    TunnelRequest,
-    MethodNotAllowed,
-    AlternateBackendUnavailable,
-    HedgeBudgetDenied,
-}
-
-impl HedgeDecisionReason {
-    #[must_use]
-    pub const fn slug(self) -> &'static str {
-        match self {
-            Self::DelayElapsed => "delay_elapsed",
-            Self::HedgingDisabled => "hedging_disabled",
-            Self::PrimaryCompleted => "primary_completed",
-            Self::RequestBodyNotReplayable => "request_body_not_replayable",
-            Self::TunnelRequest => "tunnel_request",
-            Self::MethodNotAllowed => "method_not_allowed",
-            Self::AlternateBackendUnavailable => "alternate_backend_unavailable",
-            Self::HedgeBudgetDenied => "hedge_budget_denied",
-        }
-    }
-
-    #[must_use]
-    pub const fn is_triggered(self) -> bool {
-        matches!(self, Self::DelayElapsed)
     }
 }
 
@@ -350,22 +317,6 @@ impl From<RetryPolicyDenialReason> for RetryDecisionReason {
             RetryPolicyDenialReason::TerminalError(_)
             | RetryPolicyDenialReason::AttemptLimitReached
             | RetryPolicyDenialReason::AlternateBackendUnavailable(_) => Self::RetryPolicyDisabled,
-        }
-    }
-}
-
-impl From<HedgePolicyDenialReason> for HedgeDecisionReason {
-    fn from(reason: HedgePolicyDenialReason) -> Self {
-        match reason {
-            HedgePolicyDenialReason::HedgingDisabled => Self::HedgingDisabled,
-            HedgePolicyDenialReason::PrimaryRequestCompleted => Self::PrimaryCompleted,
-            HedgePolicyDenialReason::RequestBodyNotReplayable => Self::RequestBodyNotReplayable,
-            HedgePolicyDenialReason::TunnelRequest => Self::TunnelRequest,
-            HedgePolicyDenialReason::MethodNotAllowed => Self::MethodNotAllowed,
-            HedgePolicyDenialReason::AlternateBackendUnavailable(_) => {
-                Self::AlternateBackendUnavailable
-            }
-            HedgePolicyDenialReason::BudgetDenied => Self::HedgeBudgetDenied,
         }
     }
 }

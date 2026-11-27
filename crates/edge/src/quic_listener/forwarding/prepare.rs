@@ -274,21 +274,21 @@ impl PendingForward {
         &'a self,
         method: &'a str,
         headers: http::HeaderMap,
-        auth_header_mutations: &'a [impulse_bridge::request::RequestHeaderMutationRef<'a>],
+        policy_header_mutations: &'a [impulse_bridge::request::RequestHeaderMutationRef<'a>],
         websocket_extended_connect: bool,
         body: BoxBody<Bytes, Infallible>,
         content_length: Option<usize>,
-    ) -> impulse_bridge::request::RequestBuildInput<'a, BoxBody<Bytes, Infallible>> {
-        impulse_bridge::request::RequestBuildInput {
+    ) -> impulse_bridge::http3::RequestBuildInput<'a, BoxBody<Bytes, Infallible>> {
+        impulse_bridge::http3::RequestBuildInput {
             method,
             path: &self.path,
             authority: self.authority.as_deref(),
             headers: Cow::Owned(headers),
-            auth_header_mutations,
+            policy_header_mutations,
             websocket_extended_connect,
             body,
             body_mode:
-                impulse_bridge::request::RequestBuildInput::<BoxBody<Bytes, Infallible>>::body_mode_for_length(content_length),
+                impulse_bridge::http3::RequestBuildInput::<BoxBody<Bytes, Infallible>>::body_mode_for_length(content_length),
             trace: impulse_bridge::request::RequestTraceContext {
                 request_id: self.request_id,
                 traceparent: None,
@@ -337,7 +337,7 @@ impl PendingForward {
             impulse_bridge::websocket::h3_websocket_tunnel_requested(&self.method, source_headers);
         let headers = translate_http3_request_headers(source_headers)?;
         if endpoint.scheme() == BackendScheme::Http {
-            impulse_bridge::request::build_h1_request(
+            impulse_bridge::http3::build_h1_request(
                 self.request_build_target(endpoint),
                 self.request_build_input(
                     &self.method,
@@ -350,7 +350,7 @@ impl PendingForward {
             )
             .map_err(ProxyError::from)
         } else {
-            impulse_bridge::request::build_h2_request_for_target(
+            impulse_bridge::http3::build_h2_request_for_target(
                 self.request_build_target(endpoint),
                 self.request_build_input(
                     &self.method,
@@ -379,7 +379,7 @@ impl PendingForward {
         let request_headers = self.request_headers_for_http1_websocket_tunnel();
         let request_headers = translate_http3_request_headers(request_headers.as_ref())?;
 
-        impulse_bridge::request::build_h1_request(
+        impulse_bridge::http3::build_h1_request(
             self.request_build_target(endpoint),
             self.request_build_input(
                 impulse_http3_ingress::adapt_h1_websocket_method(

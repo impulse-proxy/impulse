@@ -7,10 +7,9 @@ use http_body_util::{BodyExt, Empty, combinators::BoxBody};
 use impulse_bridge::{
     ForwardedHeaderMode, ForwardingPolicyInput, HostPolicyInput, HostPolicyMode, UpstreamScheme,
     UpstreamTargetInput,
+    http3::{RequestBodyMode, RequestBuildInput, build_h1_request, build_h2_request_for_target},
     request::{
-        RequestBodyMode, RequestBuildInput, RequestBuildPolicies, RequestBuildTarget,
-        RequestForwardedContext, RequestTraceContext, build_h1_request,
-        build_h2_request_for_target,
+        RequestBuildPolicies, RequestBuildTarget, RequestForwardedContext, RequestTraceContext,
     },
 };
 use impulse_config::{
@@ -123,7 +122,7 @@ fn request_input_from_headers<'a>(
         path,
         authority: meta.authority,
         headers,
-        auth_header_mutations: &[],
+        policy_header_mutations: &[],
         websocket_extended_connect,
         body: Empty::<Bytes>::new().boxed(),
         body_mode: RequestBuildInput::<BoxBody<Bytes, Infallible>>::body_mode_for_length(

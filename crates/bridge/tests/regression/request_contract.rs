@@ -4,7 +4,7 @@ use http::{
     HeaderMap, HeaderValue,
     header::{CONTENT_LENGTH, HOST},
 };
-use impulse_bridge::request::{
+use impulse_bridge::http3::{
     RequestBodyMode, RequestBuildInput, build_h1_request, build_h2_request_for_target,
 };
 use impulse_config::{
@@ -19,7 +19,7 @@ use crate::common::{
 };
 
 #[test]
-fn canonical_headers_match_for_translated_http3_and_borrowed_pingora_inputs() {
+fn http3_translation_matches_owned_and_borrowed_header_inputs() {
     let endpoint = BackendEndpoint::parse("backend.internal:443").expect("endpoint");
     let host_policy = UpstreamHostPolicy::default();
     let forwarded_policy = ForwardedHeaderPolicy::default();
@@ -51,7 +51,7 @@ fn canonical_headers_match_for_translated_http3_and_borrowed_pingora_inputs() {
         request_input("GET", "/headers", &h3_headers, meta),
     )
     .expect("h1 request from HTTP/3 headers");
-    let h1_from_pingora = build_h1_request(
+    let h1_from_borrowed_headers = build_h1_request(
         request_target(&endpoint, &host_policy, &forwarded_policy),
         borrowed_request_input("GET", "/headers", &native_headers, meta),
     )
@@ -61,15 +61,20 @@ fn canonical_headers_match_for_translated_http3_and_borrowed_pingora_inputs() {
         request_input("GET", "/headers", &h3_headers, meta),
     )
     .expect("h2 request from HTTP/3 headers");
-    let h2_from_pingora = build_h2_request_for_target(
+    let h2_from_borrowed_headers = build_h2_request_for_target(
         request_target(&endpoint, &host_policy, &forwarded_policy),
         borrowed_request_input("GET", "/headers", &native_headers, meta),
     )
-    .expect("h2 request from Pingora headers");
+    .expect("h2 request from borrowed headers");
 
-    assert_eq!(h1_from_h3.headers(), h1_from_pingora.headers());
-    assert_eq!(h2_from_h3.headers(), h2_from_pingora.headers());
-    for request in [&h1_from_h3, &h1_from_pingora, &h2_from_h3, &h2_from_pingora] {
+    assert_eq!(h1_from_h3.headers(), h1_from_borrowed_headers.headers());
+    assert_eq!(h2_from_h3.headers(), h2_from_borrowed_headers.headers());
+    for request in [
+        &h1_from_h3,
+        &h1_from_borrowed_headers,
+        &h2_from_h3,
+        &h2_from_borrowed_headers,
+    ] {
         assert!(request.headers().get("connection").is_none());
         assert!(request.headers().get("x-secret").is_none());
         assert_eq!(request.headers().get_all("x-keep").iter().count(), 2);
@@ -266,7 +271,7 @@ fn canonical_empty_body_inputs_do_not_emit_content_length_for_h1_or_h2() {
         client_addr: "203.0.113.20:7001".parse().expect("client"),
     };
 
-    let h1 = impulse_bridge::request::build_h1_request(
+    let h1 = impulse_bridge::http3::build_h1_request(
         request_target(&endpoint, &host_policy, &forwarded_header_policy),
         request_input_with_body_mode("GET", "", &[], meta, RequestBodyMode::Empty),
     )

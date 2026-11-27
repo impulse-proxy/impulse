@@ -6,9 +6,13 @@ use http_body_util::combinators::BoxBody;
 use hyper::ext::Protocol;
 use impulse_errors::BridgeError;
 
-use crate::request::{
-    RequestBuildInput, RequestBuildTarget, RequestHeaderAssembly, RequestHeaderPolicyInput,
-    apply_request_header_assembly, apply_request_header_policies,
+use crate::{
+    http3::{
+        RequestBuildInput, RequestHeaderSanitizationInput, RequestTransportHeaders,
+        apply_request_policy_header_mutations, apply_request_transport_headers,
+        copy_sanitized_request_headers,
+    },
+    request::{RequestBuildTarget, RequestPolicyHeaderInput, request_policy_header_mutations},
 };
 
 pub(crate) fn build_h2_request_for_target(
@@ -21,7 +25,7 @@ pub(crate) fn build_h2_request_for_target(
         path,
         authority,
         headers,
-        auth_header_mutations,
+        policy_header_mutations,
         websocket_extended_connect,
         body,
         body_mode,
@@ -40,25 +44,37 @@ pub(crate) fn build_h2_request_for_target(
         method.clone()
     };
     let is_connect = upstream_method == Method::CONNECT;
+    let policy_mutations = request_policy_header_mutations(RequestPolicyHeaderInput {
+        target: RequestBuildTarget { endpoint, policies },
+        authority,
+        headers,
+        policy_header_mutations,
+        trace,
+        forwarded,
+        include_host_header: !websocket_extended_connect,
+        preserve_upgrade: false,
+    })?;
     let builder = Request::builder().method(upstream_method.clone());
-    let (mut builder, resolved_headers) = apply_request_header_policies(
+    let mut builder = copy_sanitized_request_headers(
         builder,
-        RequestHeaderPolicyInput {
-            target: RequestBuildTarget { endpoint, policies },
-            authority,
+        RequestHeaderSanitizationInput {
             headers,
-            auth_header_mutations,
+            policy_header_mutations: &policy_mutations,
             preserve_upgrade: false,
-            forwarded,
         },
-    )?;
-    let host_value = resolved_headers.host_value;
+    );
 
     let uri = if websocket_extended_connect {
         let request_path = if path.is_empty() { "/" } else { path };
         let uri = endpoint.uri_for_path(request_path);
         Uri::try_from(uri).map_err(|_| BridgeError::InvalidUri)?
     } else if is_connect {
+        let host_value = policy_mutations
+            .iter()
+            .find(|(name, _)| name == http::header::HOST)
+            .and_then(|(_, value)| value.as_ref())
+            .and_then(|value| value.to_str().ok())
+            .ok_or(BridgeError::InvalidUri)?;
         Uri::try_from(host_value).map_err(|_| BridgeError::InvalidUri)?
     } else {
         let request_path = if path.is_empty() { "/" } else { path };
@@ -71,17 +87,15 @@ pub(crate) fn build_h2_request_for_target(
             .version(Version::HTTP_2)
             .extension(Protocol::from_static("websocket"));
     }
-    builder = apply_request_header_assembly(
+    builder = apply_request_policy_header_mutations(builder, &policy_mutations);
+    builder = apply_request_transport_headers(
         builder,
-        RequestHeaderAssembly {
-            resolved_headers,
-            trace,
+        RequestTransportHeaders {
             content_length,
             include_content_length: !websocket_extended_connect,
-            include_host_header: !websocket_extended_connect,
             add_te_trailers: false,
         },
-    )?;
+    );
 
     builder.body(body).map_err(BridgeError::Build)
 }

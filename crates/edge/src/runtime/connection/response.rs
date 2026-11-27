@@ -1,9 +1,6 @@
 use bytes::Bytes;
 use http::StatusCode;
-use impulse_contracts::{
-    HedgeOutcomeTelemetryReason, HedgeTriggerTelemetryReason, RetryAttemptTelemetryReason,
-    RetryPolicyDenialReason,
-};
+use impulse_contracts::{RetryAttemptTelemetryReason, RetryPolicyDenialReason};
 use impulse_errors::ProxyError;
 use impulse_transport::http3::UpstreamBody;
 use pingora_cache::HttpCache;
@@ -54,7 +51,6 @@ impl RetryTelemetry {
 
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct ForwardingPolicyTelemetry {
-    pub(crate) hedge: HedgeTelemetry,
     pub(crate) retry: RetryTelemetry,
 }
 
@@ -163,27 +159,6 @@ pub(crate) enum ResponseStartDecision {
     BackendFailure(ProxyError),
 }
 
-#[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct HedgeTelemetry {
-    pub(crate) trigger_reason: Option<HedgeTriggerTelemetryReason>,
-    pub(crate) outcome_reason: Option<HedgeOutcomeTelemetryReason>,
-    pub(crate) primary_late_ms: u64,
-}
-
-impl HedgeTelemetry {
-    pub(crate) fn record_trigger(&mut self, reason: HedgeTriggerTelemetryReason) {
-        self.trigger_reason = Some(reason);
-    }
-
-    pub(crate) fn record_outcome(&mut self, reason: HedgeOutcomeTelemetryReason) {
-        self.outcome_reason = Some(reason);
-    }
-
-    pub(crate) fn observe_primary_late_ms(&mut self, late_ms: u64) {
-        self.primary_late_ms = late_ms;
-    }
-}
-
 #[cfg(test)]
 mod tests {
     mod retry_policy_telemetry {
@@ -229,51 +204,6 @@ mod tests {
             assert_eq!(
                 telemetry.denial_reason,
                 Some(RetryPolicyDenialReason::BudgetDenied)
-            );
-        }
-    }
-
-    mod hedge_policy_telemetry {
-        use impulse_contracts::{HedgeOutcomeTelemetryReason, HedgeTriggerTelemetryReason};
-
-        use super::super::HedgeTelemetry;
-
-        #[test]
-        fn hedge_telemetry_records_typed_trigger_and_outcome() {
-            let mut telemetry = HedgeTelemetry::default();
-
-            telemetry.record_trigger(HedgeTriggerTelemetryReason::DelayElapsed);
-            telemetry.record_outcome(HedgeOutcomeTelemetryReason::HedgeWon);
-            telemetry.observe_primary_late_ms(42);
-
-            assert_eq!(
-                telemetry.trigger_reason,
-                Some(HedgeTriggerTelemetryReason::DelayElapsed)
-            );
-            assert_eq!(
-                telemetry.outcome_reason,
-                Some(HedgeOutcomeTelemetryReason::HedgeWon)
-            );
-            assert_eq!(telemetry.primary_late_ms, 42);
-        }
-
-        #[test]
-        fn hedge_telemetry_keeps_primary_win_and_hedge_win_outcomes_distinct() {
-            let mut primary_won = HedgeTelemetry::default();
-            primary_won.record_trigger(HedgeTriggerTelemetryReason::DelayElapsed);
-            primary_won.record_outcome(HedgeOutcomeTelemetryReason::PrimaryWonAfterTrigger);
-
-            let mut hedge_won = HedgeTelemetry::default();
-            hedge_won.record_trigger(HedgeTriggerTelemetryReason::DelayElapsed);
-            hedge_won.record_outcome(HedgeOutcomeTelemetryReason::HedgeWon);
-
-            assert_eq!(
-                primary_won.outcome_reason,
-                Some(HedgeOutcomeTelemetryReason::PrimaryWonAfterTrigger)
-            );
-            assert_eq!(
-                hedge_won.outcome_reason,
-                Some(HedgeOutcomeTelemetryReason::HedgeWon)
             );
         }
     }

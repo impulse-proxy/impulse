@@ -314,10 +314,6 @@ fn serde_defaults_for_resilience_match_type_defaults() {
         Resilience::default().protocol.max_headers_count
     );
     assert_eq!(
-        resilience.hedging.delay_ms,
-        Resilience::default().hedging.delay_ms
-    );
-    assert_eq!(
         resilience.retry_budget.ratio_percent,
         Resilience::default().retry_budget.ratio_percent
     );

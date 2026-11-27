@@ -26,16 +26,16 @@ pub use self::{
         RuntimeBackendDnsPolicy, RuntimeBackendEndpoint, RuntimeBackendHealthCheck,
         RuntimeBackendTlsPolicy, RuntimeBackendTransportKind, RuntimeBrownoutPolicy,
         RuntimeCircuitBreakerPolicy, RuntimeConnectionLimits, RuntimeExternalAuth,
-        RuntimeExternalAuthFailureMode, RuntimeExternalAuthRequestHeader, RuntimeHedgingPolicy,
-        RuntimeJwtAuth, RuntimeJwtVerificationKey, RuntimeListenerPolicySet,
-        RuntimeLoadBalancingPolicy, RuntimeLoadBalancingStrategy, RuntimePolicySet,
-        RuntimeQuotaBackendFailurePolicy, RuntimeQuotaCounterBackend, RuntimeQuotaEnforcementMode,
-        RuntimeQuotaLocalFallback, RuntimeQuotaPolicy, RuntimeQuotaPolicySet,
-        RuntimeQuotaSelectorDimension, RuntimeQuotaSelectorMatcher, RuntimeQuotaWindow,
-        RuntimeRateLimitPolicy, RuntimeRequestKeySpec, RuntimeResponseCachePolicy,
-        RuntimeResponseCompressionPolicy, RuntimeRetryBudgetPolicy, RuntimeRouteHostPattern,
-        RuntimeRouteMatchPolicy, RuntimeRouteQueuePolicy, RuntimeScopedRateLimitPolicy,
-        RuntimeTimeoutPolicy, RuntimeTransportPolicy, RuntimeWatchdogPolicy,
+        RuntimeExternalAuthFailureMode, RuntimeExternalAuthRequestHeader, RuntimeJwtAuth,
+        RuntimeJwtVerificationKey, RuntimeListenerPolicySet, RuntimeLoadBalancingPolicy,
+        RuntimeLoadBalancingStrategy, RuntimePolicySet, RuntimeQuotaBackendFailurePolicy,
+        RuntimeQuotaCounterBackend, RuntimeQuotaEnforcementMode, RuntimeQuotaLocalFallback,
+        RuntimeQuotaPolicy, RuntimeQuotaPolicySet, RuntimeQuotaSelectorDimension,
+        RuntimeQuotaSelectorMatcher, RuntimeQuotaWindow, RuntimeRateLimitPolicy,
+        RuntimeRequestKeySpec, RuntimeResponseCachePolicy, RuntimeResponseCompressionPolicy,
+        RuntimeRetryBudgetPolicy, RuntimeRouteHostPattern, RuntimeRouteMatchPolicy,
+        RuntimeRouteQueuePolicy, RuntimeScopedRateLimitPolicy, RuntimeTimeoutPolicy,
+        RuntimeTransportPolicy, RuntimeWatchdogPolicy,
     },
     secrets::{
         FilesystemSecretProvider, LiteralSecretProvider, RuntimeResolvedSecret,
@@ -61,7 +61,6 @@ pub struct RuntimeConfig {
 impl RuntimeConfig {
     pub fn from_config(config: &Config) -> Result<Self, RuntimeConfigError> {
         let resolved_config = resolve_config_secrets(config)?;
-        validate_ingress_policy_support(&resolved_config)?;
         let policies = RuntimePolicySet::from_config(&resolved_config)?;
         Ok(Self {
             version: resolved_config.version,
@@ -109,17 +108,6 @@ impl RuntimeConfig {
             .map(|(name, upstream)| (name.clone(), upstream.as_config_upstream()))
             .collect()
     }
-}
-
-fn validate_ingress_policy_support(config: &Config) -> Result<(), RuntimeConfigError> {
-    if config.resilience.hedging.enabled {
-        return Err(RuntimeConfigError::UnsupportedPolicyCombination(
-            "resilience.hedging cannot be enabled because Pingora HTTP/1.1 and HTTP/2 ingress do not enforce hedged requests"
-                .to_string(),
-        ));
-    }
-
-    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
