@@ -464,15 +464,17 @@ pub(crate) struct PingoraRuntimeConnectionAdmission {
 struct PingoraWorkerSlots {
     base: usize,
     count: usize,
+    control_slot: usize,
     next: std::sync::atomic::AtomicUsize,
     by_thread: RwLock<HashMap<ThreadId, usize>>,
 }
 
 impl PingoraWorkerSlots {
-    fn new(base: usize, count: usize) -> Self {
+    fn new(base: usize, count: usize, control_slot: usize) -> Self {
         Self {
             base,
             count,
+            control_slot,
             next: std::sync::atomic::AtomicUsize::new(0),
             by_thread: RwLock::new(HashMap::new()),
         }
@@ -491,8 +493,12 @@ impl PingoraWorkerSlots {
                 .write()
                 .unwrap_or_else(|error| error.into_inner());
             *by_thread.entry(thread_id).or_insert_with(|| {
-                self.base
-                    .saturating_add(self.next.fetch_add(1, Ordering::Relaxed) % self.count.max(1))
+                let offset = self.next.fetch_add(1, Ordering::Relaxed);
+                if offset < self.count {
+                    self.base + offset
+                } else {
+                    self.control_slot
+                }
             })
         });
         metrics.bind_worker_slot(slot);
@@ -708,6 +714,11 @@ fn pingora_ingress_service_for_listener(
     let pingora_worker_slots = Arc::new(PingoraWorkerSlots::new(
         listener.pingora_metric_slot_base,
         listener.pingora_worker_count,
+        current
+            .shared_state
+            .shared_services()
+            .metrics
+            .control_worker_slot(),
     ));
     let connection_admission = Arc::new(PingoraRuntimeConnectionAdmission {
         runtime: runtime.clone(),

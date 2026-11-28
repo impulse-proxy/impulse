@@ -4,7 +4,7 @@ use std::{
     env,
     sync::{
         Mutex, RwLock,
-        atomic::{AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicU64, Ordering},
     },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -264,8 +264,7 @@ pub struct Metrics {
     unrouted_route_id: usize,
     worker_render_order: Vec<(usize, String)>,
     worker_stats: Vec<WorkerStatsAtomic>,
-    automatic_worker_slot_start: usize,
-    automatic_worker_slot_count: usize,
+    control_worker_slot: usize,
     worker_counter_aggregation: Mutex<()>,
     backend_dns_state: RwLock<HashMap<String, BackendDnsState>>,
     request_result_metrics: RwLock<RequestResultMetricsStore>,

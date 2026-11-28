@@ -120,11 +120,16 @@ impl RuntimeBuilder {
         let timeout_policy = &config.policies.timeouts;
         let shard_count = transport_policy.packet_shards_per_worker.max(1);
         let topology = &transport_policy.topology;
-        let quic_worker_slots = topology.http3_worker_count().saturating_mul(shard_count);
+        let quic_worker_slots = topology
+            .http3_worker_count()
+            .checked_mul(shard_count)
+            .expect("HTTP/3 worker slot count overflow");
         let pingora_worker_slots = topology.pingora_worker_count();
         let worker_slots = quic_worker_slots
-            .saturating_add(pingora_worker_slots)
-            .max(1);
+            .checked_add(pingora_worker_slots)
+            .and_then(|slots| slots.checked_add(1))
+            .expect("worker slot count overflow");
+        let control_worker_slot = worker_slots - 1;
         let per_upstream_limit = transport_policy
             .connection_limits
             .per_upstream_inflight
@@ -263,10 +268,9 @@ impl RuntimeBuilder {
         route_labels.push("unrouted".to_string());
         let routing_index = Arc::new(RouteIndex::from_runtime_upstreams(&config.upstreams));
         let metrics = Arc::new(
-            crate::Metrics::new_with_runtime_labels_and_automatic_worker_slots(
+            crate::Metrics::new_with_runtime_labels_and_control_worker_slot(
                 worker_slots,
-                quic_worker_slots,
-                pingora_worker_slots,
+                control_worker_slot,
                 route_labels,
                 identities.backend_names().map(str::to_string),
                 config.observability.metrics.detailed_plugin_timing,
