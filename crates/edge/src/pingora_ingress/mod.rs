@@ -482,12 +482,13 @@ impl PingoraWorkerSlots {
 
     fn bind_current_thread(&self, metrics: &crate::Metrics) -> usize {
         let thread_id = thread::current().id();
-        let slot = self
+        let bound = self
             .by_thread
             .read()
-            .unwrap_or_else(|error| error.into_inner());
-        let slot = slot.get(&thread_id).copied();
-        let slot = slot.unwrap_or_else(|| {
+            .unwrap_or_else(|error| error.into_inner())
+            .get(&thread_id)
+            .copied();
+        let slot = bound.unwrap_or_else(|| {
             let mut by_thread = self
                 .by_thread
                 .write()
