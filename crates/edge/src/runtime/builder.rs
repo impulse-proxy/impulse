@@ -120,15 +120,11 @@ impl RuntimeBuilder {
         let timeout_policy = &config.policies.timeouts;
         let shard_count = transport_policy.packet_shards_per_worker.max(1);
         let topology = &transport_policy.topology;
-        let quic_worker_slots = topology
-            .http3_worker_count()
-            .checked_mul(shard_count)
-            .expect("HTTP/3 worker slot count overflow");
+        let quic_worker_slots = topology.http3_worker_count().saturating_mul(shard_count);
         let pingora_worker_slots = topology.pingora_worker_count();
         let worker_slots = quic_worker_slots
-            .checked_add(pingora_worker_slots)
-            .and_then(|slots| slots.checked_add(1))
-            .expect("worker slot count overflow");
+            .saturating_add(pingora_worker_slots)
+            .saturating_add(1);
         let control_worker_slot = worker_slots - 1;
         let mut worker_identities = Vec::with_capacity(control_worker_slot);
         for listener in config.listener_runtime_configs() {
@@ -141,10 +137,9 @@ impl RuntimeBuilder {
                 for shard in 0..shard_count {
                     let slot = listener
                         .http3_worker_index_base
-                        .checked_add(worker)
-                        .and_then(|index| index.checked_mul(shard_count))
-                        .and_then(|base| base.checked_add(shard))
-                        .expect("HTTP/3 worker identity slot overflow");
+                        .saturating_add(worker)
+                        .saturating_mul(shard_count)
+                        .saturating_add(shard);
                     worker_identities.push(crate::WorkerMetricIdentity {
                         slot,
                         listener: listener_identity.clone(),
@@ -154,10 +149,7 @@ impl RuntimeBuilder {
                 }
             }
             for worker in 0..listener.pingora_worker_count {
-                let slot = listener
-                    .pingora_metric_slot_base
-                    .checked_add(worker)
-                    .expect("Pingora worker identity slot overflow");
+                let slot = listener.pingora_metric_slot_base.saturating_add(worker);
                 worker_identities.push(crate::WorkerMetricIdentity {
                     slot,
                     listener: listener_identity.clone(),

@@ -20,8 +20,8 @@ use impulse_plugins::RouteExecutionClass;
 use pingora_core::{server::configuration::ServerConf, services::Service as PingoraService};
 
 use super::{
-    PingoraListenerTask, PingoraRuntimeConnectionAdmission, pingora_ingress_services,
-    spawn_pingora_ingress_listener,
+    PingoraListenerTask, PingoraRuntimeConnectionAdmission, PingoraWorkerSlots,
+    pingora_ingress_services, spawn_pingora_ingress_listener,
 };
 use crate::runtime::{bundle::RuntimeBundleHandle, listener::Http3Service};
 
@@ -171,6 +171,16 @@ fn test_connection_filter(
             "{}:{}",
             listener.listen.listen.address, listener.listen.listen.port
         ),
+        pingora_worker_slots: Arc::new(PingoraWorkerSlots::new(
+            listener.pingora_metric_slot_base,
+            listener.pingora_worker_count,
+            runtime
+                .current()
+                .shared_state
+                .shared_services()
+                .metrics
+                .control_worker_slot(),
+        )),
     }
 }
 

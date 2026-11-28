@@ -63,9 +63,7 @@ impl Metrics {
     {
         let worker_slots = worker_slots.max(1);
         let control_worker_slot = worker_slots;
-        let worker_slots = worker_slots
-            .checked_add(1)
-            .expect("metrics worker slot count overflow");
+        let worker_slots = worker_slots.saturating_add(1);
         Self::new_with_runtime_labels_and_control_worker_slot(
             worker_slots,
             control_worker_slot,
