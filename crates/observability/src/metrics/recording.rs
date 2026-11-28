@@ -323,17 +323,6 @@ impl Metrics {
         })
     }
 
-    pub fn current_worker_slot_for_range(&self, start: usize, count: usize) -> usize {
-        if count == 0 {
-            return 0;
-        }
-        AUTOMATIC_WORKER_INDEX.with(|index| {
-            start
-                .saturating_add(*index % count)
-                .min(self.worker_stats.len().saturating_sub(1))
-        })
-    }
-
     pub fn inc_total(&self) {
         self.inc_worker_requests_total();
     }
