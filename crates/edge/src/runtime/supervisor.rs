@@ -131,7 +131,7 @@ impl RuntimeSupervisor {
                 break;
             }
 
-            let listener_worker_count = listener_config.performance.worker_threads.max(1);
+            let listener_worker_count = listener_config.http3_worker_count.max(1);
             let worker_index_base = allocate_worker_index_base(&ingress, listener_worker_count);
             match self
                 .start_ingress_services(listener_config, worker_index_base)

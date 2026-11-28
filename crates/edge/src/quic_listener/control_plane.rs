@@ -139,8 +139,8 @@ impl Http3Service {
             worker_count: config
                 .policies
                 .transport
-                .worker_threads
-                .max(1)
+                .topology
+                .http3_worker_count()
                 .saturating_mul(config.policies.transport.packet_shards_per_worker.max(1))
                 .max(1),
         });

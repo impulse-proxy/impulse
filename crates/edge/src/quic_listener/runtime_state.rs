@@ -175,8 +175,8 @@ impl ControlPlaneRuntimeView {
         self.runtime_config
             .policies
             .transport
-            .worker_threads
-            .max(1)
+            .topology
+            .http3_worker_count()
             .saturating_mul(
                 self.runtime_config
                     .policies

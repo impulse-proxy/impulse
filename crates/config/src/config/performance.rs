@@ -158,6 +158,9 @@ impl Default for LogFile {
 #[serde(deny_unknown_fields)]
 pub struct Performance {
     pub worker_threads: usize,
+    /// Whether `worker_threads` was set in the source configuration.
+    #[serde(skip)]
+    pub worker_threads_explicit: bool,
     pub control_plane_threads: usize,
     pub packet_shards_per_worker: usize,
     pub packet_shard_queue_capacity: usize,
@@ -203,6 +206,7 @@ impl Default for Performance {
     fn default() -> Self {
         Self {
             worker_threads: available_data_plane_cpus(),
+            worker_threads_explicit: false,
             control_plane_threads: 2,
             packet_shards_per_worker: 1,
             packet_shard_queue_capacity: 2048,

@@ -54,7 +54,7 @@ pub(crate) fn validate_runtime_reload_compatibility(
         if current_listeners.contains_key(label) {
             continue;
         }
-        let worker_count = listener_config.performance.worker_threads.max(1);
+        let worker_count = listener_config.http3_worker_count.max(1);
         let bind_result = if worker_count > 1 {
             Http3Service::bind_reuseport_sockets(listener_config, worker_count).map(|_| ())
         } else {

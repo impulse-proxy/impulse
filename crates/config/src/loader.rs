@@ -43,8 +43,17 @@ fn parse_config_text(text: &str) -> Result<Config, String> {
     ensure_supported_version(config_version)?;
     root = migrate_to_current_version(root, config_version)?;
     apply_global_lb_fallback(&mut root);
-    serde_yaml::from_value(root)
-        .map_err(|err| format!("failed to deserialize config structure: {}", err))
+    let worker_threads_explicit = root
+        .as_mapping()
+        .and_then(|mapping| mapping.get(Value::String("performance".to_string())))
+        .and_then(Value::as_mapping)
+        .is_some_and(|performance| {
+            performance.contains_key(Value::String("worker_threads".to_string()))
+        });
+    let mut config: Config = serde_yaml::from_value(root)
+        .map_err(|err| format!("failed to deserialize config structure: {}", err))?;
+    config.performance.worker_threads_explicit = worker_threads_explicit;
+    Ok(config)
 }
 
 fn extract_config_version(root: &Value) -> Result<u32, String> {
