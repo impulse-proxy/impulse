@@ -44,7 +44,7 @@ pub use self::{
     timeouts::RuntimeTimeoutPolicy,
     transport::{
         RuntimeBackendConnectionPolicy, RuntimeConnectionLimits, RuntimeDataPlaneTopology,
-        RuntimeTransportPolicy,
+        RuntimeListenerWorkerAllocation, RuntimeTransportPolicy,
     },
     watchdog::RuntimeWatchdogPolicy,
 };

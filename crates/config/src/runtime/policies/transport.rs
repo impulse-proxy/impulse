@@ -69,19 +69,40 @@ pub struct RuntimeDataPlaneTopology {
     pub worker_threads_explicit: bool,
     pub automatic_worker_budget: usize,
     pub worker_budget: usize,
+    pub effective_worker_budget: usize,
+    pub listener_workers: Vec<RuntimeListenerWorkerAllocation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeListenerWorkerAllocation {
+    pub listener_index: usize,
+    pub pingora_workers: usize,
+    pub http3_workers: usize,
 }
 
 impl RuntimeDataPlaneTopology {
     fn calculate(performance: &Performance, listeners: &[Listen]) -> Self {
         let cpu_capacity = available_data_plane_cpus();
-        let pingora_listener_groups = listeners
+        let mut listener_workers = listeners
             .iter()
-            .filter(|listener| matches!(listener.protocol.as_str(), "http1" | "http2" | "http3"))
-            .count();
-        let http3_listener_groups = listeners
-            .iter()
-            .filter(|listener| listener.protocol == "http3")
-            .count();
+            .enumerate()
+            .map(|(listener_index, _)| RuntimeListenerWorkerAllocation {
+                listener_index,
+                pingora_workers: 0,
+                http3_workers: 0,
+            })
+            .collect::<Vec<_>>();
+        let mut groups = Vec::new();
+        for (listener_index, listener) in listeners.iter().enumerate() {
+            if matches!(listener.protocol.as_str(), "http1" | "http2" | "http3") {
+                groups.push((listener_index, false));
+            }
+            if listener.protocol == "http3" {
+                groups.push((listener_index, true));
+            }
+        }
+        let pingora_listener_groups = groups.iter().filter(|(_, http3)| !http3).count();
+        let http3_listener_groups = groups.len() - pingora_listener_groups;
         let worker_threads_explicit = performance.worker_threads_explicit;
         let automatic_worker_budget = cpu_capacity;
         let worker_budget = if worker_threads_explicit {
@@ -89,6 +110,20 @@ impl RuntimeDataPlaneTopology {
         } else {
             automatic_worker_budget
         };
+        let effective_worker_budget = worker_budget.max(groups.len());
+        if !groups.is_empty() {
+            let workers_per_group = effective_worker_budget / groups.len();
+            let extra_workers = effective_worker_budget % groups.len();
+            for (group_index, (listener_index, http3)) in groups.into_iter().enumerate() {
+                let workers = workers_per_group + usize::from(group_index < extra_workers);
+                let allocation = &mut listener_workers[listener_index];
+                if http3 {
+                    allocation.http3_workers = workers;
+                } else {
+                    allocation.pingora_workers = workers;
+                }
+            }
+        }
 
         Self {
             cpu_capacity,
@@ -99,6 +134,8 @@ impl RuntimeDataPlaneTopology {
             worker_threads_explicit,
             automatic_worker_budget,
             worker_budget,
+            effective_worker_budget,
+            listener_workers,
         }
     }
 }
