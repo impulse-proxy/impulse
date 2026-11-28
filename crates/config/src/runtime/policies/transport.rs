@@ -29,6 +29,7 @@ const H2_MAX_WINDOW_BYTES: u32 = (1 << 31) - 1;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeTransportPolicy {
     pub worker_threads: usize,
+    pub worker_threads_explicit: bool,
     pub control_plane_threads: usize,
     pub packet_shards_per_worker: usize,
     pub packet_shard_queue_capacity: usize,
@@ -234,6 +235,7 @@ impl RuntimeTransportPolicy {
 
         Ok(Self {
             worker_threads: performance.worker_threads,
+            worker_threads_explicit: performance.worker_threads_explicit,
             control_plane_threads: performance.control_plane_threads,
             packet_shards_per_worker: performance.packet_shards_per_worker,
             packet_shard_queue_capacity: performance.packet_shard_queue_capacity,
