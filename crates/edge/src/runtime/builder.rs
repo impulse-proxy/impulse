@@ -118,13 +118,13 @@ impl RuntimeBuilder {
         );
         let transport_policy = &config.policies.transport;
         let timeout_policy = &config.policies.timeouts;
-        let worker_threads = transport_policy.worker_threads.max(1);
         let shard_count = transport_policy.packet_shards_per_worker.max(1);
-        let quic_worker_slots = worker_threads
+        let topology = &transport_policy.topology;
+        let quic_worker_slots = topology
+            .http3_worker_count()
             .saturating_mul(shard_count)
-            .saturating_mul(config.listeners.len())
             .max(1);
-        let pingora_worker_slots = transport_policy.control_plane_threads.max(1);
+        let pingora_worker_slots = topology.pingora_worker_count().max(1);
         let worker_slots = quic_worker_slots.saturating_add(pingora_worker_slots);
         let per_upstream_limit = transport_policy
             .connection_limits
@@ -133,7 +133,7 @@ impl RuntimeBuilder {
         let global_inflight_limit = transport_policy.connection_limits.global_inflight.max(1);
         info!(
             "Runtime performance concurrency worker_threads={} control_plane_threads={} packet_shards_per_worker={} reuseport={} pin_workers={}",
-            worker_threads,
+            topology.effective_worker_budget,
             transport_policy.control_plane_threads.max(1),
             shard_count,
             transport_policy.reuseport,

@@ -146,9 +146,14 @@ async fn run(
         tracing_config.sample_ratio,
     );
 
-    let worker_count = runtime_config.performance.worker_threads.max(1);
     let shard_count = runtime_config.performance.packet_shards_per_worker.max(1);
-    let effective_worker_count = worker_count.saturating_mul(shard_count);
+    let effective_worker_count = runtime_config
+        .policies
+        .transport
+        .topology
+        .http3_worker_count()
+        .saturating_mul(shard_count)
+        .max(1);
     let supervisor = match RuntimeSupervisor::start(config_path, log_config, &runtime_config) {
         Ok(supervisor) => supervisor,
         Err(err) => {

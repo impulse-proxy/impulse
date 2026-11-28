@@ -81,6 +81,20 @@ pub struct RuntimeListenerWorkerAllocation {
 }
 
 impl RuntimeDataPlaneTopology {
+    pub fn pingora_worker_count(&self) -> usize {
+        self.listener_workers
+            .iter()
+            .map(|listener| listener.pingora_workers)
+            .sum()
+    }
+
+    pub fn http3_worker_count(&self) -> usize {
+        self.listener_workers
+            .iter()
+            .map(|listener| listener.http3_workers)
+            .sum()
+    }
+
     fn calculate(performance: &Performance, listeners: &[Listen]) -> Self {
         let cpu_capacity = available_data_plane_cpus();
         let mut listener_workers = listeners

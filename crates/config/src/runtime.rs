@@ -80,15 +80,26 @@ impl RuntimeConfig {
         self.listeners
             .iter()
             .cloned()
-            .map(|listen| ListenerRuntimeConfig {
-                policies: RuntimeListenerPolicySet {
-                    timeouts: self.policies.timeouts.clone(),
-                    transport: self.policies.transport.clone(),
-                    tls: listen.tls.clone(),
-                },
-                listen,
-                performance: self.performance.clone(),
-                observability: self.observability.clone(),
+            .map(|listen| {
+                let allocation = self
+                    .policies
+                    .transport
+                    .topology
+                    .listener_workers
+                    .get(listen.index);
+                let tls = listen.tls.clone();
+                ListenerRuntimeConfig {
+                    listen,
+                    pingora_worker_count: allocation.map_or(0, |workers| workers.pingora_workers),
+                    http3_worker_count: allocation.map_or(0, |workers| workers.http3_workers),
+                    policies: RuntimeListenerPolicySet {
+                        timeouts: self.policies.timeouts.clone(),
+                        transport: self.policies.transport.clone(),
+                        tls,
+                    },
+                    performance: self.performance.clone(),
+                    observability: self.observability.clone(),
+                }
             })
             .collect()
     }
@@ -222,6 +233,8 @@ pub struct RuntimeListener {
 #[derive(Debug, Clone)]
 pub struct ListenerRuntimeConfig {
     pub listen: RuntimeListener,
+    pub pingora_worker_count: usize,
+    pub http3_worker_count: usize,
     pub policies: RuntimeListenerPolicySet,
     pub performance: Performance,
     pub observability: Observability,

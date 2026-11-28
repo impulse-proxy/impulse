@@ -27,6 +27,7 @@ struct ListenerGroupSignature {
     label: String,
     listener_index: usize,
     worker_count: usize,
+    pingora_worker_count: usize,
     shard_count: usize,
     shard_queue_capacity: usize,
     shard_queue_max_bytes: usize,
@@ -164,7 +165,8 @@ fn listener_group_signature(config: &ListenerRuntimeConfig) -> ListenerGroupSign
     ListenerGroupSignature {
         label: listener_label(config),
         listener_index: config.listen.index,
-        worker_count: config.performance.worker_threads.max(1),
+        worker_count: config.http3_worker_count.max(1),
+        pingora_worker_count: config.pingora_worker_count.max(1),
         shard_count: config.performance.packet_shards_per_worker.max(1),
         shard_queue_capacity: config.performance.packet_shard_queue_capacity.max(1),
         shard_queue_max_bytes: config.performance.packet_shard_queue_max_bytes.max(1),
@@ -456,25 +458,21 @@ pub(crate) fn log_listener_startup(
         );
     }
     for group in listener_groups {
-        let listener_shards = if group.signature.reuseport {
-            group.signature.worker_count
-        } else {
-            1
-        };
         info!(
-            "Listener {} effective data_plane_workers={} packet_shards_per_worker={} pingora_listener_shards={}",
+            "Listener {} effective http3_workers={} pingora_workers={} packet_shards_per_worker={}",
             group.signature.label,
             group.signature.worker_count,
+            group.signature.pingora_worker_count,
             group.signature.shard_count,
-            listener_shards,
         );
     }
     info!(
         "Impulse data-plane workers={} packet_shards_per_worker={} reuseport={} pin_workers={}",
-        listener_groups
-            .iter()
-            .map(group_signature_worker_count)
-            .sum::<usize>(),
+        runtime_config
+            .policies
+            .transport
+            .topology
+            .effective_worker_budget,
         shard_count,
         runtime_config.performance.reuseport,
         runtime_config.performance.pin_workers
@@ -488,10 +486,6 @@ pub(crate) fn log_listener_startup(
         "Impulse logging level={} access_log_mode={} access_log_sample_ratio={}",
         log_config.level, access_log_mode, log_config.access.sample_ratio,
     );
-}
-
-fn group_signature_worker_count(group: &IngressServiceHandles) -> usize {
-    group.signature.worker_count
 }
 
 fn panic_payload_message(payload: &(dyn Any + Send + 'static)) -> String {

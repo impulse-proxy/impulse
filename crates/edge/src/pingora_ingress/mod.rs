@@ -595,7 +595,7 @@ pub fn spawn_pingora_ingress_listener(
         "{}:{}",
         listener.listen.listen.address, listener.listen.listen.port
     );
-    let worker_count = listener.policies.transport.worker_threads.max(1);
+    let worker_count = listener.pingora_worker_count.max(1);
     let socket_shards = if listener.performance.reuseport {
         worker_count
     } else {
