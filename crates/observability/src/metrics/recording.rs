@@ -8,11 +8,7 @@ impl Default for Metrics {
 
 thread_local! {
     static WORKER_METRICS_SLOT: Cell<Option<usize>> = const { Cell::new(None) };
-    static AUTOMATIC_WORKER_INDEX: usize =
-        NEXT_AUTOMATIC_WORKER_INDEX.fetch_add(1, Ordering::Relaxed);
 }
-
-static NEXT_AUTOMATIC_WORKER_INDEX: AtomicUsize = AtomicUsize::new(0);
 
 impl Metrics {
     fn mark_route_worker_metrics_stale(&self) {
@@ -65,20 +61,21 @@ impl Metrics {
         I: IntoIterator<Item = String>,
         B: IntoIterator<Item = String>,
     {
-        Self::new_with_runtime_labels_and_automatic_worker_slots(
+        let worker_slots = worker_slots.max(1);
+        let control_worker_slot = worker_slots;
+        let worker_slots = worker_slots.saturating_add(1);
+        Self::new_with_runtime_labels_and_control_worker_slot(
             worker_slots,
-            0,
-            1,
+            control_worker_slot,
             route_labels,
             backend_labels,
             detailed_plugin_timing,
         )
     }
 
-    pub fn new_with_runtime_labels_and_automatic_worker_slots<I, B>(
+    pub fn new_with_runtime_labels_and_control_worker_slot<I, B>(
         worker_slots: usize,
-        automatic_worker_slot_start: usize,
-        automatic_worker_slot_count: usize,
+        control_worker_slot: usize,
         route_labels: I,
         backend_labels: B,
         detailed_plugin_timing: bool,
@@ -86,6 +83,29 @@ impl Metrics {
     where
         I: IntoIterator<Item = String>,
         B: IntoIterator<Item = String>,
+    {
+        Self::new_with_runtime_labels_and_worker_identities(
+            worker_slots,
+            control_worker_slot,
+            [],
+            route_labels,
+            backend_labels,
+            detailed_plugin_timing,
+        )
+    }
+
+    pub fn new_with_runtime_labels_and_worker_identities<I, B, W>(
+        worker_slots: usize,
+        control_worker_slot: usize,
+        identities: W,
+        route_labels: I,
+        backend_labels: B,
+        detailed_plugin_timing: bool,
+    ) -> Self
+    where
+        I: IntoIterator<Item = String>,
+        B: IntoIterator<Item = String>,
+        W: IntoIterator<Item = WorkerMetricIdentity>,
     {
         let route_latency_sample_every = env::var(ROUTE_LATENCY_SAMPLE_EVERY_ENV)
             .ok()
@@ -111,20 +131,55 @@ impl Metrics {
         }
         let unrouted_route_id = route_label_to_id.get("unrouted").copied().unwrap_or(0);
 
-        let worker_slots = worker_slots.max(1);
-        let automatic_worker_slot_start = automatic_worker_slot_start.min(worker_slots - 1);
-        let automatic_worker_slot_count = automatic_worker_slot_count
-            .max(1)
-            .min(worker_slots - automatic_worker_slot_start);
-        let worker_labels = (0..worker_slots)
-            .map(|idx| format!("worker-{idx}"))
+        assert!(worker_slots > 0, "metrics require a control worker slot");
+        assert!(
+            control_worker_slot < worker_slots,
+            "control worker slot must be within the allocated slots"
+        );
+        let mut worker_identities = (0..worker_slots)
+            .map(|slot| WorkerMetricIdentity {
+                slot,
+                listener: if slot == control_worker_slot {
+                    "control".to_string()
+                } else {
+                    "unknown".to_string()
+                },
+                protocol: if slot == control_worker_slot {
+                    "control".to_string()
+                } else {
+                    "unknown".to_string()
+                },
+                worker: if slot == control_worker_slot {
+                    "control".to_string()
+                } else {
+                    format!("worker-{slot}")
+                },
+            })
             .collect::<Vec<_>>();
-        let mut worker_render_order = worker_labels
+        for identity in identities {
+            let slot = identity.slot;
+            assert!(
+                slot < worker_slots,
+                "worker identity slot must be within the allocated slots"
+            );
+            assert_ne!(
+                slot, control_worker_slot,
+                "worker identity cannot replace the control slot"
+            );
+            worker_identities[slot] = identity;
+        }
+        let mut worker_render_order = worker_identities
             .iter()
-            .enumerate()
-            .map(|(idx, label)| (idx, label.to_string()))
+            .cloned()
+            .map(|identity| (identity.slot, identity))
             .collect::<Vec<_>>();
-        worker_render_order.sort_by(|(_, left), (_, right)| left.cmp(right));
+        worker_render_order.sort_by(|(_, left), (_, right)| {
+            (&left.listener, &left.protocol, &left.worker).cmp(&(
+                &right.listener,
+                &right.protocol,
+                &right.worker,
+            ))
+        });
         let worker_stats = (0..worker_slots)
             .map(|_| WorkerStatsAtomic::new())
             .collect::<Vec<_>>();
@@ -276,8 +331,7 @@ impl Metrics {
             unrouted_route_id,
             worker_render_order,
             worker_stats,
-            automatic_worker_slot_start,
-            automatic_worker_slot_count,
+            control_worker_slot,
             worker_counter_aggregation: Mutex::new(()),
             backend_dns_state: RwLock::new(HashMap::new()),
             request_result_metrics: RwLock::new(RequestResultMetricsStore::default()),
@@ -309,18 +363,19 @@ impl Metrics {
     }
 
     pub fn bind_worker_slot(&self, slot: usize) {
-        let max_index = self.worker_stats.len().saturating_sub(1);
-        WORKER_METRICS_SLOT.with(|current| current.set(Some(slot.min(max_index))));
+        debug_assert!(
+            slot < self.worker_stats.len(),
+            "worker metrics slot is out of range"
+        );
+        WORKER_METRICS_SLOT.with(|current| current.set(Some(slot)));
     }
 
     pub fn current_worker_slot(&self) -> usize {
-        WORKER_METRICS_SLOT.with(|current| {
-            current.get().unwrap_or_else(|| {
-                AUTOMATIC_WORKER_INDEX.with(|index| {
-                    self.automatic_worker_slot_start + *index % self.automatic_worker_slot_count
-                })
-            })
-        })
+        WORKER_METRICS_SLOT.with(|current| current.get().unwrap_or(self.control_worker_slot))
+    }
+
+    pub fn control_worker_slot(&self) -> usize {
+        self.control_worker_slot
     }
 
     pub fn inc_total(&self) {
@@ -916,9 +971,7 @@ impl Metrics {
 
     fn current_worker_stats(&self) -> Option<&WorkerStatsAtomic> {
         let idx = self.current_worker_slot();
-        self.worker_stats
-            .get(idx)
-            .or_else(|| self.worker_stats.first())
+        self.worker_stats.get(idx)
     }
 
     /// Fold the worker-local hot counters into the aggregate totals.

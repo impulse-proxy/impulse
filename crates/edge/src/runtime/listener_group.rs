@@ -26,6 +26,8 @@ use crate::runtime::{
 struct ListenerGroupSignature {
     label: String,
     listener_index: usize,
+    http3_worker_index_base: usize,
+    pingora_metric_slot_base: usize,
     worker_count: usize,
     pingora_worker_count: usize,
     shard_count: usize,
@@ -53,7 +55,6 @@ pub(crate) struct IngressServiceHandles {
     pingora: PingoraServiceHandle,
     http3: Http3ServiceHandle,
     signature: ListenerGroupSignature,
-    worker_index_base: usize,
     failed_activation_generation: Option<u64>,
     drain_timeout: Duration,
     drain_deadline: Option<Instant>,
@@ -165,6 +166,8 @@ fn listener_group_signature(config: &ListenerRuntimeConfig) -> ListenerGroupSign
     ListenerGroupSignature {
         label: listener_label(config),
         listener_index: config.listen.index,
+        http3_worker_index_base: config.http3_worker_index_base,
+        pingora_metric_slot_base: config.pingora_metric_slot_base,
         worker_count: config.http3_worker_count.max(1),
         pingora_worker_count: config.pingora_worker_count.max(1),
         shard_count: config.performance.packet_shards_per_worker.max(1),
@@ -184,7 +187,6 @@ pub(crate) async fn start_ingress_service_handles(
     listener_config: ListenerRuntimeConfig,
     worker_shared: Arc<SharedRuntimeState>,
     runtime_bundle: Arc<RuntimeBundleHandle>,
-    worker_index_base: usize,
 ) -> Result<IngressServiceHandles, String> {
     let signature = listener_group_signature(&listener_config);
     let shutdown = ShutdownSignal::new();
@@ -201,7 +203,7 @@ pub(crate) async fn start_ingress_service_handles(
             shard_queue_capacity: signature.shard_queue_capacity,
             shard_queue_max_bytes: signature.shard_queue_max_bytes,
             pin_workers: signature.pin_workers,
-            worker_index_base,
+            worker_index_base: listener_config.http3_worker_index_base,
         },
         ListenerWorkerRuntimeState {
             listener_config: listener_config.clone(),
@@ -220,40 +222,10 @@ pub(crate) async fn start_ingress_service_handles(
             worker_handles,
         },
         signature,
-        worker_index_base,
         failed_activation_generation: None,
         drain_timeout,
         drain_deadline: None,
     })
-}
-
-/// First-fit allocation of a worker-index range of `worker_count` slots that
-/// does not overlap any live group's range. Ranges freed when groups retire are
-/// reused, so indices stay bounded across reloads instead of growing without
-/// limit (which would push worker/metrics slots past the metrics capacity).
-pub(crate) fn allocate_worker_index_base(
-    groups: &[IngressServiceHandles],
-    worker_count: usize,
-) -> usize {
-    let mut ranges: Vec<(usize, usize)> = groups
-        .iter()
-        .map(|g| {
-            (
-                g.worker_index_base,
-                g.worker_index_base.saturating_add(g.signature.worker_count),
-            )
-        })
-        .collect();
-    ranges.sort_unstable();
-
-    let mut base = 0usize;
-    for (start, end) in ranges {
-        if base.saturating_add(worker_count) <= start {
-            return base; // fits in the gap before this range
-        }
-        base = base.max(end);
-    }
-    base
 }
 
 pub(super) async fn reconcile_listener_groups(
@@ -288,7 +260,6 @@ pub(super) async fn reconcile_listener_groups(
             continue;
         }
 
-        let worker_index_base = groups[group_index].worker_index_base;
         info!(
             "Staging replacement listener group {} for activated runtime generation {}",
             signature.label, runtime.generation
@@ -298,7 +269,6 @@ pub(super) async fn reconcile_listener_groups(
             listener_config.clone(),
             Arc::clone(&runtime.shared_state),
             Arc::clone(runtime_bundle),
-            worker_index_base,
         )
         .await
         {
@@ -334,12 +304,10 @@ pub(super) async fn reconcile_listener_groups(
             continue;
         }
 
-        let worker_index_base = allocate_worker_index_base(groups, signature.worker_count);
         match start_ingress_service_handles(
             listener_config.clone(),
             Arc::clone(&runtime.shared_state),
             Arc::clone(runtime_bundle),
-            worker_index_base,
         )
         .await
         {

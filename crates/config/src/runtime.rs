@@ -77,21 +77,32 @@ impl RuntimeConfig {
     }
 
     pub fn listener_runtime_configs(&self) -> Vec<ListenerRuntimeConfig> {
+        let topology = &self.policies.transport.topology;
+        let shard_count = self.performance.packet_shards_per_worker.max(1);
+        let mut http3_worker_index_base = 0usize;
+        let mut pingora_metric_slot_base =
+            topology.http3_worker_count().saturating_mul(shard_count);
+
         self.listeners
             .iter()
             .cloned()
             .map(|listen| {
-                let allocation = self
-                    .policies
-                    .transport
-                    .topology
-                    .listener_workers
-                    .get(listen.index);
+                let allocation = topology.listener_workers.get(listen.index);
+                let pingora_worker_count = allocation.map_or(0, |workers| workers.pingora_workers);
+                let http3_worker_count = allocation.map_or(0, |workers| workers.http3_workers);
+                let listener_http3_worker_index_base = http3_worker_index_base;
+                let listener_pingora_metric_slot_base = pingora_metric_slot_base;
+                http3_worker_index_base =
+                    http3_worker_index_base.saturating_add(http3_worker_count);
+                pingora_metric_slot_base =
+                    pingora_metric_slot_base.saturating_add(pingora_worker_count);
                 let tls = listen.tls.clone();
                 ListenerRuntimeConfig {
                     listen,
-                    pingora_worker_count: allocation.map_or(0, |workers| workers.pingora_workers),
-                    http3_worker_count: allocation.map_or(0, |workers| workers.http3_workers),
+                    pingora_worker_count,
+                    http3_worker_count,
+                    http3_worker_index_base: listener_http3_worker_index_base,
+                    pingora_metric_slot_base: listener_pingora_metric_slot_base,
                     policies: RuntimeListenerPolicySet {
                         timeouts: self.policies.timeouts.clone(),
                         transport: self.policies.transport.clone(),
@@ -235,6 +246,8 @@ pub struct ListenerRuntimeConfig {
     pub listen: RuntimeListener,
     pub pingora_worker_count: usize,
     pub http3_worker_count: usize,
+    pub http3_worker_index_base: usize,
+    pub pingora_metric_slot_base: usize,
     pub policies: RuntimeListenerPolicySet,
     pub performance: Performance,
     pub observability: Observability,
