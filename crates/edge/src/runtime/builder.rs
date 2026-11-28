@@ -132,7 +132,7 @@ impl RuntimeBuilder {
             .max(1);
         let global_inflight_limit = transport_policy.connection_limits.global_inflight.max(1);
         info!(
-            "Runtime performance concurrency worker_threads={} control_plane_threads={} packet_shards_per_worker={} reuseport={} pin_workers={}",
+            "Runtime performance concurrency effective_worker_budget={} control_plane_threads={} packet_shards_per_worker={} reuseport={} pin_workers={}",
             topology.effective_worker_budget,
             transport_policy.control_plane_threads.max(1),
             shard_count,

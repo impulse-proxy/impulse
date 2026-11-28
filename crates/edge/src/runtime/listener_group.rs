@@ -437,8 +437,28 @@ pub(crate) fn log_listener_startup(
     let shard_count = runtime_config.performance.packet_shards_per_worker.max(1);
     info!("Impulse startup phase=begin");
     info!(
-        "Impulse listener topology listeners={} packet_shards_per_worker={} reuseport={} pin_workers={}",
+        "Impulse listener topology listeners={} configured_worker_threads={} worker_threads_explicit={} automatic_worker_budget={} effective_worker_budget={} packet_shards_per_worker={} reuseport={} pin_workers={}",
         runtime_config.listeners.len(),
+        runtime_config
+            .policies
+            .transport
+            .topology
+            .configured_worker_threads,
+        runtime_config
+            .policies
+            .transport
+            .topology
+            .worker_threads_explicit,
+        runtime_config
+            .policies
+            .transport
+            .topology
+            .automatic_worker_budget,
+        runtime_config
+            .policies
+            .transport
+            .topology
+            .effective_worker_budget,
         shard_count,
         runtime_config.performance.reuseport,
         runtime_config.performance.pin_workers
@@ -466,17 +486,6 @@ pub(crate) fn log_listener_startup(
             group.signature.shard_count,
         );
     }
-    info!(
-        "Impulse data-plane workers={} packet_shards_per_worker={} reuseport={} pin_workers={}",
-        runtime_config
-            .policies
-            .transport
-            .topology
-            .effective_worker_budget,
-        shard_count,
-        runtime_config.performance.reuseport,
-        runtime_config.performance.pin_workers
-    );
     let access_log_mode = match log_config.access.mode {
         AccessLogMode::ErrorsOnly => "errors_only",
         AccessLogMode::Sampled => "sampled",
