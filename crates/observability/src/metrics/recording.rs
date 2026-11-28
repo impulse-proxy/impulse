@@ -86,6 +86,29 @@ impl Metrics {
         I: IntoIterator<Item = String>,
         B: IntoIterator<Item = String>,
     {
+        Self::new_with_runtime_labels_and_worker_identities(
+            worker_slots,
+            control_worker_slot,
+            [],
+            route_labels,
+            backend_labels,
+            detailed_plugin_timing,
+        )
+    }
+
+    pub fn new_with_runtime_labels_and_worker_identities<I, B, W>(
+        worker_slots: usize,
+        control_worker_slot: usize,
+        identities: W,
+        route_labels: I,
+        backend_labels: B,
+        detailed_plugin_timing: bool,
+    ) -> Self
+    where
+        I: IntoIterator<Item = String>,
+        B: IntoIterator<Item = String>,
+        W: IntoIterator<Item = WorkerMetricIdentity>,
+    {
         let route_latency_sample_every = env::var(ROUTE_LATENCY_SAMPLE_EVERY_ENV)
             .ok()
             .and_then(|raw| raw.trim().parse::<u64>().ok())
@@ -115,21 +138,50 @@ impl Metrics {
             control_worker_slot < worker_slots,
             "control worker slot must be within the allocated slots"
         );
-        let worker_labels = (0..worker_slots)
-            .map(|idx| {
-                if idx == control_worker_slot {
+        let mut worker_identities = (0..worker_slots)
+            .map(|slot| WorkerMetricIdentity {
+                slot,
+                listener: if slot == control_worker_slot {
                     "control".to_string()
                 } else {
-                    format!("worker-{idx}")
-                }
+                    "unknown".to_string()
+                },
+                protocol: if slot == control_worker_slot {
+                    "control".to_string()
+                } else {
+                    "unknown".to_string()
+                },
+                worker: if slot == control_worker_slot {
+                    "control".to_string()
+                } else {
+                    format!("worker-{slot}")
+                },
             })
             .collect::<Vec<_>>();
-        let mut worker_render_order = worker_labels
+        for identity in identities {
+            let slot = identity.slot;
+            assert!(
+                slot < worker_slots,
+                "worker identity slot must be within the allocated slots"
+            );
+            assert_ne!(
+                slot, control_worker_slot,
+                "worker identity cannot replace the control slot"
+            );
+            worker_identities[slot] = identity;
+        }
+        let mut worker_render_order = worker_identities
             .iter()
-            .enumerate()
-            .map(|(idx, label)| (idx, label.to_string()))
+            .cloned()
+            .map(|identity| (identity.slot, identity))
             .collect::<Vec<_>>();
-        worker_render_order.sort_by(|(_, left), (_, right)| left.cmp(right));
+        worker_render_order.sort_by(|(_, left), (_, right)| {
+            (&left.listener, &left.protocol, &left.worker).cmp(&(
+                &right.listener,
+                &right.protocol,
+                &right.worker,
+            ))
+        });
         let worker_stats = (0..worker_slots)
             .map(|_| WorkerStatsAtomic::new())
             .collect::<Vec<_>>();

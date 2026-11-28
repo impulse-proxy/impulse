@@ -107,7 +107,7 @@ struct PingoraDiscoveryState {
 pub use self::types::{
     BackendRequestCountKey, OverloadShedReason, RequestLatencyStats, ResponseCompressionAction,
     ResponseCompressionBypassReason, RouteOutcome, UpstreamRequestCountKey,
-    UpstreamRequestLatencyKey,
+    UpstreamRequestLatencyKey, WorkerMetricIdentity,
 };
 use self::{
     support::*,
@@ -262,7 +262,7 @@ pub struct Metrics {
     route_label_to_id: HashMap<String, usize>,
     route_stats: Vec<RouteStatsAtomic>,
     unrouted_route_id: usize,
-    worker_render_order: Vec<(usize, String)>,
+    worker_render_order: Vec<(usize, WorkerMetricIdentity)>,
     worker_stats: Vec<WorkerStatsAtomic>,
     control_worker_slot: usize,
     worker_counter_aggregation: Mutex<()>,

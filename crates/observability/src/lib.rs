@@ -19,7 +19,7 @@ pub use metrics::{
     BackendRequestCountKey, DiscoveryRefreshUpdate, Metrics, OverloadShedReason,
     PingoraDiscoveryRefreshOutcome, RequestLatencyStats, ResponseCacheOutcome,
     ResponseCompressionAction, ResponseCompressionBypassReason, RouteOutcome,
-    UpstreamRequestCountKey, UpstreamRequestLatencyKey,
+    UpstreamRequestCountKey, UpstreamRequestLatencyKey, WorkerMetricIdentity,
 };
 pub use recorders::{
     IngressObservationRecorder, PluginObservationRecorder, PolicyObservationRecorder,

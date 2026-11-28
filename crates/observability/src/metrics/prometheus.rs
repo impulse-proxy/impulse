@@ -359,42 +359,47 @@ impl Metrics {
             "# HELP impulse_worker_ingress_queue_drop_bytes Total ingress queue drop bytes by worker thread.\n",
         );
         out.push_str("# TYPE impulse_worker_ingress_queue_drop_bytes counter\n");
-        for (idx, worker) in &self.worker_render_order {
+        for (idx, identity) in &self.worker_render_order {
             let Some(stats) = self.worker_stats.get(*idx).map(WorkerStatsAtomic::snapshot) else {
                 continue;
             };
-            let worker = escape_prometheus_label(worker);
+            let labels = format!(
+                "worker=\"{}\",listener=\"{}\",protocol=\"{}\"",
+                escape_prometheus_label(&identity.worker),
+                escape_prometheus_label(&identity.listener),
+                escape_prometheus_label(&identity.protocol),
+            );
             out.push_str(&format!(
-                "impulse_worker_requests_total{{worker=\"{}\"}} {}\n",
-                worker, stats.requests_total
+                "impulse_worker_requests_total{{{labels}}} {}\n",
+                stats.requests_total
             ));
             out.push_str(&format!(
-                "impulse_worker_requests_success{{worker=\"{}\"}} {}\n",
-                worker, stats.requests_success
+                "impulse_worker_requests_success{{{labels}}} {}\n",
+                stats.requests_success
             ));
             out.push_str(&format!(
-                "impulse_worker_requests_failure{{worker=\"{}\"}} {}\n",
-                worker, stats.requests_failure
+                "impulse_worker_requests_failure{{{labels}}} {}\n",
+                stats.requests_failure
             ));
             out.push_str(&format!(
-                "impulse_worker_backend_timeouts{{worker=\"{}\"}} {}\n",
-                worker, stats.backend_timeouts
+                "impulse_worker_backend_timeouts{{{labels}}} {}\n",
+                stats.backend_timeouts
             ));
             out.push_str(&format!(
-                "impulse_worker_backend_errors{{worker=\"{}\"}} {}\n",
-                worker, stats.backend_errors
+                "impulse_worker_backend_errors{{{labels}}} {}\n",
+                stats.backend_errors
             ));
             out.push_str(&format!(
-                "impulse_worker_ingress_packets_total{{worker=\"{}\"}} {}\n",
-                worker, stats.ingress_packets_total
+                "impulse_worker_ingress_packets_total{{{labels}}} {}\n",
+                stats.ingress_packets_total
             ));
             out.push_str(&format!(
-                "impulse_worker_ingress_queue_drops{{worker=\"{}\"}} {}\n",
-                worker, stats.ingress_queue_drops
+                "impulse_worker_ingress_queue_drops{{{labels}}} {}\n",
+                stats.ingress_queue_drops
             ));
             out.push_str(&format!(
-                "impulse_worker_ingress_queue_drop_bytes{{worker=\"{}\"}} {}\n",
-                worker, stats.ingress_queue_drop_bytes
+                "impulse_worker_ingress_queue_drop_bytes{{{labels}}} {}\n",
+                stats.ingress_queue_drop_bytes
             ));
         }
         out

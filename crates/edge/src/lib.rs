@@ -21,5 +21,7 @@ pub mod runtime;
 pub(crate) use body::ChannelBody;
 pub use edge_core::routing;
 pub(crate) use hash::{REQUEST_ID_COUNTER, stable_hash64};
-pub(crate) use impulse_observability::{Metrics, OverloadShedReason, RouteOutcome};
+pub(crate) use impulse_observability::{
+    Metrics, OverloadShedReason, RouteOutcome, WorkerMetricIdentity,
+};
 pub use runtime::supervisor::RuntimeSupervisor;

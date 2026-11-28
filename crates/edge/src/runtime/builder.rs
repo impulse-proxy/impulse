@@ -130,6 +130,42 @@ impl RuntimeBuilder {
             .and_then(|slots| slots.checked_add(1))
             .expect("worker slot count overflow");
         let control_worker_slot = worker_slots - 1;
+        let mut worker_identities = Vec::with_capacity(control_worker_slot);
+        for listener in config.listener_runtime_configs() {
+            let listener_identity = format!(
+                "listener-{}@{}:{}",
+                listener.listen.index, listener.listen.listen.address, listener.listen.listen.port
+            );
+            let protocol = listener.listen.listen.protocol.trim().to_ascii_lowercase();
+            for worker in 0..listener.http3_worker_count {
+                for shard in 0..shard_count {
+                    let slot = listener
+                        .http3_worker_index_base
+                        .checked_add(worker)
+                        .and_then(|index| index.checked_mul(shard_count))
+                        .and_then(|base| base.checked_add(shard))
+                        .expect("HTTP/3 worker identity slot overflow");
+                    worker_identities.push(crate::WorkerMetricIdentity {
+                        slot,
+                        listener: listener_identity.clone(),
+                        protocol: protocol.clone(),
+                        worker: format!("worker-{worker}-shard-{shard}"),
+                    });
+                }
+            }
+            for worker in 0..listener.pingora_worker_count {
+                let slot = listener
+                    .pingora_metric_slot_base
+                    .checked_add(worker)
+                    .expect("Pingora worker identity slot overflow");
+                worker_identities.push(crate::WorkerMetricIdentity {
+                    slot,
+                    listener: listener_identity.clone(),
+                    protocol: protocol.clone(),
+                    worker: format!("worker-{worker}"),
+                });
+            }
+        }
         let per_upstream_limit = transport_policy
             .connection_limits
             .per_upstream_inflight
@@ -268,9 +304,10 @@ impl RuntimeBuilder {
         route_labels.push("unrouted".to_string());
         let routing_index = Arc::new(RouteIndex::from_runtime_upstreams(&config.upstreams));
         let metrics = Arc::new(
-            crate::Metrics::new_with_runtime_labels_and_control_worker_slot(
+            crate::Metrics::new_with_runtime_labels_and_worker_identities(
                 worker_slots,
                 control_worker_slot,
+                worker_identities,
                 route_labels,
                 identities.backend_names().map(str::to_string),
                 config.observability.metrics.detailed_plugin_timing,

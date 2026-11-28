@@ -1,5 +1,13 @@
 use super::*;
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorkerMetricIdentity {
+    pub slot: usize,
+    pub listener: String,
+    pub protocol: String,
+    pub worker: String,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ResponseCompressionAction {
     Gzip,
