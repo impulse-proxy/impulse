@@ -120,12 +120,11 @@ impl RuntimeBuilder {
         let timeout_policy = &config.policies.timeouts;
         let shard_count = transport_policy.packet_shards_per_worker.max(1);
         let topology = &transport_policy.topology;
-        let quic_worker_slots = topology
-            .http3_worker_count()
-            .saturating_mul(shard_count)
+        let quic_worker_slots = topology.http3_worker_count().saturating_mul(shard_count);
+        let pingora_worker_slots = topology.pingora_worker_count();
+        let worker_slots = quic_worker_slots
+            .saturating_add(pingora_worker_slots)
             .max(1);
-        let pingora_worker_slots = topology.pingora_worker_count().max(1);
-        let worker_slots = quic_worker_slots.saturating_add(pingora_worker_slots);
         let per_upstream_limit = transport_policy
             .connection_limits
             .per_upstream_inflight
