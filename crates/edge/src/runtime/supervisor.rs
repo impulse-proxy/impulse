@@ -18,9 +18,8 @@ use crate::runtime::{
     bundle::RuntimeBundleHandle,
     listener::Http3Service,
     listener_group::{
-        IngressServiceHandles, allocate_worker_index_base, collect_finished_listener_groups,
-        log_listener_startup, reconcile_listener_groups, shutdown_listener_groups,
-        start_ingress_service_handles,
+        IngressServiceHandles, collect_finished_listener_groups, log_listener_startup,
+        reconcile_listener_groups, shutdown_listener_groups, start_ingress_service_handles,
     },
     shared_state::SharedRuntimeState,
 };
@@ -105,13 +104,11 @@ impl RuntimeSupervisor {
     async fn start_ingress_services(
         &self,
         listener_config: impulse_config::runtime::ListenerRuntimeConfig,
-        worker_index_base: usize,
     ) -> Result<IngressServiceHandles, String> {
         start_ingress_service_handles(
             listener_config,
             Arc::clone(&self.shared_state),
             Arc::clone(&self.runtime),
-            worker_index_base,
         )
         .await
     }
@@ -131,12 +128,7 @@ impl RuntimeSupervisor {
                 break;
             }
 
-            let listener_worker_count = listener_config.http3_worker_count.max(1);
-            let worker_index_base = allocate_worker_index_base(&ingress, listener_worker_count);
-            match self
-                .start_ingress_services(listener_config, worker_index_base)
-                .await
-            {
+            match self.start_ingress_services(listener_config).await {
                 Ok(handles) => ingress.push(handles),
                 Err(err) => {
                     error!("{}", err);

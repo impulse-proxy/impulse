@@ -161,6 +161,8 @@ pub(crate) struct PingoraEdgeRequestState {
     retry_transport_identity: Option<BackendEndpoint>,
     plugin_execution: AsyncRequestPluginExecutionGuard,
     drain: Arc<PingoraDrainState>,
+    pingora_metric_slot_base: usize,
+    pingora_metric_slot_count: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -171,6 +173,17 @@ struct PingoraTunnelState {
 pub(crate) type PingoraRequestContext = IngressRequestContext<PingoraEdgeRequestState>;
 
 impl PingoraEdgeRequestState {
+    fn worker_slot(&self) -> usize {
+        self.runtime
+            .shared_state
+            .shared_services()
+            .metrics
+            .current_worker_slot_for_range(
+                self.pingora_metric_slot_base,
+                self.pingora_metric_slot_count,
+            )
+    }
+
     fn tunnel_response_established(&self, method: &str, status: http::StatusCode) -> bool {
         self.tunnel
             .is_some_and(|tunnel| tunnel_response_established(tunnel.mode, method, status))
@@ -220,6 +233,8 @@ impl Drop for PingoraSelectedBackend {
 pub(crate) struct PingoraEdgeRequestService {
     runtime: RuntimeBundleHandle,
     drain: Arc<PingoraDrainState>,
+    pingora_metric_slot_base: usize,
+    pingora_metric_slot_count: usize,
 }
 
 impl PingoraEdgeRequestService {
@@ -267,12 +282,7 @@ impl PingoraEdgeRequestService {
             Some(PluginRequestView {
                 request_id: ctx.request_id,
                 generation: plugin_plan.generation(),
-                worker_slot: ctx
-                    .runtime
-                    .shared_state
-                    .shared_services()
-                    .metrics
-                    .current_worker_slot(),
+                worker_slot: ctx.worker_slot(),
                 runtime_route_id: route.route_id,
                 route_id: Some(route.upstream_name.as_ref()),
                 upstream_name: route.upstream_name.as_ref(),
@@ -414,12 +424,7 @@ impl PingoraEdgeRequestService {
                     SelectionScope {
                         generation: ctx.runtime.generation,
                         begin_request: true,
-                        worker_slot: ctx
-                            .runtime
-                            .shared_state
-                            .shared_services()
-                            .metrics
-                            .current_worker_slot(),
+                        worker_slot: ctx.worker_slot(),
                     },
                     ctx.runtime.shared_state.shared_services().metrics.as_ref(),
                 )
@@ -459,6 +464,8 @@ pub(crate) struct PingoraConnectionLimitedApp {
 pub(crate) struct PingoraRuntimeConnectionAdmission {
     runtime: RuntimeBundleHandle,
     listener_label: String,
+    pingora_metric_slot_base: usize,
+    pingora_metric_slot_count: usize,
 }
 
 impl std::fmt::Debug for PingoraRuntimeConnectionAdmission {
@@ -491,7 +498,10 @@ impl ConnectionAdmission for PingoraRuntimeConnectionAdmission {
             current.generation,
             &self.listener_label,
             addr.copied(),
-            metrics.current_worker_slot(),
+            metrics.current_worker_slot_for_range(
+                self.pingora_metric_slot_base,
+                self.pingora_metric_slot_count,
+            ),
             metrics,
         )
         .is_ok();
@@ -669,6 +679,8 @@ fn pingora_ingress_service_for_listener(
     let connection_admission = Arc::new(PingoraRuntimeConnectionAdmission {
         runtime: runtime.clone(),
         listener_label: listener_label.clone(),
+        pingora_metric_slot_base: listener.pingora_metric_slot_base,
+        pingora_metric_slot_count: listener.pingora_worker_count,
     });
     let tls_state = Http3Service::build_listener_tls_reload_state(&listener).map_err(|error| {
         Error::because(
@@ -717,6 +729,8 @@ fn pingora_ingress_service_for_listener(
         PingoraEdgeRequestService {
             runtime: runtime.clone(),
             drain: Arc::clone(&drain),
+            pingora_metric_slot_base: listener.pingora_metric_slot_base,
+            pingora_metric_slot_count: listener.pingora_worker_count,
         },
     );
     configure_tunnel_proxy(&mut proxy);
@@ -759,6 +773,8 @@ impl ProxyHttp for PingoraEdgeRequestService {
                 retry_transport_identity: None,
                 plugin_execution: AsyncRequestPluginExecutionGuard::default(),
                 drain: Arc::clone(&self.drain),
+                pingora_metric_slot_base: self.pingora_metric_slot_base,
+                pingora_metric_slot_count: self.pingora_metric_slot_count,
             },
             REQUEST_ID_COUNTER.fetch_add(1, Ordering::Relaxed),
         )
@@ -1249,12 +1265,7 @@ impl ProxyHttp for PingoraEdgeRequestService {
             plugin_request: PluginRequestView {
                 request_id: ctx.request_id,
                 generation: plugin_plan.generation(),
-                worker_slot: ctx
-                    .runtime
-                    .shared_state
-                    .shared_services()
-                    .metrics
-                    .current_worker_slot(),
+                worker_slot: ctx.worker_slot(),
                 runtime_route_id: route.route_id,
                 route_id: Some(route.upstream_name.as_ref()),
                 upstream_name: route.upstream_name.as_ref(),
@@ -2160,7 +2171,7 @@ fn handle_pingora_proxy_failure(
             &[selected.id],
             false,
         )
-        .with_worker_slot(metrics.current_worker_slot()),
+        .with_worker_slot(ctx.worker_slot()),
         metrics,
     );
     let (retry_backend, retry_transport_identity, alternate_failure) = match selection {
