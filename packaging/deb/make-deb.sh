@@ -25,7 +25,7 @@ cd "$REPO_ROOT"
 # Left EMPTY on purpose so the auto-detection below is reachable. Setting a
 # literal default here is what made version/arch detection dead code before.
 PKG_NAME="impulse"
-PKG_VERSION="0.7.5"
+PKG_VERSION="0.7.6"
 PKG_ARCH="amd64"
 SKIP_BUILD=0
 AUTO_START=1

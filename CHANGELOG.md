@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.6] - 2026-11-28
+
+### Changed
+
+- Backend selection state now lives on the Pingora backends. Weighted round-robin and weighted random use Pingora's selectors, least-connections and latency-aware selection use Pingora backend state, excluded and unhealthy backends are filtered by Pingora, and backend readiness and the backend inventory are derived from that same state. The custom weighted selectors and the duplicate selection state were removed.
+- Upstream request sanitization for HTTP/1.1 and HTTP/2 is delegated to Pingora's standard upstream request policy, and request header mutations are applied directly to Pingora requests. HTTP/3 keeps its own header translation. Tests cover the delegated sanitization.
+- The Pingora ingress implements Pingora's proxy contract directly, and the duplicate ingress adapter was removed.
+
+### Removed
+
+- **The `resilience.hedging` configuration block** (`enabled`, `delay_ms`, `safe_methods`, `route_allowlist`), along with the inactive hedging policy contracts and telemetry. Hedging was not supported. `hedging` is now an unknown field, so **a configuration that still contains it fails to load** with ``unknown field `hedging` ``. The shipped sample configs included an `enabled: false` hedging block; remove it from any configuration copied from them.
+- Hedging metrics: `impulse_hedge_triggered_total`, `impulse_hedge_won_total`, `impulse_hedge_wasted_total`, `impulse_hedge_primary_won_after_trigger_total`, `impulse_hedge_primary_late_ms_total` and `impulse_hedge_primary_late_samples_total`.
+
+### Compatibility
+
+- **Remove `resilience.hedging` from your configuration before upgrading.** No other configuration key was removed or renamed.
+- Dashboards, recording rules and alerts that use the removed hedging metrics must be updated. A PromQL sum that includes a removed metric returns no data rather than treating it as zero.
+
 ## [0.7.5] - 2026-11-26
 
 ### Added
