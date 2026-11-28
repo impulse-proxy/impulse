@@ -42,7 +42,10 @@ pub use self::{
     },
     resilience::{RuntimeCircuitBreakerPolicy, RuntimeRetryBudgetPolicy},
     timeouts::RuntimeTimeoutPolicy,
-    transport::{RuntimeBackendConnectionPolicy, RuntimeConnectionLimits, RuntimeTransportPolicy},
+    transport::{
+        RuntimeBackendConnectionPolicy, RuntimeConnectionLimits, RuntimeDataPlaneTopology,
+        RuntimeTransportPolicy,
+    },
     watchdog::RuntimeWatchdogPolicy,
 };
 use super::{Config, RuntimeConfigError, RuntimeListenerTls};
@@ -205,7 +208,8 @@ pub struct RuntimePolicySet {
 impl RuntimePolicySet {
     pub(crate) fn from_config(config: &Config) -> Result<Self, RuntimeConfigError> {
         let timeouts = RuntimeTimeoutPolicy::normalize(&config.performance)?;
-        let transport = RuntimeTransportPolicy::normalize(&config.performance)?;
+        let listeners = crate::config::effective_listens(config);
+        let transport = RuntimeTransportPolicy::normalize(&config.performance, &listeners)?;
         let rate_limits = RuntimeRateLimitPolicy::normalize(&config.resilience)?;
         let admission = RuntimeAdmissionPolicy::normalize(
             &config.resilience,

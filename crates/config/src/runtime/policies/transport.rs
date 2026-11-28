@@ -1,7 +1,10 @@
 use std::time::Duration;
 
 use super::{RuntimeBackendDnsPolicy, config_invalid};
-use crate::{config::Performance, runtime::RuntimeConfigError};
+use crate::{
+    config::{Listen, Performance, available_data_plane_cpus},
+    runtime::RuntimeConfigError,
+};
 
 fn require_nonzero_u64(name: &str, value: u64) -> Result<(), RuntimeConfigError> {
     if value == 0 {
@@ -30,6 +33,7 @@ const H2_MAX_WINDOW_BYTES: u32 = (1 << 31) - 1;
 pub struct RuntimeTransportPolicy {
     pub worker_threads: usize,
     pub worker_threads_explicit: bool,
+    pub topology: RuntimeDataPlaneTopology,
     pub control_plane_threads: usize,
     pub packet_shards_per_worker: usize,
     pub packet_shard_queue_capacity: usize,
@@ -56,6 +60,50 @@ pub struct RuntimeTransportPolicy {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeDataPlaneTopology {
+    pub cpu_capacity: usize,
+    pub listener_count: usize,
+    pub pingora_listener_groups: usize,
+    pub http3_listener_groups: usize,
+    pub configured_worker_threads: usize,
+    pub worker_threads_explicit: bool,
+    pub automatic_worker_budget: usize,
+    pub worker_budget: usize,
+}
+
+impl RuntimeDataPlaneTopology {
+    fn calculate(performance: &Performance, listeners: &[Listen]) -> Self {
+        let cpu_capacity = available_data_plane_cpus();
+        let pingora_listener_groups = listeners
+            .iter()
+            .filter(|listener| matches!(listener.protocol.as_str(), "http1" | "http2" | "http3"))
+            .count();
+        let http3_listener_groups = listeners
+            .iter()
+            .filter(|listener| listener.protocol == "http3")
+            .count();
+        let worker_threads_explicit = performance.worker_threads_explicit;
+        let automatic_worker_budget = cpu_capacity;
+        let worker_budget = if worker_threads_explicit {
+            performance.worker_threads
+        } else {
+            automatic_worker_budget
+        };
+
+        Self {
+            cpu_capacity,
+            listener_count: listeners.len(),
+            pingora_listener_groups,
+            http3_listener_groups,
+            configured_worker_threads: performance.worker_threads,
+            worker_threads_explicit,
+            automatic_worker_budget,
+            worker_budget,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeConnectionLimits {
     pub global_inflight: usize,
     pub per_upstream_inflight: usize,
@@ -75,7 +123,10 @@ pub struct RuntimeBackendConnectionPolicy {
 }
 
 impl RuntimeTransportPolicy {
-    pub(crate) fn normalize(performance: &Performance) -> Result<Self, RuntimeConfigError> {
+    pub(crate) fn normalize(
+        performance: &Performance,
+        listeners: &[Listen],
+    ) -> Result<Self, RuntimeConfigError> {
         require_nonzero_usize("performance.worker_threads", performance.worker_threads)?;
         if performance.worker_threads > 1024 {
             return Err(config_invalid(format!(
@@ -236,6 +287,7 @@ impl RuntimeTransportPolicy {
         Ok(Self {
             worker_threads: performance.worker_threads,
             worker_threads_explicit: performance.worker_threads_explicit,
+            topology: RuntimeDataPlaneTopology::calculate(performance, listeners),
             control_plane_threads: performance.control_plane_threads,
             packet_shards_per_worker: performance.packet_shards_per_worker,
             packet_shard_queue_capacity: performance.packet_shard_queue_capacity,
@@ -296,8 +348,8 @@ mod tests {
         performance.packet_shards_per_worker = 2;
         performance.reuseport = true;
 
-        let policy =
-            RuntimeTransportPolicy::normalize(&performance).expect("normalization must succeed");
+        let policy = RuntimeTransportPolicy::normalize(&performance, &[])
+            .expect("normalization must succeed");
 
         assert_eq!(policy.worker_threads, 8);
         assert_eq!(policy.control_plane_threads, 3);
@@ -312,8 +364,8 @@ mod tests {
         performance.packet_shard_queue_capacity = 512;
         performance.packet_shard_queue_max_bytes = 2 * 1024 * 1024;
 
-        let policy =
-            RuntimeTransportPolicy::normalize(&performance).expect("normalization must succeed");
+        let policy = RuntimeTransportPolicy::normalize(&performance, &[])
+            .expect("normalization must succeed");
 
         assert_eq!(policy.packet_shards_per_worker, 4);
         assert_eq!(policy.packet_shard_queue_capacity, 512);
@@ -330,8 +382,8 @@ mod tests {
         performance.per_backend_inflight_limit = 32;
         performance.max_active_connections = 4096;
 
-        let policy =
-            RuntimeTransportPolicy::normalize(&performance).expect("normalization must succeed");
+        let policy = RuntimeTransportPolicy::normalize(&performance, &[])
+            .expect("normalization must succeed");
 
         assert_eq!(policy.connection_limits.global_inflight, 1000);
         assert_eq!(policy.connection_limits.per_upstream_inflight, 250);
@@ -346,8 +398,8 @@ mod tests {
         performance.udp_recv_buffer_bytes = 4 * 1024 * 1024;
         performance.udp_send_buffer_bytes = 2 * 1024 * 1024;
 
-        let policy =
-            RuntimeTransportPolicy::normalize(&performance).expect("normalization must succeed");
+        let policy = RuntimeTransportPolicy::normalize(&performance, &[])
+            .expect("normalization must succeed");
 
         assert_eq!(policy.udp_recv_buffer_bytes, 4 * 1024 * 1024);
         assert_eq!(policy.udp_send_buffer_bytes, 2 * 1024 * 1024);
@@ -364,8 +416,8 @@ mod tests {
         performance.backend_connect_timeout_ms = 600;
         performance.backend_timeout_ms = 2_500;
 
-        let policy =
-            RuntimeTransportPolicy::normalize(&performance).expect("normalization must succeed");
+        let policy = RuntimeTransportPolicy::normalize(&performance, &[])
+            .expect("normalization must succeed");
 
         assert_eq!(policy.backend_connections.max_inflight, 60);
         assert_eq!(policy.backend_connections.max_idle_per_backend, 11);
@@ -389,8 +441,8 @@ mod tests {
         performance.worker_threads = 2;
         performance.reuseport = false;
 
-        let err =
-            RuntimeTransportPolicy::normalize(&performance).expect_err("normalization must fail");
+        let err = RuntimeTransportPolicy::normalize(&performance, &[])
+            .expect_err("normalization must fail");
 
         assert_eq!(err.category(), "config_invalid");
         assert_eq!(
@@ -428,7 +480,7 @@ mod tests {
             let mut performance = valid_performance();
             mutate(&mut performance);
 
-            let err = RuntimeTransportPolicy::normalize(&performance).expect_err(expected);
+            let err = RuntimeTransportPolicy::normalize(&performance, &[]).expect_err(expected);
 
             assert_eq!(err.category(), "config_invalid");
             assert_eq!(err.to_string(), format!("config_invalid: {expected}"));
@@ -459,7 +511,7 @@ mod tests {
                 performance.reuseport = true;
             }
 
-            let err = RuntimeTransportPolicy::normalize(&performance).expect_err(expected);
+            let err = RuntimeTransportPolicy::normalize(&performance, &[]).expect_err(expected);
 
             assert_eq!(err.to_string(), expected);
         }
@@ -505,8 +557,8 @@ mod tests {
             ..Performance::default()
         };
 
-        let err =
-            RuntimeTransportPolicy::normalize(&performance).expect_err("normalization must fail");
+        let err = RuntimeTransportPolicy::normalize(&performance, &[])
+            .expect_err("normalization must fail");
 
         assert!(
             err.to_string().contains(
@@ -524,8 +576,8 @@ mod tests {
             ..Performance::default()
         };
 
-        let err =
-            RuntimeTransportPolicy::normalize(&performance).expect_err("normalization must fail");
+        let err = RuntimeTransportPolicy::normalize(&performance, &[])
+            .expect_err("normalization must fail");
 
         assert!(
             err.to_string().contains(
@@ -543,8 +595,8 @@ mod tests {
             ..Performance::default()
         };
 
-        let err =
-            RuntimeTransportPolicy::normalize(&performance).expect_err("normalization must fail");
+        let err = RuntimeTransportPolicy::normalize(&performance, &[])
+            .expect_err("normalization must fail");
 
         assert!(
             err.to_string().contains(
@@ -567,8 +619,8 @@ mod tests {
             ..Performance::default()
         };
 
-        let policy =
-            RuntimeTransportPolicy::normalize(&performance).expect("normalization must succeed");
+        let policy = RuntimeTransportPolicy::normalize(&performance, &[])
+            .expect("normalization must succeed");
 
         assert_eq!(policy.max_request_body_bytes, 16_384);
         assert_eq!(policy.request_buffer_global_cap_bytes, 20_000);
